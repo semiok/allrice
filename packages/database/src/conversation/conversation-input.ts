@@ -1,7 +1,6 @@
 import {
   UuidSchema,
   RuntimeNativeInputProofSchema,
-  runtimeFeatureEnabled,
   type RuntimeNativeInputProof,
 } from '@allrice/contracts';
 import { z } from 'zod';
@@ -9,7 +8,10 @@ import type { TransactionSql } from 'postgres';
 
 import { getDatabase } from '../core/client.ts';
 import { refreshTaskClock } from '../task-clock.ts';
-import { memorySourceProducer } from '../memory-source-capture.ts';
+import {
+  memorySourceProducer,
+  memorySourceCaptureEnabled,
+} from '../memory-source-capture.ts';
 
 const TurnIdSchema = z.string().trim().min(1).max(255);
 
@@ -246,8 +248,7 @@ export async function consumeConversationSteer(input: {
         throw new Error('INPUT_ADOPTION_PROOF_REQUIRED');
     }
     const captureAdoptedFeedback =
-      command.input_kind === 'steer_current' &&
-      runtimeFeatureEnabled('ALLRICE_EXPERIENCE_REVIEW_ENABLED');
+      command.input_kind === 'steer_current' && memorySourceCaptureEnabled();
     await transaction`
       update allrice_conversation_commands
       set state = 'consumed', consumed_at = now(), updated_at = now(),
@@ -278,15 +279,15 @@ export async function consumeConversationSteer(input: {
       set status = 'canceled', error_code = 'STEER_CONSUMED',
           error_message = 'Input was consumed by the active turn',
           completed_at = now(),
-          experience_capture_state=case
-            when ${captureAdoptedFeedback} and not method_authoring and experience_capture_state is null
-            then 'pending' else experience_capture_state end,
-          experience_capture_reason=case
-            when ${captureAdoptedFeedback} and not method_authoring and experience_capture_state is null
-            then ${memorySourceProducer} else experience_capture_reason end,
-          experience_execution_run_id=case
+          memory_source_capture_state=case
+            when ${captureAdoptedFeedback} and not method_authoring and memory_source_capture_state is null
+            then 'pending' else memory_source_capture_state end,
+          memory_source_capture_reason=case
+            when ${captureAdoptedFeedback} and not method_authoring and memory_source_capture_state is null
+            then ${memorySourceProducer} else memory_source_capture_reason end,
+          memory_source_execution_run_id=case
             when ${captureAdoptedFeedback} then ${live[0]!.active_run_id}::uuid
-            else experience_execution_run_id end,
+            else memory_source_execution_run_id end,
           content_generation_id=coalesce(content_generation_id,(
             select active.content_generation_id from allrice_conversation_runtimes cr
             join allrice_employee_runs active on active.run_id=cr.active_run_id

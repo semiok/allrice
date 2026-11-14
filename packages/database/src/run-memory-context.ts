@@ -31,10 +31,11 @@ import { readContentPrincipal } from './content-maintenance.ts';
 import { employeeAccessTransaction } from './employees/employee-access-cancellation.ts';
 import { resolveEmployeeSessionInstance } from './employees/employee-instances.ts';
 import {
-  assertExperienceWorker,
-  type ExperienceRunScope,
-  type ExperienceWorker,
-} from './experience-runtime.ts';
+  assertMemoryWorker,
+  MemoryWorkerAuthorityError,
+  type MemoryRunScope,
+  type MemoryWorker,
+} from './memory-worker-authority.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
 
 export class MemoryContextError extends Error {
@@ -60,8 +61,8 @@ function parseState(raw: unknown) {
 }
 type Tx = postgres.TransactionSql;
 export type RunMemoryAuthority = {
-  scope: ExperienceRunScope;
-  worker: ExperienceWorker;
+  scope: MemoryRunScope;
+  worker: MemoryWorker;
 };
 
 /** Reuse the existing access transaction/lease guard. Serialize on the Run row
@@ -72,7 +73,7 @@ async function withRun<T>(
 ) {
   return employeeAccessTransaction(getDatabase(), async (tx) => {
     await tx`set local statement_timeout='5s'`;
-    await assertExperienceWorker(tx, auth.scope, auth.worker, true);
+    await assertMemoryWorker(tx, auth.scope, auth.worker, true);
     const who = {
       actor: { type: 'user' as const, id: auth.scope.ownerId },
       organizationId: auth.scope.organizationId,
@@ -81,11 +82,12 @@ async function withRun<T>(
     if (!(await readContentPrincipal(who, tx, true))) return unavailable();
     await tx`select pg_advisory_xact_lock_shared(hashtextextended(${`employee-content:${who.organizationId}`},0))`;
     const [row] =
-      await tx`select er.memory_context_state,er.employee_assignment_id,s.employee_instance_id
+      await tx`select er.memory_context_state,er.employee_assignment_id,s.employee_instance_id,
+        coalesce((er.execution_snapshot->'persona'->'source') ? 'task',false) task_source
       from allrice_employee_runs er join allrice_chat_sessions s on s.id=er.session_id
       and s.organization_id=er.organization_id and s.workspace_id=er.workspace_id and s.owner_id=er.owner_id
       where er.run_id=${auth.scope.runId} and s.archived_at is null`;
-    if (!row) return unavailable();
+    if (!row || row.task_source) return unavailable();
     await resolveEmployeeSessionInstance(
       who,
       row.employee_assignment_id,
@@ -93,8 +95,13 @@ async function withRun<T>(
       tx,
     );
     const result = await read(tx, row.memory_context_state);
-    await assertExperienceWorker(tx, auth.scope, auth.worker, true);
+    await assertMemoryWorker(tx, auth.scope, auth.worker, true);
     return result;
+  }).catch((error: unknown) => {
+    // Keep the public memory refusal contract when the memory-owned lease
+    // guard rejects; callers need not know about the retired experience guard.
+    if (error instanceof MemoryWorkerAuthorityError) return unavailable();
+    throw error;
   });
 }
 
@@ -252,7 +259,7 @@ export async function readRunMemoryContext<T>(
 
 async function assertMemoryIndexCurrent(
   sql: ReturnType<typeof getDatabase> | Tx,
-  scope: ExperienceRunScope,
+  scope: MemoryRunScope,
   state: RunMemoryContextV2State,
 ) {
   const current = await memoryScopeForRun(sql, scope);
@@ -356,7 +363,7 @@ function mergeConfirmedMemoryPins(
 /** Read-only companion to the existing live Run/lease admission. An ordinary
  * edit keeps its issued revision; loss of current eligibility stops the Run.
  * No read locks, new allowance, history rewrite or silent snapshot replacement. */
-export async function assertRunMemoryContextCurrent(scope: ExperienceRunScope) {
+export async function assertRunMemoryContextCurrent(scope: MemoryRunScope) {
   const sql = getDatabase();
   const instanceId = await memoryInstanceForRun(sql, scope);
   if (!instanceId) return unavailable();

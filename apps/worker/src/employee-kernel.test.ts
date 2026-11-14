@@ -233,8 +233,8 @@ it.each([1, 2])(
     expect(current.employeeDocuments).toEqual(
       input.resolved.promptSnapshot.employeeDocuments,
     );
-    // Task provenance was independently checked at enqueue/resolve. It changes
-    // the carrier in both kernel scopes, not the original authority or tool set.
+    // Task provenance was independently checked at enqueue/resolve. Both kernel
+    // scopes exclude legacy memory content while preserving PERSONA and knowledge.
     const digest = `sha256:${'a'.repeat(64)}`;
     const definition = employeeManifest({
       key: 'task-kernel-fixture',
@@ -332,9 +332,9 @@ it.each([1, 2])(
     const task = assembleEmployeeKernel(input);
     expect(task.systemInstructions).toBe(task.rootSystemInstructions);
     expect(task.systemInstructions).toContain('frozen actual task engine');
-    expect(task.systemInstructions).toContain('EXISTING_LEGAL_TASK_METHOD');
+    expect(task.systemInstructions).not.toContain('EXISTING_LEGAL_TASK_METHOD');
     expect(task.systemInstructions).toContain(
-      'original memory eligibility and byte budget',
+      'This internal task has empty MEMORY.md and no personal memory tools.',
     );
     expect(task.systemInstructions).not.toContain(
       'facts or confirmed memories',
