@@ -147,13 +147,18 @@ it.each([false, true])(
           e.name === 'skill' &&
           e.sourcePayload?.skillStatus === 'loaded',
       );
-      expect(checks).toBeGreaterThan(0);
+      expect(
+        checks,
+        result.error instanceof Error
+          ? `Preparation error: ${result.error.name}: ${result.error.message}`
+          : undefined,
+      ).toBeGreaterThan(0);
       expect(
         events.every(
           (e) =>
-            e.sessionId === null &&
-            e.messageId === null &&
-            e.internalTask?.occurrenceId === testId,
+            e.sessionId === sessionId &&
+            e.messageId === assistantMessageId &&
+            e.internalTask === undefined,
         ),
       ).toBe(true);
       const names = model.requests[0]!.tools!.map((t) => t.function.name);

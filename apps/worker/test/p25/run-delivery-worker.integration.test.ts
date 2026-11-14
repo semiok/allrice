@@ -1434,43 +1434,51 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     expect(await db`select id from allrice_runs`).toHaveLength(0);
   }, 45000);
 
-  it('refuses a pre-retirement task with a raw V1 memory snapshot before native admission and preserves its frozen history', async () => {
+  it('refuses a pre-retirement Run with a raw V1 memory snapshot before native admission and preserves its frozen history', async () => {
     const requests: ModelRequest[] = [];
-    const f = await publishedTarget(async (request) => {
+    const f = await setup(async (request) => {
       requests.push(request);
       return { text: 'Must never dispatch an obsolete memory payload.' };
     });
-    const plan = await oncePlan(f);
-    const original = EmployeeHub.prepareEmployeeRunBinding;
-    const hook = vi
-      .spyOn(EmployeeHub, 'prepareEmployeeRunBinding')
-      .mockImplementation(async (...args) => {
-        const binding = await original(...args);
-        if (!args[0].taskPersona) return binding;
-        // Raw historical input only, issued at the original INSERT. Current
-        // contracts must reject it; no immutable row/trigger is rewritten.
-        binding.executionSnapshot.capabilitySnapshot.bindings.toolNames = [
-          ...binding.executionSnapshot.capabilitySnapshot.bindings.toolNames,
-          'workspace.memory.search',
-          'workspace.experience.read',
-        ];
-        const raw = binding.promptSnapshot as unknown as Record<
-          string,
-          unknown
-        >;
-        raw.memories = [{ id: f.memories[0]!.id, content: 'TASK_MEMORY_KEEP' }];
-        raw.employeeDocuments = {
+    const historical = await createRunAuthorityFixture(f.db, {
+      configure: false,
+      runtimePolicy: f.identity.manifest.runtimePolicy,
+      // Dedicated historical first INSERT, not a new public admission or an
+      // immutable prompt rewrite. Current enqueue must keep rejecting V1.
+      preparePrompt: async () => ({
+        systemPrompt: 'Synthetic historical task',
+        conversation: [],
+        memories: [{ id: randomUUID(), content: 'TASK_MEMORY_KEEP' }],
+        employeeDocuments: {
           user: '',
           memory: '# MEMORY.md\nTASK_MEMORY_KEEP',
-        };
-        return binding;
-      });
-    let runId: string;
-    try {
-      runId = await plan.dispatch();
-    } finally {
-      hook.mockRestore();
-    }
+        },
+      }),
+      snapshot: (snapshot) => {
+        snapshot.capabilitySnapshot.bindings.toolNames.push(
+          'workspace.memory.search',
+          'workspace.experience.read',
+        );
+        return snapshot;
+      },
+    });
+    const runId = historical.rootRunId;
+    const [row] = await f.db`
+      select user_message_id,assistant_message_id from allrice_employee_runs where run_id=${runId}`;
+    const payload = {
+      schemaVersion: 1,
+      type: 'allrice.employee.run',
+      input: {
+        employeeAssignmentId: historical.assignment,
+        employeeVersionId: historical.version,
+        sessionId: historical.session,
+        userMessageId: row!.user_message_id,
+        assistantMessageId: row!.assistant_message_id,
+      },
+    };
+    // This owned fixture already has a real policy and lease; issue its
+    // claimed job input so startClaimedJob produces the ordinary Worker context.
+    await f.db`update allrice_jobs set status='claimed',attempt=1,payload=${f.db.json(payload)} where id=${historical.worker.jobId}`;
     const ledger = { schemaVersion: 1, spentBytes: 23, toolReads: 1 };
     await f.db`update allrice_employee_runs set memory_context_state=${f.db.json(ledger)} where run_id=${runId}`;
     const history = async () =>
@@ -1478,19 +1486,53 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         await f.db`select prompt_snapshot,execution_snapshot,memory_context_state from allrice_employee_runs where run_id=${runId}`
       )[0]!;
     const before = await history();
+    expect(before.memory_context_state).toEqual(ledger);
+    expect(before.prompt_snapshot.memories).toEqual([
+      { id: expect.any(String), content: 'TASK_MEMORY_KEEP' },
+    ]);
+    const workflowLease = { ...historical.worker, leaseMs: 300000 };
+    const execution = (await startClaimedJob(
+      workflowLease.workerId,
+      workflowLease.jobId,
+      workflowLease.leaseToken,
+    ))!;
+    expect(execution).toBeDefined();
+    const isolation = await prepareExecutionIsolation({
+      root: join(directory!, 'execution'),
+      organizationId: historical.org,
+      workspaceId: historical.workspace,
+      ownerId: historical.user,
+      runId,
+      jobId: workflowLease.jobId,
+      attempt: execution.job.attempt,
+    });
     const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
-    const task = await claim(f, runId, true);
+    const native = vi.spyOn(adapter!, 'execute');
     try {
-      await expect(task.run()).rejects.toMatchObject({ name: 'ZodError' });
+      await expect(
+        executeEmployeeRun({
+          execution,
+          workflowLease,
+          isolation,
+          signal: AbortSignal.timeout(15000),
+          onHarnessEvent: async () => {},
+        }),
+      ).rejects.toMatchObject({
+        name: 'ZodError',
+        issues: expect.arrayContaining([
+          expect.objectContaining({ path: ['memories', 0] }),
+        ]),
+      });
       expect(requests).toEqual([]);
       expect(broker.mock.calls).toEqual([]);
+      expect(native.mock.calls).toEqual([]);
       for (const name of [
         'workspace.memory.search',
         'workspace.experience.read',
       ])
         await expect(
           ToolBroker.executeRiceTool({
-            context: task.execution.context,
+            context: execution.context,
             capabilities: ['storage:read'],
             storageRoot: '/must-not-export',
             call: { id: randomUUID(), name, arguments: {} },
@@ -1498,7 +1540,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         ).rejects.toMatchObject({ code: 'TOOL_NOT_ALLOWED', retryable: false });
       expect(await history()).toEqual(before);
     } finally {
-      await task.isolation.cleanup();
+      await isolation.cleanup();
     }
   }, 90000);
 

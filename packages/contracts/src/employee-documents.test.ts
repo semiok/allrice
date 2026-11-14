@@ -332,12 +332,12 @@ describe('frozen platform test PERSONA', () => {
         EmployeeDocumentsSchema.parse({
           persona: exact,
           user: 'u'.repeat(2048),
-          memory: 'm'.repeat(6000),
+          memory: '',
         }),
       ).toEqual({
         persona: exact,
         user: 'u'.repeat(2048),
-        memory: 'm'.repeat(6000),
+        memory: '',
       });
     },
   );
@@ -562,6 +562,7 @@ describe('normal Run PERSONA defaults and sparse personal sources', () => {
       );
       expect(
         EmployeeDocumentsSchema.parse({
+          schemaVersion: 2,
           persona,
           user: 'u'.repeat(2048),
           memory: 'm'.repeat(6000),
