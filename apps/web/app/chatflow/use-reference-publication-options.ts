@@ -7,6 +7,10 @@ import { workbenchJson } from '../../lib/chatflow/workbench-model';
 export type ReferencePublicationOptions = z.infer<
   typeof ReferenceLibraryOptionsSchema
 >;
+type ReferencePublicationOptionsResult = {
+  options?: ReferencePublicationOptions;
+  error?: string;
+};
 const responseSchema = z.object({
   viewerId: UuidSchema,
   options: ReferenceLibraryOptionsSchema,
@@ -20,14 +24,12 @@ export function useReferencePublicationOptions(props: {
   headers: Record<string, string>;
   active: boolean;
   supplied?: ReferencePublicationOptions;
-}) {
+}): ReferencePublicationOptionsResult {
   const headerKey = JSON.stringify(props.headers);
   const key = `${props.workspaceId}/${props.viewerId}/${headerKey}`;
-  const [result, setResult] = useState<{
-    key: string;
-    options?: ReferencePublicationOptions;
-    error?: string;
-  } | null>(null);
+  const [result, setResult] = useState<
+    (ReferencePublicationOptionsResult & { key: string }) | null
+  >(null);
   useEffect(() => {
     if (!props.active || !props.viewerId || props.supplied) return;
     const controller = new AbortController();

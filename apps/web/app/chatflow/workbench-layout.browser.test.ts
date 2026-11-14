@@ -13762,6 +13762,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         } as ArtifactPreview),
       queries: [] as URLSearchParams[],
       selections: [] as string[],
+      selectionReplies: [] as string[],
       retries: [] as {
         sourceId: string;
         input: unknown;
@@ -13854,7 +13855,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         if (state.selectionDelay) await state.selectionDelay;
         if (state.denied.has(reference.revisionId))
           return answer(failure([reference.revisionId]), 409);
-        return answer({
+        await answer({
           viewerId: f.state.viewer,
           workspaceId: f.state.workspace,
           selection: {
@@ -13868,6 +13869,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ownership: reference.ownership,
           },
         });
+        state.selectionReplies.push(reference.revisionId);
+        return;
       }
       if (url.pathname.endsWith('/preview') && reference) {
         state.reads.push(reference.revisionId);
@@ -14443,6 +14446,224 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
     30000,
   );
+
+  function materialQuote(panel: Locator, reference: ReferenceRevision) {
+    return panel
+      .locator('article')
+      .filter({
+        has: panel.getByRole('button', {
+          name: reference.fileName,
+          exact: true,
+        }),
+      })
+      .getByRole('button', { name: '引用到对话', exact: true });
+  }
+
+  it.each([409, 500])(
+    'MET247 F3 valid reselection refreshes a rejected pin and the next ordinary %i remains visible',
+    async (status) => {
+      const f = await materialFixture();
+      try {
+        const reference = f.materials.references[0]!;
+        const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+        await input.fill('请根据资料继续整理');
+        await f.page
+          .locator('header')
+          .getByRole('button', { name: '企业资料', exact: true })
+          .click();
+        const panel = f.panel.getByRole('region', {
+          name: '企业资料',
+          exact: true,
+        });
+        const quote = materialQuote(panel, reference);
+        await quote.click();
+        const chip = f.page.locator(
+          `[data-reference-revision-id="${reference.revisionId}"]`,
+        );
+        await chip.waitFor();
+        let dedicated = true;
+        const message = `这次发送遇到普通 ${status} 错误`;
+        await f.page.route('**/api/v1/sessions/*/messages?*', (route) => {
+          f.state.messageInputs.push(route.request().postDataJSON());
+          return route.fulfill({
+            status: dedicated ? 409 : status,
+            contentType: 'application/json',
+            body: JSON.stringify(
+              dedicated
+                ? f.failure([reference.revisionId])
+                : {
+                    error: {
+                      code: status === 409 ? 'CONFLICT' : 'INTERNAL_ERROR',
+                      message,
+                    },
+                  },
+            ),
+          });
+        });
+        const send = async (count: number) => {
+          await input.press('Enter');
+          await expect.poll(() => f.state.messageInputs.length).toBe(count);
+          await expect.poll(() => input.isEnabled()).toBe(true);
+        };
+        await send(1);
+        expect(await chip.getAttribute('data-reference-unavailable')).toBe(
+          'true',
+        );
+        await quote.click();
+        await expect.poll(() => f.materials.selections.length).toBe(2);
+        await expect
+          .poll(() => chip.getAttribute('data-reference-unavailable'))
+          .toBeNull();
+        expect(
+          await f.page
+            .getByRole('alert')
+            .filter({ hasText: '引用失败，文件可能被调整权限或移除' })
+            .count(),
+        ).toBe(0);
+        await send(2);
+        expect(await chip.getAttribute('data-reference-unavailable')).toBe(
+          'true',
+        );
+        dedicated = false;
+        await send(3);
+        await f.page.getByRole('alert').filter({ hasText: message }).waitFor();
+        expect(
+          await chip.getAttribute('data-reference-unavailable'),
+        ).toBeNull();
+        expect(await input.inputValue()).toBe('请根据资料继续整理');
+        expect(
+          await f.page.locator('[data-reference-revision-id]').count(),
+        ).toBe(1);
+      } finally {
+        await f.close();
+      }
+    },
+    30000,
+  );
+
+  for (const outcome of ['success', 'rejected'] as const)
+    it.each(['send-first', 'preflight-first', 'late-preflight'] as const)(
+      `MET247 F3 %s cannot attach an unsent pin across a ${outcome} receipt and quoting recovers`,
+      async (order) => {
+        const f = await materialFixture();
+        let releaseSend = () => {};
+        let releaseSelection = () => {};
+        try {
+          const [sent, next] = f.materials.references;
+          const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+          await input.fill('只发送已选资料');
+          await f.page
+            .locator('header')
+            .getByRole('button', { name: '企业资料', exact: true })
+            .click();
+          const panel = f.panel.getByRole('region', {
+            name: '企业资料',
+            exact: true,
+          });
+          await materialQuote(panel, sent!).click();
+          await f.page
+            .getByRole('button', {
+              name: `移除资料 ${sent!.fileName}`,
+              exact: true,
+            })
+            .waitFor();
+          const quote = materialQuote(panel, next!);
+          f.materials.selectionDelay = new Promise<void>((done) => {
+            releaseSelection = done;
+          });
+          const gate = new Promise<void>((done) => {
+            releaseSend = done;
+          });
+          let sending = false;
+          await f.page.route(
+            '**/api/v1/sessions/*/messages?*',
+            async (route) => {
+              sending = true;
+              await gate;
+              if (outcome === 'success') return route.fallback();
+              f.state.messageInputs.push(route.request().postDataJSON());
+              return route.fulfill({
+                status: 409,
+                contentType: 'application/json',
+                body: JSON.stringify(f.failure([sent!.revisionId])),
+              });
+            },
+          );
+          if (order !== 'send-first') {
+            await quote.click();
+            await expect.poll(() => f.materials.selections.length).toBe(2);
+          }
+          await input.press('Enter');
+          await expect.poll(() => sending).toBe(true);
+          expect(await quote.isDisabled()).toBe(true);
+          if (order === 'send-first') {
+            await quote.evaluate((button) =>
+              (button as HTMLButtonElement).click(),
+            );
+            expect(f.materials.selections).toEqual([sent!.revisionId]);
+          }
+          const settleSelection = async () => {
+            releaseSelection();
+            await expect
+              .poll(() => f.materials.selectionReplies.length)
+              .toBe(2);
+            await f.page.evaluate(
+              () =>
+                new Promise<void>((done) =>
+                  requestAnimationFrame(() =>
+                    requestAnimationFrame(() => done()),
+                  ),
+                ),
+            );
+            expect(
+              await f.page
+                .locator(`[data-reference-revision-id="${next!.revisionId}"]`)
+                .count(),
+            ).toBe(0);
+          };
+          if (order === 'preflight-first') await settleSelection();
+          releaseSend();
+          await expect.poll(() => input.isEnabled()).toBe(true);
+          if (order === 'late-preflight') await settleSelection();
+          if (order === 'send-first') releaseSelection();
+          await expect.poll(() => quote.isEnabled()).toBe(true);
+          expect(f.state.messageInputs[0]?.referenceRevisionIds).toEqual([
+            sent!.revisionId,
+          ]);
+          expect(
+            await f.page
+              .locator(`[data-reference-revision-id="${next!.revisionId}"]`)
+              .count(),
+          ).toBe(0);
+          expect(
+            await f.page.locator('[data-reference-revision-id]').count(),
+          ).toBe(outcome === 'success' ? 0 : 1);
+          await quote.click();
+          await f.page
+            .getByRole('button', {
+              name: `移除资料 ${next!.fileName}`,
+              exact: true,
+            })
+            .waitFor();
+          expect(f.materials.selections).toEqual(
+            order === 'send-first'
+              ? [sent!.revisionId, next!.revisionId]
+              : [sent!.revisionId, next!.revisionId, next!.revisionId],
+          );
+          expect(
+            await f.page.locator('[data-reference-revision-id]').count(),
+          ).toBe(outcome === 'success' ? 1 : 2);
+          expect(await input.inputValue()).toBe(
+            outcome === 'success' ? '' : '只发送已选资料',
+          );
+        } finally {
+          releaseSelection();
+          releaseSend();
+          await f.close();
+        }
+      },
+      30000,
+    );
 
   it('MET247 F3 late send rejection cannot mark or restore pins in the next session', async () => {
     const f = await materialFixture();

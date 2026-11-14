@@ -1233,6 +1233,7 @@ export function ChatFlowClient({
     setAtTranscriptBottom(true);
     setBusy(true);
     setError('');
+    setReferenceFailure(null);
     const createdAt = new Date().toISOString();
     const echo = {
       scope: settingsScope,
@@ -1425,13 +1426,16 @@ export function ChatFlowClient({
       setDraft(text);
       setSessionReferences(draftReferences);
       setReferenceSelections(draftReferenceSelections);
-      if (cause instanceof ReferenceSelectionUnavailableError)
-        setReferenceFailure({
-          scope: referenceRequestScope,
-          sessionId: nativeAdmissionSessionId!,
-          clientMessageId,
-          revisionIds: cause.referenceRevisionIds,
-        });
+      setReferenceFailure(
+        cause instanceof ReferenceSelectionUnavailableError
+          ? {
+              scope: referenceRequestScope,
+              sessionId: nativeAdmissionSessionId!,
+              clientMessageId,
+              revisionIds: cause.referenceRevisionIds,
+            }
+          : null,
+      );
       setCompanyReferences(draftCompanyReferences);
       setError(
         cause instanceof ReferenceSelectionUnavailableError
@@ -2328,6 +2332,16 @@ export function ChatFlowClient({
       current.some((item) => item.revisionId === reference.revisionId)
         ? current
         : [...current, reference],
+    );
+    setReferenceFailure((current) =>
+      current?.scope === settingsScope && current.sessionId === activeId
+        ? {
+            ...current,
+            revisionIds: current.revisionIds.filter(
+              (id) => id !== reference.revisionId,
+            ),
+          }
+        : current,
     );
     requestAnimationFrame(() => composerInput.current?.focus());
     return true;
@@ -3378,7 +3392,7 @@ export function ChatFlowClient({
                   sessionId={activeId}
                   headers={tenantHeaders}
                   active={active}
-                  readOnly={conversationReadOnly}
+                  readOnly={conversationReadOnly || busy}
                   initialReference={
                     currentModuleRequest?.kind === 'materials' &&
                     currentModuleRequest.id

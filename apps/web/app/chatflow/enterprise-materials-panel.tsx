@@ -87,6 +87,8 @@ export function EnterpriseMaterialsPanel(props: {
   current.current = identity;
   const active = useRef(props.active);
   active.current = props.active;
+  const inputAllowed = useRef(false);
+  inputAllowed.current = props.active && !props.readOnly;
   const [category, setCategory] = useState<keyof typeof categories>('all');
   const [query, setQuery] = useState('');
   const [page, setPage] = useState<{
@@ -115,6 +117,7 @@ export function EnterpriseMaterialsPanel(props: {
   const [deniedRevisions, setDeniedRevisions] = useState<string[]>([]);
   const [attempt, setAttempt] = useState(0);
   const operation = useRef<AbortController | null>(null);
+  const quoteOperation = useRef<AbortController | null>(null);
   const retryRequests = useRef(new Map<string, string>());
   const list = useRef<HTMLDivElement>(null);
   const sourceId = props.initialReference?.sourceId;
@@ -146,6 +149,13 @@ export function EnterpriseMaterialsPanel(props: {
     );
     return () => operation.current?.abort();
   }, [identity, props.active]);
+  useEffect(() => {
+    if (!props.readOnly || !quoteOperation.current) return;
+    quoteOperation.current.abort();
+    if (operation.current === quoteOperation.current)
+      setAction((prior) => ({ ...prior, busy: '' }));
+    quoteOperation.current = null;
+  }, [props.readOnly]);
   useEffect(() => {
     if (!props.active || !props.viewerId) return;
     const controller = new AbortController();
@@ -280,6 +290,7 @@ export function EnterpriseMaterialsPanel(props: {
     operation.current?.abort();
     const controller = new AbortController();
     operation.current = controller;
+    quoteOperation.current = controller;
     setAction({ key: identity, busy: r.revisionId, error: '', notice: '' });
     try {
       const response = await fetch(
@@ -295,7 +306,12 @@ export function EnterpriseMaterialsPanel(props: {
       const value = ReferenceInputSelectionResultSchema.parse(
         await readJson(response, { read: true }),
       );
-      if (controller.signal.aborted || current.current !== identity) return;
+      if (
+        controller.signal.aborted ||
+        current.current !== identity ||
+        !inputAllowed.current
+      )
+        return;
       if (
         value.viewerId !== props.viewerId ||
         value.workspaceId !== props.workspaceId ||
@@ -308,7 +324,12 @@ export function EnterpriseMaterialsPanel(props: {
       setDeniedRevisions((ids) => ids.filter((id) => id !== r.revisionId));
       setAction({ key: identity, busy: '', error: '', notice: '' });
     } catch (cause) {
-      if (controller.signal.aborted || current.current !== identity) return;
+      if (
+        controller.signal.aborted ||
+        current.current !== identity ||
+        !inputAllowed.current
+      )
+        return;
       if (cause instanceof ReferenceSelectionUnavailableError) {
         setDeniedRevisions((ids) => [...new Set([...ids, r.revisionId])]);
         setSelected(null);
@@ -319,6 +340,8 @@ export function EnterpriseMaterialsPanel(props: {
         error: cause instanceof Error ? cause.message : '操作未完成，请重试。',
         notice: '',
       });
+    } finally {
+      if (quoteOperation.current === controller) quoteOperation.current = null;
     }
   }
   async function copy(r: ReferenceRevision) {
