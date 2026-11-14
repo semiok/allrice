@@ -48,7 +48,7 @@ suite(
       route: { params: Promise<T> },
     ) => Promise<Response>;
     type MemoryHandler = TargetHandler<{ id: string }>;
-    let manage: ReadHandler, create: ReadHandler, rawList: ReadHandler;
+    let manage: ReadHandler, create: ReadHandler;
     let detail: MemoryHandler,
       edit: MemoryHandler,
       remove: MemoryHandler,
@@ -73,7 +73,7 @@ suite(
       const adminDetailPath =
         '../../../apps/web/app/api/v1/admin/organizations/[organizationId]/employee-memories/[id]/route.ts';
       ({ GET: manage } = (await import(managePath)) as { GET: ReadHandler });
-      ({ POST: create, GET: rawList } = (await import(createPath)) as {
+      ({ POST: create } = (await import(createPath)) as {
         POST: ReadHandler;
         GET: ReadHandler;
       });

@@ -441,13 +441,10 @@ export async function executeEmployeeRun({
               },
             }
           : {}),
-        loadScene: async (
-          selection: {
-            sceneId: string;
-            sceneDigest: string;
-          },
-          _employeeDocuments = false,
-        ) => {
+        loadScene: async (selection: {
+          sceneId: string;
+          sceneDigest: string;
+        }) => {
           const loaded = await loadEmployeeRuntimeScene(
             contentScope,
             contentRuntime!.generationId,
@@ -885,7 +882,6 @@ export async function executeEmployeeRun({
             executionSnapshot.schemaVersion === 2
               ? executionSnapshot.localMcp
               : undefined,
-            kernel.employeeDocuments,
           );
     const routePlan = decideCapabilityRoute({
       request: {
@@ -1270,7 +1266,6 @@ export async function executeEmployeeRun({
             executionSnapshot.schemaVersion === 2
               ? executionSnapshot.localMcp
               : undefined,
-            kernel.employeeDocuments,
           );
     const turnToolCapabilities = tools.flatMap((tool) => {
       const capability = riceToolCapability(tool.name);

@@ -255,7 +255,6 @@ describe('Codex hosted search Tool Broker integration', () => {
       ['workspace.memory.remember'],
       [],
       undefined,
-      documents,
     );
     expect(definitions).toHaveLength(1);
     expect(definitions[0]!.inputSchema.properties).toHaveProperty('summary');

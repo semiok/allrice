@@ -1,6 +1,5 @@
 import {
   ImageToolInputSchema,
-  type EmployeeDocuments,
   NativeOfficeExportSchema,
   OfficePdfExportSchema,
   runtimeFeatureEnabled,
@@ -727,7 +726,6 @@ export function riceToolDefinitionsForCapabilities(
   allowedToolNames?: readonly string[],
   _legacyMcpTools?: readonly FrozenMcpTool[],
   localMcp?: LocalMcpSnapshot,
-  _employeeDocuments?: EmployeeDocuments,
 ) {
   const allowed = allowedToolNames ? new Set(allowedToolNames) : null;
   const definitions = riceToolDefinitions.filter(
@@ -818,7 +816,6 @@ export function riceToolDefinitionsForTurn(
   selectedToolNames: readonly string[],
   frozenMcpTools: readonly FrozenMcpTool[] = [],
   localMcp?: LocalMcpSnapshot,
-  _employeeDocuments?: EmployeeDocuments,
 ) {
   const selected = new Set(selectedToolNames);
   return riceToolDefinitionsForCapabilities(
@@ -826,7 +823,6 @@ export function riceToolDefinitionsForTurn(
     allowedToolNames,
     frozenMcpTools,
     localMcp,
-    _employeeDocuments,
   ).filter(
     (definition) =>
       ['read_only', 'managed_write'].includes(

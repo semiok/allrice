@@ -236,7 +236,7 @@ suite(
         concurrency,
         active: () => started.length,
         stopping: () => false,
-        claim: (options) => claimNextJob(workerId, 30_000, options),
+        claim: () => claimNextJob(workerId, 30_000),
         start: (job) => started.push(job.id),
       });
       return { workerId, started: started.sort() };

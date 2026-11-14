@@ -1974,11 +1974,7 @@ async function requestCancellationTransaction(
   });
 }
 
-export async function claimNextJob(
-  workerIdInput: string,
-  leaseMs: number,
-  options: { allowBackground?: boolean } = {},
-) {
+export async function claimNextJob(workerIdInput: string, leaseMs: number) {
   const workerId = UuidSchema.parse(workerIdInput);
   const leaseToken = randomUUID();
   const sql = getDatabase();

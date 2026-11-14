@@ -1713,16 +1713,9 @@ async function prepareChatRunBinding(
   employeeDocuments = false,
   task?: Pick<EmployeePersonaTask, 'kind' | 'id'>,
 ) {
-  const {
-    context,
-    workspaceId,
-    session,
-    message,
-    result,
-    effectiveEmployeeVersionId,
-  } = input;
+  const { context, workspaceId, session, result, effectiveEmployeeVersionId } =
+    input;
   const { historyRows, userRequest, imageAttachments } = runContext;
-  const sql = database.sql;
   const transaction =
     database.kind === 'transaction' ? database.sql : undefined;
   const memories: never[] = [];
@@ -2492,9 +2485,11 @@ export async function listWorkspaceMemories(
         ${sourceIds ? tx`and m.source_type='message' and m.source_id in ${tx(sourceIds)}` : tx``}
       order by m.updated_at desc,m.id desc limit 100`;
     return rows.map((row) => {
-      const { details: _details, ...record } = mapEmployeeMemoryRecord(row);
+      const record = EmployeeMemoryRowSchema.strip().parse(
+        mapEmployeeMemoryRecord(row),
+      );
       return {
-        ...EmployeeMemoryRowSchema.parse(record),
+        ...record,
         workspaceId: row.workspace_id,
         ownerId: row.owner_id,
         instanceId: row.instance_id,

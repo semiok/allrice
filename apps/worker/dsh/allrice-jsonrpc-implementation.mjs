@@ -1225,9 +1225,7 @@ export async function createAllRiceRuntime(
           this.accountingBridge,
           (p) => this.runAdmission.attribute(p),
         );
-      this.registerNativeTools(
-        !!this.employeeDocuments && params.documentMemory === true,
-      );
+      this.registerNativeTools();
       if (this.nativeTools.has('platform.repository.review')) {
         // The profile also installs native tools. Restrict the review Agent's
         // complete inherited set, not only the calls forwarded to the Broker.
@@ -1332,7 +1330,7 @@ export async function createAllRiceRuntime(
       }));
     }
 
-    registerNativeTools(_documentMemory = false) {
+    registerNativeTools() {
       if (
         this.nativeTools.has('web.search') ||
         this.nativeTools.has('web.fetch')

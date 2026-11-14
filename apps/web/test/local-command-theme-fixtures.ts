@@ -5,7 +5,6 @@ const digest = (c: string) => `sha256:${c.repeat(64)}`;
 export const workspace = id(1),
   instance = id(7),
   employee = id(9);
-const at = '2026-10-20T03:00:00.000Z';
 
 // Local command operations in each state a person can meet.
 const command = {

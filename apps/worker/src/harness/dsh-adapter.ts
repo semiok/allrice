@@ -613,11 +613,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             }).parse(selectionParams);
             if (!input.contentGuard?.loadScene)
               throw Error('employee_scene_unbound');
-            return await input.contentGuard.loadScene(
-              selection,
-              !!input.kernel.employeeDocuments &&
-                params.nativeSessionId === threadId,
-            );
+            return await input.contentGuard.loadScene(selection);
           }
           const evidence = EmployeeSceneStateSchema.shape.adopted
             .unwrap()
