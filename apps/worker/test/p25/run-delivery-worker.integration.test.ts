@@ -89,6 +89,7 @@ import {
   deleteManagedEmployeeMemory,
 } from '../../../../packages/database/src/workspace/service.ts';
 import { memoryPairDigest } from '../../../../packages/database/src/workspace/employee-memory.ts';
+import { getPersonalEmployeeMemory } from '../../../../packages/database/src/employee-memory-management.ts';
 import { mutateCompanyAsset } from '../../../../packages/database/src/company-assets.ts';
 import {
   createRecurringTask,
@@ -3733,20 +3734,25 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     let historical: Awaited<ReturnType<typeof getLatestContextCheckpoint>> =
       null;
     const memoryFacts = async () =>
-      (
-        await listWorkspaceMemories(
-          f.context,
-          f.identity.workspace,
-          f.identity.employee,
-          { instanceId: f.chat.employeeInstanceId ?? f.identity.assignment },
-        )
-      ).map(({ id, summary, details, revision, pairDigest }) => ({
-        id,
-        summary,
-        details,
-        revision,
-        pairDigest,
-      }));
+      Promise.all(
+        (
+          await listWorkspaceMemories(
+            f.context,
+            f.identity.workspace,
+            f.identity.employee,
+            { instanceId: f.chat.employeeInstanceId ?? f.identity.assignment },
+          )
+        ).map(async ({ id }) => {
+          const { memory } = await getPersonalEmployeeMemory(
+            f.context,
+            f.identity.workspace,
+            f.chat.employeeInstanceId ?? f.identity.assignment,
+            id,
+          );
+          const { summary, details, revision, pairDigest } = memory;
+          return { id, summary, details, revision, pairDigest };
+        }),
+      );
     let memories: Awaited<ReturnType<typeof memoryFacts>> = [];
     let threadId: string | undefined;
     for (phase = 0; phase < runs.length; phase++) {

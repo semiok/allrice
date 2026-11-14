@@ -170,13 +170,8 @@ async function productionDatabase(
           ...store,
           calendar: calendar && {
             ...calendar,
-            materialize: (writer, allowHandoff) =>
-              db.materializeNativeCalendar(
-                calendar,
-                writer,
-                options.reference,
-                allowHandoff,
-              ),
+            materialize: (writer) =>
+              db.materializeNativeCalendar(calendar, writer, options.reference),
           },
           commitMutation(writer, write) {
             if (write.mutation.kind === 'reject_command')
