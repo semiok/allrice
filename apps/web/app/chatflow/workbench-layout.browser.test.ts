@@ -14425,6 +14425,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
         await input.press('Enter');
         await expect.poll(() => f.state.messageInputs.length).toBe(1);
+        // The composer stays enabled while sending; wait for the failure receipt
+        // before checking the restored draft and reference pins.
+        await f.page
+          .getByRole('alert')
+          .filter({ hasText: '引用失败，文件可能被调整权限或移除' })
+          .waitFor();
         await expect.poll(() => input.isEnabled()).toBe(true);
         expect(await input.inputValue()).toBe('请结合两份资料整理周报');
         expect(f.state.messageInputs[0]?.referenceRevisionIds).toEqual([
