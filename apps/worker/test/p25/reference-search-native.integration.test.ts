@@ -6,6 +6,7 @@ import * as database from '../../../../packages/database/src/core/client.ts';
 import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
 import { referenceToolFixture } from '../../../../packages/database/src/reference-tool.fixture.ts';
 import { changeReferencePublication } from '../../../../packages/database/src/reference-library.ts';
+import { bindConversationThread } from '../../../../packages/database/src/conversation/conversation-runtime.ts';
 import {
   executeEmployeeReferenceTool,
   loadEmployeeRuntimeReferences,
@@ -82,12 +83,17 @@ suite(
           ).toHaveLength(1);
           const [job] =
             await f.db`select attempt from allrice_jobs where id=${worker.jobId}`;
+          const native = `dsh-${run.scope.sessionId}`;
+          await bindConversationThread({
+            ...run.scope,
+            workerId: worker.workerId,
+            threadId: native,
+          });
           const [runtime] =
             await f.db`select thread_generation from allrice_conversation_runtimes where session_id=${run.scope.sessionId}`;
-          const native = `dsh-${run.scope.sessionId}`,
-            generation = runtime!.thread_generation,
+          const generation = runtime!.thread_generation,
             turnId = `${native}:turn:1`;
-          await f.db`update allrice_conversation_runtimes set thread_id=${native},active_turn_id=${turnId} where session_id=${run.scope.sessionId}`;
+          await f.db`update allrice_conversation_runtimes set active_turn_id=${turnId} where session_id=${run.scope.sessionId}`;
           // Synthetic Host identity only; actual Worker check and DB commit run unchanged.
           await f.db`insert into allrice_native_session_bindings(native_session_id,organization_id,workspace_id,owner_id,context_kind,context_id,
             storage_context_key,storage_namespace,artifact_id,artifact_manifest_digest,distribution_generation,profile_id,first_run_id,first_job_id,first_attempt,binding_basis)
@@ -414,15 +420,17 @@ suite(
         expect(audits.filter((row) => row.decision === 'allowed')).toHaveLength(
           4,
         );
-        expect(audits.filter((row) => row.decision === 'denied')).toMatchObject(
+        const denied = audits
+          .filter((row) => row.decision === 'denied')
+          .map((row) => ({
+            errorCode: row.metadata.errorCode,
+            retryable: row.metadata.retryable,
+          }));
+        expect(denied).toHaveLength(2);
+        expect(denied).toEqual(
           expect.arrayContaining([
-            { metadata: { errorCode: 'TOOL_INPUT_INVALID', retryable: false } },
-            {
-              metadata: {
-                errorCode: 'REFERENCE_UNAVAILABLE',
-                retryable: false,
-              },
-            },
+            { errorCode: 'TOOL_INPUT_INVALID', retryable: false },
+            { errorCode: 'REFERENCE_UNAVAILABLE', retryable: false },
           ]),
         );
         const [exports] =
