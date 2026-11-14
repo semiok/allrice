@@ -1107,6 +1107,27 @@ export function createNativeCalendarSqlStore(
     prepareCalendarPeriodInTransaction,
     prepareCalendarArmInTransaction,
 
+    async acquireWriter() {
+      return enabled() ? base.acquireWriter() : null;
+    },
+    async renewWriter(w: NativeOnceWriter) {
+      requireEnabled();
+      return base.renewWriter(w);
+    },
+    async assertWriter(w: NativeOnceWriter) {
+      requireEnabled();
+      return base.assertWriter(w);
+    },
+    async releaseClosedWriter(w: NativeOnceWriter) {
+      requireEnabled();
+      return base.releaseClosedWriter(w);
+    },
+    async loadCalendarControls(w: NativeOnceWriter) {
+      requireEnabled();
+      return (await base.loadControls(w)).filter(
+        (c): c is NativeCalendarControl => c.kind === 'calendar',
+      );
+    },
     async prepareCalendarPeriod(
       w: NativeOnceWriter,
       input: Parameters<typeof prepareCalendarPeriodInTransaction>[2],

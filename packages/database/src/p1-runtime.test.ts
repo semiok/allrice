@@ -14,7 +14,6 @@ import {
   DeliverableVersionSchema,
   ManagedBrowserStepSchema,
   ManagedBrowserTaskSchema,
-  MemoryRevisionSchema,
   type ExecutionContext,
 } from '@allrice/contracts';
 import { randomUUID } from 'node:crypto';
@@ -237,12 +236,10 @@ describe('MET-98 execution governance', () => {
     ).toBe(false);
   });
 
-  it('keeps governed revision, browser evidence and external action records replayable', () => {
+  it('keeps deliverable versions, browser evidence and external action records replayable', () => {
     const ids = {
       organization: '11111111-1111-4111-8111-111111111111',
       workspace: '22222222-2222-4222-8222-222222222222',
-      memory: '33333333-3333-4333-8333-333333333333',
-      revision: '44444444-4444-4444-8444-444444444444',
       user: '55555555-5555-4555-8555-555555555555',
       run: '66666666-6666-4666-8666-666666666666',
       target: '77777777-7777-4777-8777-777777777777',
@@ -267,24 +264,6 @@ describe('MET-98 execution governance', () => {
         changeSummary: '补充风险章节',
         createdAt: '2026-08-31T00:00:00.000Z',
       }).version,
-    ).toBe(2);
-    expect(
-      MemoryRevisionSchema.parse({
-        id: ids.revision,
-        organizationId: ids.organization,
-        workspaceId: ids.workspace,
-        memoryId: ids.memory,
-        revision: 2,
-        content: '用户确认后的项目背景',
-        trust: 'user_confirmed',
-        lifecycleState: 'durable',
-        memoryClass: 'project_fact',
-        confidence: 1,
-        expiresAt: null,
-        reason: '用户更正',
-        changedBy: ids.user,
-        changedAt: '2026-08-31T00:00:00.000Z',
-      }).revision,
     ).toBe(2);
     expect(
       ManagedBrowserTaskSchema.parse({

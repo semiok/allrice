@@ -355,4 +355,5 @@ export async function applyBrandFeedback(
       values(${id},${scope.organizationId},${scope.workspaceId},${scope.ownerId},${scope.instanceId},${brandId},${fixed.id},${action.platform},${fixed.content.campaign?.key ?? null},${action.output.feedbackIds},${tx.json(action.output)},${source},${action.runId},${action.sessionId},${tx.json(action.workflow!)})`;
     return { brandId, entityId: id, revision: 1, state: 'retrospective_saved' };
   }
+  return fail('invalid_state');
 }
