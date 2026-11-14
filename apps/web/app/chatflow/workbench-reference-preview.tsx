@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import {
   parseArtifactPreview,
   workbenchJson,
@@ -12,12 +12,20 @@ import {
 } from './native-document-preview';
 import { DocumentToolbar } from './document-reader';
 import css from './document-reader.module.css';
+import detail from './workbench-files-panel.module.css';
 export function ReferenceSnapshotPreview(props: {
   revisionId: string;
   title: string;
   workspaceId: string;
   headers: Record<string, string>;
   active: boolean;
+  material?: {
+    purpose: string;
+    beforePreview?: ReactNode;
+    footer: ReactNode;
+    quickActions?: ReactNode;
+    trailingActions?: ReactNode;
+  };
 }) {
   const [preview, setPreview] = useState<ArtifactPreview | null>(null),
     [error, setError] = useState(''),
@@ -30,6 +38,7 @@ export function ReferenceSnapshotPreview(props: {
     const controller = new AbortController();
     setPreview(null);
     setError('');
+    setSource(false);
     void workbenchJson(base + '/preview' + query, props.headers, {
       signal: controller.signal,
     })
@@ -45,13 +54,55 @@ export function ReferenceSnapshotPreview(props: {
       });
     return () => controller.abort();
   }, [base, query, props.headers, attempt, props.active]);
+  const nativeViewport = hasNativeViewport(preview) && !source;
+  const pdfFooter = !!props.material && preview?.kind === 'pdf' && !source;
+  const content = (
+    <div
+      className={`${css.content} ${nativeViewport ? css.officeContent : ''} ${props.material ? detail.deliveryPreview : ''} ${props.material && nativeViewport ? detail.deliveryViewport : ''}`}
+    >
+      {error && !props.material ? (
+        <p role="alert">{error}</p>
+      ) : error ? (
+        <div className={detail.previewError} role="alert">
+          <span>预览加载失败</span>
+          <button type="button" onClick={() => setAttempt((n) => n + 1)}>
+            重新加载
+          </button>
+        </div>
+      ) : preview ? (
+        <NativeDocumentPreview
+          active={props.active}
+          preview={preview}
+          fileName={props.title}
+          pageUrl={base + '/preview' + query}
+          headers={props.headers}
+          source={source}
+          footer={pdfFooter ? props.material?.footer : undefined}
+        />
+      ) : (
+        <p role="status">
+          {props.material ? '正在加载文件预览…' : '正在读取资料版本…'}
+        </p>
+      )}
+    </div>
+  );
   return (
-    <div className={css.reader}>
+    <div
+      className={`${css.reader} ${props.material ? detail.deliveryDetail : ''}`}
+    >
       <DocumentToolbar
+        key={base}
+        delivery={!!props.material}
+        description={props.material?.purpose}
         title={props.title}
         downloadUrl={base + '/download' + query}
+        missingFonts={
+          preview?.kind === 'pdf' ? preview.missingFonts : undefined
+        }
+        quickActions={props.material?.quickActions}
+        trailingActions={props.material?.trailingActions}
         actions={[
-          { id: 'refresh', label: '刷新资料' },
+          ...(!props.material ? [{ id: 'refresh', label: '刷新资料' }] : []),
           ...(hasSourcePreview(preview)
             ? [{ id: 'source', label: source ? '查看预览' : '查看源文本' }]
             : []),
@@ -61,24 +112,15 @@ export function ReferenceSnapshotPreview(props: {
           if (id === 'source') setSource((v) => !v);
         }}
       />
-      <div
-        className={`${css.content} ${hasNativeViewport(preview) && !source ? css.officeContent : ''}`}
-      >
-        {error ? (
-          <p role="alert">{error}</p>
-        ) : preview ? (
-          <NativeDocumentPreview
-            active={props.active}
-            preview={preview}
-            fileName={props.title}
-            pageUrl={base + '/preview' + query}
-            headers={props.headers}
-            source={source}
-          />
-        ) : (
-          <p role="status">正在读取资料版本…</p>
-        )}
-      </div>
+      {props.material?.beforePreview}
+      {props.material ? (
+        <div className={detail.deliveryReadingArea}>
+          {content}
+          {!pdfFooter && props.material.footer}
+        </div>
+      ) : (
+        content
+      )}
     </div>
   );
 }

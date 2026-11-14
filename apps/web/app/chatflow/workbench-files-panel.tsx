@@ -33,6 +33,7 @@ import { WorkbenchIcon } from './workbench-modules';
 import { useWorkbenchFileReference } from './use-workbench-file-reference';
 import { useWorkbenchFileFavorite } from './use-workbench-file-favorite';
 import css from './workbench-files-panel.module.css';
+import { useReferencePublicationOptions } from './use-reference-publication-options';
 const scopeNames = {
   personal: '仅自己',
   departments: '指定部门',
@@ -71,7 +72,12 @@ export function WorkbenchFilesPanel(props: {
   onUse: (reference: ReferenceRevision) => void;
   onTemplate?: (reference: ReferenceRevision) => void;
   onRead?: () => void;
+  onPublish?: (file: WorkbenchDeliverable) => void;
 }) {
+  const publicationOptions = useReferencePublicationOptions({
+    ...props,
+    active: props.active && !!props.onPublish,
+  }).options;
   const employeeScope = `${props.ownerKey}/${props.currentEmployee?.id ?? ''}`;
   const [employeeChoice, setEmployeeChoice] = useState({
     scope: employeeScope,
@@ -389,6 +395,24 @@ export function WorkbenchFilesPanel(props: {
                   hour: '2-digit',
                   minute: '2-digit',
                 })}
+                {file.publication && (
+                  <>
+                    <span aria-hidden="true">·</span>
+                    <WorkbenchIcon kind="materials" size={13} />
+                    {file.publication.audience.scope === 'company'
+                      ? '全公司'
+                      : file.publication.audience.scope === 'personal'
+                        ? '仅自己'
+                        : publicationOptions?.departments
+                            ?.filter((department) =>
+                              file.publication!.audience.departmentIds.includes(
+                                department.id,
+                              ),
+                            )
+                            .map((department) => department.name)
+                            .join('、')}
+                  </>
+                )}
               </small>
             </button>
             <FileMenu
@@ -402,6 +426,11 @@ export function WorkbenchFilesPanel(props: {
               favoriteDisabled={favorite.disabled || !!favorite.using}
               onFavorite={() =>
                 void favorite.setFavorite(file.objectId, !file.favorite)
+              }
+              onPublish={
+                props.onPublish && catalog?.viewerId === props.viewerId
+                  ? () => props.onPublish?.(file)
+                  : undefined
               }
             />
           </article>
@@ -438,12 +467,14 @@ function FileMenu({
   onUse,
   favoriteDisabled,
   onFavorite,
+  onPublish,
 }: {
   file: WorkbenchDeliverable;
   disabled: boolean;
   onUse: () => void;
   favoriteDisabled: boolean;
   onFavorite: () => void;
+  onPublish?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -484,11 +515,24 @@ function FileMenu({
             label: file.favorite ? '取消收藏' : '收藏',
             disabled: favoriteDisabled,
           },
+          ...(onPublish
+            ? [
+                {
+                  id: 'publish',
+                  label: file.publication
+                    ? '已添加为企业资料'
+                    : '添加为企业资料',
+                  disabled:
+                    !!file.publication || file.canPublishReference !== true,
+                },
+              ]
+            : []),
         ]}
         onClose={() => setOpen(false)}
         onSelect={(id) => {
           setOpen(false);
           if (id === 'favorite') onFavorite();
+          if (id === 'publish') onPublish?.();
           if (id === 'download') {
             const a = document.createElement('a');
             a.href = `/api/v1/workbench/files/${file.objectId}/download?workspaceId=${file.workspaceId}`;

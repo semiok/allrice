@@ -38,11 +38,13 @@ export function UnifiedWorkbenchControls(props: {
   const files = useWorkbenchUnread(props.scopeId + '/files', directory.fileIds);
   const marks = useRef({
     files: files.markRead,
+    materials: () => {},
     experience: () => {},
     workflow: () => {},
   });
   marks.current = {
     files: files.markRead,
+    materials: () => {},
     experience: () => {},
     workflow: () => {},
   };
@@ -60,6 +62,7 @@ export function UnifiedWorkbenchControls(props: {
     <WorkbenchEntries
       counts={{
         files: files.count,
+        materials: 0,
         experience: 0,
         workflow: 0,
       }}
