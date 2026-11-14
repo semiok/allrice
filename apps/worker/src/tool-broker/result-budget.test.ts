@@ -125,37 +125,29 @@ describe('bounded tool data previews', () => {
       ),
     ).toBe(small);
   });
-  it.each([
-    'workspace.memory.search',
-    'workspace.experience.read',
-    'workspace.memory.read',
-  ])(
-    'never exports private %s results into an unguarded file',
-    async (name) => {
-      // No storage/context exists: any attempt to export would throw differently.
-      const input = { call: { name } } as RiceToolExecutionInput;
-      const small = {
-        modelContent: JSON.stringify({ items: [{ content: '禁止省略条件' }] }),
-        summary: 'complete',
-      };
-      expect(await boundToolResult(input, small)).toBe(small);
-      await expect(
-        boundToolResult(input, {
-          modelContent: '中'.repeat(
-            name === 'workspace.memory.read' ? 3334 : 3000,
-          ),
-          summary: 'overflow',
-        }),
-      ).rejects.toMatchObject({
-        code: 'MEMORY_CONTEXT_BUDGET_EXHAUSTED',
-        retryable: false,
-      });
-      expect(storage.create).not.toHaveBeenCalled();
-      expect(storage.put).not.toHaveBeenCalled();
-      expect(storage.register).not.toHaveBeenCalled();
-    },
-  );
-  it('allows decoded ordinal text above the old8000 cap without changing legacy tools', async () => {
+  it('never exports private V2 memory results into an unguarded file', async () => {
+    const name = 'workspace.memory.read';
+    // No storage/context exists: any attempt to export would throw differently.
+    const input = { call: { name } } as RiceToolExecutionInput;
+    const small = {
+      modelContent: JSON.stringify({ items: [{ content: '禁止省略条件' }] }),
+      summary: 'complete',
+    };
+    expect(await boundToolResult(input, small)).toBe(small);
+    await expect(
+      boundToolResult(input, {
+        modelContent: '中'.repeat(3334),
+        summary: 'overflow',
+      }),
+    ).rejects.toMatchObject({
+      code: 'MEMORY_CONTEXT_BUDGET_EXHAUSTED',
+      retryable: false,
+    });
+    expect(storage.create).not.toHaveBeenCalled();
+    expect(storage.put).not.toHaveBeenCalled();
+    expect(storage.register).not.toHaveBeenCalled();
+  });
+  it('allows a complete decoded V2 pair up to its current byte allowance', async () => {
     const result = { modelContent: '🧑'.repeat(2250), summary: 'complete' };
     expect(
       await boundToolResult(
@@ -163,10 +155,6 @@ describe('bounded tool data previews', () => {
         result,
       ),
     ).toBe(result);
-    for (const name of ['workspace.memory.search', 'workspace.experience.read'])
-      await expect(
-        boundToolResult({ call: { name } } as RiceToolExecutionInput, result),
-      ).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_BUDGET_EXHAUSTED' });
     expect(storage.create).not.toHaveBeenCalled();
     expect(storage.put).not.toHaveBeenCalled();
     expect(storage.register).not.toHaveBeenCalled();

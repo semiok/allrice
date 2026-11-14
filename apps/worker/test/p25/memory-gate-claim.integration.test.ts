@@ -23,7 +23,6 @@ import {
   type NativeOnceWriter,
 } from '../../../../packages/database/src/native-schedule-once-state.ts';
 import { claimNextJob } from '../../../../packages/database/src/execution/queue.ts';
-import { experienceConsolidationJobType } from '../../../../packages/database/src/experience-consolidation-contracts.ts';
 import { readHostMemory, type HostMemoryProbe } from '../../src/host-memory.ts';
 import {
   claimUnderMemoryGate,
@@ -273,16 +272,9 @@ suite(
       );
     });
 
-    it('at warn claims the foreground chat and due reminder within half the slots but leaves consolidation queued until normal', async () => {
+    it('at warn claims the chat and due reminder within half the slots and leaves the next chat queued until normal', async () => {
       const foreground = await queuedChatAndReminder();
-      const background = await queuedChat('整理本周已收集的经验');
-      // Queue-boundary fixture: the consolidation producer has its own suite.
-      // No execution is attempted; exercise the real SQL type filter and lease.
-      await f.db`update allrice_jobs set payload=${f.db.json({
-        schemaVersion: 1,
-        type: experienceConsolidationJobType,
-        input: { occurrenceId: randomUUID() },
-      })}, priority=-100 where id=${background}`;
+      const background = await queuedChat('整理下一场会议的要点');
       const warned = await workerTick(gate('2 3664 185712 1821 16384'));
       expect(warned.started).toEqual(foreground);
       expect(await jobRows(foreground)).toEqual(

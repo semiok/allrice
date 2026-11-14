@@ -11,7 +11,7 @@ import {
   createSession,
 } from '../../../../packages/database/src/identity.ts';
 import { ensureGeneralEmployeeInstance } from '../../../../packages/database/src/employees/employee-instances.ts';
-import { freezeEmployeeDocuments } from '../../../../packages/database/src/employees/employee-documents.ts';
+import { freezeEmployeeMemoryIndexV2 } from '../../../../packages/database/src/employees/employee-documents.ts';
 import {
   deleteManagedEmployeeMemory,
   promoteManagedEmployeeMemory,
@@ -136,7 +136,7 @@ suite('ordinary pair candidates through native/Worker storage', () => {
       async onToolCall(call) {
         const result = await f.run(call);
         expect(JSON.parse(result.modelContent)).toMatchObject({
-          content: pair.summary,
+          summary: pair.summary,
           lifecycleState: 'candidate',
           requiresConfirmation: true,
           notice: '已记为候选，确认后才生效',
@@ -157,19 +157,21 @@ suite('ordinary pair candidates through native/Worker storage', () => {
       source_type: 'message',
       source_id: f.messageId,
     });
-    // The explicit legacy factory remains v1 and must still exclude candidates.
-    const projection = await freezeEmployeeDocuments(
+    // Current V2 admission excludes unconfirmed candidates from its index.
+    const projection = await freezeEmployeeMemoryIndexV2(
       fixture.db,
       {
         organizationId: f.org,
         workspaceId: f.workspace,
         ownerId: f.user,
         instanceId: f.assignment,
+        employeeId: f.employee,
       },
       {},
-      false,
     );
-    expect(projection.employeeDocuments).not.toHaveProperty('schemaVersion');
+    expect(projection.employeeDocuments.schemaVersion).toBe(2);
+    expect(projection.employeeDocuments.memory).toBe('');
+    expect(projection.memoryContextStateV2.pins).toEqual([]);
     expect(projection.memories).toEqual([]);
   }, 60000);
 
@@ -205,24 +207,32 @@ suite('ordinary pair candidates through native/Worker storage', () => {
       b.id,
       f.mutation(1),
     );
-    const frozen = await freezeEmployeeDocuments(
+    const frozen = await freezeEmployeeMemoryIndexV2(
       fixture.db,
       {
         organizationId: f.org,
         workspaceId: f.workspace,
         ownerId: f.user,
         instanceId: f.assignment,
+        employeeId: f.employee,
       },
       {},
-      false,
     );
-    expect(frozen.memories).toContainEqual(
-      expect.objectContaining({
+    expect(frozen.employeeDocuments.memory).toContain(pair.summary);
+    expect(frozen.employeeDocuments.memory).not.toContain(pair.details);
+    expect(frozen.memories).toEqual([]);
+    expect(frozen.memoryContextStateV2.pins).toEqual([
+      {
+        number: 1,
         id: b.id,
-        content: `${pair.summary}\n${pair.details}`,
-      }),
+        revision: confirmed.revision,
+        pairDigest: memoryPairDigest(pair),
+        hasDetails: true,
+      },
+    ]);
+    expect(frozen.memoryContextStateV2.pins.map((pin) => pin.id)).not.toContain(
+      a.id,
     );
-    expect(frozen.memories.map((memory) => memory.id)).not.toContain(a.id);
     await deleteManagedEmployeeMemory(
       f.context,
       f.workspace,
@@ -260,7 +270,7 @@ suite('ordinary pair candidates through native/Worker storage', () => {
     expect(deleted!.revision).toBe(2);
   });
 
-  it('accepts stored checkpoint pairs and legacy content without installing a producer', async () => {
+  it('accepts V2 checkpoint pairs with idempotency and rejects retired content input', async () => {
     const f = await setup(),
       checkpointId = randomUUID();
     const checkpoint = {
@@ -286,7 +296,7 @@ suite('ordinary pair candidates through native/Worker storage', () => {
     };
     const input = { ...identity, ...pair, idempotencyKey: randomUUID() };
     const first = await createCheckpointMemoryCandidate(f.context, input);
-    expect(first.content).toBe(`${pair.summary}\n${pair.details}`);
+    expect(first).toMatchObject(pair);
     expect((await createCheckpointMemoryCandidate(f.context, input)).id).toBe(
       first.id,
     );
@@ -318,12 +328,16 @@ suite('ordinary pair candidates through native/Worker storage', () => {
     };
     await fixture.db`insert into allrice_context_checkpoints(id,organization_id,workspace_id,session_id,owner_id,harness,thread_id,thread_generation,covered_through_message_id,summary_version,summary,checksum,config_checksum,estimated_tokens,message_count)
       values(${legacyCheckpointId},${f.org},${f.workspace},${f.session},${f.user},'dsh',${legacyCheckpoint.threadId},0,${f.messageId},'extractive-v1',${legacyCheckpoint.summary},${contextCheckpointChecksum(legacyCheckpoint)},${legacyCheckpoint.configChecksum},10,1)`;
-    const legacy = await createCheckpointMemoryCandidate(f.context, {
-      ...identity,
-      checkpointId: legacyCheckpointId,
-      content: '历史普通候选',
-    });
-    expect(legacy.lifecycleState).toBe('candidate');
+    await expect(
+      createCheckpointMemoryCandidate(f.context, {
+        ...identity,
+        checkpointId: legacyCheckpointId,
+        content: '历史普通候选',
+      }),
+    ).rejects.toThrow();
+    expect(
+      await fixture.db`select id from allrice_memories where source_id=${legacyCheckpointId}`,
+    ).toHaveLength(0);
     const [row] =
       await fixture.db`select summary,details,lifecycle_state,expires_at from allrice_memories where id=${fresh.id}`;
     expect(row).toEqual({

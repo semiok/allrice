@@ -24,7 +24,7 @@ const ports = vi.hoisted(() => ({
   repositoryReview: vi.fn(),
   changeset: vi.fn(),
   documents: vi.fn(),
-  experiences: vi.fn(),
+  content: vi.fn(),
   quality: vi.fn(),
   reverify: vi.fn(),
   modelAdmission: vi.fn(),
@@ -39,7 +39,7 @@ vi.mock('@allrice/database', async (original) => ({
   getPlatformRepairExecution: ports.repair,
   getPlatformRepositoryReviewExecution: ports.repositoryReview,
   getChangesetRun: ports.changeset,
-  prepareRunExperiences: ports.experiences,
+  prepareEmployeeContentContext: ports.content,
   admitModelExecution: ports.modelAdmission,
 }));
 vi.mock('./employee-document-admission.js', () => ({
@@ -70,7 +70,7 @@ beforeEach(() => {
   ports.repositoryReview.mockResolvedValue(null);
   ports.changeset.mockResolvedValue(null);
   ports.documents.mockRejectedValue(nextAdmission);
-  ports.experiences.mockRejectedValue(nextAdmission);
+  ports.content.mockRejectedValue(nextAdmission);
 });
 function invocation(extra: Record<string, unknown> = {}) {
   return {
@@ -145,7 +145,7 @@ describe('queued employee model execution requires frozen PERSONA', () => {
       });
       expect(resolved).toEqual(original);
       expect(ports.documents).not.toHaveBeenCalled();
-      expect(ports.experiences).not.toHaveBeenCalled();
+      expect(ports.content).not.toHaveBeenCalled();
       expectNoModelEntry();
     },
   );
@@ -243,7 +243,7 @@ describe('queued employee model execution requires frozen PERSONA', () => {
         await expect(executeEmployeeRun(invocation())).rejects.toBe(
           nextAdmission,
         );
-        expect(ports.experiences).toHaveBeenCalledOnce();
+        expect(ports.content).toHaveBeenCalledOnce();
       }
       expect(ports.documents).not.toHaveBeenCalled();
       expectNoModelEntry();
