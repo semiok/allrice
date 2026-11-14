@@ -1051,6 +1051,7 @@ export async function assertEmployeeContentReferenceMessages(
   visited = new Set<string>(),
   locked = false,
   expectedBrandKey?: string | null,
+  mode: 'new_import' | 'frozen_context' = 'new_import',
 ) {
   return assertReferenceMessages(
     reader,
@@ -1060,6 +1061,7 @@ export async function assertEmployeeContentReferenceMessages(
     visited,
     locked,
     expectedBrandKey,
+    mode === 'frozen_context' ? new Set<string>() : undefined,
   );
 }
 

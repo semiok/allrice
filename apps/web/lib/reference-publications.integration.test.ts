@@ -41,7 +41,11 @@ import {
   resolveStorageGrant,
   saveStorageGrant,
 } from '../../../packages/database/src/data.ts';
-import { markFinalDeliveryRootLocked } from '../../../packages/database/src/final-delivery-commit.ts';
+import {
+  markFinalDeliveryRootLocked,
+  finalDeliveryTextDigest,
+} from '../../../packages/database/src/final-delivery-commit.ts';
+import { createRunDeliveryPort } from '../../../apps/worker/src/final-delivery/run-delivery.ts';
 import { readFinalDeliveryReferences } from '../../../packages/database/src/final-delivery-references.ts';
 import {
   appendJobEvent,
@@ -1084,6 +1088,126 @@ suite(
       expect(parents).toEqual([]);
       await finish(consumer);
     }, 120000);
+
+    it.each(['before_check', 'before_commit'] as const)(
+      'v1.7: checked Worker completion retains read publication context withdrawn %s',
+      async (timing) => {
+        const previous = process.env.ALLRICE_WORKBENCH_ENABLED;
+        vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
+        try {
+          const s = await setup(),
+            published = await httpUpload(s.owner);
+          await ready(published.revisionId);
+          const controls = {
+            version: 1,
+            enabled: true,
+            mode: 'execute',
+            rules: [],
+          };
+          await f.db`insert into allrice_runtime_policy_controls(organization_id,workspace_id,version,controls)
+            values(${s.owner.organizationId},${s.owner.workspaceId},1,${f.db.json(controls)})`;
+          const run = await runtimeRun(s, [published.revisionId]),
+            worker = await lease(run);
+          expect(
+            await loadEmployeeRuntimeReferences(
+              run.scope,
+              run.runtime.generationId,
+              worker,
+            ),
+          ).toHaveLength(1);
+          const [job] =
+            await f.db`select attempt from allrice_jobs where id=${worker.jobId}`;
+          const [runtime] =
+            await f.db`select thread_generation from allrice_conversation_runtimes where session_id=${run.scope.sessionId}`;
+          const native = `dsh-${run.scope.sessionId}`,
+            generation = runtime!.thread_generation,
+            turnId = `${native}:turn:1`;
+          await f.db`update allrice_conversation_runtimes set thread_id=${native},active_turn_id=${turnId} where session_id=${run.scope.sessionId}`;
+          // Synthetic Host identity only; actual Worker check and DB commit run unchanged.
+          await f.db`insert into allrice_native_session_bindings(native_session_id,organization_id,workspace_id,owner_id,context_kind,context_id,
+            storage_context_key,storage_namespace,artifact_id,artifact_manifest_digest,distribution_generation,profile_id,first_run_id,first_job_id,first_attempt,binding_basis)
+            values(${native},${run.scope.organizationId},${run.scope.workspaceId},${run.scope.ownerId},'chat',${run.scope.sessionId},${run.scope.sessionId},${'/synthetic/' + run.scope.sessionId},
+              ${'sha256:' + 'a'.repeat(64)},${'sha256:' + 'a'.repeat(64)},'fixture','restricted',${run.scope.runId},${worker.jobId},${job!.attempt},'approved_compatibility_reader')`;
+          await appendJobEvent({
+            ...worker,
+            type: 'turn.started',
+            payload: { source: 'dsh', threadId: native, turnId, generation },
+          });
+          const port = createRunDeliveryPort({
+            scope: {
+              organizationId: run.scope.organizationId,
+              workspaceId: run.scope.workspaceId,
+              projectId: null,
+            },
+            rootRunId: run.scope.runId,
+            worker: { ...worker, attempt: job!.attempt, generation },
+          });
+          const answer = '保留已读上下文，正常完成本轮答复。';
+          const candidate = {
+            nativeText: answer,
+            projectedText: answer,
+            nativeSessionId: native,
+            publicMessageId: randomUUID(),
+            durableSeq: 1,
+            nativeBindingId: randomUUID(),
+            rootRunId: run.scope.runId,
+            attempt: job!.attempt,
+            generation,
+          };
+          if (timing === 'before_check')
+            await change(s.owner, published.sourceId, 'delete', 1);
+          const decision = await port.check(candidate);
+          expect(decision.status).toBe('valid');
+          const facts = await port.readSnapshot(answer);
+          expect(facts.explicitReferenceVersionIds).toEqual([]);
+          expect(facts.artifacts).toEqual([]);
+          const origin = (await port.readOrigin())!;
+          const guard = port.createCommitGuard(
+            {
+              nativeSessionId: native,
+              publicMessageId: candidate.publicMessageId,
+              durableSeq: candidate.durableSeq,
+              nativeBindingId: candidate.nativeBindingId,
+              nativeCandidateDigest: finalDeliveryTextDigest(answer),
+              candidateDigest: decision.candidateDigest,
+              factSetDigest: decision.factSetDigest,
+              attempt: job!.attempt,
+              generation,
+            },
+            origin,
+            answer,
+          );
+          if (timing === 'before_commit')
+            await change(s.owner, published.sourceId, 'delete', 1);
+          await expect(
+            loadEmployeeRuntimeReferences(
+              run.scope,
+              run.runtime.generationId,
+              worker,
+            ),
+          ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+          await completeJob({
+            ...worker,
+            result: { answer, citations: [] },
+            checkedDelivery: guard,
+          });
+          const [stored] =
+            await f.db`select r.state,r.result,m.content from allrice_runs r
+            join allrice_employee_runs er on er.run_id=r.id join allrice_messages m on m.id=er.assistant_message_id where r.id=${run.scope.runId}`;
+          expect(stored).toMatchObject({
+            state: 'succeeded',
+            result: { answer },
+            content: { text: answer },
+          });
+          const [reads] =
+            await f.db`select reference_reads from allrice_employee_runs where run_id=${run.scope.runId}`;
+          expect(reads!.reference_reads).toHaveLength(1);
+        } finally {
+          vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', previous);
+        }
+      },
+      120000,
+    );
 
     it.each(['delete', 'audience'] as const)(
       'v1.7: concurrent %s does not block existing-context output or native and usage receipts',
@@ -2647,6 +2771,61 @@ suite(
       120000,
     );
 
+    it('v1.7: cold frozen imports retain publication text but queued first imports and current shared Session/message authority stay guarded', async () => {
+      const s = await setup(),
+        published = await httpUpload(s.owner);
+      await ready(published.revisionId);
+      const source = await runtimeRun(s, [published.revisionId]),
+        worker = await lease(source);
+      await loadEmployeeRuntimeReferences(
+        source.scope,
+        source.runtime.generationId,
+        worker,
+      );
+      await completeJob({
+        ...worker,
+        result: { answer: '已读资料中的预算金额873元。', citations: [] },
+      });
+      await f.db`update allrice_chat_sessions set visibility='workspace' where id=${source.scope.sessionId}`;
+      await f.db`update allrice_messages set visibility='workspace' where session_id=${source.scope.sessionId}`;
+      const frozen = await runtimeRun(
+        { ...s, owner: s.finance },
+        [],
+        undefined,
+        [source.scope.sessionId],
+      );
+      await finish(frozen);
+      const queued = await sendChatMessage(
+        s.finance,
+        s.finance.workspaceId!,
+        frozen.scope.sessionId,
+        {
+          clientMessageId: randomUUID(),
+          text: '再次引用共享会话',
+          sessionReferenceIds: [source.scope.sessionId],
+          deliveryMode: 'follow_up',
+        },
+      );
+      await change(s.owner, published.sourceId, 'delete', 1);
+      await expect(
+        resolveEmployeeExecution(frozen.scope),
+      ).resolves.toMatchObject({
+        promptSnapshot: frozen.execution.promptSnapshot,
+      });
+      await expect(
+        resolveEmployeeExecution({ ...frozen.scope, runId: queued.run.id }),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await f.db`update allrice_chat_sessions set visibility='private' where id=${source.scope.sessionId}`;
+      await expect(
+        resolveEmployeeExecution(frozen.scope),
+      ).rejects.toMatchObject({ code: 'unavailable' });
+      await f.db`update allrice_chat_sessions set visibility='workspace' where id=${source.scope.sessionId}`;
+      await f.db`update allrice_messages set visibility='private' where id=${source.sent.assistantMessage.id}`;
+      await expect(
+        resolveEmployeeExecution(frozen.scope),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+    }, 120000);
+
     it('v1.7: actual-read deletion preserves old dispatch, cold recovery, continuation and frozen imports while rejecting a new import', async () => {
       const s = await setup(),
         published = await httpUpload(s.owner);
@@ -2762,6 +2941,11 @@ suite(
         await expect(
           assertEmployeeContentContext(run.scope, run.runtime.generationId),
         ).resolves.toBeUndefined();
+        await expect(
+          resolveEmployeeExecution(run.scope),
+        ).resolves.toMatchObject({
+          promptSnapshot: run.execution.promptSnapshot,
+        });
         await expect(
           prepareEmployeeContentContext(run.scope),
         ).resolves.toMatchObject({ generationId: run.runtime.generationId });
