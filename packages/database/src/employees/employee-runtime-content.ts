@@ -20,7 +20,6 @@ import { randomUUID, createHash } from 'node:crypto';
 import {
   assertReferenceSelections,
   retrieveReferenceKnowledgeInTransaction,
-  readReferenceSelection,
   ReferenceRuntimeError,
   ReferencePublicationRuntimeError,
   hasRevokedReferencePublicationHistory,
