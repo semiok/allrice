@@ -578,7 +578,7 @@ suite('U1 Rice full persona from the real employee entry', () => {
         }
       }
       if (path === '/api/v1/workbench/updates')
-        return route.fulfill(json({ fileIds: [], experienceIds: [] }));
+        return route.fulfill(json({ fileIds: [] }));
       if (path === '/api/v1/workbench/files')
         return route.fulfill(
           json({

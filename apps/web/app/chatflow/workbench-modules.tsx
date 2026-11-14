@@ -17,6 +17,7 @@ import {
 import { z } from 'zod';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import css from './workbench-modules.module.css';
+/** `experience` is the persisted dock kind for current V2 employee memory. */
 export type WorkbenchModule = 'files' | 'experience' | 'workflow';
 export const moduleLabels = {
   files: '交付成果',
@@ -235,7 +236,6 @@ export function useWorkbenchDirectory(input: {
   const [snapshot, setSnapshot] = useState<{
     scope: string;
     fileIds: string[] | null;
-    experienceIds: string[] | null;
   } | null>(null);
   const [revision, setRevision] = useState(0);
   const reload = useCallback(() => setRevision((n) => n + 1), []);
@@ -278,7 +278,6 @@ export function useWorkbenchDirectory(input: {
           z
             .object({
               fileIds: z.array(z.string()).nullable(),
-              experienceIds: z.array(z.string()).nullable(),
             })
             .parse(value),
         )
@@ -288,7 +287,7 @@ export function useWorkbenchDirectory(input: {
         })
         .catch(() => {
           if (!controller.signal.aborted && active.current === scope)
-            setSnapshot({ scope, fileIds: null, experienceIds: null });
+            setSnapshot({ scope, fileIds: null });
         });
     }, 120);
     return () => {
@@ -305,8 +304,6 @@ export function useWorkbenchDirectory(input: {
   ]);
   return {
     fileIds: snapshot?.scope === input.scope ? snapshot.fileIds : null,
-    experienceIds:
-      snapshot?.scope === input.scope ? snapshot.experienceIds : null,
     reload,
   };
 }

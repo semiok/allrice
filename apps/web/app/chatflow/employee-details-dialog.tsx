@@ -15,7 +15,6 @@ import {
   type EmployeeDetailsProfile,
   type EmployeeInstance,
   type ReferenceSelection,
-  type ExperienceSummary,
 } from '@allrice/contracts';
 import { DshDialog } from './dsh-upstream/Dialog';
 import { EmployeeMemoryEntry } from './employee-memory-entry';
@@ -43,10 +42,6 @@ import {
 } from './employee-profile-form';
 import { readJson } from './chatflow-utils';
 import formCss from './employee-profile-form.module.css';
-import {
-  ExperiencePanel,
-  ExperienceSummaryCard,
-} from '../workspace/experience/experience-panel';
 import { NativeDocumentPreview } from './native-document-preview';
 import { DocumentToolbar } from './document-reader';
 import {
@@ -110,7 +105,6 @@ function EmployeeDetailsReader(
   const [result, setResult] = useState<{
     attempt: number;
     data?: EmployeeDetails;
-    experienceSummary?: ExperienceSummary;
     historicalCustom?: { name: string };
     sceneReadDone?: boolean;
     error?: string;
@@ -201,7 +195,6 @@ function EmployeeDetailsReader(
           setResult({
             attempt,
             data: next,
-            experienceSummary: shared?.experienceSummary,
           });
       })
       .catch(async () => {
@@ -608,25 +601,6 @@ function EmployeeDetailsReader(
                   writes={props.fileWrites}
                 />
               )
-            }
-            experienceContent={
-              props.organizationView
-                ? result?.experienceSummary && (
-                    <ExperienceSummaryCard
-                      summary={result.experienceSummary}
-                      shared
-                    />
-                  )
-                : props.instanceId && (
-                    <ExperiencePanel
-                      workspaceId={props.workspaceId}
-                      instanceId={props.instanceId}
-                      scopeId={props.scopeId}
-                      headers={props.headers}
-                      embedded
-                      readOnly
-                    />
-                  )
             }
           />
           {!props.organizationView &&

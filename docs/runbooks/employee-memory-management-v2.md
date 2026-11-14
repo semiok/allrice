@@ -1,13 +1,13 @@
 # 普通个人记忆管理 v2
 
-本包依赖 PR1 的 pair 存储和迁移，提供完整后端管理合同；匹配的 MET-251 前端、后续候选生产及新 Run 索引/编号读取仍须组合验证。本包不具备独立部署条件，不把旧 UI 的类型可编译视为可用，不恢复 C/#788 或 checkpoint 维护任务。
+当前个人记忆唯一管理合同为 V2 summary/details、本人确认和编号读取。旧经验、旧全文 editor、搜索及外部 lifecycleState/durable/expiresAt/content 参数已退出；本文描述接口，不证明本批门禁或部署完成。
 
 ## 本人入口
 
 | 请求                                                 | 合同                                                                        |
 | ---------------------------------------------------- | --------------------------------------------------------------------------- |
 | GET `/api/v1/memories/manage?workspaceId&instanceId` | schemaVersion=2；全部 active/pending 最小行及同读 counts；不分页            |
-| GET `/api/v1/memories/{id}?workspaceId&instanceId`   | 当前完整 pair；自身删除/过期为 404                                          |
+| GET `/api/v1/memories/{id}?workspaceId&instanceId`   | 当前完整 pair；自身删除或失去权限为 404                                          |
 | POST `/api/v1/memories`                              | workspaceId、instanceId、summary、details?、idempotencyKey；本人直接 active |
 | PATCH `/api/v1/memories/{id}?workspaceId`            | 完整 pair、reason 和 Mutation；pending 保存即确认                           |
 | POST `/api/v1/memories/{id}/promote?workspaceId`     | Mutation；不改 pair 的本人确认                                              |
@@ -34,25 +34,21 @@ counts 为 active、pending、maxActive=100。新增、pending 保存/确认先�
 
 其他 API 不传 details 时保留原信封形状。旧 422 memory_capacity 不是 v2 名额合同，不能解析 message 猜原因。
 
-旧单 content 创建保留 PR1 的显式机械转换。真实 null-pair legacy PATCH 可作无损适配；已 paired 的旧 PATCH 即使拿当前 revision/contentDigest 也先拒绝且零写入。expired legacy 在实际 UPDATE 用数据库 clock_timestamp() 拒绝；不能显式传 NULL 复活。
+通用 GET `/memories` 只返回 V2 行和核对范围所需的 owner/workspace/instance，不返回旧全文或有效期。按 source/run 的读取保留本 Run 原真人消息与 adopted steering 来源过滤；revisions 继续供当前冻结修订与审计使用。管理 Row 不向模型授予浏览器身份或绕过 Run 预算。
 
-pin endpoint 已退役，继续鉴权及目标门卫后返回 contract_changed，不改历史 pin metadata/审计/修订。manage 不接受 state/after/search/filter/pin/preview；不存在 archived/expired 管理分组、nextCursor、budget。旧字段 schemas 只供尚待匹配的旧消费者编译，不是隐藏版本开关。
-
-旧通用 GET `/memories`、按 source/run 的读取、revisions 和已冻结 v1 Run 的文档/来源/预算仍按原合同独立保留；管理 Row 不把 source IDs、原聊天、tool 输出或私有 profile 带入新接口。管理 HTTP 不向模型授予浏览器身份或预算旁路。新模型注入/ordinal 工具由后续 PR 单独实现。
+manage 不接受 state/after/search/filter/pin/preview，不提供 archived/expired 管理分组、nextCursor 或旧 capacity_preview。已退役 pin 入口与全文兼容参数不再可调用。
 
 ## 候选和来源边界
 
-PR4 的真实普通 mutation 核心供后续 PR3 生产入口复用。pending→active 对已知 message/checkpoint 复核同 scope 未撤回 session/原身份，对 file 复核确切存储对象和现有读取权限；active 编辑不按另一记忆的删除或原来源重新审判。没有 L0/cutoff 或删除摘要过滤。
+PR4 的真实普通 mutation 核心供后续 PR3 生产入口复用。pending→active 继续复核当前 scope、未撤回来源及原身份；active 编辑不按另一记忆的删除或原来源重新审判。没有 L0/cutoff 或删除摘要过滤。
 
-普通 tool/connector 保留既有本人 scope、记录 CAS、本人确认语义；其 opaque sourceId 没有资源种类，当前无真实生产 caller，不能据此宣称具备外部撤回证明或授予外部资源权限。后续 PR3 不新增该类生产，也不把它与 C review/receipt 混同。C/#788 没有被本包接入、验证或恢复。
-
-旧 writer 的 source+contentDigest 幂等键和已 archive 同源的新建拒绝未在 PR4 改动；PR3 按软删除决定另分旧操作重放与新 pending 提议。删除 A 不隐藏/禁改已存在的同源 B，也不使 A 自身重新可见。
+当前模型候选不新增文件、tool/connector 或外部资料生产通道，不把素材采集视为本人事实、普通 pending 或确认。独立 A1 素材存储与配置继续隔离。
 
 ## 回退与验证边界
 
-没有新增 PG 表、状态或迁移，没有真实 DB 操作。本包仅复用存储、门卫和单向审计/回执，不涉及 DSH 原生 Agent 能力或新租约。
+管理接口复用原有 PG 表和状态。本包仅复用存储、门卫和单向审计/回执，不涉及 DSH 原生 Agent 能力或新租约。
 
-保留 PR1 恢复 runbook：事务失败全部回滚；已提交数据/新用户和候选写入不能丢失；补偿必须追加修订并以当前 pair/revision CAS，不原地改历史 revision，不提供丢数据逆迁移。旧/新冻结 Run 不互相改写或重置预算。
+保留当前 pair 恢复 runbook：事务失败全部回滚；已提交数据/新用户和候选写入不能丢失；补偿必须追加修订并以当前 pair/revision CAS，不原地改历史 revision，不提供丢数据逆迁移。当前冻结 Run 不改写或重置预算。
 
 回退 HTTP 消费者前必须验证其认识已写 pair、回执和统一错误信封；旧 UI 不是可直接回滚的管理消费者。保留已提交数据并向前修复，不能靠清空 details、删除新回执或恢复旧库求可用。
 

@@ -13,21 +13,13 @@ The same frozen document version selects Host initialization, its compatibility 
 the explicit v2 capability receipt, run/begin validation and candidate writer shape.
 The read grant controls only ordinal disclosure; it never selects a writer version.
 
-The PERSONA combination retains strict V1/V2 documents, both with the same optional
-16384-byte PERSONA field and independent renderer. USER remains2048bytes; V1 memory
-remains6000bytes and the V2 initial index remains18303bytes. The complete PERSONA
-still enters the model input estimate, while only MEMORY bytes enter the existing
-24000-byte memory ledger. A present PERSONA never grants memory eligibility.
-Only explicit human `employeeDocuments=true` selects the new index; persona-only
-and scheduled producers preserve their original source, tools and V1 accounting.
-Admitted children receive current PERSONA only. DSH fork history may still contain
-completed root USER/MEMORY snapshots, without injecting them as current context.
-
-Memory storage migration is `0236_employee_memory_pairs.sql`, after PERSONA's
-`0235_persona_runtime_package_compatibility.sql`. Their SQL objects do not overlap:
-the latter updates the existing version-compatibility function, while0236 adds
-memory pair columns, checks, preflight and audit backfill. Forward recovery and
-ordinary backup/restore preserve both migrations and their existing semantics.
+Current documents use schemaVersion=2 with the same optional 16384-byte PERSONA field.
+USER remains 2048 bytes; the complete memory index has a structural maximum of 18303 bytes.
+Only MEMORY bytes enter the existing 24000-byte memory ledger. PERSONA grants no memory eligibility.
+Ordinary human roots, including their current Workflow/Skill, share the frozen index and gates.
+Scheduled, manual automation and folder-event producers carry empty MEMORY and no memory tools.
+Children receive current PERSONA only; DSH fork history is not newly injected memory authority.
+Current pair columns, revisions, operations and the recovery contract remain in place.
 
 New ordinary Run admission freezes one row set into `employeeDocuments.schemaVersion=2` and pins.
 The queue's first INSERT stores this already charged state in its existing `memory_context_state` JSON.
@@ -36,12 +28,12 @@ Each Run owns continuous ordinals1..N; an ordinal is neither a database ID nor a
 Pins retain ID, revision, pair digest and detail presence, with no copied detail text.
 V2 `promptSnapshot.memories` is empty; legacy common/experience memory is not an alternate input.
 
-| Contract               | Persisted v1                                   | Newly admitted v2                               |
-| ---------------------- | ---------------------------------------------- | ----------------------------------------------- |
-| Initial memory         | Existing whole-item6000-byte/20-item selection | Full index, structural maximum18303bytes        |
-| Single successful read | Existing8000-byte JSON envelope                | Complete decoded native text, at most10000bytes |
-| Run total / reads      | Existing24000bytes /12                         | Same24000bytes including index /12              |
-| Reader                 | Existing search and source handles             | Explicit `workspace.memory.read({number})`      |
+| Contract | Current V2 |
+| --- | --- |
+| Initial memory | Full confirmed index, structural maximum 18303 bytes |
+| Single successful read | Complete decoded native text, at most 10000 bytes |
+| Run total / reads | 24000 bytes including index / 12 |
+| Reader | Explicit `workspace.memory.read({number})` |
 
 One shared renderer emits summary and complete detail with no inner JSON serialization.
 Its structural maximum is40×4+2000×4+68=8228bytes; outer RPC escaping is not model text.
@@ -51,13 +43,13 @@ Successful rereads consume another read and their actual text bytes under the ex
 No memory result enters generic truncation, fullResult, file spill or static export.
 
 The new tool requires an explicit frozen memory-read grant; broad storage capability is insufficient.
-V2 removes the legacy search/source surfaces and their server-side entrypoints refuse v2 state.
+Legacy search/source surfaces, V1 parsers and full-content fallbacks are removed.
 Present owner/member/instance/confirmation and original issued revision pair are rechecked.
 Deleting any indexed identity invalidates that old context; independent confirmed memories stay active.
 An ordinary later edit does not replace a previously issued historical pair.
 No deletion lineage hard block, time cutoff, semantic matcher or new source authority is introduced.
 
-V1/NULL/pending records are never upgraded or given a fresh allowance on prepare/resume/duplicate input.
+Missing or incompatible state never upgrades or receives a fresh allowance on prepare/resume/duplicate input.
 The verified execution package must contain the v2 parser, manifest and native tool render together.
 An incompatible old carrier fails before disclosure; v2 cannot fall back to a generic envelope.
 Rollback must stop new admission and preserve/drain existing v2 Runs on a compatible package.

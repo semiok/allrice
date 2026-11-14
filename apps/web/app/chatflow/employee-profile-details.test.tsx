@@ -23,7 +23,6 @@ describe('EmployeeProfileDetails', () => {
         memoryEntry: <p>OWNER_MEMORY_SLOT</p>,
         workflowContent: <p>OLD_FILE_READER</p>,
         workflowReadContent: <p>OLD_READ_AUDIT</p>,
-        experienceContent: <p>OLD_EXPERIENCE</p>,
       };
       const html = renderToStaticMarkup(<EmployeeProfileDetails {...props} />);
       for (const text of [

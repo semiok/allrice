@@ -841,6 +841,8 @@ MET-246 PR2（2026-11-10 已审方案）：沿用同一公开 context/工具接�
 
 MET-246/PERSONA 组合修订（2026-11-12 主会话转达用户批准）：strict V1/V2 共用可选 PERSONA 字段的独立 16384 字节 schema，renderer 不依赖 union 的 shape；V1 MEMORY 6000、V2 初始索引 18303、USER 2048 各自预算保持。PERSONA 完整进入真实模型输入估算，但不计入 memory 的 24000 字节账本。只有明确 `employeeDocuments === true` 冻结普通 V2 索引；persona_only 和定时人设继续使用原资格、工具、来源和账本，不因可选字段出现而取得记忆权限。root 获得本次合法三文档，child/nested 当前 context 只继承 PERSONA；fork 已完成历史、冷恢复、更新和清空仍由 DSH 负责。记忆字段迁移改 0236 并保留 PERSONA 0235 的兼容函数；审计与恢复按完整迁移名识别。此修订仅对齐已有冻结存储、门卫与账本，无新权限、状态机、DSH 包或私有接口；MET-225 沿既有行由主会话更新，独审和组合验证另记。
 
+MET-223 A2（2026-11-14 获批实施，门禁与发布状态另记）：本批替代上述旧 search/source 与 V1 分支。普通真人 root 及其当前 Workflow/Skill 只保留 V2 摘要索引、完整编号读取和普通候选本人确认，继续现有 100 条生效、10000-byte 单读、24000-byte/12 读账本及当前身份、来源、revision/pairDigest 门卫。系统、定时、手动自动化和文件夹事件任务 MEMORY 恒空且无个人记忆工具；子智能体不因此取得新权限。旧经验生产、验证、采用、品牌经验支线及旧个人 hash RAG 退出，企业知识检索与共用正文列保留。当前 `allrice-employee-documents-v1` 是原适配器 ID，不代表保留 V1 文档解析或旧工具；DSH 原生目录、工具注册、context、恢复和取消语义继续复用，无新增状态机或 SaaS 机制。历史迁移、决策和只读事件不作为恢复旧执行器的开关。本段记录替代合同，不声称 M5、独审、CI、合并或部署已完成。
+
 ### MET-249 U1-3b：作者名字接原生 Skill
 
 个人场景 Provider 将精确包的 `name`、`whenToUse`、`metadata`、`invocation` 直接交给 rc.2 公开 Skill Provider；无作者字段的旧包仍用 UUID，历史 Run 和读取账本不改写。SaaS 沿现本人写事务及组织锁拒绝场景/基础/启用个人 Skill 重名，已发布作者名更新不能更名。普通安装/绑定/启用同样检查场景；没有第二套命令解析、阶段凭据或加载状态。`allrice-progressive-scene-provider-v1` 对应 MET-225 E02/L03/L04，精确资源、来源、撤销与使用证据门卫保留。

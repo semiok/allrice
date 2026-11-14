@@ -283,7 +283,7 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
     await open('employee');
     const tab = (name: string) => page.getByRole('tab', { name });
     await tab('执行要求').waitFor();
-    for (const name of ['执行流程', '参考资料', '经验积累'])
+    for (const name of ['执行流程', '参考资料'])
       await readable(`D08 未选中标签 ${name}`, tab(name));
     await readable('D08 平台继承', page.getByText('平台继承', { exact: true }));
     await readable('D08 来源与版本', page.getByText('查看来源与版本'));

@@ -1,12 +1,10 @@
 import {
   DataAccessError,
-  correctWorkspaceMemory,
   correctManagedEmployeeMemory,
   deleteManagedEmployeeMemory,
   getPersonalEmployeeMemory,
 } from '@allrice/database';
 import {
-  EmployeeMemoryTextSchema,
   EmployeeMemoryListQuerySchema,
   EmployeeMemoryDetailResponseSchema,
   EmployeeMemoryWriteResponseSchema,
@@ -61,19 +59,6 @@ export async function PATCH(
     if (!workspaceId) throw new DataAccessError('not_found');
     const { id } = await route.params;
     const input = await request.json();
-    if (input && typeof input === 'object' && 'content' in input) {
-      EmployeeMemoryTextSchema.parse(input.content);
-      const memory = await correctWorkspaceMemory(
-        context,
-        workspaceId,
-        id,
-        input,
-      );
-      return Response.json(
-        { memory: { ...memory, ownedByMe: true } },
-        { headers: { 'cache-control': 'private, no-store' } },
-      );
-    }
     const { counts, ...memory } = await correctManagedEmployeeMemory(
       context,
       workspaceId,

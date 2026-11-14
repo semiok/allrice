@@ -19,9 +19,9 @@ conversation navigation.
    `openai-codex` inside DSH; MiniMax and other managed APIs use DSH Provider
    plugins. Shell, filesystem, browser, MCP, subagent and unapproved network
    capabilities remain disabled.
-6. The conversation harness exposes four tenant-data tools:
+6. The conversation harness exposes the authorized tenant-data tools:
    `workspace.file.list`, `workspace.file.read`,
-   `workspace.memory.search`, or `workspace.session.search`. A bound reviewed
+   `workspace.memory.read`, `workspace.memory.remember`, or `workspace.session.search`. A bound reviewed
    network Skill can additionally activate `web.search` through the deployment
    Codex subscription and the guarded `web.fetch` page reader. The reviewed
    `wechat-research` Skill uses cloud-only `wechat.article.search` and

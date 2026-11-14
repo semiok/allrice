@@ -92,8 +92,8 @@ Worker 依赖构建、database / Worker 类型检查、相关文件 ESLint / Pre
 `workspace.session.search` 只返回 Session ID、标题、更新时间，不返回聊天正文。
 原生新子会话不会自动复制整段父聊天；这与授予某个查询工具后主动查询授权资源是两种行为。
 如果任务需要“只能读指定文件/片段”，当前工具级委派不能表达该限制，不能把它宣传为已实现。
-首版 child 查询为显式 allowlist：`workspace.skill.read`、`workspace.document.read`、
-`workspace.memory.search`、`workspace.session.search`、`web.search`。
+当前 child 查询保持显式 allowlist：`workspace.skill.read`、`workspace.document.read`、
+`workspace.session.search`、`web.search`。MET-223 A2 删除旧个人记忆 search，不向 child 新增 read/remember 权限。
 `browser.run`、本地 Bridge 读取等尚无 child 生命周期适配的路径，在 provision 前拒绝，
 不能因为 manifest 标记 read_only 就自动下放。
 

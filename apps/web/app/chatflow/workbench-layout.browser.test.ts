@@ -31,9 +31,6 @@ import {
   defaultWorkAutomation,
   UserPreferencesInputSchema,
   type UserPreferences,
-  type ExperienceCandidate,
-  type ExperienceDraftBatch,
-  ExperienceOverviewSchema,
   WorkbenchArtifactSchema,
   type WorkbenchFile,
   type WorkbenchDeliverable,
@@ -594,7 +591,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         | 'apps'
         | 'account'
         | 'capabilities'
-        | 'experience'
         | 'skills';
       personalSkills?: boolean;
       archiveCount?: number;
@@ -817,10 +813,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       employeeHistoryDelay: null as Promise<void> | null,
       employeeHistoryStatus: 200,
       experienceReads: 0,
-      experienceDelay: null as Promise<void> | null,
-      experienceStatus: 200,
-      experienceCandidates: [] as ExperienceCandidate[],
-      experienceBatches: [] as ExperienceDraftBatch[],
       employeeModel: 'configured-model',
       employeeReasoningEffort: 'medium',
       omitSessionA: false,
@@ -861,7 +853,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       workbenchFiles: [] as WorkbenchFile[],
       workbenchReferenceUses: [] as string[],
       workbenchPreviewReads: 0,
-      workbenchExperienceKeys: [] as string[],
       scheduledTasks: options.scheduledTasks ?? [],
       scheduledReads: [] as Array<{
         sessionId: string | null;
@@ -1147,12 +1138,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         state.updateReads++;
         const payload = {
           fileIds: workbenchFiles().map((file) => file.objectId),
-          experienceIds: state.workbenchExperienceKeys,
         };
         options.failureEvidence?.mark('updates-route-received', {
           updateReads: state.updateReads,
           fileIds: payload.fileIds,
-          experienceIds: [...payload.experienceIds],
         });
         return answer(payload);
       }
@@ -2084,45 +2073,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ? answer({ instance })
           : answer({ error: { message: 'synthetic instance missing' } }, 404);
       }
+      // A retired route is never loaded by a current memory entry.
       if (path === '/api/v1/experiences') {
         state.experienceReads++;
-        const body = {
-          overview: ExperienceOverviewSchema.parse({
-            visibility: 'owner',
-            workspaceId: state.workspace,
-            instanceId: id(7),
-            summary: {
-              enabled: true,
-              policy: {
-                frequency: 'weekly',
-                timezone: 'Asia/Shanghai',
-                time: '03:00',
-                weekday: 1,
-                monthDay: 1,
-                source: 'platform',
-                revision: 2,
-                validationMode: 'supported_cases',
-                adoptionMode: 'supported_private',
-              },
-              schedule: {
-                state: 'not_scheduled',
-                lastCheckedAt: null,
-                nextRunAt: null,
-                lastOccurrence: null,
-              },
-              counts: {
-                pendingSources: 2,
-                awaitingValidation: 0,
-                adoptedTotal: 1,
-              },
-            },
-          }),
-          candidates: structuredClone(state.experienceCandidates),
-          draftBatches: structuredClone(state.experienceBatches),
-        };
-        const status = state.experienceStatus;
-        if (state.experienceDelay) await state.experienceDelay;
-        return answer(status === 200 ? body : { code: 'not_found' }, status);
+        return answer({}, 404);
       }
       if (path === '/api/v1/workspace' && state.startupFailure)
         return answer(
@@ -3700,21 +3654,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     ])
       expect(await dialog.getByText(name, { exact: true }).count()).toBe(0);
   }
-  it('MET198 file unread numbers remain scoped while retired experience keys never become memory badges', async ({
+  it('MET198 file unread numbers remain scoped while current memory stays independent', async ({
     task,
   }) => {
     const observation: { fixture?: Awaited<ReturnType<typeof fixture>> } = {};
     const evidence: ReturnType<typeof createFailureEvidence> =
       createFailureEvidence({
         file: import.meta.url,
-        test: 'MET198 file unread numbers remain scoped while retired experience keys never become memory badges',
+        test: 'MET198 file unread numbers remain scoped while current memory stays independent',
         collect: async () => {
           const f = observation.fixture;
           const snapshot = {
             updateReads: f?.state.updateReads,
             workbenchReads: f?.state.workbenchReads,
             files: f?.state.files,
-            experienceKeys: f?.state.workbenchExperienceKeys,
             errors: f?.errors,
             writes: f?.writes,
             unexpected: f?.unexpected,
@@ -3782,10 +3735,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       category: 'uploads',
       deliverableVersion: null,
     });
-    f.state.workbenchExperienceKeys.push(id(9910) + '/1');
     evidence.mark('fixture-files-mutated', {
       fileId: id(9901),
-      experienceKey: id(9910) + '/1',
     });
     await f.page.evaluate(() =>
       window.dispatchEvent(new Event('allrice:workbench-files-changed')),
@@ -5936,7 +5887,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
 
   it.each([
     ['capabilities', '工作方式'],
-    ['experience', '工作方式'],
     ['skills', '个人偏好'],
   ] as const)(
     'maps legacy settings=%s to %s without exposing personal skill management',
@@ -10092,49 +10042,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     30000,
   );
 
-  it.each([1440, 390])(
-    'MET184 retired owner experience entry never requests private provenance at %s',
-    async (width) => {
-      const f = await fixture({
-        width,
-        touch: width < 600,
-        employeeHistory: true,
-        employeeDetails: true,
-      });
-      let provenanceReads = 0;
-      try {
-        await f.page.route('**/api/v1/experiences/*/provenance?**', (route) => {
-          provenanceReads++;
-          return route.fulfill({
-            status: 403,
-            json: { error: { message: 'Denied' } },
-          });
-        });
-        const dialog = await openOwnerDetails(f);
-        await expectRetiredTabs(dialog);
-        expect(
-          await dialog
-            .getByRole('button', {
-              name: /查看来源与版本|查看准确记录|收起来源与版本/,
-            })
-            .count(),
-        ).toBe(0);
-        expect(
-          await dialog
-            .getByText('PRIVATE_EXACT_FEEDBACK', { exact: true })
-            .count(),
-        ).toBe(0);
-        expect(provenanceReads).toBe(0);
-        expect(f.state.experienceReads).toBe(0);
-        expect(f.writes).toEqual([]);
-      } finally {
-        await f.close();
-      }
-    },
-    30000,
-  );
-
-  it('MET183 retired owner experience views cannot revive private feedback after reopen or revoke', async () => {
+  it('MET182 owner detail clears current private profile after revocation', async () => {
     const f = await fixture({ employeeHistory: true, employeeDetails: true });
     try {
       let dialog = await openOwnerDetails(f);
@@ -10144,11 +10052,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.state.employeeDetails.profile.expressionStyle = 'exploratory';
       dialog = await openOwnerDetails(f);
       await dialog.getByText('比较方案与取舍', { exact: true }).waitFor();
-      expect(
-        await dialog
-          .getByText('PRIVATE_OLD_EXPERIENCE', { exact: true })
-          .count(),
-      ).toBe(0);
       await expectRetiredTabs(dialog);
       await dialog.getByRole('button', { name: '关闭', exact: true }).click();
       f.state.employeeDetailStatus = 403;
@@ -10160,11 +10063,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         exact: true,
       });
       await denied.getByRole('alert').waitFor();
-      for (const text of [
-        'PRIVATE_CURRENT',
-        'PRIVATE_OLD_EXPERIENCE',
-        '比较方案与取舍',
-      ])
+      for (const text of ['PRIVATE_CURRENT', '比较方案与取舍'])
         expect(await denied.getByText(text, { exact: true }).count()).toBe(0);
       expect(
         await denied.getByRole('region', { name: '经验整理概况' }).count(),

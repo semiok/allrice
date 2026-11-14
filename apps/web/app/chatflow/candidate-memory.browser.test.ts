@@ -13,9 +13,7 @@ import {
   EmployeeMemoryWriteResponseSchema,
   type EmployeeMemoryRecord,
   type RequestContext,
-  type WorkspaceMemorySchema,
 } from '@allrice/contracts';
-import type { z } from 'zod';
 import type {
   Browser,
   Page,
@@ -23,13 +21,12 @@ import type {
 import * as client from '../../../../packages/database/src/core/client.ts';
 import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
 import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
-import { seedLegacyEmployeeMemory } from '../../../../packages/database/src/workspace/employee-memory-v1.fixture.ts';
+import { getPersonalEmployeeMemory } from '../../../../packages/database/src/employee-memory-management.ts';
 import {
   createSession,
   authenticateSession,
 } from '../../../../packages/database/src/identity.ts';
 import {
-  createTraceableMemory,
   listWorkspaceMemories,
   ensureDefaultEmployee,
 } from '../../../../packages/database/src/workspace/service.ts';
@@ -43,7 +40,6 @@ import {
   ensureGeneralEmployeeInstance,
 } from '../../../../packages/database/src/employees/employee-instances.ts';
 import { POST as promote } from '../api/v1/memories/[id]/promote/route';
-import { POST as pin } from '../api/v1/memories/[id]/pin/route';
 import {
   DELETE as discard,
   PATCH as correct,
@@ -53,7 +49,7 @@ import {
 const ports = vi.hoisted(() => ({ cookies: vi.fn() }));
 vi.mock('next/headers', () => ({ cookies: ports.cookies }));
 const requests = new AsyncLocalStorage<Request>();
-type WorkspaceMemory = z.infer<typeof WorkspaceMemorySchema>;
+type WorkspaceMemory = EmployeeMemoryRecord;
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1' &&
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -75,6 +71,8 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
   let loseAckFor = '',
     failDeleteFor = '';
   let loseNextCreateAck = false;
+  let blockedDetailId = '';
+  let detailReadGate: Promise<void> | null = null;
   const httpWrites: Array<{
     method: string;
     id: string;
@@ -86,6 +84,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     identity = await createRunAuthorityFixture(f.db);
     foreign = await createRunAuthorityFixture(f.db);
+    await ensureGeneralEmployeeInstance(f.db, identity.assignment);
     await ensureGeneralEmployeeInstance(f.db, foreign.assignment);
     ownerToken = (await createSession(identity.user)).token;
     foreignToken = (await createSession(foreign.user)).token;
@@ -116,16 +115,11 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       reader,
       identity.workspace,
     );
-    shared = await createTraceableMemory(reader, {
+    await ensureGeneralEmployeeInstance(f.db, readerAssignment!.id);
+    shared = await seedPending(reader, {
       workspaceId: identity.workspace,
       instanceId: readerAssignment!.id,
-      idempotencyKey: randomUUID(),
-      content: '他人的工作区可见候选',
-      visibility: 'private',
-      sourceType: 'user',
-      sourceLabel: 'fixture',
-      lifecycleState: 'candidate',
-      memoryClass: 'work_note',
+      summary: '他人的工作区可见候选',
     });
     await f.db`update allrice_memories set visibility='workspace' where id=${shared.id}`;
     // Only Next's per-request cookie accessor is adapted to the fixture server.
@@ -292,6 +286,8 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
             }
             if (req.method === 'DELETE' && id === failDeleteFor)
               return Response.json({}, { status: 503 });
+            if (req.method === 'GET' && id === blockedDetailId)
+              await detailReadGate;
             const params = { params: Promise.resolve({ id }) };
             const response =
               id === 'manage'
@@ -306,9 +302,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
                       ? await correct(request, params)
                       : req.method === 'GET'
                         ? await getMemory(request, params)
-                        : parts[5] === 'pin'
-                          ? await pin(request, params)
-                          : await promote(request, params);
+                        : await promote(request, params);
             if (id === loseAckFor && parts[5] === 'promote' && response.ok) {
               loseAckFor = '';
               return Response.json({}, { status: 503 });
@@ -373,11 +367,46 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     expect(failures).toEqual([]);
   }, 30000);
 
-  async function remember(
-    content: string,
-    expiresAt: string | null = null,
-    historicalV1 = false,
-  ) {
+  /** Synthetic current V2 pair only; model production is covered by Worker tests. */
+  async function seedPending(
+    context: RequestContext,
+    input: {
+      workspaceId: string;
+      instanceId: string;
+      summary: string;
+      details?: string | null;
+      sourceId?: string;
+    },
+  ): Promise<EmployeeMemoryRecord> {
+    const id = randomUUID();
+    const details = input.details ?? null;
+    const complete =
+      details === null ? input.summary : `${input.summary}\n${details}`;
+    await f.db.begin(async (tx) => {
+      const [instance] =
+        await tx`select a.employee_id from allrice_employee_instances i
+        join allrice_employee_assignments a on a.id=i.assignment_id
+        where i.id=${input.instanceId}`;
+      await tx`insert into allrice_memories(id,organization_id,workspace_id,owner_id,employee_id,instance_id,
+          content,summary,details,visibility,source_type,source_id,source_label,lifecycle_state,memory_class,trust_level)
+        values(${id},${context.organizationId},${input.workspaceId},${context.actor.id},${instance!.employee_id},${input.instanceId},
+          ${complete},${input.summary},${details},'private',${input.sourceId ? 'message' : 'user'},${input.sourceId ?? null},
+          'current V2 UI fixture','candidate','user_preference','derived')`;
+      await tx`insert into allrice_memory_revisions(organization_id,workspace_id,memory_id,revision,content,summary,details,
+          trust_level,lifecycle_state,memory_class,confidence,reason,changed_by)
+        values(${context.organizationId},${input.workspaceId},${id},1,${complete},${input.summary},${details},
+          'derived','candidate','user_preference',1,'current V2 UI fixture',${context.actor.id})`;
+    });
+    return (
+      await getPersonalEmployeeMemory(
+        context,
+        input.workspaceId,
+        input.instanceId,
+        id,
+      )
+    ).memory;
+  }
+  async function remember(content: string) {
     const [run] =
       await f.db`select user_message_id from allrice_employee_runs where run_id=${identity.rootRunId}`;
     let sourceId = run!.user_message_id as string;
@@ -411,24 +440,14 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await f.db`insert into allrice_conversation_commands(organization_id,workspace_id,session_id,owner_id,followup_run_id,command_type,client_user_message_id,expected_generation,expected_turn_id,message,input_kind,state,native_proof)
         values(${identity.org},${identity.workspace},${identity.session},${identity.user},${followup},'steer',${inputId},1,${turn},${content},'steer_current','consumed',${f.db.json(proof)})`;
     }
-    const input = {
+    return seedPending(owner, {
       workspaceId: identity.workspace,
       instanceId: identity.assignment,
-      employeeId: identity.employee,
-      content,
-      visibility: 'private' as const,
-      sourceType: 'message' as const,
+      summary: content,
       sourceId,
-      sourceLabel: '模型提取候选',
-      confidence: 0.8,
-      expiresAt,
-      lifecycleState: 'candidate' as const,
-      memoryClass: 'user_preference' as const,
-    };
-    return historicalV1
-      ? seedLegacyEmployeeMemory(f.db, owner, input)
-      : createTraceableMemory(owner, input);
+    });
   }
+
   function api(
     path: string,
     init: RequestInit = {},
@@ -492,8 +511,6 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         document.body.setAttribute('data-ds-dark-theme', '');
       else document.body.removeAttribute('data-ds-dark-theme');
     }, theme);
-    if (host === 'management' && !instance)
-      await page.getByRole('button', { name: '个人记忆', exact: true }).click();
     return { page, close: () => context.close() };
   }
   const card = (page: Page, id: string) =>
@@ -542,8 +559,8 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     ).toEqual([candidate.id]);
     const [run] =
       await f.db`select user_message_id from allrice_employee_runs where run_id=${identity.rootRunId}`;
-    await f.db`insert into allrice_memories(organization_id,workspace_id,owner_id,instance_id,content,visibility,source_type,lifecycle_state,memory_class,trust_level,source_label)
-      select ${identity.org},${identity.workspace},${identity.user},${identity.assignment},'Newer unrelated fixture ' || n,'private','user','candidate','work_note','derived','fixture'
+    await f.db`insert into allrice_memories(organization_id,workspace_id,owner_id,employee_id,instance_id,content,summary,visibility,source_type,lifecycle_state,memory_class,trust_level,source_label)
+      select ${identity.org},${identity.workspace},${identity.user},${identity.employee},${identity.assignment},'Newer unrelated fixture ' || n,'Newer unrelated fixture ' || n,'private','user','candidate','work_note','derived','fixture'
       from generate_series(1,105) n`;
     expect(
       (
@@ -617,15 +634,11 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     const [command] =
       await f.db`insert into allrice_conversation_commands(organization_id,workspace_id,session_id,owner_id,followup_run_id,command_type,client_user_message_id,expected_generation,expected_turn_id,message,input_kind,state)
       values(${identity.org},${identity.workspace},${identity.session},${identity.user},${followup},'steer',${inputId},1,${turn},'追加偏好','steer_current','consumed') returning id`;
-    const added = await createTraceableMemory(owner, {
+    const added = await seedPending(owner, {
       workspaceId: identity.workspace,
-      content: '已有追加来源的候选',
-      visibility: 'private',
-      sourceType: 'message',
+      instanceId: identity.assignment,
+      summary: '已有追加来源的候选',
       sourceId: message,
-      sourceLabel: 'fixture steering source',
-      lifecycleState: 'candidate',
-      memoryClass: 'user_preference',
     });
     const read = () =>
       listWorkspaceMemories(owner, identity.workspace, undefined, {
@@ -716,15 +729,11 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       })
     ).id;
   }
-  async function pendingFor(instanceId: string, content: string) {
-    return createTraceableMemory(owner, {
+  async function pendingFor(instanceId: string, summary: string) {
+    return seedPending(owner, {
       workspaceId: identity.workspace,
       instanceId,
-      content,
-      sourceType: 'user',
-      sourceLabel: 'isolated UI fixture',
-      lifecycleState: 'candidate',
-      idempotencyKey: randomUUID(),
+      summary,
     });
   }
   const deletion = (page: Page) =>
@@ -799,6 +808,50 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     ).toHaveLength(1);
   });
 
+  it('rejects retired full-content and lifecycle parameters through the current owner HTTP entry', async () => {
+    const row = await detail(candidate.id);
+    const snapshot =
+      () => f.db`select revision,summary,details,lifecycle_state,archived_at
+      from allrice_memories where id=${row.id}`;
+    const before = await snapshot();
+    const legacy = [
+      { content: '不能用旧全文参数保存' },
+      { lifecycleState: 'durable' },
+      { durable: true },
+      { expiresAt: '2099-01-01T00:00:00.000Z' },
+      { contentDigest: 'sha256:' + 'a'.repeat(64) },
+    ];
+    for (const field of legacy) {
+      const created = await api(
+        '',
+        write({
+          workspaceId: identity.workspace,
+          instanceId: identity.assignment,
+          idempotencyKey: randomUUID(),
+          summary: '仅当前 pair 合同可以保存',
+          details: null,
+          ...field,
+        }),
+      );
+      expect(created.status).toBe(400);
+      const corrected = await api(
+        '/' + row.id,
+        write(
+          {
+            ...exact(row),
+            summary: row.summary,
+            details: row.details,
+            reason: '本人核对当前 pair',
+            ...field,
+          },
+          'PATCH',
+        ),
+      );
+      expect(corrected.status).toBe(400);
+    }
+    expect(await snapshot()).toEqual(before);
+  });
+
   it('keeps the existing chat card complete after a real V2 edit while the v2 sidebar still lists only its summary', async () => {
     const pending = await remember('真实候选来源：月报条件请本人确认');
     const row = await detail(pending.id);
@@ -825,9 +878,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     try {
       const current = card(chat.page, pending.id);
       await current.waitFor();
-      expect(await current.locator('p').first().textContent()).toBe(
-        `${pair.summary}\n${pair.details}`,
-      );
+      await expect
+        .poll(() => current.locator('p').first().textContent())
+        .toBe(`${pair.summary}\n${pair.details}`);
       const manager = await open(
         'management',
         'light',
@@ -849,6 +902,51 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       }
     } finally {
       await chat.close();
+    }
+  });
+
+  it('keeps confirmation disabled until the complete current candidate details are visible', async () => {
+    const [run] =
+      await f.db`select user_message_id from allrice_employee_runs where run_id=${identity.rootRunId}`;
+    const pending = await seedPending(owner, {
+      workspaceId: identity.workspace,
+      instanceId: identity.assignment,
+      summary: '月报只发授权汇总',
+      details: '未获本人授权不得发送原始名单。',
+      sourceId: run!.user_message_id,
+    });
+    let release!: () => void;
+    detailReadGate = new Promise<void>((done) => {
+      release = done;
+    });
+    blockedDetailId = pending.id;
+    const ui = await open('chat');
+    try {
+      const current = card(ui.page, pending.id);
+      await current.waitFor();
+      const confirm = current.getByRole('button', {
+        name: '确认并记住',
+        exact: true,
+      });
+      expect(await confirm.isDisabled()).toBe(true);
+      expect(
+        (await collection()).pending.some((row) => row.id === pending.id),
+      ).toBe(true);
+      expect(await current.textContent()).not.toContain(pending.details);
+      blockedDetailId = '';
+      release();
+      await current
+        .getByText(`${pending.summary}\n${pending.details}`, { exact: true })
+        .waitFor();
+      await expect.poll(() => confirm.isEnabled()).toBe(true);
+      await confirm.click();
+      await current.getByText('长期记忆', { exact: true }).waitFor();
+      expect((await detail(pending.id)).state).toBe('active');
+    } finally {
+      blockedDetailId = '';
+      detailReadGate = null;
+      release();
+      await ui.close();
     }
   });
 
@@ -946,60 +1044,6 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await ui.close();
     }
   });
-
-  it.each(['future', 'expired'] as const)(
-    'uses real eligibility for a paired historical %s expiry and removes retired expiry promises',
-    async (period) => {
-      const pending = await remember('有历史期限的成对候选 ' + period);
-      const captured = new Date(Date.now() - 2 * 86400000).toISOString();
-      const expiry = new Date(
-        Date.now() + (period === 'future' ? 1 : -1) * 86400000,
-      ).toISOString();
-      await f.db.unsafe(
-        'update allrice_memories set captured_at=$2,created_at=$2,updated_at=$2,expires_at=$3 where id=$1',
-        [pending.id, captured, expiry],
-      );
-      await f.db.unsafe(
-        'update allrice_memory_revisions set changed_at=$2,expires_at=$3 where memory_id=$1',
-        [pending.id, captured, expiry],
-      );
-      const ui = await open('management');
-      try {
-        await ui.page
-          .getByRole('heading', { name: '测试助手 · 记忆', exact: true })
-          .waitFor();
-        await ui.page
-          .getByText('正在读取记忆…', { exact: true })
-          .waitFor({ state: 'hidden' });
-        expect(
-          await ui.page
-            .getByText('确认不会延长有效期', { exact: false })
-            .count(),
-        ).toBe(0);
-        if (period === 'expired')
-          expect(await card(ui.page, pending.id).count()).toBe(0);
-        else {
-          await card(ui.page, pending.id)
-            .getByRole('button', { name: '确认', exact: true })
-            .click();
-          await ui.page
-            .getByRole('region', { name: '生效中', exact: true })
-            .locator('[data-memory-id="' + pending.id + '"]')
-            .waitFor();
-          expect(
-            (
-              await f.db.unsafe(
-                'select expires_at,lifecycle_state from allrice_memories where id=$1',
-                [pending.id],
-              )
-            )[0],
-          ).toEqual({ expires_at: null, lifecycle_state: 'durable' });
-        }
-      } finally {
-        await ui.close();
-      }
-    },
-  );
 
   it.each(['confirm-success', 'discard-failure', 'discard-ack-loss'] as const)(
     'preserves a frozen ordinary card across another real view refresh: %s',
@@ -1536,41 +1580,6 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       expect(await ui.page.getByRole('dialog').count()).toBe(0);
     } finally {
       release();
-      await ui.close();
-    }
-  });
-
-  it('does not silently fall back to a v1 full-content editor or mutate a historical record', async () => {
-    const instanceId = await isolatedInstance();
-    const legacy = await seedLegacyEmployeeMemory(f.db, owner, {
-      workspaceId: identity.workspace,
-      instanceId,
-      sourceType: 'user',
-      content: '历史v1整段内容只能按明确迁移合同处理',
-    });
-    const before = await f.db.unsafe(
-      'select revision,content,summary,details from allrice_memories where id=$1',
-      [legacy.id],
-    );
-    const ui = await open('management', 'light', 1440, instanceId);
-    try {
-      await ui.page
-        .getByRole('alert')
-        .filter({ hasText: '记忆读取失败' })
-        .waitFor();
-      expect(
-        await ui.page
-          .getByRole('button', { name: '＋ 新增', exact: true })
-          .isDisabled(),
-      ).toBe(true);
-      expect(await ui.page.getByRole('textbox').count()).toBe(0);
-      expect(
-        await f.db.unsafe(
-          'select revision,content,summary,details from allrice_memories where id=$1',
-          [legacy.id],
-        ),
-      ).toEqual(before);
-    } finally {
       await ui.close();
     }
   });
