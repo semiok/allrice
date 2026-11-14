@@ -142,13 +142,14 @@ suite('R3 publications HTTP search', () => {
     expect(body.references[0].revisionId).toBe(revisionId);
   });
   it('rejects malformed pagination and a caller-selected foreign workspace', async () => {
-    for (const parameters of [
+    const invalidParameters: Record<string, string>[] = [
       { limit: '0' },
       { limit: 'bad' },
       { cursor: '{}' },
       { cursor: '{broken' },
       { category: 'admin' },
-    ]) {
+    ];
+    for (const parameters of invalidParameters) {
       const response = await get({ query: '差旅', ...parameters });
       expect(response.status).toBe(400);
       expect(await response.text()).not.toContain(sourceId);
