@@ -15,7 +15,11 @@ const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
     ? describe
     : describe.skip;
-const args = ['--host-resolver-rules=MAP *.allrice.test 127.0.0.1'];
+const args = [
+  // Required by Browser.getBrowserCommandLine, no longer a Playwright default.
+  '--enable-automation',
+  '--host-resolver-rules=MAP *.allrice.test 127.0.0.1',
+];
 const executablePath =
   process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH ??
   process.env.ALLRICE_MANAGED_BROWSER_EXECUTABLE ??
