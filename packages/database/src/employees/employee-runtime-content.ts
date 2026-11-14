@@ -22,9 +22,17 @@ import {
   retrieveReferenceKnowledgeInTransaction,
   ReferenceRuntimeError,
   ReferencePublicationRuntimeError,
-  hasRevokedReferencePublicationHistory,
   referencePublicationDependencyRuns,
 } from '../reference-runtime.ts';
+import {
+  prepareReferenceText,
+  assertPreparedReferencesReadable,
+  prepareReferenceSearch,
+  referenceTextPage,
+  referenceTextCitation,
+  boundedReferenceToolResult,
+  type PreparedReferenceText,
+} from '../reference-search.ts';
 import {
   EmployeeContentManifestSchema,
   EmployeeRuntimeContentSchema,
@@ -33,6 +41,9 @@ import {
   ReferenceReadSchema,
   ReferenceReadsSchema,
   ReferenceSelectionsSchema,
+  ReferenceSearchInputSchema,
+  ReferenceReadInputSchema,
+  type ReferenceToolName,
   type ReferenceRead,
   type KnowledgeRetrievalResult,
   type EmployeeRuntimeContent,
@@ -82,23 +93,6 @@ export class EmployeeRuntimeContentError extends Error {
   }
 }
 class PublicationContentUnavailableError extends EmployeeRuntimeContentError {}
-/** Permanent Q8 comes only from actual-read withdrawal facts, never current ACL loss. */
-export class EmployeeReferencePublicationRevokedError extends EmployeeRuntimeContentError {
-  constructor() {
-    super('本对话使用的企业资料已撤销或删除，请新建对话。历史记录仍可查看。');
-  }
-}
-export async function assertEmployeeReferencePublicationHistory(
-  context: ContentIdentity,
-  sessionId: string,
-  sql: ContentSql,
-  lock = false,
-) {
-  if (
-    await hasRevokedReferencePublicationHistory(context, sessionId, sql, lock)
-  )
-    throw new EmployeeReferencePublicationRevokedError();
-}
 const unavailable = () => {
   throw new EmployeeRuntimeContentError();
 };
@@ -821,17 +815,6 @@ async function generationIsReadable(
   referencedMessageIds?: string[],
   publicationRuns?: ReadonlySet<string>,
 ) {
-  if (
-    !publicationRuns &&
-    (await hasRevokedReferencePublicationHistory(
-      identity(scope),
-      scope.sessionId,
-      sql,
-      locked,
-      referencedMessageIds,
-    ))
-  )
-    throw new PublicationContentUnavailableError();
   const visitKey = referencedMessageIds
     ? `${generationId}:${[...referencedMessageIds].sort().join(',')}:${[...(publicationRuns ?? [])].sort().join(',')}`
     : generationId;
@@ -862,9 +845,11 @@ async function generationIsReadable(
       : expectedBrandKey;
   if (current) {
     try {
-      await assertReferenceSelections(
+      // Already frozen publication text is history. Only new reads reauthorize it.
+      await assertGenerationReferences(
         reader,
         current.reference_selections,
+        false,
         sql,
         locked,
       );
@@ -878,6 +863,7 @@ async function generationIsReadable(
           parseSceneState(current.content_scene_state)
             .reads.filter((r) => !r.personal)
             .map((r) => r.sceneId),
+          false,
         );
     } catch (error) {
       if (error instanceof PublicationContentUnavailableError) throw error;
@@ -903,7 +889,7 @@ async function generationIsReadable(
         { sessionId: string; messages: { id: string }[] }[] | null;
     })[]
   >`
-    select distinct ${publicationRuns ? (publicationRuns.size ? sql`run_id in ${sql([...publicationRuns])}` : sql`false`) : sql`true`} as include_publications,
+    select distinct ${publicationRuns ? (publicationRuns.size ? sql`run_id in ${sql([...publicationRuns])}` : sql`false`) : sql`false`} as include_publications,
       execution_snapshot->'workflowInvocation' brand_workflow,experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and session_id=${scope.sessionId} and owner_id=${scope.ownerId} and content_generation_id=${generationId}
@@ -981,7 +967,9 @@ async function generationIsReadable(
           visited,
           locked,
           brandKey,
-          publicationRuns,
+          // Frozen imported text is already part of this context. A new import
+          // supplies its own exact publicationRuns at the public entry point.
+          publicationRuns ?? new Set<string>(),
         );
     } catch (error) {
       if (error instanceof PublicationContentUnavailableError) throw error;
@@ -1063,6 +1051,7 @@ export async function assertEmployeeContentReferenceMessages(
   visited = new Set<string>(),
   locked = false,
   expectedBrandKey?: string | null,
+  mode: 'new_import' | 'frozen_context' = 'new_import',
 ) {
   return assertReferenceMessages(
     reader,
@@ -1072,6 +1061,7 @@ export async function assertEmployeeContentReferenceMessages(
     visited,
     locked,
     expectedBrandKey,
+    mode === 'frozen_context' ? new Set<string>() : undefined,
   );
 }
 
@@ -1097,16 +1087,6 @@ async function assertReferenceMessages(
       ...reader,
       actor: { type: 'user' as const, id: session.owner_id },
     };
-    if (
-      await hasRevokedReferencePublicationHistory(
-        owner,
-        sessionId,
-        sql,
-        locked,
-        messageIds,
-      )
-    )
-      throw new PublicationContentUnavailableError();
     publicationRuns = new Set(
       await referencePublicationDependencyRuns(
         owner,
@@ -1186,12 +1166,6 @@ export async function assertEmployeeBrandWorkflowContext(scope: RunScope) {
 export async function prepareEmployeeContentContext(scope: RunScope) {
   const result = await withContentLocks(scope, async (tx) => {
     const run = await ownedRun(scope, tx);
-    await assertEmployeeReferencePublicationHistory(
-      identity(scope),
-      scope.sessionId,
-      tx,
-      true,
-    );
     await assertPersonalProvenance(identity(scope), run, tx);
     if (!run.content) {
       if (
@@ -1202,9 +1176,10 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
       return null; // unchanged historical snapshots
     }
     try {
-      await assertReferenceSelections(
+      await assertGenerationReferences(
         identity(scope),
         run.reference_selections,
+        false,
         tx,
         true,
       );
@@ -1213,12 +1188,14 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
         return unavailable();
       throw error;
     }
-    const current = await readEmployeeRuntimeContent(
+    const current = await readRuntimeContent(
       identity(scope),
       run.content,
       tx,
       undefined,
       true,
+      [],
+      false,
     );
     // Only actual personal package reads retain this conversation's Workflow
     // authority. A normal save leaves exact old revisions readable. Revocation
@@ -1783,6 +1760,155 @@ export async function loadEmployeeRuntimeReferences(
   });
   if ('rejected' in result) return unavailable();
   return result.knowledge;
+}
+
+/** The private Worker closure supplies Run/generation/lease. Tool arguments
+ * cannot substitute another caller, and frozen old Runs gain no new grants. */
+export async function executeEmployeeReferenceTool(
+  scope: RunScope,
+  generationId: string,
+  worker: ContentWorker,
+  toolName: ReferenceToolName,
+  input: unknown,
+  signal?: AbortSignal,
+) {
+  const args =
+    toolName === 'workspace.reference.search'
+      ? ReferenceSearchInputSchema.parse(input)
+      : ReferenceReadInputSchema.parse(input);
+  const reader = identity(scope);
+  async function authority(tx: ContentSql, locked: boolean) {
+    const run = await ownedRun(scope, tx);
+    const [grant] =
+      await tx`select run_id from allrice_employee_runs where run_id=${scope.runId}
+      and execution_snapshot->'capabilitySnapshot'->'grantedCapabilities' ? 'storage:read'
+      and execution_snapshot->'capabilitySnapshot'->'bindings'->'toolNames' ? ${toolName}`;
+    if (
+      !grant ||
+      run.content_generation_id !== generationId ||
+      !(await validContentLease(scope, worker, tx)) ||
+      !(await generationIsReadable(
+        scope,
+        generationId,
+        tx,
+        reader,
+        new Set(),
+        locked,
+      ))
+    )
+      return unavailable();
+    signal?.throwIfAborted();
+    return run;
+  }
+  await authority(getDatabase(), false);
+  // Full scans, extraction decoding, offsets and response formatting are outside
+  // content/admission locks. Only exact authority and the receipt append commit.
+  const search =
+    'query' in args ? await prepareReferenceSearch(reader, args) : null;
+  const read =
+    'revisionId' in args ? await prepareReferenceText(reader, args) : null;
+  const readPage =
+    read && 'offset' in args
+      ? referenceTextPage(read, args.offset, args.limit)
+      : null;
+  const excerpts = search
+    ? search.excerpts
+    : read && readPage?.content
+      ? [
+          {
+            prepared: read,
+            page: readPage,
+            result: referenceTextCitation(read, readPage),
+          },
+        ]
+      : [];
+  const metadata = (selection: PreparedReferenceText['selection']) => ({
+    sourceId: selection.sourceId,
+    revisionId: selection.revisionId,
+    revision: selection.revision,
+    digest: selection.digest,
+    checksum: selection.checksum,
+    fileName: selection.fileName,
+    purpose: selection.purpose,
+  });
+  const response = (results: KnowledgeRetrievalResult[]) => {
+    const excerpt = (entry: (typeof excerpts)[number]) => {
+      const result = results.find(
+        (value) =>
+          value.citation.reference?.revisionId ===
+          entry.prepared.selection.revisionId,
+      );
+      if (!result) return unavailable();
+      return {
+        ...entry.page,
+        citation: {
+          id: result.citation.id,
+          label: result.citation.label,
+          referenceLabel: result.citation.referenceLabel,
+        },
+      };
+    };
+    return search
+      ? {
+          results: search.references.map((reference) => {
+            const entry = excerpts.find(
+              (item) =>
+                item.prepared.selection.revisionId === reference.revisionId,
+            );
+            return {
+              sourceId: reference.sourceId,
+              revisionId: reference.revisionId,
+              revision: reference.revision,
+              digest: reference.manifestDigest,
+              checksum: reference.checksum,
+              fileName: reference.fileName,
+              purpose: reference.purpose,
+              processing: reference.processing,
+              fullTextReady: reference.fullTextReady,
+              ...(entry ? { excerpt: excerpt(entry) } : {}),
+            };
+          }),
+          nextCursor: search.nextCursor,
+          fullTextCoverage: search.fullTextCoverage,
+        }
+      : {
+          ...metadata(read!.selection),
+          ...(excerpts.length ? excerpt(excerpts[0]!) : readPage),
+        };
+  };
+  // The longest allowed R label is reserved so budget validation precedes locks.
+  boundedReferenceToolResult(
+    response(
+      excerpts.map((entry) => ({
+        ...entry.result,
+        citation: { ...entry.result.citation, referenceLabel: 'R64' },
+      })),
+    ),
+  );
+  return withContentLocks(scope, async (tx) => {
+    const run = await authority(tx, true);
+    await assertPreparedReferencesReadable(
+      reader,
+      search?.dependencies ?? [],
+      read ? [read] : excerpts.map((entry) => entry.prepared),
+      tx,
+    );
+    signal?.throwIfAborted();
+    const results = excerpts.length
+      ? await recordReferenceReads(tx, scope, run, generationId, worker, [
+          {
+            origin: { kind: 'tool', toolName },
+            results: excerpts.map((entry) => entry.result),
+          },
+        ])
+      : [];
+    if (!(await validContentLease(scope, worker, tx))) return unavailable();
+    signal?.throwIfAborted();
+    return {
+      modelContent: boundedReferenceToolResult(response(results)),
+      itemCount: search ? search.references.length : excerpts.length,
+    };
+  });
 }
 
 /** Worker completion reads committed receipts, including earlier attempts and

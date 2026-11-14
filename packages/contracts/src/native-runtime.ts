@@ -1,6 +1,10 @@
 /** Native adapters use this explicit runtime boundary. Keep the existing
  * definitions and shared module instances; never re-export the root index. */
 export { ModelTransportFailureCodeSchema } from './model-diagnostics.ts';
+export {
+  ReferenceSearchInputSchema,
+  ReferenceReadInputSchema,
+} from './reference-search.ts';
 export { NativeSubagentSummarySchema } from './native-subagent-summary.ts';
 export {
   NativeSubagentControlAcceptanceSchema,

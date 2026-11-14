@@ -29,6 +29,18 @@ export class ReferenceRuntimeError extends Error {
     super('所选资料尚未就绪、已撤回或访问权限已变化，请重新选择资料。');
   }
 }
+export class ReferenceFullTextUnavailableError extends ReferenceRuntimeError {
+  readonly reason = 'full_text_unavailable';
+}
+
+/** Exact rejected input IDs only: never expose fresh metadata for a denied source. */
+export class ReferenceSelectionUnavailableError extends Error {
+  readonly code = 'REFERENCE_SELECTION_UNAVAILABLE';
+  constructor(readonly referenceRevisionIds: string[]) {
+    super('引用失败，文件可能被调整权限或移除');
+  }
+}
+
 /** Internal source identity, not another wire error or persisted lifecycle. */
 export class ReferencePublicationRuntimeError extends ReferenceRuntimeError {}
 
@@ -255,8 +267,7 @@ async function publicationHistoryAccess(
   return { used: true, canRead, revoked };
 }
 
-/** Current loss stops only this visible commit. It never writes permanent
- * invalidation or turns an audience edit into a revoke/delete fact. */
+/** Historical diagnostic fact only; never a continuation or publication gate. */
 export function readReferencePublicationHistoryAccess(
   context: ContentIdentity,
   sessionId: string,
@@ -266,8 +277,7 @@ export function readReferencePublicationHistoryAccess(
   return publicationHistoryAccess(context, sessionId, sql, lock, true);
 }
 
-/** Own Session history is permanent Q8; external frozen message checks pass
- * exact message IDs so future Runs cannot be added retroactively. */
+/** Read-only historical withdrawal fact. It must not gate existing context. */
 export async function hasRevokedReferencePublicationHistory(
   context: ContentIdentity,
   sessionId: string,
@@ -298,11 +308,41 @@ export async function captureReferenceSelections(
   )
     throw new ReferenceRuntimeError();
   const selections: ReferenceSelection[] = [];
-  for (const id of [...revisionIds].sort())
-    selections.push(
-      (await readReferenceSelection(context, id, sql, true)).selection,
-    );
+  const rejected: string[] = [];
+  for (const id of [...revisionIds].sort()) {
+    try {
+      selections.push(
+        (await readReferenceSelection(context, id, sql, true)).selection,
+      );
+    } catch (error) {
+      if (!(error instanceof ReferenceRuntimeError)) throw error;
+      rejected.push(id);
+    }
+  }
+  if (rejected.length) throw new ReferenceSelectionUnavailableError(rejected);
   return selections;
+}
+
+/** A reference chip is a current read, not a capability or a model read receipt. */
+export async function readReferenceInputSelection(
+  context: ContentIdentity,
+  workspaceId: string,
+  revisionId: string,
+) {
+  UuidSchema.parse(workspaceId);
+  UuidSchema.parse(revisionId);
+  if (context.workspaceId !== workspaceId)
+    throw new DataAccessError('authorization_denied');
+  return getDatabase().begin(async (tx) => {
+    if (!(await readContentPrincipal(context, tx, true)))
+      throw new DataAccessError('authorization_denied');
+    const [selection] = await captureReferenceSelections(
+      context,
+      [revisionId],
+      tx,
+    );
+    return { viewerId: context.actor.id, workspaceId, selection: selection! };
+  });
 }
 
 export async function assertReferenceSelections(

@@ -2,6 +2,7 @@ import { employeePersonaAdmission } from '../employees/employee-instances.ts';
 import {
   modelFailureText,
   RunMemoryContextV2StateSchema,
+  ReferenceSelectionsSchema,
   personalWorkflowHistoryFailureText,
   type ModelFailure,
   type EmployeePersonaTask,
@@ -1165,27 +1166,31 @@ async function enqueueRunInTransaction(
       );
     }
   }
-  if (options.employeeBinding) {
-    const { assertEmployeeReferencePublicationHistory } =
-      await import('../employees/employee-runtime-content.ts');
-    await assertEmployeeReferencePublicationHistory(
-      instanceIdentity,
-      options.employeeBinding.sessionId,
-      transaction,
-      true,
-    );
-  }
   if (options.employeeBinding?.promptSnapshot.referenceSelections) {
     // Final admission rechecks authority after the message transaction. Pins
     // cannot sneak through a department move or a source withdrawal.
-    const { assertReferenceSelections } =
-      await import('../reference-runtime.ts');
-    await assertReferenceSelections(
-      instanceIdentity,
+    const {
+      assertReferenceSelections,
+      ReferenceRuntimeError,
+      ReferenceSelectionUnavailableError,
+    } = await import('../reference-runtime.ts');
+    const rejected: string[] = [];
+    for (const selection of ReferenceSelectionsSchema.parse(
       options.employeeBinding.promptSnapshot.referenceSelections,
-      transaction,
-      true,
-    );
+    ).sort((a, b) => a.revisionId.localeCompare(b.revisionId))) {
+      try {
+        await assertReferenceSelections(
+          instanceIdentity,
+          [selection],
+          transaction,
+          true,
+        );
+      } catch (error) {
+        if (!(error instanceof ReferenceRuntimeError)) throw error;
+        rejected.push(selection.revisionId);
+      }
+    }
+    if (rejected.length) throw new ReferenceSelectionUnavailableError(rejected);
     if (!options.employeeBinding.executionSnapshot.content)
       throw new QueueError('policy_denied');
   }
@@ -2115,38 +2120,6 @@ export async function claimNextJob(
   return row ? mapJob(row) : null;
 }
 
-/** Narrow visible-publication gate. The leased Job is the authority for the
- * employee owner/session; event or completion JSON cannot supply that scope. */
-async function employeeReferencePublicationAccess(
-  transaction: TransactionSql,
-  job: JobRow,
-) {
-  const [employee] = await transaction<
-    { session_id: string; assistant_message_id: string }[]
-  >`
-    select er.session_id,er.assistant_message_id from allrice_employee_runs er
-    join allrice_chat_sessions s on s.id=er.session_id
-      and s.organization_id=er.organization_id and s.workspace_id=er.workspace_id and s.owner_id=er.owner_id
-    where er.run_id=${job.run_id} and er.organization_id=${job.organization_id}
-      and er.workspace_id=${job.workspace_id} and er.owner_id=${job.owner_id}`;
-  if (!employee) return null;
-  const { readReferencePublicationHistoryAccess } =
-    await import('../reference-runtime.ts');
-  return {
-    employee,
-    ...(await readReferencePublicationHistoryAccess(
-      {
-        actor: { type: 'user', id: job.owner_id },
-        organizationId: job.organization_id,
-        workspaceId: job.workspace_id,
-      },
-      employee.session_id,
-      transaction,
-      true,
-    )),
-  };
-}
-
 /** Only this Run/attempt/message's already committed complete public body can
  * survive an authorization loss. A delta, old attempt or arbitrary completed
  * marker is never proof that a different terminal answer/citation was public. */
@@ -2201,53 +2174,6 @@ async function transitionTerminal(
     payload: Record<string, unknown>;
   },
 ) {
-  const publication = await employeeReferencePublicationAccess(
-    transaction,
-    job,
-  );
-  const publicationBlocked =
-    publication !== null && publication.used && !publication.canRead;
-  const published =
-    publication && publicationBlocked
-      ? await committedEmployeeReply(
-          transaction,
-          job,
-          publication.employee.assistant_message_id,
-        )
-      : null;
-  if (publicationBlocked) {
-    // This is a terminal receipt, not another model dispatch. Seal any new
-    // output while still releasing the Job/runtime and keeping usage/native
-    // close facts. Never throw and roll those independent facts back.
-    const code = input.code ?? 'EMPLOYEE_CONTENT_UNAVAILABLE';
-    input = {
-      ...input,
-      ...(input.runStatus === 'succeeded'
-        ? ({
-            jobStatus: 'failed',
-            runStatus: 'failed',
-            eventType: 'run.failed',
-          } as const)
-        : {}),
-      code,
-      message:
-        input.message ??
-        '本次执行使用的企业资料已不可用，请重新选择资料或新建对话。',
-      result: published
-        ? { answer: published.text, citations: published.citations }
-        : undefined,
-      payload: {
-        code,
-        ...(typeof input.payload.drainDisposition === 'string'
-          ? { drainDisposition: input.payload.drainDisposition }
-          : {}),
-        ...(typeof input.payload.reason === 'string'
-          ? { reason: input.payload.reason }
-          : {}),
-      },
-      skipExperienceCapture: true,
-    };
-  }
   await settleManagedBrowserTasksForJobAttempt(transaction, job, {
     status: input.jobStatus === 'canceled' ? 'canceled' : 'failed',
     errorCode:
@@ -2354,9 +2280,8 @@ async function transitionTerminal(
     // Native DSH may already have delivered a complete message before the
     // final operation/accounting check fails. Keep that reply without changing
     // the failed Run status. Never recover a delta fragment or an older attempt.
-    const retainedReply = publicationBlocked
-      ? (published?.text ?? null)
-      : input.runStatus === 'failed'
+    const retainedReply =
+      input.runStatus === 'failed'
         ? ((
             await committedEmployeeReply(
               transaction,
@@ -2365,9 +2290,8 @@ async function transitionTerminal(
             )
           )?.text ?? null)
         : null;
-    const text = publicationBlocked
-      ? (published?.text ?? failureText)
-      : input.runStatus === 'succeeded' && typeof result.answer === 'string'
+    const text =
+      input.runStatus === 'succeeded' && typeof result.answer === 'string'
         ? result.answer
         : input.runStatus === 'canceled'
           ? 'Rice 的这次执行已取消。'
@@ -2384,9 +2308,7 @@ async function transitionTerminal(
       set content = ${transaction.json(
         toJsonValue({
           text,
-          citations: publicationBlocked
-            ? (published?.citations ?? [])
-            : citations,
+          citations,
           ...(input.modelFailure
             ? { modelFailureCategory: input.modelFailure.category }
             : {}),
@@ -3200,90 +3122,6 @@ export async function heartbeatJob(
   });
 }
 
-/** Classify the normalized producer, never its words or a claimed ACL. Native
- * display is not necessarily a receipt: todo, question and tool views carry
- * model-derived text. Unclassified native displays do not gain a bypass. */
-function referencePublicationEventKind(type: RunEventType, payload: unknown) {
-  if (type === 'assistant.text.delta' || type === 'assistant.text.completed')
-    return 'content';
-  if (['tool.started', 'tool.completed', 'tool.failed'].includes(type))
-    return 'tool';
-  if (type !== 'harness.native') return 'receipt';
-  const event = payload as {
-    sourceEventType?: string;
-    nativeType?: string;
-    nativePayload?: unknown;
-  } | null;
-  const nativeType = event?.sourceEventType ?? event?.nativeType;
-  if (nativeType === 'session/user-question') return 'question';
-  if (nativeType === 'session/user-questions') {
-    const view = event?.nativePayload as
-      { questions?: { active?: unknown[]; settled?: unknown[] } } | undefined;
-    // An actual empty native view closes membership without new question or
-    // answer text. Do not manufacture this view when suppressing a question.
-    if (
-      Array.isArray(view?.questions?.active) &&
-      view.questions.active.length === 0 &&
-      Array.isArray(view.questions.settled) &&
-      view.questions.settled.length === 0
-    )
-      return 'receipt';
-    return 'question';
-  }
-  return [
-    'session/user-question-answered',
-    'session/projection',
-    'session/stopped',
-    'assistant/attempt',
-    'request/context',
-    'request/header',
-    'llm/retry',
-    'llm/retry-started',
-    'compaction/start',
-    'compaction/end',
-    'compaction/summary',
-    'compaction/prune',
-    'allrice/model-wait',
-    'allrice/model-stream',
-    'allrice/runtime-preparation',
-  ].includes(nativeType ?? '')
-    ? 'receipt'
-    : 'content';
-}
-
-/** Preserve only this already-observed call's status/identity, not its name,
- * query, activityDetail or either copy of a dynamic summary. This display
- * receipt never proves execution, native usage, or physical closure. */
-function referencePublicationToolReceipt(type: RunEventType, payload: unknown) {
-  const input = payload as Record<string, unknown> | null;
-  const receipt: Record<string, unknown> = {};
-  for (const key of [
-    'source',
-    'generation',
-    'threadId',
-    'turnId',
-    'conversationId',
-    'messageId',
-    'attempt',
-    'order',
-    'sourceEventId',
-    'sourceEventType',
-    'sourceOccurredAt',
-    'toolCallId',
-    'itemCount',
-  ]) {
-    const value = input?.[key];
-    if (typeof value === 'string' || typeof value === 'number')
-      receipt[key] = value;
-  }
-  const status = type.slice('tool.'.length);
-  return {
-    ...receipt,
-    status,
-    nativePayload: { presentation: 'tool', status },
-  };
-}
-
 export async function appendJobEvent(input: {
   workerId: string;
   jobId: string;
@@ -3316,7 +3154,7 @@ export async function appendJobEvent(input: {
           await transaction`set local statement_timeout='10s'`;
           await lockNativeQuestionMode(transaction);
         }
-        let job = await lockedLeasedJob(
+        const job = await lockedLeasedJob(
           transaction,
           workerId,
           jobId,
@@ -3325,52 +3163,7 @@ export async function appendJobEvent(input: {
           'running',
           lockWaitMs,
         );
-        let payload = input.payload;
-        const kind = referencePublicationEventKind(input.type, payload);
-        if (kind !== 'receipt') {
-          // Only identity/source/policy locks follow root/clock/Job. This must
-          // precede every question projection, including method activation.
-          const publication = await employeeReferencePublicationAccess(
-            transaction,
-            job,
-          );
-          if (publication && !publication.canRead) {
-            if (kind === 'question') {
-              // onEvent returns void: suppressing a card alone leaves DSH
-              // waiting. Stop only this exact Run through its existing port;
-              // current audience loss never writes permanent invalidation.
-              await requestEmployeeAccessCancellationTransaction(
-                transaction,
-                job.run_id,
-                'EMPLOYEE_CONTENT_UNAVAILABLE',
-                {
-                  actorId: null,
-                  requestId: null,
-                  actorLabel: 'reference_publication_current_authority',
-                },
-              );
-              // The first stop can shorten this lease to its fixed drain.
-              // Recheck that frozen row, not the earlier admission snapshot.
-              const [frozen] = await transaction<JobRow[]>`
-                select * from allrice_jobs where id=${job.id} for update`;
-              if (
-                !frozen ||
-                frozen.worker_id !== workerId ||
-                frozen.lease_token !== leaseToken ||
-                frozen.attempt !== job.attempt ||
-                frozen.status !== 'running'
-              )
-                throw new QueueError('lease_lost');
-              job = frozen;
-            }
-            await assertLockedLeaseCurrent(transaction, job);
-            // Resolving the ordinary unpublished result keeps the real
-            // batcher alive for usage, native accounting and close receipts.
-            // Database/lease errors still reject honestly.
-            if (kind !== 'tool') return null;
-            payload = referencePublicationToolReceipt(input.type, payload);
-          }
-        }
+        const payload = input.payload;
         if (input.type === 'harness.native') {
           await recordTaskQuestion(transaction, job.run_id, payload);
           await recordNativeQuestions(transaction, job.run_id, payload);
@@ -3687,25 +3480,6 @@ export async function completeJob(input: {
       (job.payload as { type?: string }).type === experienceConsolidationJobType
         ? await completeExperienceConsolidation(transaction, job, input.result)
         : input.result;
-    // Take the exact current publication locks before validating success.
-    // Lost authority takes the existing failure terminal, never weakens or
-    // skips a proof for a Run that is actually committed as succeeded.
-    const publication = await employeeReferencePublicationAccess(
-      transaction,
-      job,
-    );
-    if (publication && !publication.canRead) {
-      await transitionTerminal(transaction, job, {
-        jobStatus: 'failed',
-        runStatus: 'failed',
-        eventType: 'run.failed',
-        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
-        message: '本次执行使用的企业资料已不可用，请重新选择资料或新建对话。',
-        result,
-        payload: { code: 'EMPLOYEE_CONTENT_UNAVAILABLE' },
-      });
-      return;
-    }
     const deliveryCheck = guard
       ? await guard.assertCurrent(transaction, job, result)
       : undefined;

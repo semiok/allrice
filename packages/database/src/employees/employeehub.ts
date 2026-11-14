@@ -33,6 +33,7 @@ import {
   AssignEmployeeVersionInputSchema,
   allRiceToolManifest,
   withEmployeeCustomizationTools,
+  freezeReferenceToolNames,
   freezeMemorySourceToolNames,
   freezeMemoryIndexToolNames,
   withoutTaskMemoryTools,
@@ -1570,15 +1571,20 @@ export async function prepareEmployeeRunBinding(
     instance?.kind,
   );
   const boundToolNames = await freezeConnectedLocalToolNames(
-    input.taskPersona
-      ? withoutTaskMemoryTools(customizedTools)
-      : (memoryIndex
-          ? freezeMemoryIndexToolNames
-          : freezeMemorySourceToolNames)(
-          customizedTools,
-          grantedCapabilities,
-          modelSnapshot,
-        ),
+    freezeReferenceToolNames(
+      input.taskPersona
+        ? withoutTaskMemoryTools(customizedTools)
+        : (memoryIndex
+            ? freezeMemoryIndexToolNames
+            : freezeMemorySourceToolNames)(
+            customizedTools,
+            grantedCapabilities,
+            modelSnapshot,
+          ),
+      grantedCapabilities,
+      modelSnapshot,
+      input.employeeDocuments === true,
+    ),
     {
       organizationId: input.context.organizationId,
       workspaceId: input.workspaceId,
@@ -1742,6 +1748,7 @@ export async function resolveEmployeeExecution(input: {
       provider_snapshot: unknown;
       skill_bindings: unknown;
       prompt_snapshot: unknown;
+      content_context_bound: boolean;
       native_skills: unknown;
       execution_snapshot: unknown;
       native_execution_binding: unknown;
@@ -1763,6 +1770,10 @@ export async function resolveEmployeeExecution(input: {
   >`
     select er.provider_snapshot, er.skill_bindings, er.native_skills,
       er.prompt_snapshot,
+      exists(select 1 from allrice_employee_content_contexts cc
+        where cc.generation_id=er.content_generation_id and cc.organization_id=er.organization_id
+          and cc.workspace_id=er.workspace_id and cc.owner_id=er.owner_id and cc.session_id=er.session_id
+          and cc.invalidated_at is null) content_context_bound,
       er.execution_snapshot,er.native_execution_binding,er.session_id,er.user_message_id,er.employee_assignment_id,er.employee_version_id,
       c.project_id,c.native_root_origin,v.config_checksum,bv.id birth_version_id,bv.manifest birth_manifest,bv.config_checksum birth_config_checksum,
       m.content->>'text' current_user_request,
@@ -1815,6 +1826,7 @@ export async function resolveEmployeeExecution(input: {
   await assertSessionReferencesReadable(
     input,
     promptSnapshot.sessionReferences ?? [],
+    row.content_context_bound ? 'frozen_context' : 'new_import',
   );
   const nativeSkills = DshNativeSkillSnapshotSchema.array()
     .parse(row.native_skills)

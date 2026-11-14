@@ -18,8 +18,8 @@ const LEASE_RENEWAL =
   'Rice Bridge device protocol: authorizing or downloading an operation transfer renews the operation lease in its own transaction (ledger heartbeat UPDATE); its locks keep a revoked operation from being renewed. Everything else this GET reads is still audited.';
 
 /**
- * Functions a GET route calls that run their own writing transaction; the
- * audit does not walk into them from that route only.
+ * Functions a GET route calls that run a writing transaction or an explicitly
+ * approved short final authorization transaction. The audit skips only this call.
  */
 export const writingGetCalls: readonly {
   route: string;
@@ -27,6 +27,20 @@ export const writingGetCalls: readonly {
   owner: string;
   reason: string;
 }[] = [
+  {
+    route: 'apps/web/app/api/v1/references/publications/route.ts',
+    file: 'packages/database/src/reference-search.ts',
+    owner: 'assertPreparedReferencesReadable',
+    reason:
+      'MET-247 approved final current-principal/publication/exact-pin gate (2026-11-14 P1). Only this short authorization transaction holds SHARE locks; full text scan and decoding stay outside and remain audited.',
+  },
+  {
+    route: 'apps/web/app/api/v1/references/revisions/[id]/selection/route.ts',
+    file: 'packages/database/src/reference-runtime.ts',
+    owner: 'readReferenceInputSelection',
+    reason:
+      'MET-247 v1.7 approved reference-time permission check: short principal/publication/exact-pin transaction before returning a chip; no text extraction, Run, receipt or remote work.',
+  },
   {
     route: BRIDGE_FILE_TRANSFERS,
     file: 'packages/database/src/runtime-ledger/ledger.ts',

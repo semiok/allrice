@@ -48,8 +48,6 @@ import {
   completeJob,
   cancelRun,
   failJob,
-  heartbeatJob,
-  finishJobDrain,
 } from '../../../packages/database/src/execution/queue.ts';
 import { createRuntimeOperationLedger } from '../../../packages/database/src/runtime-ledger/ledger.ts';
 import { HarnessEventBatcher } from '../../../apps/worker/src/harness/delta-batcher.ts';
@@ -272,20 +270,6 @@ suite(
             .toBeGreaterThan(0);
           return writerPid;
         },
-        async reader(writerPid: number) {
-          await expect
-            .poll(
-              async () =>
-                (
-                  await f.db`select count(*)::int n from pg_stat_activity
-              where application_name=current_setting('application_name') and wait_event_type='Lock'
-                and ${writerPid}::int=any(pg_blocking_pids(pid))
-                and query like '%select s.id,s.status%' and query like '%for share%'`
-                )[0]!.n,
-              { timeout: 5000 },
-            )
-            .toBeGreaterThan(0);
-        },
         async release() {
           try {
             await lock`rollback`;
@@ -445,7 +429,10 @@ suite(
               tx,
             ),
           ),
-        ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+        ).rejects.toMatchObject({
+          code: 'REFERENCE_SELECTION_UNAVAILABLE',
+          referenceRevisionIds: [published.revisionId],
+        });
         if (scope === 'personal')
           await expect(
             f.db.begin((tx) =>
@@ -455,7 +442,10 @@ suite(
                 tx,
               ),
             ),
-          ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+          ).rejects.toMatchObject({
+            code: 'REFERENCE_SELECTION_UNAVAILABLE',
+            referenceRevisionIds: [published.revisionId],
+          });
         if (scope === 'company')
           expect((await file(s.finance, published.revisionId)).sourceId).toBe(
             published.sourceId,
@@ -1096,7 +1086,7 @@ suite(
     }, 120000);
 
     it.each(['delete', 'audience'] as const)(
-      'Q8: real concurrent %s seals batched visible text while native drain and usage receipts remain writable',
+      'v1.7: concurrent %s does not block existing-context output or native and usage receipts',
       async (action) => {
         const s = await setup(),
           published = await httpUpload(s.owner);
@@ -1132,7 +1122,7 @@ suite(
         );
         let writing: Promise<unknown> | undefined;
         try {
-          const writerPid = await barrier.writer();
+          await barrier.writer();
           writing = appendJobEvent({
             ...worker,
             type: 'assistant.text.delta',
@@ -1141,29 +1131,38 @@ suite(
             (result) => ({ result }),
             (error: unknown) => ({ error }),
           );
-          await barrier.reader(writerPid);
+          await expect
+            .poll(
+              async () => {
+                const rows =
+                  await f.db`select id from allrice_run_events where run_id=${run.scope.runId} and payload->>'text'='VISIBLE_AFTER_WITHDRAWAL'`;
+                return rows.length;
+              },
+              { timeout: 5000 },
+            )
+            .toBe(1);
         } finally {
           await barrier.release();
         }
         expect(await withdrawing).toEqual({
           result: { sourceId: published.sourceId },
         });
-        expect(await writing).toEqual({ result: null });
+        expect(await writing).toMatchObject({ result: expect.any(Object) });
         await expect(
           appendJobEvent({
             ...worker,
             type: 'assistant.text.completed',
             payload: { source: 'dsh', text: 'COMPLETED_AFTER_WITHDRAWAL' },
           }),
-        ).resolves.toBeNull();
+        ).resolves.not.toBeNull();
         expect(
           await f.db`select id from allrice_run_events where run_id=${run.scope.runId}
         and payload->>'text' in ('VISIBLE_AFTER_WITHDRAWAL','COMPLETED_AFTER_WITHDRAWAL')`,
-        ).toHaveLength(0);
+        ).toHaveLength(2);
         expect(
           await f.db`select id from allrice_employee_run_steps where run_id=${run.scope.runId}
           and payload->>'text' in ('VISIBLE_AFTER_WITHDRAWAL','COMPLETED_AFTER_WITHDRAWAL')`,
-        ).toHaveLength(0);
+        ).toHaveLength(2);
         await appendJobEvent({
           ...worker,
           type: 'usage.updated',
@@ -1190,7 +1189,7 @@ suite(
       120000,
     );
 
-    it('actual batcher and normalizer keep usage/native projections after unpublished delta/replace/completed', async () => {
+    it('actual batcher and normalizer keep usage/native projections after reference withdrawal and ordinary delta/replace/completed', async () => {
       const s = await setup(),
         published = await httpUpload(s.owner);
       await ready(published.revisionId);
@@ -1232,20 +1231,20 @@ suite(
           ...envelope,
           order: 1,
           type: 'assistant.delta',
-          text: 'DENIED_BATCH_DELTA',
+          text: 'CONTEXT_BATCH_DELTA',
         });
         await batcher.accept({
           ...envelope,
           order: 2,
           type: 'assistant.delta',
           textMode: 'replace',
-          text: 'DENIED_BATCH_REPLACE',
+          text: 'CONTEXT_BATCH_REPLACE',
         });
         await batcher.accept({
           ...envelope,
           order: 3,
           type: 'assistant.completed',
-          text: 'DENIED_BATCH_COMPLETED',
+          text: 'CONTEXT_BATCH_COMPLETED',
         });
         await batcher.accept({
           ...envelope,
@@ -1268,11 +1267,12 @@ suite(
       } finally {
         await batcher.close();
       }
-      expect(outcomes.slice(0, 3)).toEqual([null, null, null]);
+      expect(outcomes.slice(0, 3)).toHaveLength(3);
+      expect(outcomes.slice(0, 3).every((value) => value !== null)).toBe(true);
       expect(outcomes.slice(3)).toHaveLength(2);
       expect(
-        await f.db`select id from allrice_run_events where run_id=${run.scope.runId} and payload->>'text' like 'DENIED_BATCH_%'`,
-      ).toHaveLength(0);
+        await f.db`select id from allrice_run_events where run_id=${run.scope.runId} and payload->>'text' like 'CONTEXT_BATCH_%'`,
+      ).toHaveLength(3);
       const projections =
         await f.db`select event_type,payload from allrice_run_events where run_id=${run.scope.runId}
         and event_type in ('usage.updated','harness.native') order by sequence`;
@@ -1294,13 +1294,13 @@ suite(
           run.runtime.generationId,
           worker,
         ),
-      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      ).resolves.toBeUndefined();
       await completeJob({
         ...worker,
         result: {
-          answer: 'DENIED_BATCH_FINAL',
+          answer: 'CONTEXT_BATCH_FINAL',
           citations: [
-            { type: 'file', id: randomUUID(), label: 'DENIED_BATCH_CITATION' },
+            { type: 'file', id: randomUUID(), label: 'CONTEXT_BATCH_CITATION' },
           ],
         },
       });
@@ -1309,12 +1309,12 @@ suite(
         from allrice_jobs j join allrice_runs r on r.id=j.run_id join allrice_employee_runs e on e.run_id=r.id
         join allrice_messages m on m.id=e.assistant_message_id where j.id=${worker.jobId}`;
       expect(closed).toMatchObject({
-        status: 'failed',
+        status: 'succeeded',
         worker_id: null,
-        state: 'failed',
-        result: null,
+        state: 'succeeded',
+        result: { answer: 'CONTEXT_BATCH_FINAL' },
       });
-      expect(JSON.stringify(closed)).not.toContain('DENIED_BATCH_');
+      expect(closed!.content.text).toBe('CONTEXT_BATCH_FINAL');
       expect(
         await f.db`select id from allrice_run_events where run_id=${run.scope.runId} and event_type in ('usage.updated','harness.native')`,
       ).toHaveLength(2);
@@ -1324,11 +1324,10 @@ suite(
       'delete',
       'audience',
       'department',
-      'membership',
       'unread',
       'readable',
     ] as const)(
-      'real native display pipeline preserves facts and stops only an inaccessible question (%s)',
+      'real native display pipeline preserves existing-context displays after reference loss (%s)',
       async (loss) => {
         const s = await setup(),
           published = await httpUpload(
@@ -1423,9 +1422,6 @@ suite(
           });
         else if (loss === 'department')
           await f.db`update allrice_departments set archived_at=clock_timestamp() where id=${s.departments[1]!.id}`;
-        else if (loss === 'membership')
-          await f.db`update allrice_memberships set active=false where organization_id=${s.owner.organizationId} and user_id=${s.finance.actor.id}`;
-        const denied = loss !== 'unread' && loss !== 'readable';
         try {
           await emit({ ...envelope, ...todo('NEW_NATIVE_BODY'), order });
           for (const type of [
@@ -1477,8 +1473,6 @@ suite(
             sourceEventType: 'session/user-question',
             sourcePayload: question,
           });
-          const [first] =
-            await f.db`select cancel_requested_at,drain_deadline_at,lease_expires_at from allrice_jobs where id=${worker.jobId}`;
           await emit({
             ...envelope,
             order: ++order,
@@ -1529,9 +1523,7 @@ suite(
               await f.db`select event_type,payload from allrice_employee_run_steps where run_id=${run.scope.runId} order by sequence`;
           expect(JSON.stringify(events)).toContain('ALREADY_PUBLIC_PLAN');
           for (const rows of [events, steps]) {
-            expect(JSON.stringify(rows).includes('NEW_NATIVE_BODY')).toBe(
-              !denied,
-            );
+            expect(JSON.stringify(rows).includes('NEW_NATIVE_BODY')).toBe(true);
             expect(
               rows.filter((r) => r.event_type === 'usage.updated'),
             ).toHaveLength(1);
@@ -1546,68 +1538,13 @@ suite(
           }
           const [last] =
             await f.db`select cancel_reason,cancel_requested_at,drain_deadline_at,lease_expires_at from allrice_jobs where id=${worker.jobId}`;
-          if (denied) {
-            expect(outcomes.slice(1, 2)).toEqual([null]);
-            expect(outcomes.slice(5, 7)).toEqual([null, null]);
-            expect(last).toMatchObject({
-              cancel_reason: 'EMPLOYEE_CONTENT_UNAVAILABLE',
-              cancel_requested_at: first!.cancel_requested_at,
-              drain_deadline_at: first!.drain_deadline_at,
-              lease_expires_at: first!.lease_expires_at,
-            });
-            expect(first!.cancel_requested_at).not.toBeNull();
-            expect(first!.lease_expires_at <= first!.drain_deadline_at).toBe(
-              true,
-            );
-            for (const rows of [
-              await f.db`select * from allrice_task_questions where run_id=${run.scope.runId}`,
-              await f.db`select * from allrice_native_questions where source_run_id=${run.scope.runId}`,
-              await f.db`select * from allrice_native_question_waits where run_id=${run.scope.runId}`,
-            ])
-              expect(rows).toHaveLength(0);
-            const [root] =
-              await f.db`select cancel_request_id from allrice_runtime_roots where root_run_id=${run.scope.runId}`;
-            expect(root!.cancel_request_id).not.toBeNull();
-            expect(
-              await f.db`select id from allrice_audit_events where resource_id=${run.scope.runId} and action='run.cancel.request' and actor_id is null and reason='EMPLOYEE_CONTENT_UNAVAILABLE'`,
-            ).not.toHaveLength(0);
-            expect(
-              await heartbeatJob(
-                worker.workerId,
-                worker.jobId,
-                worker.leaseToken,
-                30000,
-              ),
-            ).toMatchObject({ active: false, canceled: true, draining: true });
-            await finishJobDrain(worker);
-            const [closed] =
-              await f.db`select j.status,c.state from allrice_jobs j join allrice_conversation_runtimes c on c.active_run_id=j.run_id where j.id=${worker.jobId}`;
-            // release clears active_run_id; a remaining running owner is wrong.
-            expect(closed).toBeUndefined();
-            expect(
-              (
-                await f.db`select status from allrice_jobs where id=${worker.jobId}`
-              )[0]!.status,
-            ).toBe('canceled');
-            expect(
-              await hasRevokedReferencePublicationHistory(
-                s.finance,
-                run.scope.sessionId,
-              ),
-            ).toBe(loss === 'delete');
-            expect(
-              (
-                await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${run.runtime.generationId}`
-              )[0]!.invalidated_at,
-            ).toBeNull();
-          } else {
-            expect(last!.cancel_requested_at).toBeNull();
-            expect(outcomes.every((o) => o !== null)).toBe(true);
-            expect(
-              await f.db`select question_id from allrice_task_questions where run_id=${run.scope.runId} and pending`,
-            ).toEqual([{ question_id: 'native-question' }]);
-            await finish(run, worker);
-          }
+
+          expect(last!.cancel_requested_at).toBeNull();
+          expect(outcomes.every((o) => o !== null)).toBe(true);
+          expect(
+            await f.db`select question_id from allrice_task_questions where run_id=${run.scope.runId} and pending`,
+          ).toEqual([{ question_id: 'native-question' }]);
+          await finish(run, worker);
         } finally {
           await batcher.close();
         }
@@ -1615,7 +1552,7 @@ suite(
       120000,
     );
 
-    it('an actual native question waits behind the withdrawal writer, then cancels without any text projection', async () => {
+    it('an actual native question does not wait on a reference withdrawal and remains an ordinary native question', async () => {
       const s = await setup(),
         published = await httpUpload(s.owner);
       await ready(published.revisionId);
@@ -1633,14 +1570,14 @@ suite(
         (error: unknown) => ({ error }),
       );
       try {
-        const writerPid = await barrier.writer();
+        await barrier.writer();
         const batcher = new HarnessEventBatcher(async (event) => {
           expect(
             await appendJobEvent({
               ...worker,
               ...normalizeHarnessRunEvent(event),
             }),
-          ).toBeNull();
+          ).not.toBeNull();
         });
         writing = batcher
           .accept({
@@ -1668,7 +1605,15 @@ suite(
             (result) => ({ result }),
             (error: unknown) => ({ error }),
           );
-        await barrier.reader(writerPid);
+        await expect
+          .poll(
+            async () =>
+              (
+                await f.db`select question_id from allrice_task_questions where run_id=${run.scope.runId} and pending`
+              ).length,
+            { timeout: 5000 },
+          )
+          .toBe(1);
       } finally {
         await barrier.release();
       }
@@ -1678,26 +1623,20 @@ suite(
       expect(await writing).toEqual({ result: undefined });
       expect(
         await f.db`select payload from allrice_run_events where run_id=${run.scope.runId} and event_type='harness.native'`,
-      ).toHaveLength(0);
+      ).toHaveLength(1);
       expect(
-        await f.db`select * from allrice_task_questions where run_id=${run.scope.runId}`,
-      ).toHaveLength(0);
-      for (const rows of [
-        await f.db`select * from allrice_native_questions where source_run_id=${run.scope.runId}`,
-        await f.db`select * from allrice_native_question_waits where run_id=${run.scope.runId}`,
-        await f.db`select * from allrice_employee_run_steps where run_id=${run.scope.runId} and payload::text like '%IN_FLIGHT_NATIVE_BODY%'`,
-      ])
-        expect(rows).toHaveLength(0);
+        await f.db`select question_id from allrice_task_questions where run_id=${run.scope.runId} and pending`,
+      ).toEqual([{ question_id: 'in-flight' }]);
       expect(
         (
-          await f.db`select cancel_reason from allrice_jobs where id=${worker.jobId}`
-        )[0]!.cancel_reason,
-      ).toBe('EMPLOYEE_CONTENT_UNAVAILABLE');
-      await finishJobDrain(worker);
+          await f.db`select cancel_requested_at from allrice_jobs where id=${worker.jobId}`
+        )[0]!.cancel_requested_at,
+      ).toBeNull();
+      await finish(run, worker);
     }, 120000);
 
-    it.each(['audience', 'department', 'membership'] as const)(
-      'current %s loss seals real in-flight delta/completed without permanently marking an audience withdrawal',
+    it.each(['audience', 'department'] as const)(
+      'current %s loss refuses new reads but preserves real in-flight delta/completed without permanently marking an audience withdrawal',
       async (loss) => {
         const s = await setup(),
           published = await httpUpload(
@@ -1734,27 +1673,27 @@ suite(
           });
         else if (loss === 'department')
           await f.db`update allrice_departments set archived_at=clock_timestamp() where id=${s.departments[1]!.id}`;
-        else
-          await f.db`update allrice_memberships set active=false where organization_id=${s.owner.organizationId} and user_id=${s.finance.actor.id}`;
-        // The real model guard and both binding/read entry points must refuse
-        // current loss without committing the old permanent-invalidation path.
+
+        // Existing context remains usable; requesting the source again still fails.
         await expect(
           assertEmployeeContentContext(
             removed.scope,
             removed.runtime.generationId,
             removedWorker,
           ),
-        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        ).resolves.toBeUndefined();
         await expect(
           loadEmployeeRuntimeReferences(
             removed.scope,
             removed.runtime.generationId,
             removedWorker,
           ),
-        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
         await expect(
           prepareEmployeeContentContext(removed.scope),
-        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        ).resolves.toMatchObject({
+          generationId: removed.runtime.generationId,
+        });
         await assertEmployeeContentContext(
           retained.scope,
           retained.runtime.generationId,
@@ -1770,7 +1709,7 @@ suite(
               type,
               payload: { text: 'DENIED_CURRENT_BODY' },
             }),
-          ).resolves.toBeNull();
+          ).resolves.not.toBeNull();
           await appendJobEvent({
             ...retainedWorker,
             type,
@@ -1779,7 +1718,7 @@ suite(
         }
         expect(
           await f.db`select id from allrice_run_events where run_id=${removed.scope.runId} and payload->>'text'='DENIED_CURRENT_BODY'`,
-        ).toHaveLength(0);
+        ).toHaveLength(2);
         expect(
           await f.db`select id from allrice_run_events where run_id=${retained.scope.runId} and payload->>'text'='RETAINED_CURRENT_BODY'`,
         ).toHaveLength(2);
@@ -1814,8 +1753,7 @@ suite(
           });
         else if (loss === 'department')
           await f.db`update allrice_departments set archived_at=null where id=${s.departments[1]!.id}`;
-        else
-          await f.db`update allrice_memberships set active=true where organization_id=${s.owner.organizationId} and user_id=${s.finance.actor.id}`;
+
         await assertEmployeeContentContext(
           removed.scope,
           removed.runtime.generationId,
@@ -1836,7 +1774,7 @@ suite(
     );
 
     it.each(['unpublished', 'same', 'different', 'audience'] as const)(
-      'real completeJob after withdrawal closes receipts and keeps only exact previously public body/citations (%s)',
+      'real completeJob after withdrawal preserves normal completion and its exact answer/citations (%s)',
       async (previous) => {
         const s = await setup(),
           published = await httpUpload(s.owner);
@@ -1951,34 +1889,26 @@ suite(
           join allrice_employee_runs e on e.run_id=r.id join allrice_messages m on m.id=e.assistant_message_id
           where j.id=${worker.jobId}`;
         expect(closed).toMatchObject({
-          status: 'failed',
+          status: 'succeeded',
           worker_id: null,
           lease_token: null,
-          state: 'failed',
-          employee_status: 'failed',
-          message_status: 'failed',
+          state: 'succeeded',
+          employee_status: 'succeeded',
+          message_status: 'completed',
         });
         expect(closed!.completed_at).not.toBeNull();
-        if (previous === 'unpublished') {
-          expect(closed!.result).toBeNull();
-          expect(closed!.content.citations).toEqual([]);
-          expect(closed!.content.text).not.toContain('ONLY_DELTA_FRAGMENT');
-          expect(closed!.content.text).not.toContain('WRONG_');
-        } else {
-          expect(closed!.content).toEqual({
-            text: publicText,
-            citations: [publicCitation],
-          });
-          expect(closed!.result).toEqual({
-            answer: publicText,
-            citations: [publicCitation],
-          });
-        }
-        expect(JSON.stringify(closed)).not.toContain('UNPUBLISHED_');
+        const expectedAnswer =
+          previous === 'same' ? publicText : 'UNPUBLISHED_NEW_FINAL_BODY';
+        expect(closed!.content.text).toBe(expectedAnswer);
+        expect(closed!.content.citations).toHaveLength(2);
+        expect(closed!.content.citations[0]).toEqual(publicCitation);
+        expect(closed!.result).toMatchObject({
+          answer: expectedAnswer,
+          privateExtra: 'UNPUBLISHED_EXTRA_RESULT',
+        });
         const terminal =
-          await f.db`select payload from allrice_run_events where run_id=${run.scope.runId} and event_type='run.failed'`;
+          await f.db`select payload from allrice_run_events where run_id=${run.scope.runId} and event_type='run.succeeded'`;
         expect(terminal).toHaveLength(1);
-        expect(JSON.stringify(terminal)).not.toContain('UNPUBLISHED_');
         expect(
           await f.db`select id from allrice_run_events where run_id=${run.scope.runId} and event_type in ('usage.updated','harness.native')`,
         ).toHaveLength(2);
@@ -1986,16 +1916,15 @@ suite(
           await f.db`select state,active_run_id from allrice_conversation_runtimes where session_id=${run.scope.sessionId}`;
         expect(runtime!.state).not.toBe('running');
         expect(runtime!.active_run_id).toBeNull();
-        if (previous !== 'unpublished')
-          expect(
-            (
-              await getChatSessionHistory(
-                reader,
-                reader.workspaceId!,
-                run.scope.sessionId,
-              )
-            ).messages.some((m) => m.content.text === publicText),
-          ).toBe(true);
+        expect(
+          (
+            await getChatSessionHistory(
+              reader,
+              reader.workspaceId!,
+              run.scope.sessionId,
+            )
+          ).messages.some((m) => m.content.text === expectedAnswer),
+        ).toBe(true);
       },
       120000,
     );
@@ -2067,7 +1996,7 @@ suite(
             source.scope,
             source.runtime.generationId,
           ),
-        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        ).resolves.toBeUndefined();
         expect(
           await hasRevokedReferencePublicationHistory(
             s.owner,
@@ -2088,7 +2017,9 @@ suite(
         await finish(continued);
         await expect(
           prepareEmployeeContentContext(importer.scope),
-        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        ).resolves.toMatchObject({
+          generationId: importer.runtime.generationId,
+        });
         if (priorPublication) {
           await change(s.owner, priorPublication.sourceId, 'delete');
           expect(
@@ -2102,7 +2033,7 @@ suite(
               frozen.scope,
               frozen.runtime.generationId,
             ),
-          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+          ).resolves.toBeUndefined();
         }
       },
       120000,
@@ -2264,8 +2195,8 @@ suite(
       expect(
         await referenceEligibility(s.finance, current.scope.sessionId),
       ).toEqual({
-        canContinue: false,
-        reason: 'current_access_lost',
+        canContinue: true,
+        reason: null,
       });
       await expect(
         assertEmployeeContentContext(
@@ -2273,7 +2204,7 @@ suite(
           current.runtime.generationId,
           worker,
         ),
-      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      ).resolves.toBeUndefined();
       await change(s.owner, b.sourceId, 'audience', 2, {
         scope: 'company',
         departmentIds: [],
@@ -2316,7 +2247,7 @@ suite(
           current.scope,
           current.runtime.generationId,
         ),
-      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      ).resolves.toBeUndefined();
       expect(
         (
           await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${current.runtime.generationId}`
@@ -2340,7 +2271,7 @@ suite(
           current.scope,
           current.runtime.generationId,
         ),
-      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      ).resolves.toBeUndefined();
       await expect(
         sendChatMessage(
           s.finance,
@@ -2351,7 +2282,7 @@ suite(
             text: '请继续核对',
           },
         ),
-      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      ).resolves.toMatchObject({ created: true });
       const early = prior[0]!;
       await assertEmployeeContentReferenceMessages(
         s.finance,
@@ -2470,11 +2401,11 @@ suite(
           : await runtimeRun(s, [], undefined, [early.scope.sessionId]);
         if (derived) await finish(derived);
         await change(s.owner, published.sourceId, 'delete');
-        // Publication Q8 uses exact read/action facts rather than invalidating
-        // the whole generation. An earlier legacy invalidation still binds.
+        // Publication revocation preserves existing context. Unrelated legacy
+        // generation invalidation and new external reads remain guarded.
         await expect(
           assertEmployeeContentContext(later.scope, later.runtime.generationId),
-        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        ).resolves.toBeUndefined();
         expect(
           await hasRevokedReferencePublicationHistory(
             s.owner,
@@ -2604,7 +2535,7 @@ suite(
                 text: '继续保护的后期回答',
               },
             ),
-          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+          ).resolves.toMatchObject({ created: true });
       },
       120000,
     );
@@ -2637,7 +2568,7 @@ suite(
               first.runtime.generationId,
               worker,
             ),
-          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+          ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
         }
         await failJob({
           ...worker,
@@ -2662,7 +2593,10 @@ suite(
         ).toBe(false);
         await expect(
           runtimeRun(reader, [published.revisionId], first.scope.sessionId),
-        ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+        ).rejects.toMatchObject({
+          code: 'REFERENCE_SELECTION_UNAVAILABLE',
+          referenceRevisionIds: [published.revisionId],
+        });
         const next = await runtimeRun(reader, [], first.scope.sessionId),
           nextWorker = await lease(next);
         expect(next.runtime.generationId).toBe(first.runtime.generationId);
@@ -2713,7 +2647,62 @@ suite(
       120000,
     );
 
-    it('Q8: actual read receipts block dispatch, cold recovery, continuation and imported generations permanently after delete; selecting a draft alone does not', async () => {
+    it('v1.7: cold frozen imports retain publication text but queued first imports and current shared Session/message authority stay guarded', async () => {
+      const s = await setup(),
+        published = await httpUpload(s.owner);
+      await ready(published.revisionId);
+      const source = await runtimeRun(s, [published.revisionId]),
+        worker = await lease(source);
+      await loadEmployeeRuntimeReferences(
+        source.scope,
+        source.runtime.generationId,
+        worker,
+      );
+      await completeJob({
+        ...worker,
+        result: { answer: '已读资料中的预算金额873元。', citations: [] },
+      });
+      await f.db`update allrice_chat_sessions set visibility='workspace' where id=${source.scope.sessionId}`;
+      await f.db`update allrice_messages set visibility='workspace' where session_id=${source.scope.sessionId}`;
+      const frozen = await runtimeRun(
+        { ...s, owner: s.finance },
+        [],
+        undefined,
+        [source.scope.sessionId],
+      );
+      await finish(frozen);
+      const queued = await sendChatMessage(
+        s.finance,
+        s.finance.workspaceId!,
+        frozen.scope.sessionId,
+        {
+          clientMessageId: randomUUID(),
+          text: '再次引用共享会话',
+          sessionReferenceIds: [source.scope.sessionId],
+          deliveryMode: 'follow_up',
+        },
+      );
+      await change(s.owner, published.sourceId, 'delete', 1);
+      await expect(
+        resolveEmployeeExecution(frozen.scope),
+      ).resolves.toMatchObject({
+        promptSnapshot: frozen.execution.promptSnapshot,
+      });
+      await expect(
+        resolveEmployeeExecution({ ...frozen.scope, runId: queued.run.id }),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      await f.db`update allrice_chat_sessions set visibility='private' where id=${source.scope.sessionId}`;
+      await expect(
+        resolveEmployeeExecution(frozen.scope),
+      ).rejects.toMatchObject({ code: 'unavailable' });
+      await f.db`update allrice_chat_sessions set visibility='workspace' where id=${source.scope.sessionId}`;
+      await f.db`update allrice_messages set visibility='private' where id=${source.sent.assistantMessage.id}`;
+      await expect(
+        resolveEmployeeExecution(frozen.scope),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+    }, 120000);
+
+    it('v1.7: actual-read deletion preserves old dispatch, cold recovery, continuation and frozen imports while rejecting a new import', async () => {
       const s = await setup(),
         published = await httpUpload(s.owner);
       await ready(published.revisionId);
@@ -2822,26 +2811,24 @@ suite(
         expect(
           await referenceEligibility(s.owner, run.scope.sessionId),
         ).toEqual({
-          canContinue: false,
-          reason: 'publication_revoked',
+          canContinue: true,
+          reason: null,
         });
         await expect(
           assertEmployeeContentContext(run.scope, run.runtime.generationId),
-        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+        ).resolves.toBeUndefined();
+        await expect(
+          resolveEmployeeExecution(run.scope),
+        ).resolves.toMatchObject({
+          promptSnapshot: run.execution.promptSnapshot,
+        });
         await expect(
           prepareEmployeeContentContext(run.scope),
-        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
-        const [before] =
-          await f.db`select count(*)::int n from allrice_messages where session_id=${run.scope.sessionId}`;
-        await expect(
-          sendChatMessage(s.owner, s.owner.workspaceId!, run.scope.sessionId, {
-            clientMessageId: randomUUID(),
-            text: '请继续',
-          }),
-        ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
-        const [after] =
-          await f.db`select count(*)::int n from allrice_messages where session_id=${run.scope.sessionId}`;
-        expect(after!.n).toBe(before!.n);
+        ).resolves.toMatchObject({ generationId: run.runtime.generationId });
+        const continued = await runtimeRun(s, [], run.scope.sessionId);
+        expect(continued.runtime.generationId).toBe(run.runtime.generationId);
+        expect(continued.runtime.allowedMessageIds).toBeNull();
+        await finish(continued);
       }
       const { POST } =
         await import('../app/api/v1/sessions/[id]/messages/route.ts');
@@ -2863,11 +2850,8 @@ suite(
         ),
         { params: Promise.resolve({ id: source.scope.sessionId }) },
       );
-      expect(denied.status).toBe(409);
-      expect((await denied.json()).error).toMatchObject({
-        code: 'REFERENCE_PUBLICATION_REVOKED',
-        retryable: false,
-      });
+      expect(denied.status).toBe(202);
+      expect((await denied.json()).created).toBe(true);
       await expect(
         assertEmployeeContentReferenceMessages(
           s.owner,
