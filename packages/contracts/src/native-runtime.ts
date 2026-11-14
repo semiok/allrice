@@ -1,6 +1,7 @@
 /** Native adapters use this explicit runtime boundary. Keep the existing
  * definitions and shared module instances; never re-export the root index. */
 export { ModelTransportFailureCodeSchema } from './model-diagnostics.ts';
+export { allRiceToolManifest } from './tool-manifest.ts';
 export {
   ReferenceSearchInputSchema,
   ReferenceReadInputSchema,

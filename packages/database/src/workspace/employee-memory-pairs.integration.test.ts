@@ -175,7 +175,7 @@ suite(
         expect(response.status).toBe(400);
         expect(ApiErrorSchema.parse(await response.json()).error).toMatchObject(
           {
-            code: 'INVALID_REQUEST',
+            code: 'VALIDATION_FAILED',
             retryable: false,
           },
         );

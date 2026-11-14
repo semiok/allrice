@@ -509,9 +509,10 @@ suite(
         params(original.id),
       );
       expect(legacy.status).toBe(400);
-      expect(ApiErrorSchema.parse(await legacy.json()).error.code).toBe(
-        'INVALID_REQUEST',
-      );
+      expect(ApiErrorSchema.parse(await legacy.json()).error).toMatchObject({
+        code: 'VALIDATION_FAILED',
+        retryable: false,
+      });
       expect((await snapshot(original.id)).memory).toMatchObject({
         revision: 3,
         details: null,
@@ -668,18 +669,20 @@ suite(
         'memory_limit_reached',
       );
       const legacyKey = randomUUID();
-      await conflict(
-        await create(
-          request(f, 'POST', undefined, {
-            workspaceId: f.workspace,
-            instanceId: f.assignment,
-            sourceType: 'user',
-            content: '旧创建不能绕过名额',
-            idempotencyKey: legacyKey,
-          }),
-        ),
-        'memory_limit_reached',
+      const legacy = await create(
+        request(f, 'POST', undefined, {
+          workspaceId: f.workspace,
+          instanceId: f.assignment,
+          sourceType: 'user',
+          content: '旧创建不能绕过名额',
+          idempotencyKey: legacyKey,
+        }),
       );
+      expect(legacy.status).toBe(400);
+      expect(ApiErrorSchema.parse(await legacy.json()).error).toMatchObject({
+        code: 'VALIDATION_FAILED',
+        retryable: false,
+      });
       expect(
         await fixture.db`select operation_key from allrice_employee_memory_operations where operation_key=${legacyKey}`,
       ).toHaveLength(0);
@@ -875,6 +878,19 @@ suite(
       const replay = await create(request(f, 'POST', undefined, input));
       expect(await replay.json()).toEqual(result);
       expect(await snapshot(result.memory.id)).toEqual(before);
+      const [origin] =
+        await fixture.db`select user_message_id from allrice_employee_runs where run_id=${f.rootRunId}`;
+      const [policy] =
+        await fixture.db`select * from allrice_policy_snapshots where id=${f.policy}`;
+      const policySnapshot = PolicySnapshotSchema.parse({
+        id: policy!.id,
+        organizationId: f.org,
+        subjectId: f.user,
+        version: policy!.version,
+        issuedAt: policy!.issued_at.toISOString(),
+        expiresAt: policy!.expires_at.toISOString(),
+        ...policy!.payload,
+      });
       let release!: () => void, acquired!: () => void;
       const held = new Promise<void>((resolve) => {
         release = resolve;
@@ -887,44 +903,34 @@ suite(
         acquired();
         await held;
       });
-      await ready;
-      const [origin] =
-        await fixture.db`select user_message_id from allrice_employee_runs where run_id=${f.rootRunId}`;
-      const [policy] =
-        await fixture.db`select * from allrice_policy_snapshots where id=${f.policy}`;
-      const policySnapshot = PolicySnapshotSchema.parse({
-        id: policy!.id,
-        organizationId: f.org,
-        subjectId: f.user,
-        version: policy!.version,
-        issuedAt: policy!.created_at.toISOString(),
-        expiresAt: policy!.expires_at.toISOString(),
-        ...policy!.payload,
-      });
-      const candidateWrite = createRememberedMemoryCandidate(
-        f.context,
-        {
-          workspaceId: f.workspace,
-          employeeId: f.employee,
-          sourceId: origin!.user_message_id,
-          summary: '后台仅产候选',
-          details: null,
-        },
-        {
-          executionId: randomUUID(),
-          runId: f.rootRunId,
-          jobId: f.worker.jobId,
-          worker: { type: 'worker', id: f.worker.workerId },
-          delegatedBy: { type: 'user', id: f.user },
-          organizationId: f.org,
-          workspaceId: f.workspace,
-          policySnapshot,
-          startedAt: new Date().toISOString(),
-        },
-        { nativeSessionId: f.session, callId: randomUUID() },
-      );
       let timeout: ReturnType<typeof setTimeout> | undefined;
+      let candidateWrite:
+        | ReturnType<typeof createRememberedMemoryCandidate>
+        | undefined;
       try {
+        await ready;
+        candidateWrite = createRememberedMemoryCandidate(
+          f.context,
+          {
+            workspaceId: f.workspace,
+            employeeId: f.employee,
+            sourceId: origin!.user_message_id,
+            summary: '后台仅产候选',
+            details: null,
+          },
+          {
+            executionId: randomUUID(),
+            runId: f.rootRunId,
+            jobId: f.worker.jobId,
+            worker: { type: 'worker', id: f.worker.workerId },
+            delegatedBy: { type: 'user', id: f.user },
+            organizationId: f.org,
+            workspaceId: f.workspace,
+            policySnapshot,
+            startedAt: new Date().toISOString(),
+          },
+          { nativeSessionId: f.session, callId: randomUUID() },
+        );
         const candidate = await Promise.race([
           candidateWrite,
           new Promise<never>((_resolve, reject) => {
@@ -944,7 +950,7 @@ suite(
         clearTimeout(timeout);
         release();
         await blocker;
-        await candidateWrite.catch(() => undefined);
+        await candidateWrite?.catch(() => undefined);
       }
       expect((await page(f)).counts).toEqual({
         active: 100,

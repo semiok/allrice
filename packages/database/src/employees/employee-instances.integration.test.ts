@@ -1190,7 +1190,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         { summary: string; details: string | null }[]
       >`select summary,details from allrice_memories where id=${memory.id}`;
       expect(pair).toEqual({
-        summary: Array.from(input.text).slice(0, 40).join(''),
+        summary: 'Preserve every amount',
         details: input.text,
       });
       expect(restoredRun!.prompt_snapshot.memories).toEqual([]);

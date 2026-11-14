@@ -13,7 +13,11 @@ import {
 
 // Oracle for the immutable 0236 migration; this is not a runtime compatibility adapter.
 const historicalPair = (content: string) => ({
-  summary: Array.from(content).slice(0, 40).join(''),
+  summary: Array.from(content)
+    .slice(0, 40)
+    .join('')
+    .replace(/[\r\n\u2028\u2029]/gu, ' ')
+    .trim(),
   details: Array.from(content).length > 40 ? content : null,
 });
 const suite =

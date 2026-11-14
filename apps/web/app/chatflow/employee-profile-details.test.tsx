@@ -75,10 +75,10 @@ describe('EmployeeProfileDetails', () => {
       '个人输出偏好正文',
       '平台通用要求',
       '参考资料',
-      '经验积累',
     ])
       expect(html).toContain(text);
     for (const text of [
+      '经验积累',
       '未启用草稿不能显示',
       '每周核对正文',
       '月度审计正文',

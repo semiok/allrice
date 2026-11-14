@@ -74,7 +74,7 @@ const v: NativeMonthlyCalendarRevision = {
   rule: {
     kind: 'monthly',
     monthDay: 31,
-    time: '10:00',
+    time: '10:00:00',
     timezone: 'Asia/Shanghai',
   },
   contentDigest: nativeOnceDigest('content'),
