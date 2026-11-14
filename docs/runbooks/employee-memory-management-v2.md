@@ -7,7 +7,7 @@
 | 请求                                                 | 合同                                                                        |
 | ---------------------------------------------------- | --------------------------------------------------------------------------- |
 | GET `/api/v1/memories/manage?workspaceId&instanceId` | schemaVersion=2；全部 active/pending 最小行及同读 counts；不分页            |
-| GET `/api/v1/memories/{id}?workspaceId&instanceId`   | 当前完整 pair；自身删除或失去权限为 404                                          |
+| GET `/api/v1/memories/{id}?workspaceId&instanceId`   | 当前完整 pair；自身删除或失去权限为 404                                     |
 | POST `/api/v1/memories`                              | workspaceId、instanceId、summary、details?、idempotencyKey；本人直接 active |
 | PATCH `/api/v1/memories/{id}?workspaceId`            | 完整 pair、reason 和 Mutation；pending 保存即确认                           |
 | POST `/api/v1/memories/{id}/promote?workspaceId`     | Mutation；不改 pair 的本人确认                                              |

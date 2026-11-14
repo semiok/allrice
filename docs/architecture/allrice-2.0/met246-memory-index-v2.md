@@ -28,12 +28,12 @@ Each Run owns continuous ordinals1..N; an ordinal is neither a database ID nor a
 Pins retain ID, revision, pair digest and detail presence, with no copied detail text.
 V2 `promptSnapshot.memories` is empty; legacy common/experience memory is not an alternate input.
 
-| Contract | Current V2 |
-| --- | --- |
-| Initial memory | Full confirmed index, structural maximum 18303 bytes |
-| Single successful read | Complete decoded native text, at most 10000 bytes |
-| Run total / reads | 24000 bytes including index / 12 |
-| Reader | Explicit `workspace.memory.read({number})` |
+| Contract               | Current V2                                           |
+| ---------------------- | ---------------------------------------------------- |
+| Initial memory         | Full confirmed index, structural maximum 18303 bytes |
+| Single successful read | Complete decoded native text, at most 10000 bytes    |
+| Run total / reads      | 24000 bytes including index / 12                     |
+| Reader                 | Explicit `workspace.memory.read({number})`           |
 
 One shared renderer emits summary and complete detail with no inner JSON serialization.
 Its structural maximum is40×4+2000×4+68=8228bytes; outer RPC escaping is not model text.
