@@ -77,6 +77,7 @@ export const ReferencePublicationQueryResultSchema = z
           start: z.number().int().nonnegative(),
           end: z.number().int().nonnegative(),
           locations: z.array(ReferenceTextLocationSchema),
+          warnings: z.array(z.string()),
         })
         .strict(),
     ),

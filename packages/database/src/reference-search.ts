@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import type postgres from 'postgres';
 import { z } from 'zod';
 import {
   KnowledgeRetrievalResultSchema,
@@ -17,7 +18,11 @@ import {
   readContentPrincipal,
   type ContentIdentity,
 } from './content-maintenance.ts';
-import { listReferencePublications } from './reference-library.ts';
+import {
+  listReferencePublications,
+  referenceSourceAccess,
+} from './reference-library.ts';
+import { runtimePolicyDigest } from './runtime-policy.ts';
 import {
   readReferenceSelection,
   ReferenceRuntimeError,
@@ -35,6 +40,15 @@ export class ReferenceToolResultLimitError extends Error {
   readonly code = 'TOOL_RESULT_TOO_LARGE';
   constructor() {
     super('企业资料结果超过内联上限，请减少 limit 后继续读取。');
+  }
+}
+
+export class ReferenceReadOffsetError extends Error {
+  readonly code = 'TOOL_INPUT_INVALID';
+  constructor() {
+    super(
+      '读取起点超出资料正文长度，请使用返回的 nextOffset 或 totalCharacters。',
+    );
   }
 }
 
@@ -124,7 +138,16 @@ export async function queryReferencePublications(
   context: ContentIdentity,
   input: unknown,
 ) {
-  return (await preparePublicationQuery(context, input)).page;
+  const prepared = await preparePublicationQuery(context, input);
+  return getDatabase().begin(async (tx) => {
+    await assertPreparedReferencesReadable(
+      context,
+      prepared.dependencies,
+      prepared.texts,
+      tx,
+    );
+    return prepared.page;
+  });
 }
 
 async function preparePublicationQuery(
@@ -210,6 +233,7 @@ async function preparePublicationQuery(
   const references = candidates.slice(0, query.limit);
   const last = references.at(-1);
   const matches = [];
+  const texts: PreparedReferenceText[] = [];
   if (query.query && includeMatches)
     for (const reference of references) {
       if (!reference.fullTextReady) continue;
@@ -217,6 +241,7 @@ async function preparePublicationQuery(
         context,
         referenceReadPin(reference),
       );
+      texts.push(prepared);
       const at = textMatchOffset(prepared.fullText.text, query.query);
       if (at < 0) continue;
       const excerpt = referenceTextPage(
@@ -230,6 +255,7 @@ async function preparePublicationQuery(
         start: excerpt.start,
         end: excerpt.end,
         locations: excerpt.locations,
+        warnings: excerpt.warnings,
       });
     }
   const page = ReferencePublicationQueryResultSchema.parse({
@@ -251,7 +277,91 @@ async function preparePublicationQuery(
       ).length,
     },
   });
-  return { page, dependencies: current };
+  return { page, dependencies: current, texts };
+}
+
+/** Shared final disclosure gate. Full-text scanning/decoding has already
+ * finished outside this short transaction; the web path creates no Run/read. */
+export async function assertPreparedReferencesReadable(
+  context: ContentIdentity,
+  dependencies: readonly ReferenceRevision[],
+  texts: readonly PreparedReferenceText[],
+  tx: postgres.TransactionSql,
+) {
+  if (!(await readContentPrincipal(context, tx, true)))
+    throw new ReferenceRuntimeError();
+  const sources = new Set([
+    ...dependencies.map((r) => r.sourceId),
+    ...texts.map((r) => r.selection.sourceId),
+  ]);
+  for (const sourceId of [...sources].sort()) {
+    const current = await referenceSourceAccess(
+      context,
+      sourceId,
+      tx,
+      false,
+      true,
+    );
+    if (
+      !current.publication ||
+      dependencies.some(
+        (r) =>
+          r.sourceId === sourceId &&
+          r.publication!.audienceRevision !== current.publication!.revision,
+      )
+    )
+      throw new ReferenceRuntimeError();
+  }
+  // The extractor publishes document changes before its processing CAS. Take
+  // document locks before processing locks too, so readers cannot invert it.
+  for (const prepared of [...texts].sort((a, b) =>
+    a.document.id.localeCompare(b.document.id),
+  )) {
+    const [document] = await tx`select id from allrice_knowledge_documents
+      where id=${prepared.document.id} and xmin::text=${prepared.document.version} and active for share`;
+    if (!document) throw new ReferenceRuntimeError();
+  }
+  // Even a not-ready publication contributes protected metadata/coverage.
+  // Recheck its exact pin and ready fact without reading/decoding full text.
+  for (const reference of [...dependencies].sort(compareReferences)) {
+    const [current] = await tx`select
+      case when o.state='pending' then 'uploading' else p.state end as processing,p.failure,
+      (p.state='ready' and o.state='ready' and o.immutable and o.deleted_at is null
+        and (o.retention_until is null or o.retention_until>clock_timestamp()) and exists(
+          select 1 from allrice_knowledge_documents d where d.knowledge_revision_id=r.id and d.active
+            and d.organization_id=r.organization_id and d.workspace_id=r.workspace_id
+            and d.source_ref='file:'||o.id::text and d.checksum=o.checksum
+            and d.full_text is not null and octet_length(d.full_text)>0
+            and d.full_text_locations is not null and d.full_text_metadata is not null)) as ready
+      from allrice_knowledge_revisions r join allrice_storage_objects o on o.id=r.file_object_id
+      join allrice_knowledge_processing p on p.revision_id=r.id
+      where r.id=${reference.revisionId} and r.knowledge_source_id=${reference.sourceId}
+        and r.status='published' and r.checksum=${reference.manifestDigest} and o.checksum=${reference.checksum}
+      for share of r,o,p`;
+    if (
+      !current ||
+      current.processing !== reference.processing ||
+      current.failure !== (reference.failure ?? null) ||
+      current.ready !== reference.fullTextReady
+    )
+      throw new ReferenceRuntimeError();
+  }
+  for (const prepared of [...texts].sort((a, b) =>
+    a.selection.sourceId.localeCompare(b.selection.sourceId),
+  )) {
+    const current = await readReferenceSelection(
+      context,
+      prepared.selection.revisionId,
+      tx,
+      true,
+    );
+    if (
+      !current.publication ||
+      runtimePolicyDigest(current.selection) !==
+        runtimePolicyDigest(prepared.selection)
+    )
+      throw new ReferenceRuntimeError();
+  }
 }
 
 type FullTextRow = {
@@ -323,7 +433,8 @@ export function referenceTextPage(
   limit: number,
 ) {
   const text = prepared.fullText.text;
-  z.number().int().min(0).max(text.length).parse(offset);
+  z.number().int().min(0).parse(offset);
+  if (offset > text.length) throw new ReferenceReadOffsetError();
   ReferenceReadInputSchema.shape.limit.parse(limit);
   const start = boundary(text, offset);
   let end = boundary(text, Math.min(text.length, start + limit));

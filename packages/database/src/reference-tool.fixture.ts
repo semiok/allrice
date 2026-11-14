@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { expect } from 'vitest';
 import type { ReferenceAudience, RequestContext } from '@allrice/contracts';
 import {
-  createRuntimeFixtureDatabase,
+  type createRuntimeFixtureDatabase,
   runtimeFixtureStorage,
 } from './runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';

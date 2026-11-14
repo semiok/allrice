@@ -26,9 +26,9 @@ import {
   hasRevokedReferencePublicationHistory,
   referencePublicationDependencyRuns,
 } from '../reference-runtime.ts';
-import { referenceSourceAccess } from '../reference-library.ts';
 import {
   prepareReferenceText,
+  assertPreparedReferencesReadable,
   prepareReferenceSearch,
   referenceTextPage,
   referenceTextCitation,
@@ -1843,15 +1843,20 @@ export async function executeEmployeeReferenceTool(
     'query' in args ? await prepareReferenceSearch(reader, args) : null;
   const read =
     'revisionId' in args ? await prepareReferenceText(reader, args) : null;
+  const readPage =
+    read && 'offset' in args
+      ? referenceTextPage(read, args.offset, args.limit)
+      : null;
   const excerpts = search
     ? search.excerpts
-    : read && 'offset' in args
-      ? (() => {
-          const page = referenceTextPage(read, args.offset, args.limit);
-          return [
-            { prepared: read, page, result: referenceTextCitation(read, page) },
-          ];
-        })()
+    : read && readPage?.content
+      ? [
+          {
+            prepared: read,
+            page: readPage,
+            result: referenceTextCitation(read, readPage),
+          },
+        ]
       : [];
   const metadata = (selection: PreparedReferenceText['selection']) => ({
     sourceId: selection.sourceId,
@@ -1902,7 +1907,10 @@ export async function executeEmployeeReferenceTool(
           nextCursor: search.nextCursor,
           fullTextCoverage: search.fullTextCoverage,
         }
-      : { ...metadata(read!.selection), ...excerpt(excerpts[0]!) };
+      : {
+          ...metadata(read!.selection),
+          ...(excerpts.length ? excerpt(excerpts[0]!) : readPage),
+        };
   };
   // The longest allowed R label is reserved so budget validation precedes locks.
   boundedReferenceToolResult(
@@ -1915,66 +1923,26 @@ export async function executeEmployeeReferenceTool(
   );
   return withContentLocks(scope, async (tx) => {
     const run = await authority(tx, true);
-    // Coverage is also protected metadata: recheck every counted publication,
-    // including authorized not-ready entries that yielded no excerpt.
-    for (const dependency of [...(search?.dependencies ?? [])].sort((a, b) =>
-      a.sourceId.localeCompare(b.sourceId),
-    )) {
-      const current = await referenceSourceAccess(
-        reader,
-        dependency.sourceId,
-        tx,
-        false,
-        true,
-      );
-      if (
-        !current.publication ||
-        current.publication.revision !==
-          dependency.publication!.audienceRevision
-      )
-        throw new ReferenceRuntimeError();
-    }
-    for (const entry of [...excerpts].sort((a, b) =>
-      a.prepared.selection.sourceId.localeCompare(
-        b.prepared.selection.sourceId,
-      ),
-    )) {
-      const current = await readReferenceSelection(
-        reader,
-        entry.prepared.selection.revisionId,
-        tx,
-        true,
-      );
-      if (
-        !current.publication ||
-        runtimePolicyDigest(current.selection) !==
-          runtimePolicyDigest(entry.prepared.selection)
-      )
-        throw new ReferenceRuntimeError();
-      const [document] =
-        await tx`select id from allrice_knowledge_documents where id=${entry.prepared.document.id}
-        and xmin::text=${entry.prepared.document.version} and active for share`;
-      if (!document) throw new ReferenceRuntimeError();
-    }
-    signal?.throwIfAborted();
-    const results = await recordReferenceReads(
+    await assertPreparedReferencesReadable(
+      reader,
+      search?.dependencies ?? [],
+      read ? [read] : excerpts.map((entry) => entry.prepared),
       tx,
-      scope,
-      run,
-      generationId,
-      worker,
-      [
-        {
-          origin: { kind: 'tool', toolName },
-          results: excerpts.map((entry) => entry.result),
-        },
-      ],
     );
+    signal?.throwIfAborted();
+    const results = excerpts.length
+      ? await recordReferenceReads(tx, scope, run, generationId, worker, [
+          {
+            origin: { kind: 'tool', toolName },
+            results: excerpts.map((entry) => entry.result),
+          },
+        ])
+      : [];
     if (!(await validContentLease(scope, worker, tx))) return unavailable();
     signal?.throwIfAborted();
     return {
       modelContent: boundedReferenceToolResult(response(results)),
-      itemCount: search ? search.references.length : 1,
+      itemCount: search ? search.references.length : excerpts.length,
     };
   });
 }

@@ -148,6 +148,47 @@ suite('R3 actual-read receipts and private Run authority', () => {
     expect(reread.fileName).toBe('差旅规定.txt');
   }, 120000);
 
+  it('distinguishes N-1, EOF and out-of-range without empty or invented read receipts', async () => {
+    const saved = await x.publish('甲乙丙');
+    const run = await x.run();
+    const last = JSON.parse(
+      (
+        await invoke(run, 'workspace.reference.read', {
+          ...saved.pin,
+          offset: 2,
+        })
+      ).modelContent,
+    );
+    expect(last).toMatchObject({
+      content: '丙',
+      start: 2,
+      end: 3,
+      nextOffset: null,
+      citation: { referenceLabel: 'R1' },
+    });
+    const first = await receipts(run);
+    expect(first).toHaveLength(1);
+    const eof = await invoke(run, 'workspace.reference.read', {
+      ...saved.pin,
+      offset: 3,
+    });
+    expect(eof.itemCount).toBe(0);
+    expect(JSON.parse(eof.modelContent)).toMatchObject({
+      content: '',
+      start: 3,
+      end: 3,
+      nextOffset: null,
+      totalCharacters: 3,
+      locations: [],
+    });
+    expect(JSON.parse(eof.modelContent)).not.toHaveProperty('citation');
+    expect(await receipts(run)).toEqual(first);
+    await expect(
+      invoke(run, 'workspace.reference.read', { ...saved.pin, offset: 4 }),
+    ).rejects.toMatchObject({ code: 'TOOL_INPUT_INVALID' });
+    expect(await receipts(run)).toEqual(first);
+  }, 120000);
+
   it('never expands an old frozen allowlist on recovery', async () => {
     const original = contracts.freezeReferenceToolNames;
     const selection = vi

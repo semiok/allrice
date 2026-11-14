@@ -2,6 +2,7 @@ import {
   ReferenceRuntimeError,
   EmployeeRuntimeContentError,
   ReferenceToolResultLimitError,
+  ReferenceReadOffsetError,
   DataAccessError,
 } from '@allrice/database';
 import {
@@ -39,13 +40,16 @@ export const executeReferenceTool: RiceToolHandler = async ({
       summary:
         name === 'workspace.reference.search'
           ? `已检索企业资料 · ${result.itemCount} 项`
-          : '已读取企业资料正文',
+          : result.itemCount === 0
+            ? '已到资料正文末尾'
+            : '已读取企业资料正文',
     };
   } catch (error) {
     if (
       error instanceof ReferenceRuntimeError ||
       error instanceof EmployeeRuntimeContentError ||
-      error instanceof ReferenceToolResultLimitError
+      error instanceof ReferenceToolResultLimitError ||
+      error instanceof ReferenceReadOffsetError
     )
       throw new HandlerError(error.code, error.message, false, {
         cause: error,

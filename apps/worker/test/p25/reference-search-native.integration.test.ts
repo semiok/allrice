@@ -46,6 +46,9 @@ suite(
         run.resolved.executionSnapshot!.capabilitySnapshot.bindings.toolNames,
       ).toEqual(expect.arrayContaining([...referenceToolNames]));
       let discovered: Record<string, unknown> | undefined;
+      const pages: Record<string, unknown>[] = [];
+      const receiptCounts: number[] = [];
+      const denials: unknown[] = [];
       const model = await p24Fixture(async (request, index) => {
         if (index === 1)
           return {
@@ -72,7 +75,49 @@ suite(
             },
           };
         }
-        expect(index).toBe(3);
+        if (index >= 3 && index <= 5) {
+          if (index === 3) {
+            expect(pages[0]).toMatchObject({
+              content: '差旅上限为九百元。',
+              citation: { referenceLabel: 'R1' },
+            });
+            expect(receiptCounts).toEqual([1]);
+          }
+          if (index === 4)
+            expect(pages[1]).toMatchObject({
+              content: '。',
+              nextOffset: null,
+              citation: { referenceLabel: 'R2' },
+            });
+          if (index === 5) {
+            expect(pages[2]).toMatchObject({
+              content: '',
+              start: text.length,
+              end: text.length,
+              nextOffset: null,
+            });
+            expect(pages[2]).not.toHaveProperty('citation');
+            expect(receiptCounts).toEqual([1, 2, 2]);
+          }
+          return {
+            nativeTool: {
+              name: 'workspace_reference_read',
+              arguments: { ...saved.pin, offset: text.length + index - 4 },
+            },
+          };
+        }
+        expect(index).toBe(6);
+        expect(denials).toHaveLength(1);
+        expect(denials[0]).toMatchObject({
+          code: 'TOOL_INPUT_INVALID',
+          retryable: false,
+        });
+        expect(JSON.stringify(request.messages)).toContain(
+          '读取起点超出资料正文长度',
+        );
+        expect(JSON.stringify(request.messages)).not.toContain(
+          'AllRice Tool Broker request failed',
+        );
         return { text: '差旅上限为九百元，出处 R1。' };
       });
       const client = new DshProtocolClient({
@@ -125,9 +170,19 @@ suite(
                   args,
                   signal,
                 ),
+            }).catch((error: unknown) => {
+              denials.push(error);
+              throw error;
             });
             if (call.name === 'workspace.reference.search')
               discovered = JSON.parse(result.modelContent).results[0];
+            else {
+              pages.push(JSON.parse(result.modelContent));
+              const [stored] =
+                await f.db`select jsonb_array_length(reference_reads)::int n from allrice_employee_runs where run_id=${run.scope.runId}`;
+              receiptCounts.push(stored!.n);
+              if (pages.length === 3) expect(result.itemCount).toBe(0);
+            }
             return result;
           },
         }),
@@ -155,8 +210,11 @@ suite(
             { timeout: 15000 },
           )
           .toBe(true);
-        expect(calls).toEqual([...referenceToolNames]);
-        expect(model.requests).toHaveLength(3);
+        expect(calls).toEqual([
+          referenceToolNames[0],
+          ...Array<string>(4).fill(referenceToolNames[1]),
+        ]);
+        expect(model.requests).toHaveLength(6);
         expect(
           model.requests[0]!.tools!.map((tool) => tool.function.name),
         ).toEqual(
@@ -173,16 +231,29 @@ suite(
         const [stored] =
           await f.db`select reference_reads from allrice_employee_runs where run_id=${run.scope.runId}`;
         const reads = ReferenceReadsSchema.parse(stored!.reference_reads);
-        expect(reads).toHaveLength(1);
+        expect(reads).toHaveLength(2);
         expect(reads[0]).toMatchObject({
           origin: { kind: 'tool', toolName: 'workspace.reference.search' },
           citation: { reference: saved.pin, referenceLabel: 'R1' },
+        });
+        expect(reads[1]).toMatchObject({
+          origin: { kind: 'tool', toolName: 'workspace.reference.read' },
+          citation: {
+            reference: saved.pin,
+            referenceLabel: 'R2',
+            locator: { start: text.length - 1, end: text.length },
+          },
         });
         const audits =
           await f.db`select action,decision,metadata from allrice_audit_events where metadata->>'runId'=${run.scope.runId} and action='tool.execute'`;
         expect(JSON.stringify(audits)).toContain('workspace.reference.search');
         expect(JSON.stringify(audits)).toContain('workspace.reference.read');
-        expect(audits.every((row) => row.decision === 'allowed')).toBe(true);
+        expect(audits.filter((row) => row.decision === 'allowed')).toHaveLength(
+          4,
+        );
+        expect(audits.filter((row) => row.decision === 'denied')).toMatchObject(
+          [{ metadata: { errorCode: 'TOOL_INPUT_INVALID', retryable: false } }],
+        );
         const [exports] =
           await f.db`select count(*)::int n from allrice_storage_objects where organization_id=${run.scope.organizationId} and category='exports'`;
         expect(exports!.n).toBe(0);
