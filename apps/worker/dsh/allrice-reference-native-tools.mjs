@@ -5,6 +5,7 @@ import {
 
 const cursor = {
   type: 'object',
+  additionalProperties: false,
   description:
     'Exact nextCursor from the previous page of this same query. Omit on the first page.',
   properties: {
