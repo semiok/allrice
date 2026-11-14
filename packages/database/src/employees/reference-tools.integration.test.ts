@@ -400,14 +400,25 @@ suite('R3 actual-read receipts and private Run authority', () => {
     ).toBe('R1');
   }, 120000);
 
-  it('uses native tool receipts in existing Q8 and blocks continuation after permanent withdrawal', async () => {
+  it('does not turn historical reference tolerance into a membership or Run authority bypass', async () => {
+    const saved = await x.publish('当前成员资格仍为独立门卫');
+    const run = await x.run();
+    await invoke(run, 'workspace.reference.read', saved.pin);
+    await f.db`update allrice_memberships set active=false where organization_id=${x.context.organizationId} and user_id=${x.context.actor.id}`;
+    try {
+      await expect(
+        invoke(run, 'workspace.reference.read', saved.pin),
+      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      expect(await receipts(run)).toHaveLength(1);
+    } finally {
+      await f.db`update allrice_memberships set active=true where organization_id=${x.context.organizationId} and user_id=${x.context.actor.id}`;
+    }
+  }, 120000);
+
+  it('preserves actual-read context after withdrawal while refusing new reads and accepting continuation', async () => {
     const saved = await x.publish('后续会话使用的正式资料');
     const run = await x.run();
     await invoke(run, 'workspace.reference.read', saved.pin);
-    await completeJob({
-      ...run.worker,
-      result: { answer: '依据企业资料完成。', citations: [] },
-    });
     expect(
       await hasRevokedReferencePublicationHistory(
         x.context,
@@ -423,13 +434,28 @@ suite('R3 actual-read receipts and private Run authority', () => {
     ).toBe(true);
     await expect(
       assertEmployeeContentContext(run.scope, run.runtime.generationId),
-    ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+    ).resolves.toBeUndefined();
+    await expect(
+      invoke(run, 'workspace.reference.read', saved.pin),
+    ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+    await assertEmployeeContentContext(
+      run.scope,
+      run.runtime.generationId,
+      run.worker,
+    );
+    await completeJob({
+      ...run.worker,
+      result: {
+        answer: '资料现在不可再次读取，但可以继续讨论。',
+        citations: [],
+      },
+    });
     await expect(
       sendChatMessage(x.context, run.scope.workspaceId, run.scope.sessionId, {
         text: '继续',
         clientMessageId: randomUUID(),
       }),
-    ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+    ).resolves.toMatchObject({ created: true });
     expect(await receipts(run)).toHaveLength(1);
   }, 120000);
 });

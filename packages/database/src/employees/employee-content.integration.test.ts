@@ -2984,7 +2984,10 @@ suite(
         f.db.begin((tx) =>
           captureReferenceSelections(s.b, [privateRef.revisionId], tx),
         ),
-      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      ).rejects.toMatchObject({
+        code: 'REFERENCE_SELECTION_UNAVAILABLE',
+        referenceRevisionIds: [privateRef.revisionId],
+      });
       await expect(
         f.db.begin((tx) =>
           assertReferenceSelections(
@@ -3146,13 +3149,19 @@ suite(
       try {
         await expect(
           sendChatMessage(s.a, s.company.workspaceId, session.id, input),
-        ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+        ).rejects.toMatchObject({
+          code: 'REFERENCE_SELECTION_UNAVAILABLE',
+          referenceRevisionIds: [ref.revisionId],
+        });
       } finally {
         spy.mockRestore();
       }
       await expect(
         sendChatMessage(s.a, s.company.workspaceId, session.id, input),
-      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      ).rejects.toMatchObject({
+        code: 'REFERENCE_SELECTION_UNAVAILABLE',
+        referenceRevisionIds: [ref.revisionId],
+      });
       expect(
         await f.db`select run_id from allrice_employee_runs where session_id=${session.id}`,
       ).toHaveLength(0);
@@ -3179,7 +3188,10 @@ suite(
         f.db.begin((tx) =>
           captureReferenceSelections(s.a, [ref.revisionId], tx),
         ),
-      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      ).rejects.toMatchObject({
+        code: 'REFERENCE_SELECTION_UNAVAILABLE',
+        referenceRevisionIds: [ref.revisionId],
+      });
       const session = await createChatSession(s.a, {
         workspaceId: s.company.workspaceId,
         employeeAssignmentId: s.assigned.id,
@@ -3191,7 +3203,10 @@ suite(
           referenceRevisionIds: [ref.revisionId],
           deliveryMode: 'follow_up',
         }),
-      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      ).rejects.toMatchObject({
+        code: 'REFERENCE_SELECTION_UNAVAILABLE',
+        referenceRevisionIds: [ref.revisionId],
+      });
       expect(
         await f.db`select id from allrice_messages where session_id=${session.id}`,
       ).toHaveLength(0);
@@ -3248,7 +3263,7 @@ suite(
       );
       return { s, ids };
     }
-    it('refuses scene load and adoption during current publication denial without invalidating their valid prior scene receipt', async () => {
+    it('allows an unrelated scene load and adoption after an already-read publication loses access', async () => {
       const { s, ids } = await sceneSetup();
       const content = 'budget=1000 spent=300 balance=700';
       const published = await publishReference(
@@ -3316,7 +3331,7 @@ suite(
           selection,
           worker,
         ),
-      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      ).resolves.toMatchObject({ receipt: loaded.receipt });
       await expect(
         adoptEmployeeRuntimeScene(
           run.scope,
@@ -3324,7 +3339,7 @@ suite(
           evidence,
           worker,
         ),
-      ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+      ).resolves.toMatchObject({ adopted: evidence });
       expect(
         (
           await f.db`select invalidated_at from allrice_employee_content_contexts where generation_id=${run.runtime.generationId}`
@@ -3334,7 +3349,7 @@ suite(
         (
           await f.db`select content_scene_state from allrice_employee_runs where run_id=${run.scope.runId}`
         )[0]!.content_scene_state,
-      ).toEqual({ reads: [loaded.receipt] });
+      ).toEqual({ reads: [loaded.receipt], adopted: evidence });
       await changeReferencePublication(s.b, published.sourceId, {
         workspaceId: s.company.workspaceId,
         requestId: randomUUID(),
@@ -3349,7 +3364,7 @@ suite(
           evidence,
           worker,
         ),
-      ).toMatchObject(loaded.receipt);
+      ).toMatchObject({ adopted: evidence });
       await releaseConversationRuntime({
         ...run.scope,
         workerId: worker.workerId,
@@ -3420,7 +3435,7 @@ suite(
               first.runtime.generationId,
               worker,
             ),
-          ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
+          ).resolves.toBeUndefined();
           await expect(
             loadEmployeeRuntimeReferences(
               first.scope,

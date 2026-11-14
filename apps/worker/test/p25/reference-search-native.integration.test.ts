@@ -5,7 +5,11 @@ import { referenceToolNames, ReferenceReadsSchema } from '@allrice/contracts';
 import * as database from '../../../../packages/database/src/core/client.ts';
 import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
 import { referenceToolFixture } from '../../../../packages/database/src/reference-tool.fixture.ts';
-import { executeEmployeeReferenceTool } from '../../../../packages/database/src/employees/employee-runtime-content.ts';
+import { changeReferencePublication } from '../../../../packages/database/src/reference-library.ts';
+import {
+  executeEmployeeReferenceTool,
+  assertEmployeeContentContext,
+} from '../../../../packages/database/src/employees/employee-runtime-content.ts';
 import { executeRiceTool, riceToolDefinitions } from '../../src/tool-broker.js';
 import { dshInboundToolHandler } from '../../src/harness/dsh/tool-bridge.js';
 import {
@@ -106,17 +110,42 @@ suite(
             },
           };
         }
-        expect(index).toBe(6);
-        expect(denials).toHaveLength(1);
-        expect(denials[0]).toMatchObject({
-          code: 'TOOL_INPUT_INVALID',
+        if (index === 6) {
+          expect(denials).toHaveLength(1);
+          expect(denials[0]).toMatchObject({
+            code: 'TOOL_INPUT_INVALID',
+            retryable: false,
+          });
+          expect(JSON.stringify(request.messages)).toContain(
+            '读取起点超出资料正文长度',
+          );
+          expect(JSON.stringify(request.messages)).not.toContain(
+            'AllRice Tool Broker request failed',
+          );
+          await changeReferencePublication(x.publisher, saved.sourceId, {
+            workspaceId: x.publisher.workspaceId,
+            requestId: randomUUID(),
+            expectedRevision: 1,
+            action: 'delete',
+          });
+          return {
+            nativeTool: {
+              name: 'workspace_reference_read',
+              arguments: saved.pin,
+            },
+          };
+        }
+        expect(index).toBe(7);
+        expect(denials).toHaveLength(2);
+        expect(denials[1]).toMatchObject({
+          code: 'REFERENCE_UNAVAILABLE',
           retryable: false,
         });
-        expect(JSON.stringify(request.messages)).toContain(
-          '读取起点超出资料正文长度',
-        );
-        expect(JSON.stringify(request.messages)).not.toContain(
-          'AllRice Tool Broker request failed',
+        expect(JSON.stringify(request.messages)).toContain('访问权限已变化');
+        await assertEmployeeContentContext(
+          run.scope,
+          run.runtime.generationId,
+          run.worker,
         );
         return { text: '差旅上限为九百元，出处 R1。' };
       });
@@ -212,9 +241,9 @@ suite(
           .toBe(true);
         expect(calls).toEqual([
           referenceToolNames[0],
-          ...Array<string>(4).fill(referenceToolNames[1]),
+          ...Array<string>(5).fill(referenceToolNames[1]),
         ]);
-        expect(model.requests).toHaveLength(6);
+        expect(model.requests).toHaveLength(7);
         expect(
           model.requests[0]!.tools!.map((tool) => tool.function.name),
         ).toEqual(
@@ -252,7 +281,15 @@ suite(
           4,
         );
         expect(audits.filter((row) => row.decision === 'denied')).toMatchObject(
-          [{ metadata: { errorCode: 'TOOL_INPUT_INVALID', retryable: false } }],
+          expect.arrayContaining([
+            { metadata: { errorCode: 'TOOL_INPUT_INVALID', retryable: false } },
+            {
+              metadata: {
+                errorCode: 'REFERENCE_UNAVAILABLE',
+                retryable: false,
+              },
+            },
+          ]),
         );
         const [exports] =
           await f.db`select count(*)::int n from allrice_storage_objects where organization_id=${run.scope.organizationId} and category='exports'`;

@@ -26,15 +26,14 @@ import { runtimePolicyDigest } from './runtime-policy.ts';
 import {
   readReferenceSelection,
   ReferenceRuntimeError,
+  ReferenceFullTextUnavailableError,
 } from './reference-runtime.ts';
 import {
   validateReferenceFullText,
   type ReferenceFullText,
 } from './reference-fulltext.ts';
 
-export class ReferenceFullTextUnavailableError extends ReferenceRuntimeError {
-  readonly reason = 'full_text_unavailable';
-}
+export { ReferenceFullTextUnavailableError } from './reference-runtime.ts';
 
 export class ReferenceToolResultLimitError extends Error {
   readonly code = 'TOOL_RESULT_TOO_LARGE';

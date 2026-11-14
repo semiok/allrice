@@ -2,7 +2,9 @@ import {
   ArtifactReviewError,
   DataAccessError,
   ReferenceLibraryError,
+  ReferenceSelectionUnavailableError,
 } from '@allrice/database';
+import { ReferenceSelectionErrorSchema } from '@allrice/contracts';
 import { getRequestContext } from './identity/session';
 import { storageErrorResponse } from './storage/responses';
 import { apiProblem } from './api-error-response';
@@ -19,7 +21,25 @@ export async function referenceContext(request: Request, write = false) {
     throw new ReferenceLibraryError('request_conflict');
   return context;
 }
+export function referenceSelectionError(
+  error: ReferenceSelectionUnavailableError,
+) {
+  return Response.json(
+    ReferenceSelectionErrorSchema.parse({
+      error: {
+        code: error.code,
+        message: error.message,
+        requestId: crypto.randomUUID(),
+        retryable: false,
+        referenceRevisionIds: error.referenceRevisionIds,
+      },
+    }),
+    { status: 409, headers: referenceHeaders },
+  );
+}
 export function referenceError(error: unknown) {
+  if (error instanceof ReferenceSelectionUnavailableError)
+    return referenceSelectionError(error);
   if (error instanceof ReferenceLibraryError) {
     const message = {
       version_conflict: '资料版本已更新，请刷新后重试。',

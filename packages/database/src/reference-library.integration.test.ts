@@ -244,7 +244,10 @@ suite(
         f.db.begin((tx) =>
           captureReferenceSelections(foreign.reader, [p.revisionId], tx),
         ),
-      ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+      ).rejects.toMatchObject({
+        code: 'REFERENCE_SELECTION_UNAVAILABLE',
+        referenceRevisionIds: [p.revisionId],
+      });
       const retrieved = await retrieveSelectedReferenceKnowledge({
         context: reader,
         selections: selected,
