@@ -32,7 +32,6 @@ import { DshDialog } from './dsh-upstream/Dialog';
 import { WorkbenchIcon } from './workbench-modules';
 import { useWorkbenchFileReference } from './use-workbench-file-reference';
 import { useWorkbenchFileFavorite } from './use-workbench-file-favorite';
-import { copyWorkbenchFileLink } from './workbench-file-link';
 import css from './workbench-files-panel.module.css';
 const scopeNames = {
   personal: '仅自己',
@@ -96,7 +95,6 @@ export function WorkbenchFilesPanel(props: {
     value: WorkbenchDeliverablesActionsCatalog;
   } | null>(null);
   const [status, setStatus] = useState({ key: '', loading: false, error: '' });
-  const [notice, setNotice] = useState('');
   const [linkStatus, setLinkStatus] = useState<{
     scope: string;
     denied: boolean;
@@ -273,12 +271,12 @@ export function WorkbenchFilesPanel(props: {
               })
             }
           >
+            <option value="">全部员工</option>
             {employees.map((employee) => (
               <option value={employee.id} key={employee.id}>
                 {employee.name}
               </option>
             ))}
-            <option value="">全部员工</option>
           </select>
           <IconChevronDownOutlineRegular size={14} />
         </div>
@@ -329,9 +327,9 @@ export function WorkbenchFilesPanel(props: {
           )}
         </p>
       )}
-      {(notice || referenceActions.notice) && (
+      {referenceActions.notice && (
         <p className={css.notice} role="status">
-          {notice || referenceActions.notice}
+          {referenceActions.notice}
         </p>
       )}
       {referenceActions.pending && (
@@ -401,7 +399,6 @@ export function WorkbenchFilesPanel(props: {
                 !catalog?.quotableFileIds.includes(file.objectId)
               }
               onUse={() => void referenceActions.useFile(file)}
-              onNotice={setNotice}
               favoriteDisabled={favorite.disabled || !!favorite.using}
               onFavorite={() =>
                 void favorite.setFavorite(file.objectId, !file.favorite)
@@ -439,14 +436,12 @@ function FileMenu({
   file,
   disabled,
   onUse,
-  onNotice,
   favoriteDisabled,
   onFavorite,
 }: {
   file: WorkbenchDeliverable;
   disabled: boolean;
   onUse: () => void;
-  onNotice: (message: string) => void;
   favoriteDisabled: boolean;
   onFavorite: () => void;
 }) {
@@ -484,7 +479,6 @@ function FileMenu({
         }
         items={[
           { id: 'download', label: '下载' },
-          { id: 'copy', label: '复制链接' },
           {
             id: 'favorite',
             label: file.favorite ? '取消收藏' : '收藏',
@@ -495,10 +489,6 @@ function FileMenu({
         onSelect={(id) => {
           setOpen(false);
           if (id === 'favorite') onFavorite();
-          if (id === 'copy')
-            void copyWorkbenchFileLink(file.workspaceId, file.objectId)
-              .then(() => onNotice('链接已复制，仅你自己可以打开'))
-              .catch((cause) => onNotice(message(cause)));
           if (id === 'download') {
             const a = document.createElement('a');
             a.href = `/api/v1/workbench/files/${file.objectId}/download?workspaceId=${file.workspaceId}`;

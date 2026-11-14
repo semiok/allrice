@@ -545,6 +545,24 @@ MET181 公司组合验收发现固定 `dsh-tool-ask-user@0.1.5-rc.3` 的 Consume
 
 引用上下文在入队时随原生 inbox 消息持久化；pre-step 接纳后移除适配器暂存字段，紧接用户消息插入原生 session-reference 消息。进程在接纳前重启也能从 inbox 恢复固定内容，无需重读来源或依赖内存映射。
 
+### Web Office 预览字体目录（2026-11-12）
+
+共享 `previewOfficePdf`（Web 预览与 Worker PDF 导出）通过 OfficeToPdf 公开
+`fontDirectories` 显式指定系统字体根。
+macOS 使用 `/System/Library/Fonts`、`/Library/Fonts` 与系统 MobileAsset 字体目录，
+保留 Heiti/Hiragino/Songti 和已安装的 PingFang；Linux 使用镜像已有的系统字体目录，
+保留固定版本的 Noto CJK/DejaVu。Windows 使用系统 Fonts 目录。
+Kit 在显式配置目录时关闭 Office 应用与 Group Containers 的可选补扫，
+避免非交互 Web 服务进入 AppData 隐私授权等待；不要求服务取得额外系统隐私权限。
+依据是本次已证实的 TCC 等待及用户 2026-11-12 批准的修复 A。
+字体发现、替换、缓存、转换期限、取消和下载降级继续由原生实现与现有预览入口负责，
+不加入字体二进制、重试或转换状态机。缺字体仍通过原有 `missingFonts` 提示。
+仅目标文件预览 HTTP 接缝增加脱敏阶段日志；`constructed` 表示路由创建响应，
+`finish` 表示 Node ServerResponse 完成发送，不证明浏览器已经收到响应。
+关联只使用同进程唯一的 Node AsyncLocalStorage；不同服务端模块副本通过原生 process
+上的固定 Symbol 共用实例，不按请求建 Map，也不信任入站诊断头。
+标准 Next 入口没有该上下文时，路由自行生成新关联 ID 和单调计时起点。
+
 #### 2026-09-27 · MET-160 设置视觉适配复核
 
 复核官方 `native-settings` 0.1.7-rc.1（`46a7f68b0922371ce7144b668b90e377d8e799f4`）。沿用 Modal、焦点锁定、Esc 和恢复焦点；AllRice 的 `settings-design.module.css` 负责冷灰外观与尺寸，窄屏以原生 select 切换同一 sections slot。`SettingsRoot.tsx` 的样式接入及移动导航补丁、源码摘要已更新到 UI 账本。账号退出、连接管理、电脑能力开关与个人偏好仍由 AllRice 原业务组件处理，无新增 DSH 宿主权限。

@@ -7,10 +7,10 @@
   font-size: 13px;
 }
 .deliveryDetail {
-  overflow: auto;
-  overscroll-behavior: contain;
+  overflow: hidden;
 }
 .deliveryDetail .back {
+  flex: none;
   align-self: flex-start;
   margin: 12px 16px 4px;
   padding: 4px 0;
@@ -26,15 +26,23 @@
   color: var(--dsw-alias-label-primary);
   font-size: 12px;
 }
+.deliveryReadingArea {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
 .deliveryDetail .deliveryPreview {
   box-sizing: border-box;
-  flex: 0 1 260px;
-  min-height: 190px;
-  max-height: 260px;
-  margin: 10px 20px 0;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 12px;
-  background: var(--dsw-alias-bg-l1);
+  flex: none;
+  min-height: 100%;
+  overflow: visible;
+}
+.deliveryDetail .deliveryViewport {
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
 }
 .deliveryDetail .deliveryPreview > :has(> [data-document-zoom-frame]) {
   min-height: 0;
@@ -109,20 +117,10 @@
   text-decoration: none;
   cursor: pointer;
 }
-.detailActions .primaryAction {
-  color: var(--ar-text-on-primary);
-  background: var(--ar-action-primary);
-  border-color: transparent;
-}
 .detailActions button:disabled,
 .fileMenu:disabled {
   opacity: 0.45;
   cursor: default;
-}
-.privateNote {
-  margin: 14px 0 0;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
 }
 .toolbar {
   display: flex;
@@ -541,11 +539,6 @@
 }
 
 @media (max-width: 520px) {
-  .deliveryDetail .deliveryPreview {
-    flex-basis: 220px;
-    min-height: 170px;
-    max-height: 220px;
-  }
   .fileName {
     font-size: 12px;
   }
