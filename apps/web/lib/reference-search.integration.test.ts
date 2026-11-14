@@ -20,6 +20,14 @@ import {
   finishReferenceProcessing,
 } from '../../../packages/database/src/reference-processing.ts';
 
+function referenceGate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 const browser = vi.hoisted(() => ({ context: null as RequestContext | null }));
 vi.mock('./identity/session', () => ({
   getRequestContext: async () => browser.context,
@@ -203,8 +211,8 @@ suite('R3 publications HTTP search', () => {
         (select count(*)::int from allrice_runs) as runs,
         (select coalesce(sum(jsonb_array_length(coalesce(reference_reads,'[]'::jsonb))),0)::int from allrice_employee_runs) as reads`;
       const before = await bookkeeping();
-      const prepared = Promise.withResolvers<void>(),
-        release = Promise.withResolvers<void>();
+      const prepared = referenceGate(),
+        release = referenceGate();
       // Pause after the actual document SELECT resolves, not in a mocked ACL.
       // Wrapping the SQL boundary also exercises the old implementation, where
       // prepareReferenceText is called internally and cannot be module-spied.

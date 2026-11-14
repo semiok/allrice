@@ -86,8 +86,8 @@ export async function referenceToolFixture(
     expect(runtime).not.toBeNull();
     const workerId = randomUUID();
     const job = await claimNextJob(workerId, 600000);
-    expect(job?.runId).toBe(scope.runId);
-    const worker = { workerId, jobId: job!.id, leaseToken: job!.leaseToken! };
+    expect(job?.id).toBe(sent.run.job.id);
+    const worker = { workerId, jobId: job!.id, leaseToken: job!.lease!.token };
     const execution = await startClaimedJob(
       workerId,
       worker.jobId,

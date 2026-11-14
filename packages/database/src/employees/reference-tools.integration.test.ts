@@ -23,6 +23,14 @@ import { completeJob } from '../execution/queue.ts';
 import { sendChatMessage } from '../workspace/service.ts';
 import { releaseConversationRuntime } from '../conversation/conversation-runtime.ts';
 
+function referenceGate() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -255,8 +263,8 @@ suite('R3 actual-read receipts and private Run authority', () => {
     async (loss) => {
       const saved = await x.publish('并发保护-' + loss);
       const run = await x.run();
-      const prepared = Promise.withResolvers<void>(),
-        release = Promise.withResolvers<void>();
+      const prepared = referenceGate(),
+        release = referenceGate();
       const prepare = search.prepareReferenceText;
       const barrier = vi
         .spyOn(search, 'prepareReferenceText')
@@ -311,8 +319,8 @@ suite('R3 actual-read receipts and private Run authority', () => {
       fileName: '覆盖范围保密.txt',
     });
     const run = await x.run();
-    const prepared = Promise.withResolvers<void>(),
-      release = Promise.withResolvers<void>();
+    const prepared = referenceGate(),
+      release = referenceGate();
     const prepare = search.prepareReferenceSearch;
     const barrier = vi
       .spyOn(search, 'prepareReferenceSearch')
