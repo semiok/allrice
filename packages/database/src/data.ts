@@ -1,4 +1,3 @@
-import { employeeMemoryReadPredicate } from './workspace/employee-memory-read.ts';
 import type { ResourcePrincipal } from './resource-principal.ts';
 import { randomUUID } from 'node:crypto';
 
@@ -6,7 +5,6 @@ import {
   ObjectKeySchema,
   StorageCategorySchema,
   UuidSchema,
-  VectorRecallInputSchema,
   VisibilitySchema,
   authorizeResource,
   makeObjectKey,
@@ -20,7 +18,6 @@ import type { TransactionSql } from 'postgres';
 
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
-import { readContentPrincipal } from './content-maintenance.ts';
 import { workbenchFileAccess } from './workbench-file-access.ts';
 
 const CreateStorageMetadataSchema = z
@@ -365,7 +362,7 @@ export async function completeStorageDelete(
     where object_id = ${row.id} and revoked_at is null
   `;
   await sql.begin(async (transaction) => {
-    const memories = await transaction<{ id: string }[]>`
+    await transaction`
       update allrice_memories
       set archived_at = now(), updated_at = now()
       where organization_id = ${context.organizationId}
@@ -375,14 +372,6 @@ export async function completeStorageDelete(
         and archived_at is null
       returning id
     `;
-    if (memories.length > 0) {
-      await transaction`
-        delete from allrice_rag_chunks
-        where organization_id = ${context.organizationId}
-          and workspace_id = ${row.workspace_id}
-          and memory_id in ${transaction(memories.map((memory) => memory.id))}
-      `;
-    }
   });
   await audit({
     context,
@@ -452,54 +441,6 @@ export async function resolveStorageGrant(grant: SignedAccessGrant) {
   );
   if (access && !access.canRead) throw new DataAccessError('grant_invalid');
   return mapStoredFile(row);
-}
-
-function vectorLiteral(values: number[]) {
-  return `[${values.join(',')}]`;
-}
-
-type RecalledMemoryChunk = {
-  id: string;
-  memory_id: string;
-  content: string;
-  owner_id: string;
-  similarity: number;
-};
-
-export async function recallRagChunks(context: RequestContext, input: unknown) {
-  const query = VectorRecallInputSchema.parse(input);
-  const owner = actorId(context);
-  if (!hasWorkspaceMembership(context, query.workspaceId))
-    throw new DataAccessError('authorization_denied');
-  const embedding = vectorLiteral(query.embedding);
-  return getDatabase().begin(async (sql): Promise<RecalledMemoryChunk[]> => {
-    const { employeeMemoryScope } =
-      await import('./workspace/employee-memory.ts');
-    if (
-      !(await readContentPrincipal(
-        { ...context, workspaceId: query.workspaceId },
-        sql,
-      ))
-    )
-      throw new DataAccessError('authorization_denied');
-    // These are memory chunks, not the enterprise knowledge source. Missing
-    // instance authority cannot fall back to a legacy shared review.
-    if (!query.instanceId) return [];
-    const scope = await employeeMemoryScope(
-      context,
-      query.workspaceId,
-      query.instanceId,
-      sql,
-    );
-    return sql<RecalledMemoryChunk[]>`
-      select c.id,c.memory_id,c.content,c.owner_id,1-(c.embedding <=> ${embedding}::vector) similarity
-      from allrice_rag_chunks c join allrice_memories m
-        on m.id=c.memory_id and m.organization_id=c.organization_id and m.workspace_id=c.workspace_id
-      where c.organization_id=${context.organizationId} and c.workspace_id=${query.workspaceId}
-        and (c.owner_id=${owner} or c.visibility<>'private')
-        and ${employeeMemoryReadPredicate(sql, scope)}
-      order by c.embedding <=> ${embedding}::vector limit ${query.limit}`;
-  });
 }
 
 export function newStorageObjectId() {

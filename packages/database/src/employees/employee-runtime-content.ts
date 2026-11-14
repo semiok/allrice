@@ -1,5 +1,4 @@
 import {
-  ExperienceReadPinsSchema,
   BrandContentWorkflowInvocationSchema,
   BrandFeedbackInputSchema,
   BrandContextContentSchema,
@@ -9,8 +8,6 @@ import {
 import { BrandContentError } from '../brand-content/rules.ts';
 import type { BrandContentIdentity } from '../brand-content/types.ts';
 import { ArtifactReviewError } from '../artifact-review.ts';
-import { assertExperienceReadPins } from '../experience-adoption.ts';
-import { ExperienceError } from '../experience.ts';
 import {
   assertPersonalSkillsReadable,
   assertPersonalSkillPins,
@@ -495,12 +492,9 @@ async function assertPersonalProvenance(
   sql: ContentSql,
 ) {
   await assertBrandProvenance(reader, row, sql);
-  try {
-    await assertExperienceReadPins(reader, row.experience_reads, sql);
-  } catch (error) {
-    if (error instanceof ExperienceError) return unavailable();
-    throw error;
-  }
+  // Historical experience receipts cannot authorize content after retirement.
+  if (!Array.isArray(row.experience_reads) || row.experience_reads.length)
+    return unavailable();
   const raw = row.has_personal_skills ? row.personal_skills : undefined;
   const pins = row.native_personal_pins ?? [];
   if (row.has_personal_skills || pins.length) {
@@ -553,22 +547,6 @@ async function brandSourceSessions(
     contextIds = new Set([invocation.input.contextRevisionId]),
     feedbackIds = new Set((invocation.input.feedback ?? []).map((f) => f.id)),
     objectIds = new Set<string>();
-  const reports = (invocation.input.experiences ?? []).map(
-    (e) => e.retrospectiveId,
-  );
-  if (reports.length) {
-    const rows = await sql<
-      { session_id: string; context_id: string; feedback_ids: string[] }[]
-    >`
-      select session_id,context_id,feedback_ids from allrice_brand_content_retrospectives
-      where id in ${sql(reports)} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
-        and instance_id=${invocation.instanceId} and brand_id=${invocation.input.brandId}`;
-    for (const row of rows) {
-      sessions.add(row.session_id);
-      contextIds.add(row.context_id);
-      for (const id of row.feedback_ids) feedbackIds.add(id);
-    }
-  }
   const receiptIds = new Set<string>();
   if (feedbackIds.size) {
     const rows = await sql<
@@ -1338,7 +1316,7 @@ export async function prepareEmployeeContentContext(scope: RunScope) {
       ...current,
       generationId: context!.generation_id,
       nativeContextKey:
-        ExperienceReadPinsSchema.parse(run.experience_reads ?? []).length ||
+        (Array.isArray(run.experience_reads) && run.experience_reads.length) ||
         run.brand_workflow ||
         run.personal_skills ||
         current.scenes.length ||

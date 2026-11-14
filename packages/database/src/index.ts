@@ -34,7 +34,6 @@ export {
   assertEmployeeChatHumanSource,
   readEmployeeChatSourceKind,
 } from './employees/employee-chat-authority.ts';
-export { filterEmployeeMethodMemories } from './employees/employee-content-chat.ts';
 export * from './employees/employee-runtime-content.ts';
 export * from './organization-departments.ts';
 export * from './organization-employee-assignments.ts';
@@ -48,9 +47,7 @@ export {
   EmployeeMemoryCapacityError,
 } from './workspace/employee-memory.ts';
 export * from './workspace-readiness.ts';
-export * from './experience.ts';
 export { collectPendingMemorySources } from './memory-source-evidence.ts';
-export { collectPendingExperienceEvidence } from './experience-evidence.ts';
 export * from './bridge.ts';
 export * from './workbench-terminal.ts';
 export * from './local-files.ts';
@@ -240,20 +237,8 @@ export * from './employees/personal-skill-versions.ts';
 export * from './employees/personal-skill-browser.ts';
 export * from './employees/employee-skill-catalog.ts';
 
-export * from './experience-consolidation.ts';
-export { getExperienceOverview } from './experience-overview.ts';
-export {
-  syncExperienceValidations,
-  experienceValidationStillCurrent,
-} from './experience-validation.ts';
-export * from './experience-consolidation-contracts.ts';
 export { runtimePolicyDigest } from './runtime-policy.ts';
 
-export {
-  syncExperienceAdoptions,
-  reassessReportStyleAdoption,
-} from './experience-adoption.ts';
-export { prepareRunExperiences } from './experience-runtime.ts';
 export {
   prepareRunMemoryContext,
   readRunMemoryOrdinal,
@@ -261,8 +246,6 @@ export {
   MemoryContextError,
   type RunMemoryAuthority,
 } from './run-memory-context.ts';
-export { readRunExperienceSource } from './run-experience-source.ts';
-export { getExperienceProvenance } from './experience-provenance.ts';
 
 export {
   NativeRootOriginSchema,
@@ -371,11 +354,6 @@ export {
   type NativeCalendarPlan,
   type NativeCalendarDecision,
 } from './native-schedule-calendar-business-state.ts';
-export {
-  experienceNativeCalendarEnabled,
-  lockExperienceCalendarAdmissions,
-  materializeExperienceNativeCalendar,
-} from './experience-native.ts';
 export type { NativeRecurringPartitionControl } from './native-schedule-recurring-loader.ts';
 export type { NativeRecurringControl } from './native-schedule-recurring-state.ts';
 export {

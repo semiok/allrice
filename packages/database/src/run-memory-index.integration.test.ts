@@ -21,10 +21,8 @@ import {
 import {
   assertRunMemoryContextCurrent,
   prepareRunMemoryContext,
-  readRunMemoryContext,
   readRunMemoryOrdinal,
 } from './run-memory-context.ts';
-import { readRunExperienceSource } from './run-experience-source.ts';
 import { executeRiceTool } from '../../../apps/worker/src/tool-broker.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import { savePlatformEmployeeDraft } from './employees/platform-employees.ts';
@@ -165,7 +163,7 @@ suite(
           ...source.definition,
           capabilities: {
             ...source.definition.capabilities,
-            toolNames: ['workspace.skill.read', 'workspace.memory.search'],
+            toolNames: ['workspace.skill.read', 'workspace.memory.read'],
           },
         },
       });
@@ -370,7 +368,7 @@ suite(
         content,summary,visibility,source_type,lifecycle_state,trust_level)
         select ${f.org},${f.workspace},${f.user},${f.assignment},${f.employee},'待确认','待确认','private','user','candidate','derived'
         from generate_series(1,73)`;
-      const excluded = Array.from({ length: 9 }, () => randomUUID());
+      const excluded = Array.from({ length: 6 }, () => randomUUID());
       await fixture.db`insert into allrice_memories(id,organization_id,workspace_id,owner_id,instance_id,employee_id,
         content,summary,visibility,source_type,lifecycle_state,trust_level,captured_at)
         select id,${f.org},${f.workspace},${f.user},${f.assignment},${f.employee},'隔离规则','隔离规则','private','user','durable','user_confirmed',clock_timestamp()-interval '2 days'
@@ -381,29 +379,6 @@ suite(
       await fixture.db`update allrice_memories set employee_id=null where id=${excluded[3]!}`;
       const [source] =
         await fixture.db`select * from allrice_employee_runs where run_id=${f.rootRunId}`;
-      for (const [i, status] of ['pending', 'approved'].entries()) {
-        await fixture.db`insert into allrice_experience_reviews(memory_id,organization_id,workspace_id,owner_id,client_request_id,
-          request_digest,run_id,session_id,message_id,source_excerpt,source_digest,proposed_digest,requested_scope,share_acknowledged,
-          status,reviewed_by,reviewed_at,review_reason)
-          values(${excluded[4 + i]!},${f.org},${f.workspace},${f.user},${randomUUID()},${'sha256:' + 'a'.repeat(64)},${f.rootRunId},${f.session},
-            ${source!.user_message_id},'Synthetic review',${'sha256:' + 'b'.repeat(64)},${'sha256:' + 'c'.repeat(64)},'private',false,
-            ${status},${status === 'approved' ? f.user : null},${status === 'approved' ? new Date() : null},${status === 'approved' ? 'Synthetic approval' : null})`;
-      }
-      const brand = randomUUID(),
-        context = randomUUID(),
-        retrospective = randomUUID();
-      await fixture.db.begin(async (tx) => {
-        await tx`insert into allrice_brand_content_brands(id,organization_id,workspace_id,owner_id,instance_id,name,revision,current_context_id)
-          values(${brand},${f.org},${f.workspace},${f.user},${f.assignment},'Synthetic brand',1,${context})`;
-        await tx`insert into allrice_brand_content_contexts(id,organization_id,workspace_id,owner_id,instance_id,brand_id,number,brand_name,content,digest)
-          values(${context},${f.org},${f.workspace},${f.user},${f.assignment},${brand},1,'Synthetic brand','{}',${'sha256:' + 'd'.repeat(64)})`;
-        await tx`insert into allrice_brand_content_retrospectives(id,organization_id,workspace_id,owner_id,instance_id,brand_id,context_id,platform,
-          feedback_ids,output,source_text,run_id,session_id,workflow)
-          values(${retrospective},${f.org},${f.workspace},${f.user},${f.assignment},${brand},${context},'synthetic',${[randomUUID()]}::uuid[],
-            '{}','Synthetic source',${f.rootRunId},${f.session},'{}')`;
-        await tx`insert into allrice_brand_content_experiences(memory_id,organization_id,workspace_id,owner_id,instance_id,brand_id,retrospective_id,context_id,platform)
-          values(${excluded[6]!},${f.org},${f.workspace},${f.user},${f.assignment},${brand},${retrospective},${context},'synthetic')`;
-      });
       const methodRun = randomUUID(),
         userMessage = randomUUID(),
         assistantMessage = randomUUID();
@@ -416,7 +391,7 @@ suite(
         session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,execution_snapshot,method_authoring)
         values(${methodRun},${f.org},${f.workspace},${f.user},${f.assignment},${f.version},${f.session},${userMessage},${assistantMessage},
           ${fixture.db.json(source!.provider_snapshot)},'{}',${fixture.db.json(source!.execution_snapshot)},true)`;
-      await fixture.db`update allrice_memories set source_type='message',source_id=${userMessage} where id=${excluded[7]!}`;
+      await fixture.db`update allrice_memories set source_type='message',source_id=${userMessage} where id=${excluded[4]!}`;
       const checkpointId = randomUUID();
       const checkpoint = {
         sessionId: f.session,
@@ -434,7 +409,7 @@ suite(
         thread_generation,covered_through_message_id,summary_version,summary,checksum,config_checksum,estimated_tokens,message_count)
         values(${checkpointId},${f.org},${f.workspace},${f.session},${f.user},'dsh',null,0,${userMessage},'extractive-v1',
           ${checkpoint.summary},${contextCheckpointChecksum(checkpoint)},${checkpoint.configChecksum},10,1)`;
-      await fixture.db`update allrice_memories set source_type='checkpoint',source_id=${checkpointId} where id=${excluded[8]!}`;
+      await fixture.db`update allrice_memories set source_type='checkpoint',source_id=${checkpointId} where id=${excluded[5]!}`;
       const ownerContext = (await authenticateSession(
         (await createSession(f.user)).token,
         { organizationId: f.org, workspaceId: f.workspace },
@@ -457,12 +432,7 @@ suite(
         f.projection.memoryContextStateV2,
       );
       await expect(
-        prepareRunMemoryContext(
-          f.auth,
-          [],
-          f.projection.employeeDocuments.memory,
-          2,
-        ),
+        prepareRunMemoryContext(f.auth, f.projection.employeeDocuments.memory),
       ).resolves.toEqual([]);
       const before = await state(f.rootRunId);
       await expect(
@@ -547,9 +517,7 @@ suite(
       const spent = await state(f.rootRunId);
       await prepareRunMemoryContext(
         f.auth,
-        [],
         f.projection.employeeDocuments.memory,
-        2,
       );
       expect(await state(f.rootRunId)).toEqual(spent);
       const next = await freezeEmployeeMemoryIndexV2(
@@ -591,16 +559,8 @@ suite(
       expect((await state(g.rootRunId)).toolReads).toBe(1);
     });
 
-    it('never uses the legacy search/source pipeline for v2 and rejects corrupt, old or ungranted state', async () => {
+    it('rejects corrupt, retired or ungranted memory state', async () => {
       const f = await setup();
-      const oldSearch = vi.fn(async () => []);
-      await expect(
-        readRunMemoryContext(f.auth, 'memory_search', oldSearch),
-      ).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_UNAVAILABLE' });
-      expect(oldSearch).not.toHaveBeenCalled();
-      await expect(
-        readRunExperienceSource(f.auth, `experience:sha256:${'a'.repeat(64)}`),
-      ).rejects.toMatchObject({ code: 'MEMORY_CONTEXT_UNAVAILABLE' });
       for (const input of [
         { number: 0 },
         { number: 101 },
@@ -620,9 +580,7 @@ suite(
         await expect(
           prepareRunMemoryContext(
             f.auth,
-            [],
             f.projection.employeeDocuments.memory,
-            2,
           ),
         ).rejects.toThrow();
         expect(await state(f.rootRunId)).toEqual(old);

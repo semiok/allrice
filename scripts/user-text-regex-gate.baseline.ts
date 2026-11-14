@@ -29,54 +29,6 @@ export const baseline: readonly BaselineEntry[] = [
     ],
   },
   {
-    file: 'packages/contracts/src/experience-adoption.ts',
-    owner: 'completeAttendanceRule',
-    kind: 'reject',
-    use: '模型整理的“到场统计”经验草稿必须逐句等于固定句式，否则不能采纳（MET-210 #1 第 4 步）',
-    sites: [
-      String.raw`test(/^(?:统计到场情况时[，,]?)?(?:依据|根据)原始(?:名单|名册)(?:和明确的(?:人员)?到场状态)?[，,]?分别(?:核对|统计)到场(?:和|与|、)(?:未到|缺席)人数$/u)`,
-      String.raw`test(/^(?:并)?(?:在结果中)?分项列出$/u)`,
-      String.raw`test(/^缺少(?:名单|名册)或状态不明时[，,]?不推算人数$/u)`,
-      String.raw`test(/^(?:统计到场情况时[，,]?)?(?:依据|根据)原始(?:名单|名册)(?:和明确的(?:人员)?到场状态)?[，,]?分别(?:(?:核对|统计)到场(?:和|与|、)(?:未到|缺席)人数[，,]?(?:并)?(?:在结果中)?分项列出|统计并列出到场(?:和|与|、)(?:未到|缺席)人数)$/u)`,
-      String.raw`test(/^(?:适用于)?有原始(?:名单|名册)且(?:人员)?到场状态明确的人员统计任务$/u)`,
-      String.raw`test(/^不适用于缺少(?:名单|名册)或状态不明时推算人数$/u)`,
-    ],
-  },
-  {
-    file: 'packages/contracts/src/experience-adoption.ts',
-    owner: 'completeReportStyle',
-    kind: 'reject',
-    use: '模型整理的“报告风格”经验草稿必须等于固定句式，否则不能采纳（MET-210 #1 第 4 步）',
-    sites: [
-      String.raw`RegExp(/^(?:仅|只)?适用于同类报告的措辞与篇幅选择[，,。.;；]不(?:推及|推广到|扩展到)(?:所有|其他)文体[，,。.;；](?:也)?不覆盖明确的详细说明要求$/u)`,
-      String.raw`RegExp(/^(?:撰写|编写|输出|交付)同类报告时[，,]?在保留必要信息的前提下优先(?:采用|使用|保持)(?:简洁|简短)[、，,]清晰的(?:表达|说明)$/u)`,
-      String.raw`RegExp(/^面向该用户[、，,](?:包含|含有)(?:多个(?:可区分|独立)?要点|多要点)的同类报告[，,。.;；]有(?:明确|指定)格式要求时(?:遵循|按)(?:该(?:格式)?)?要求$/u)`,
-      String.raw`RegExp(/^(?:(?:撰写|编写|输出|交付)(?:(?:包含|含有)?(?:多个(?:可区分|独立)?要点|多要点)的)?报告时|(?:当)?报告(?:包含|含有)(?:多个(?:可区分|独立)?要点|多要点)时)[，,]?(?:优先)?(?:(?:采用|使用|保持)(?:(?:分点|分项|分条)(?:方式|结构|(?:表达|说明)(?:的结构)?)|条理清晰的(?:方式|表达|说明|结构))|(?:按要点)?(?:分点|分项|分条)(?:说明|表达))[，,。.;；](?:便于|方便)逐项阅读$/u)`,
-      String.raw`test(/^(?:仅|只)适用于报告的表达方式[，,。.;；：:]?不改变业务规则[、，,]?计算口径[、，,]?或执行步骤$/u)`,
-      String.raw`test(RegExp(/^(?:(?:仅|只)?适用于(?:包含|含有)?(?:多个(?:可区分|独立)?要点|多要点)[、，,]?(?:且|并且)无指定格式要求的(?:同类)?报告[，,。.;；]不(?:推及|推广到|扩展到)(?:所有|其他)文体|(?:仅|只)?适用于(?:同类)?(?:包含|含有)?(?:多个(?:可区分|独立)?要点|多要点)(?:的)?报告[，,。.;；]有(?:明确|指定)格式要求时(?:遵循|按)(?:该(?:格式)?)?要求[，,。.;；]不(?:推及|推广到|扩展到)(?:所有|其他)文体)$/u))`,
-      String.raw`RegExp(/^(?:(?:撰写|编写|输出|交付)(?:(?:包含|含有)?(?:多个(?:可区分|独立)?要点|多要点)的)?报告时|(?:当)?报告(?:包含|含有)(?:多个(?:可区分|独立)?要点|多要点)时)[，,]?(?:优先)?(?:(?:采用|使用|保持)(?:(?:分点|分项|分条)(?:方式|结构|(?:表达|说明)(?:的结构)?)|条理清晰的(?:方式|表达|说明|结构))|(?:按要点)?(?:分点|分项|分条)(?:说明|表达))$/u)`,
-      String.raw`RegExp(/^(?:(?:撰写|编写|输出|交付)(?:(?:包含|含有)?(?:多个(?:可区分|独立)?要点|多要点)的)?报告时|(?:当)?报告(?:包含|含有)(?:多个(?:可区分|独立)?要点|多要点)时)[，,]?(?:优先)?(?:采用|使用|保持)(?:简洁|简短)(?:的)?(?:方式|表达|说明)$/u)`,
-    ],
-  },
-  {
-    file: 'packages/contracts/src/experience-adoption.ts',
-    owner: 'explicitExperienceForgetRequest',
-    kind: 'reject',
-    use: '“忘记某条经验”必须是固定句式、目标带引号，否则不执行删除',
-    sites: [
-      String.raw`/^(?:请|帮我|请帮我)?(?:忘记|忘掉|删除|撤回|撤销)(?:你(?:自动)?整理的|已整理的)?[“「"]([^”」"\n]{1,4000})[”」"](?:这条)?(?:个人)?(?:经验|记忆)[，,。！.!]?(?:\s*以后不要自动采用[。！.!]?)?$/u`,
-    ],
-  },
-  {
-    file: 'packages/contracts/src/experience-adoption.ts',
-    owner: 'supportsDirectReportPreference',
-    kind: 'reject',
-    use: '用户反馈必须是“这份报告分点说明很清晰”这类固定说法，才算报告风格的偏好证据，否则不采纳',
-    sites: [
-      'RegExp(/^(?:反馈|我已核对)?(?:这份|本次的|这个)?报告${(?:分点|分项|条理清晰)|(?:简洁|简短)}(?:说明|表达)?(?:很)?(?:清晰|方便|合适)(?:阅读起来很方便)?$/u)',
-    ],
-  },
-  {
     file: 'packages/database/src/employees/once-task-intent.ts',
     owner: 'explicitOnceTaskIntent',
     kind: 'reject',
@@ -220,13 +172,6 @@ export const baseline: readonly BaselineEntry[] = [
   },
 
   {
-    file: 'packages/database/src/experience-runtime.ts',
-    owner: 'targetMatches',
-    kind: 'reject',
-    use: '“忘记”的目标必须逐字等于固定的经验文案，否则判为找不到、不执行',
-    sites: [String.raw`=== "到场和未到人数分项列出"`],
-  },
-  {
     file: 'apps/worker/src/harness/dsh-adapter.ts',
     owner: 'nativeToolFailureSummary',
     kind: 'decide',
@@ -236,17 +181,6 @@ export const baseline: readonly BaselineEntry[] = [
       String.raw`/无法独立确认域名/`,
       String.raw`/childRunId|当前任务没有这个子智能体/`,
       String.raw`/WEB_TIMEOUT|网页读取超时/`,
-    ],
-  },
-  {
-    file: 'packages/contracts/src/experience-adoption.ts',
-    owner: 'experienceAppliesToRequest',
-    kind: 'decide',
-    use: '按原话里有没有“报告”“到场/名单”等词，决定是否套用已采纳的经验',
-    sites: [
-      String.raw`/报告/u`,
-      String.raw`/(?:到场|签到|缺席|未到)/u`,
-      String.raw`/(?:名单|名册|人数|统计|核对)/u`,
     ],
   },
   {

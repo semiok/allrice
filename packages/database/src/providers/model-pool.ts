@@ -14,7 +14,6 @@ import {
   modelProviderRuntimeSupported,
   SaasCapabilityManifestSchema,
   SessionModelSnapshotSchema,
-  ExperienceModelSnapshotSchema,
   UpdateModelConnectionInputSchema,
   UpsertEmployeeModelPolicyInputSchema,
   UpsertModelConnectionInputSchema,
@@ -756,33 +755,6 @@ async function freezeEmployeeModelTarget(
     resolvedFallbacks: [],
     frozenAt: new Date().toISOString(),
   };
-}
-
-/** Internal occurrence identity is separate from any product chat Session. */
-export async function freezeExperienceModelSnapshot(
-  input: {
-    organizationId: string;
-    workspaceId: string;
-    employeeId: string;
-    ownerId: string;
-    occurrenceId: string;
-  },
-  database?: ModelPoolSql,
-) {
-  const target = await freezeEmployeeModelTarget(input, database);
-  return ExperienceModelSnapshotSchema.parse({
-    ...target,
-    schemaVersion: 2,
-    sessionId: null,
-    occurrenceId: input.occurrenceId,
-    runLimits: {
-      ...target.runLimits,
-      timeoutMs: Math.min(target.runLimits.timeoutMs || 300000, 300000),
-      maxInputTokens: Math.min(target.runLimits.maxInputTokens, 24000),
-      maxOutputTokens: Math.min(target.runLimits.maxOutputTokens, 4000),
-      maxTotalTokens: Math.min(target.runLimits.maxTotalTokens, 28000),
-    },
-  });
 }
 
 export async function freezeSessionModelSnapshot(

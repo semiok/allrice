@@ -4,14 +4,12 @@ import type {
   ClaimedJobHandlerInput,
 } from '../job-runner.js';
 import { executeEmployeeRun } from './employee-run.js';
-import { executeExperienceConsolidation } from './experience-consolidation.js';
 import { executePlatformTechnicalTask } from './platform-technical.js';
 import { executePlatformRepositoryAction } from './platform-repository.js';
 import { executePlatformRepositoryMerge } from './platform-repository-merge.js';
 import { executeSystemEcho } from './system-echo.js';
 
 const handlers = {
-  'allrice.experience.consolidate': executeExperienceConsolidation,
   'allrice.employee.run': executeEmployeeRun,
   'allrice.platform.technical': executePlatformTechnicalTask,
   'allrice.platform.repository': executePlatformRepositoryAction,

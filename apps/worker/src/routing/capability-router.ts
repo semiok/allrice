@@ -123,7 +123,6 @@ function toolTerms(name: string, description: string) {
   const specific: Record<string, string[]> = {
     'workspace.file.list': ['文件', '文档', '列出文件', 'list files'],
     'workspace.file.read': ['读取文件', '打开文件', 'read file'],
-    'workspace.memory.search': ['记忆', '以前说过', 'memory'],
     'workspace.memory.remember': [
       '记住',
       '记下',

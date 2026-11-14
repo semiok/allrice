@@ -12,11 +12,6 @@ import { WorkMethodSchema } from './work-methods.ts';
 import { TimestampSchema, UuidSchema, VisibilitySchema } from './common.ts';
 import { officeMediaTypes } from './office-quality.ts';
 import { KnowledgeCitationSchema } from './knowledge.ts';
-import {
-  MemoryClassSchema,
-  MemoryLifecycleStateSchema,
-  MemorySourceTypeSchema,
-} from './operations.ts';
 import { UserQuestionAnswerSubmissionSchema } from './user-questions.ts';
 import { ChangesetActionInputSchema } from './runtime-v2/changeset-execution.ts';
 
@@ -359,57 +354,4 @@ export const CreateSessionAttachmentInputSchema = z
 
 export const LinkSessionAttachmentInputSchema = z
   .object({ objectId: UuidSchema })
-  .strict();
-
-export const CreateWorkspaceMemoryInputSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    instanceId: UuidSchema.optional(),
-    idempotencyKey: UuidSchema.optional(),
-    employeeId: UuidSchema.nullable().default(null),
-    content: z.string().trim().min(1).max(100_000),
-    visibility: VisibilitySchema.default('private'),
-    sourceType: MemorySourceTypeSchema,
-    sourceId: UuidSchema.nullable().default(null),
-    sourceLabel: z.string().trim().min(1).max(240).default('用户保存的记忆'),
-    lifecycleState: MemoryLifecycleStateSchema.default('durable'),
-    memoryClass: MemoryClassSchema.default('work_note'),
-    confidence: z.number().min(0).max(1).default(1),
-    expiresAt: TimestampSchema.nullable().default(null),
-  })
-  .strict();
-
-export const WorkspaceMemorySchema = z
-  .object({
-    id: UuidSchema,
-    organizationId: UuidSchema,
-    workspaceId: UuidSchema,
-    employeeId: UuidSchema.nullable(),
-    instanceId: UuidSchema.nullable(),
-    contentDigest: z.string(),
-    ownerId: UuidSchema,
-    content: z.string(),
-    visibility: VisibilitySchema,
-    sourceType: MemorySourceTypeSchema,
-    sourceId: UuidSchema.nullable(),
-    lifecycleState: MemoryLifecycleStateSchema,
-    memoryClass: MemoryClassSchema,
-    revision: z.number().int().positive(),
-    trust: z.enum([
-      'user_confirmed',
-      'platform_verified',
-      'derived',
-      'untrusted_external',
-    ]),
-    confidence: z.number().min(0).max(1),
-    sourceLabel: z.string(),
-    capturedAt: TimestampSchema,
-    expiresAt: TimestampSchema.nullable(),
-    lastVerifiedAt: TimestampSchema.nullable(),
-    supersedesMemoryId: UuidSchema.nullable(),
-    lastRecalledAt: TimestampSchema.nullable(),
-    recallCount: z.number().int().nonnegative(),
-    createdAt: TimestampSchema,
-    updatedAt: TimestampSchema,
-  })
   .strict();

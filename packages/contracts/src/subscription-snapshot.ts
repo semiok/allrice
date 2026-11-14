@@ -2,8 +2,6 @@ import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import {
   SessionModelSnapshotSchema,
-  ExperienceModelSnapshotSchema,
-  type ExperienceModelSnapshot,
   type SessionModelSnapshot,
 } from './models.ts';
 import {
@@ -45,9 +43,8 @@ export type SubscriptionSnapshot = z.infer<typeof SubscriptionSnapshotSchema>;
 /** Fail closed for any claimed Codex route. Only an unambiguously non-Codex
  * selection returns undefined; model/browser text never supplies this input. */
 export function resolveSubscriptionSnapshot(input: {
-  sessionId?: string;
-  occurrenceId?: string;
-  modelSnapshot: SessionModelSnapshot | ExperienceModelSnapshot | undefined;
+  sessionId: string;
+  modelSnapshot: SessionModelSnapshot | undefined;
   decision: Pick<
     RouteDecision,
     | 'employeeId'
@@ -70,10 +67,7 @@ export function resolveSubscriptionSnapshot(input: {
   const deny = (): never => {
     throw Error('ASSISTANT_SUBSCRIPTION_ROUTE_UNVERIFIED');
   };
-  if (Boolean(input.sessionId) === Boolean(input.occurrenceId)) return deny();
-  const parsed = input.occurrenceId
-    ? ExperienceModelSnapshotSchema.safeParse(input.modelSnapshot)
-    : SessionModelSnapshotSchema.safeParse(input.modelSnapshot);
+  const parsed = SessionModelSnapshotSchema.safeParse(input.modelSnapshot);
   const native = DshExecutionSnapshotSchema.safeParse(runtime);
   if (!parsed.success || !native.success) return deny();
   const frozen = parsed.data;
@@ -88,11 +82,7 @@ export function resolveSubscriptionSnapshot(input: {
   );
   if (
     targets.length !== 1 ||
-    (frozen.schemaVersion === 2
-      ? frozen.occurrenceId !== input.occurrenceId ||
-        input.sessionId !== undefined
-      : frozen.sessionId !== input.sessionId ||
-        input.occurrenceId !== undefined) ||
+    frozen.sessionId !== input.sessionId ||
     frozen.employeeId !== route.employeeId ||
     frozen.policyRevision !== route.modelPolicyRevision
   )
@@ -114,15 +104,12 @@ export function resolveSubscriptionSnapshot(input: {
   )
     return deny();
   return SubscriptionSnapshotSchema.parse({
-    version: frozen.schemaVersion === 2 ? 2 : 1,
+    version: 1,
     billingMode: 'subscription',
     harness: 'dsh',
     provider: 'openai-codex',
     authMode: 'chatgpt_subscription',
     sessionId: frozen.sessionId,
-    ...(frozen.schemaVersion === 2
-      ? { occurrenceId: frozen.occurrenceId }
-      : {}),
     employeeId: frozen.employeeId,
     connectionId: target.connectionId,
     modelCatalogEntryId: target.modelCatalogEntryId,

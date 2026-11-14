@@ -1,4 +1,3 @@
-export * from './employee-memory-management.ts';
 export * from './personal-employee-memory.ts';
 export * from './base-rice.ts';
 export * from './image-generation.ts';
@@ -67,7 +66,6 @@ export * from './common.ts';
 export * from './employees.ts';
 export * from './task-suggestions.ts';
 export * from './employee-colors.ts';
-export * from './experience.ts';
 export * from './memory-source.ts';
 export * from './employee-model-settings.ts';
 export * from './framework.ts';
@@ -159,10 +157,7 @@ export * from './project-dependency-resolution.ts';
 export * from './project-tool-releases.ts';
 
 export * from './project-resolution-script.ts';
-export * from './experience-validation.ts';
 
-export * from './experience-adoption.ts';
-export * from './experience-provenance.ts';
 export * from './memory-context.ts';
 export * from './memory-index.ts';
 

@@ -47,7 +47,6 @@ import {
   sendChatMessage,
   createPersonalEmployeeMemory,
 } from '../workspace/service.ts';
-import { freezeEmployeeDocuments } from './employee-documents.ts';
 import {
   createEmployeeInstance,
   getEmployeeInstance,
@@ -882,22 +881,13 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
           );
           const documents = promptSnapshot.employeeDocuments;
           if (!documents?.persona) throw Error('expected real documents');
-          const legacyProjection = await freezeEmployeeDocuments(
-            transaction ?? fixture.db,
-            {
-              organizationId: f.organizationId,
-              workspaceId: f.workspaceId,
-              ownerId: f.ownerId,
-              instanceId: instance.id,
-            },
-            promptSnapshot.organizationContext ?? {},
-            false,
-          );
           delete promptSnapshot.employeeDocuments;
-          promptSnapshot.memories = legacyProjection.memories;
+          promptSnapshot.memories = [];
           if (shape === 'user_memory_only')
-            promptSnapshot.employeeDocuments =
-              legacyProjection.employeeDocuments;
+            promptSnapshot.employeeDocuments = {
+              user: documents.user,
+              memory: '',
+            };
           promptSnapshot.systemPrompt +=
             '\n\n# IDENTITY.md\nHISTORICAL_UNMIGRATED_SYSTEM {{literal}}';
           const { memoryContextStateV2, ...historicalBinding } = binding;

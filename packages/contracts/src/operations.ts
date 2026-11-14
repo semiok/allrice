@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { TimestampSchema, UuidSchema, VisibilitySchema } from './common.ts';
+import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 
 export const MemoryTrustSchema = z.enum([
@@ -31,89 +31,6 @@ export const MemorySourceTypeSchema = z.enum([
   'checkpoint',
 ]);
 export type MemorySourceType = z.infer<typeof MemorySourceTypeSchema>;
-
-export const MemoryProvenanceSchema = z
-  .object({
-    sourceType: MemorySourceTypeSchema,
-    sourceId: UuidSchema.nullable(),
-    sourceLabel: z.string().trim().min(1).max(240),
-    trust: MemoryTrustSchema,
-    confidence: z.number().min(0).max(1),
-    capturedAt: TimestampSchema,
-  })
-  .strict();
-
-export const GovernedMemorySchema = z
-  .object({
-    id: UuidSchema,
-    organizationId: UuidSchema,
-    workspaceId: UuidSchema,
-    employeeId: UuidSchema.nullable(),
-    ownerId: UuidSchema,
-    content: z.string().min(1).max(100_000),
-    visibility: VisibilitySchema,
-    lifecycleState: MemoryLifecycleStateSchema,
-    memoryClass: MemoryClassSchema,
-    revision: z.number().int().positive(),
-    provenance: MemoryProvenanceSchema,
-    expiresAt: TimestampSchema.nullable(),
-    lastVerifiedAt: TimestampSchema.nullable(),
-    supersedesMemoryId: UuidSchema.nullable(),
-    lastRecalledAt: TimestampSchema.nullable(),
-    recallCount: z.number().int().nonnegative(),
-    createdAt: TimestampSchema,
-    updatedAt: TimestampSchema,
-    archivedAt: TimestampSchema.nullable(),
-  })
-  .strict();
-export type GovernedMemory = z.infer<typeof GovernedMemorySchema>;
-
-export const MemoryRevisionSchema = z
-  .object({
-    id: UuidSchema,
-    organizationId: UuidSchema,
-    workspaceId: UuidSchema,
-    memoryId: UuidSchema,
-    revision: z.number().int().positive(),
-    content: z.string().min(1).max(100_000),
-    trust: MemoryTrustSchema,
-    lifecycleState: MemoryLifecycleStateSchema,
-    memoryClass: MemoryClassSchema,
-    confidence: z.number().min(0).max(1),
-    expiresAt: TimestampSchema.nullable(),
-    reason: z.string().min(1).max(500),
-    changedBy: UuidSchema,
-    changedAt: TimestampSchema,
-  })
-  .strict();
-export type MemoryRevision = z.infer<typeof MemoryRevisionSchema>;
-
-export const MemoryMutationInputSchema = z
-  .object({
-    instanceId: UuidSchema,
-    expectedRevision: z.number().int().positive(),
-    contentDigest: ChecksumSchema,
-    idempotencyKey: UuidSchema,
-  })
-  .strict();
-
-export const CorrectMemoryInputSchema = MemoryMutationInputSchema.extend({
-  content: z.string().trim().min(1).max(100_000),
-  reason: z.string().trim().min(1).max(500),
-  confidence: z.number().min(0).max(1).default(1),
-  expiresAt: TimestampSchema.nullable().default(null),
-}).strict();
-
-export const CreateCheckpointMemoryCandidateInputSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    employeeId: UuidSchema,
-    sessionId: UuidSchema,
-    checkpointId: UuidSchema,
-    content: z.string().trim().min(1).max(100_000),
-    sourceLabel: z.string().trim().min(1).max(240),
-  })
-  .strict();
 
 export const ExecutionTargetKindSchema = z.enum([
   'cloud_sandbox',

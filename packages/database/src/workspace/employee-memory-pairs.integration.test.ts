@@ -12,17 +12,10 @@ import {
 import {
   createPersonalEmployeeMemory,
   correctPersonalEmployeeMemory,
-  createTraceableMemory,
-  correctWorkspaceMemory,
-  promoteWorkspaceMemory,
+  promoteManagedEmployeeMemory,
 } from './service.ts';
-import {
-  memoryContentDigest,
-  memoryPairDigest,
-  legacyPersonalMemoryPair,
-} from './employee-memory.ts';
-import { seedLegacyEmployeeMemory } from './employee-memory-v1.fixture.ts';
-import { embedWorkspaceText } from './memory-recall.ts';
+import { memoryContentDigest, memoryPairDigest } from './employee-memory.ts';
+import { seedPersonalMemoryPair } from './employee-memory-pair.fixture.ts';
 
 const ports = vi.hoisted(() => ({ context: vi.fn() }));
 vi.mock('../../../../apps/web/lib/identity/session', () => ({
@@ -33,7 +26,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 suite(
-  'personal pairs: complete owner writes and legacy PATCH protection',
+  'personal pairs: complete owner writes and retired full-content PATCH rejection',
   () => {
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let PATCH: (
@@ -87,8 +80,7 @@ suite(
       'memory',(select to_jsonb(m) from allrice_memories m where id=${id}),
       'revisions',(select jsonb_agg(to_jsonb(r) order by revision) from allrice_memory_revisions r where memory_id=${id}),
       'receipts',(select jsonb_agg(to_jsonb(o) order by operation_key) from allrice_employee_memory_operations o where memory_id=${id}),
-      'audit',(select jsonb_agg(to_jsonb(a) order by id) from allrice_audit_events a where resource_id=${id}),
-      'chunks',(select jsonb_agg(to_jsonb(c) order by id) from allrice_rag_chunks c where memory_id=${id})
+      'audit',(select jsonb_agg(to_jsonb(a) order by id) from allrice_audit_events a where resource_id=${id})
     ) value`;
       return row!.value;
     }
@@ -120,10 +112,6 @@ suite(
         summary: input.summary,
         details: input.details,
       });
-      expect(saved.chunks).toHaveLength(1);
-      expect(saved.chunks[0].content).toBe(
-        `${input.summary}\n${input.details}`,
-      );
       expect(saved.receipts).toHaveLength(1);
       expect(
         saved.audit.filter(
@@ -149,19 +137,6 @@ suite(
         constraint_name: 'allrice_memories_pair_check',
       });
       expect(await snapshot(a.id)).toEqual(saved);
-      const legacyKey = randomUUID();
-      await expect(
-        createTraceableMemory(f.context, {
-          workspaceId: f.workspace,
-          instanceId: f.assignment,
-          idempotencyKey: legacyKey,
-          sourceType: 'user',
-          content: '🧑'.repeat(2001),
-        }),
-      ).rejects.toMatchObject({ name: 'ZodError' });
-      const [receipts] =
-        await fixture.db`select count(*)::int count from allrice_employee_memory_operations where operation_key=${legacyKey}`;
-      expect(receipts!.count).toBe(0);
     });
     it.each(['月结前不得外发', null])(
       'rejects a new legacy HTTP PATCH at the CURRENT revision, details=%j, with zero writes',
@@ -197,16 +172,11 @@ suite(
           ),
           { params: Promise.resolve({ id: m.id }) },
         );
-        expect(response.status).toBe(409);
+        expect(response.status).toBe(400);
         expect(ApiErrorSchema.parse(await response.json()).error).toMatchObject(
           {
-            code: 'CONFLICT',
+            code: 'INVALID_REQUEST',
             retryable: false,
-            details: {
-              domain: 'employee_memory',
-              reason: 'contract_changed',
-              requiredSchemaVersion: 2,
-            },
           },
         );
         expect(await snapshot(m.id)).toEqual(before);
@@ -247,7 +217,6 @@ suite(
       );
       expect(afterEdit.revisions[0]).toEqual(before.revisions[0]);
       expect(afterEdit.revisions[1].content).toBe(afterEdit.memory.content);
-      expect(afterEdit.chunks[0].content).toBe(afterEdit.memory.content);
       expect(
         await correctPersonalEmployeeMemory(
           f.context,
@@ -277,147 +246,9 @@ suite(
       const afterClear = await snapshot(m.id);
       expect(afterClear.memory.content).toBe(cleared.summary);
       expect(afterClear.revisions[2].content).toBe(cleared.summary);
-      expect(afterClear.chunks[0].content).toBe(cleared.summary);
       await expect(
         correctPersonalEmployeeMemory(f.context, f.workspace, m.id, update),
       ).rejects.toThrow('employee_memory_conflict');
-    });
-    it.each([
-      ['past', 'original'],
-      ['past', 'null'],
-      ['database-now', 'original'],
-      ['database-now', 'null'],
-    ] as const)(
-      'rejects a historical v1 expired HTTP PATCH at %s with %s expiry and zero writes',
-      async (expiry, requestedExpiry) => {
-        const f = await setup();
-        const content = '历史已过期记忆不得复活';
-        const m = await fixture.db.begin(async (tx) => {
-          // Genuine historical v1 row: pair columns are omitted on first INSERT.
-          const [row] = await tx<{ id: string; expires_at: Date }[]>`
-            with timing as (select clock_timestamp() db_now)
-            insert into allrice_memories
-              (organization_id,workspace_id,employee_id,owner_id,instance_id,content,source_type,
-                captured_at,expires_at,created_at,updated_at,last_verified_at)
-            select ${f.org},${f.workspace},${f.employee},${f.user},${f.assignment},${content},'user',
-              db_now-interval '2 days',db_now-${expiry === 'past' ? '1 day' : '0 seconds'}::interval,
-              db_now-interval '2 days',db_now-interval '2 days',db_now-interval '2 days'
-            from timing returning id,expires_at`;
-          await tx`insert into allrice_memory_revisions
-            (organization_id,workspace_id,memory_id,revision,content,trust_level,lifecycle_state,memory_class,
-              confidence,expires_at,reason,changed_by)
-            select organization_id,workspace_id,id,revision,content,trust_level,lifecycle_state,memory_class,
-              confidence,expires_at,'synthetic historical v1 baseline',owner_id from allrice_memories where id=${row!.id}`;
-          const embedding = `[${embedWorkspaceText(content).join(',')}]`;
-          await tx`insert into allrice_rag_chunks(organization_id,workspace_id,memory_id,owner_id,content,embedding)
-            values(${f.org},${f.workspace},${row!.id},${f.user},${content},${embedding}::vector)`;
-          return row!;
-        });
-        const [boundary] =
-          await fixture.db`select expires_at<=clock_timestamp() expired,
-          captured_at<expires_at valid_capture from allrice_memories where id=${m.id}`;
-        expect(boundary).toEqual({ expired: true, valid_capture: true });
-        const before = await snapshot(m.id);
-        expect(before.memory).toMatchObject({
-          summary: null,
-          details: null,
-          archived_at: null,
-          revision: 1,
-        });
-        expect(before.revisions).toHaveLength(1);
-        expect(before.chunks).toHaveLength(1);
-        ports.context.mockResolvedValue(f.context);
-        const response = await PATCH(
-          new Request(
-            `http://localhost/api/v1/memories/${m.id}?workspaceId=${f.workspace}`,
-            {
-              method: 'PATCH',
-              headers: {
-                origin: 'http://localhost',
-                'content-type': 'application/json',
-              },
-              body: JSON.stringify({
-                instanceId: f.assignment,
-                expectedRevision: 1,
-                contentDigest: memoryContentDigest(content),
-                idempotencyKey: randomUUID(),
-                content: '修改过期记忆',
-                reason: '旧编辑器保存',
-                expiresAt:
-                  requestedExpiry === 'original'
-                    ? m.expires_at.toISOString()
-                    : null,
-              }),
-            },
-          ),
-          { params: Promise.resolve({ id: m.id }) },
-        );
-        expect(response.status).toBe(409);
-        expect(response.headers.get('cache-control')).toBe('private, no-store');
-        expect(ApiErrorSchema.parse(await response.json()).error).toMatchObject(
-          {
-            code: 'CONFLICT',
-            retryable: false,
-            details: {
-              domain: 'employee_memory',
-              reason: 'contract_changed',
-              requiredSchemaVersion: 2,
-            },
-          },
-        );
-        expect(await snapshot(m.id)).toEqual(before);
-      },
-    );
-    it('mechanically adapts a genuine unexpired full-content legacy edit, replays its current receipt and then protects the pair', async () => {
-      const f = await setup();
-      const [future] = await fixture.db<{ expires_at: Date }[]>`
-        select clock_timestamp()+interval '1 day' expires_at`;
-      const legacy = {
-        workspaceId: f.workspace,
-        instanceId: f.assignment,
-        idempotencyKey: randomUUID(),
-        content: '旧正文'.repeat(30),
-        sourceType: 'user' as const,
-        expiresAt: future!.expires_at.toISOString(),
-      };
-      const m = await seedLegacyEmployeeMemory(fixture.db, f.context, legacy);
-      const input = {
-        instanceId: f.assignment,
-        expectedRevision: 1,
-        contentDigest: m.contentDigest,
-        idempotencyKey: randomUUID(),
-        content: '完整新正文'.repeat(20),
-        reason: '本人修改旧记忆',
-      };
-      const edited = await correctWorkspaceMemory(
-        f.context,
-        f.workspace,
-        m.id,
-        input,
-      );
-      expect(edited.content).toBe(input.content);
-      expect(edited.expiresAt).toBeNull();
-      expect(
-        await correctWorkspaceMemory(f.context, f.workspace, m.id, input),
-      ).toEqual(edited);
-      const before = await snapshot(m.id);
-      expect(before.memory).toMatchObject(
-        legacyPersonalMemoryPair(input.content),
-      );
-      expect(before.revisions[0]).toMatchObject({
-        content: m.content,
-        summary: null,
-        details: null,
-      });
-      await expect(
-        correctWorkspaceMemory(f.context, f.workspace, m.id, {
-          ...input,
-          expectedRevision: 2,
-          contentDigest: edited.contentDigest,
-          idempotencyKey: randomUUID(),
-        }),
-      ).rejects.toThrow('employee_memory_contract_changed');
-      expect(await snapshot(m.id)).toEqual(before);
     });
     it('keeps tenant, instance, membership and idempotency authority ahead of paired writes', async () => {
       const f = await setup(),
@@ -460,49 +291,36 @@ suite(
       ).rejects.toThrow('authorization_denied');
       expect(await snapshot(m.id)).toEqual(before);
     });
-    it('preserves legacy confirmation and uses the same pair editor for pending save-and-confirm', async () => {
+    it('confirms complete V2 candidates by pair CAS or owner save', async () => {
       const f = await setup();
-      const m = await createTraceableMemory(f.context, {
+      const input = {
         workspaceId: f.workspace,
         instanceId: f.assignment,
-        idempotencyKey: randomUUID(),
-        sourceType: 'user',
-        lifecycleState: 'candidate',
-        content: '原候选'.repeat(30),
-      });
-      const pair = legacyPersonalMemoryPair(m.content);
-      const promoted = await promoteWorkspaceMemory(
+        summary: '原候选',
+        details: '完整约束',
+      };
+      const m = await seedPersonalMemoryPair(fixture.db, f.context, input);
+      const promoted = await promoteManagedEmployeeMemory(
         f.context,
         f.workspace,
         m.id,
-        {
-          instanceId: f.assignment,
-          expectedRevision: 1,
-          contentDigest: m.contentDigest,
-          idempotencyKey: randomUUID(),
-        },
+        { ...expected({ ...m, instanceId: f.assignment }) },
       );
-      expect(promoted.lifecycleState).toBe('durable');
-      expect((await snapshot(m.id)).memory).toMatchObject(pair);
-      const pending = await createTraceableMemory(f.context, {
-        workspaceId: f.workspace,
-        instanceId: f.assignment,
-        idempotencyKey: randomUUID(),
-        sourceType: 'user',
-        lifecycleState: 'candidate',
-        content: '另一个待确认候选',
+      expect(promoted.state).toBe('active');
+      expect((await snapshot(m.id)).memory).toMatchObject({
+        summary: input.summary,
+        details: input.details,
+      });
+      const pending = await seedPersonalMemoryPair(fixture.db, f.context, {
+        ...input,
+        summary: '另一个待确认候选',
       });
       const saved = await correctPersonalEmployeeMemory(
         f.context,
         f.workspace,
         pending.id,
         {
-          instanceId: f.assignment,
-          expectedRevision: 1,
-          pairDigest: memoryPairDigest(
-            legacyPersonalMemoryPair(pending.content),
-          ),
-          idempotencyKey: randomUUID(),
+          ...expected({ ...pending, instanceId: f.assignment }),
           summary: '本人修改并确认',
           details: '完整保存说明',
           reason: '本人编辑',
@@ -519,7 +337,7 @@ suite(
         expires_at: null,
       });
     });
-    it('rolls back pair, revision, chunks, audit and receipt on the first failed audit', async () => {
+    it('rolls back pair, revision, audit and receipt on the first failed audit', async () => {
       const f = await setup(),
         m = await createPersonalEmployeeMemory(f.context, f.input);
       const before = await snapshot(m.id);

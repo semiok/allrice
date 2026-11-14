@@ -1,12 +1,3 @@
-import { confirmedMemoryHandle } from '../employees/employee-documents.ts';
-import {
-  hasMemorySourceTool,
-  type ConfirmedMemoryReadPin,
-} from '@allrice/contracts';
-import {
-  readRunMemoryContext,
-  type RunMemoryAuthority,
-} from '../run-memory-context.ts';
 import { randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 
@@ -37,8 +28,6 @@ import {
 } from '../company-run-assets.ts';
 import { CompanyAssetError } from '../company-assets.ts';
 import { resolveWorkspaceId } from '../workspace/service.ts';
-import { searchConfirmedEmployeeMemories } from '../workspace/employee-memory-read.ts';
-import { memoryInstanceForRun } from '../workspace/employee-memory.ts';
 import { allocateWorkbenchFileName } from '../workbench-file-name.ts';
 
 interface ResourceRow {
@@ -51,7 +40,7 @@ interface ResourceRow {
 
 function authorizeRead(
   context: ExecutionContext,
-  type: 'storage_object' | 'memory' | 'chat_session',
+  type: 'storage_object' | 'chat_session',
   row: ResourceRow,
 ) {
   const decision = authorizeExecution(
@@ -755,87 +744,6 @@ export async function listDeliverableVersions(input: {
     order by version.version desc
   `;
   return rows.map(mapDeliverableVersion);
-}
-
-export async function searchToolBrokerMemories(
-  context: ExecutionContext,
-  query: string,
-  limit: number,
-  transaction?: TransactionSql,
-  pins: readonly ConfirmedMemoryReadPin[] = [],
-  sourceTool = false,
-  documents = false,
-) {
-  if (!context.workspaceId) throw new DataAccessError('authorization_denied');
-  const sql = transaction ?? getDatabase();
-  const instanceId = await memoryInstanceForRun(sql, {
-    organizationId: context.organizationId,
-    workspaceId: context.workspaceId,
-    ownerId: context.policySnapshot.subjectId,
-    runId: context.runId,
-  });
-  if (!instanceId) return [];
-  const rows = await searchConfirmedEmployeeMemories(
-    sql,
-    {
-      organizationId: context.organizationId,
-      workspaceId: context.workspaceId,
-      ownerId: context.policySnapshot.subjectId,
-      instanceId,
-    },
-    query,
-    limit,
-    pins,
-  );
-  return rows.map((row) => {
-    authorizeRead(context, 'memory', row);
-    return {
-      id: row.id,
-      content: row.content,
-      ...(documents ? { revision: row.revision } : {}),
-      ...(sourceTool ? { sourceHandle: confirmedMemoryHandle(row) } : {}),
-      provenance: {
-        trust: row.trust_level,
-        confidence: Number(row.confidence),
-        sourceLabel: row.source_label,
-      },
-      updatedAt: row.updated_at.toISOString(),
-    };
-  });
-}
-
-export async function readToolBrokerMemoryContext(
-  context: ExecutionContext,
-  query: string,
-  limit: number,
-  authority: RunMemoryAuthority,
-) {
-  if (
-    authority.scope.runId !== context.runId ||
-    authority.scope.organizationId !== context.organizationId ||
-    authority.scope.workspaceId !== context.workspaceId ||
-    authority.scope.ownerId !== context.policySnapshot.subjectId
-  )
-    throw new DataAccessError('authorization_denied');
-  return readRunMemoryContext(
-    authority,
-    'memory_search',
-    async (tx, state) => {
-      const [run] =
-        await tx`select execution_snapshot from allrice_employee_runs where run_id=${authority.scope.runId}`;
-      return searchToolBrokerMemories(
-        context,
-        query,
-        limit,
-        tx,
-        state.initial.documentDigest === undefined ? [] : state.confirmedPins,
-        state.initial.documentDigest !== undefined &&
-          hasMemorySourceTool(run?.execution_snapshot),
-        state.initial.documentDigest !== undefined,
-      );
-    },
-    (items, state) => (state.initial.documentDigest === undefined ? [] : items),
-  );
 }
 
 export async function searchToolBrokerSessions(

@@ -56,5 +56,4 @@ export const hiddenSystemSkillNames = new Set([
   'governed-memory',
   'workflow-automation',
   'employee-customization',
-  'experience-consolidation',
 ]);

@@ -63,7 +63,7 @@ export function harnessCapabilityMatrix(
   });
 }
 
-/** A scheduled private task has its own durable identity, never a fabricated chat. */
+/** Read-only historical event identity. Retired tasks cannot create a new kernel. */
 export const InternalHarnessTaskSchema = z
   .object({
     kind: z.enum(['experience_consolidation', 'experience_validation']),
@@ -209,19 +209,6 @@ export const EmployeeKernelRequestSchema = z
   .strict();
 export type EmployeeKernelRequest = z.infer<typeof EmployeeKernelRequestSchema>;
 
-export const InternalKernelRequestSchema = EmployeeKernelRequestSchema.extend({
-  sessionId: z.null(),
-  userMessageId: z.null(),
-  assistantMessageId: z.null(),
-  internalTask: InternalHarnessTaskSchema,
-  nativeContextId: UuidSchema.optional(),
-}).strict();
-export type InternalKernelRequest = z.infer<typeof InternalKernelRequestSchema>;
-export function harnessContextKey(
-  kernel: EmployeeKernelRequest | InternalKernelRequest,
-) {
-  return 'internalTask' in kernel
-    ? (kernel.nativeContextId ??
-        `experience-${kernel.internalTask.occurrenceId}`)
-    : kernel.sessionId;
+export function harnessContextKey(kernel: EmployeeKernelRequest) {
+  return kernel.sessionId;
 }

@@ -727,9 +727,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
         turnId,
         sessionId: input.kernel.sessionId,
         messageId: input.kernel.assistantMessageId,
-        ...('internalTask' in input.kernel
-          ? { internalTask: input.kernel.internalTask }
-          : {}),
         sourceEventId: `dsh:${input.attempt}:${order}`,
         sourceEventType,
         sourceOccurredAt: new Date().toISOString(),

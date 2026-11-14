@@ -1,6 +1,7 @@
 // MET-223: these platform publications are retired, even when an old immutable
 // package survives as an instance's creation record. Names are not identities.
 const retiredPlatformSkillIds = new Set([
+  '18300000-0002-4000-8000-000000000001',
   '7486aa1e-2495-4dd1-9eea-2ba4d65c761e',
   '4f94e92d-e065-4217-af0b-9c25d0802290',
   'd78b3556-821a-5550-bf13-d9dd84b9bbe0',

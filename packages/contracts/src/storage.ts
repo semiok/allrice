@@ -80,15 +80,6 @@ export const SignFileInputSchema = z
   })
   .strict();
 
-export const VectorRecallInputSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    instanceId: UuidSchema.optional(),
-    embedding: z.array(z.number().finite()).length(1536),
-    limit: z.number().int().min(1).max(50).default(10),
-  })
-  .strict();
-
 export const SignedAccessGrantSchema = z
   .object({
     objectId: UuidSchema,

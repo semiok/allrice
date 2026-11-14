@@ -10,10 +10,7 @@ import {
 } from './memory-index.ts';
 import { EmployeeDocumentsSchema } from './employee-documents.ts';
 import { EmployeePromptSnapshotSchema } from './employees.ts';
-import {
-  freezeMemoryIndexToolNames,
-  memoryContextPolicy,
-} from './memory-context.ts';
+import { freezeMemoryIndexToolNames } from './memory-context.ts';
 
 describe('v2 complete memory text and immutable version contracts', () => {
   it('carries all 100 summaries including ordinal100, at the structural byte bound', () => {
@@ -70,7 +67,7 @@ describe('v2 complete memory text and immutable version contracts', () => {
         ...prompt,
         employeeDocuments: { user: '', memory: '' },
       }).success,
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it.each(['🧑', '中', '\u0001', '"', '\\', '\n'])(
@@ -96,15 +93,7 @@ describe('v2 complete memory text and immutable version contracts', () => {
     },
   );
 
-  it('keeps the legacy policy and accepts a short read even with less than512 remaining', () => {
-    expect(memoryContextPolicy).toEqual({
-      version: 1,
-      meter: 'utf8_bytes',
-      maximumInitialBytes: 6000,
-      maximumResponseBytes: 8000,
-      maximumRunBytes: 24000,
-      maximumToolReads: 12,
-    });
+  it('accepts a short read even with less than512 remaining', () => {
     expect(
       Buffer.byteLength(
         renderMemoryDetailV2(1, { summary: '短', details: null }),
@@ -162,9 +151,10 @@ describe('v2 complete memory text and immutable version contracts', () => {
       expect(MemoryOrdinalInputSchema.safeParse(input).success).toBe(false);
   });
 
-  it('replaces old read names only when a memory grant exists, without changing the caller', () => {
+  it('uses only an explicit current memory read grant, without changing the caller', () => {
     const tools = [
       'workspace.file.read',
+      'workspace.memory.read',
       'workspace.memory.search',
       'workspace.experience.read',
     ];
@@ -172,6 +162,13 @@ describe('v2 complete memory text and immutable version contracts', () => {
       freezeMemoryIndexToolNames(tools, ['storage:read'], undefined),
     ).toEqual(['workspace.file.read', 'workspace.memory.read']);
     expect(tools).toContain('workspace.memory.search');
+    expect(
+      freezeMemoryIndexToolNames(
+        ['workspace.memory.search'],
+        ['storage:read'],
+        undefined,
+      ),
+    ).toEqual([]);
     expect(
       freezeMemoryIndexToolNames(
         ['workspace.file.read'],
@@ -199,7 +196,7 @@ describe('v2 complete memory text and immutable version contracts', () => {
       }),
     ).toBe(true);
     const full = Array.from({ length: 64 }, (_, i) =>
-      i ? `tool${i}` : 'workspace.memory.search',
+      i ? `tool${i}` : 'workspace.memory.read',
     );
     expect(
       freezeMemoryIndexToolNames(full, ['storage:read'], undefined),
@@ -219,7 +216,7 @@ describe('v2 complete memory text and immutable version contracts', () => {
     } as NonNullable<Parameters<typeof freezeMemoryIndexToolNames>[2]>;
     const grants = ['storage:read', 'storage:write', 'model:invoke'] as const;
     const imageTools = [
-      'workspace.memory.search',
+      'workspace.memory.read',
       'workspace.export.create',
       ...Array.from({ length: 60 }, (_, i) => `synthetic_${i}`),
     ];

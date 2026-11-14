@@ -1,9 +1,7 @@
-import { employeeMemoryReadPredicate } from '../workspace/employee-memory-read.ts';
 import { getDatabase } from '../core/client.ts';
 import { lockWorkspaceStorageQuota } from '../core/storage-quota.ts';
 import { DataAccessError } from '../data.ts';
 import { readContentPrincipal } from '../content-maintenance.ts';
-import { memoryInstanceForRun } from '../workspace/employee-memory.ts';
 import { employeeAccessTransaction } from './employee-access-cancellation.ts';
 import {
   type getEmployeeInstance,
@@ -54,32 +52,4 @@ export async function enterEmployeeContentChat<T>(
     const text = await assertEmployeeChatRun(tx, input, instance, tool);
     return read(tx, instance, text);
   });
-}
-
-/** Frozen recall can predate another Run entering authoring. Recheck at the
- * Worker execution boundary, preserving frozen bodies and historical records. */
-export async function filterEmployeeMethodMemories<
-  T extends { id: string; revision?: number; content?: string },
->(
-  scope: {
-    organizationId: string;
-    workspaceId: string;
-    ownerId: string;
-    runId: string;
-  },
-  memories: T[],
-): Promise<T[]> {
-  if (!memories.length) return memories;
-  const sql = getDatabase();
-  const instanceId = await memoryInstanceForRun(sql, scope);
-  if (!instanceId) return [];
-  const rows = await getDatabase()<
-    { id: string; revision: number; content: string }[]
-  >`select m.id,m.revision,m.content from allrice_memories m
-    where m.id=any(${memories.map((m) => m.id)}::uuid[])
-      and ${employeeMemoryReadPredicate(sql, { ...scope, instanceId })}`;
-  // Ordinary edits apply to the next Run. Keep this Run's frozen bytes;
-  // only current eligibility (including archival/revocation) may remove them.
-  const readable = new Set(rows.map((row) => row.id));
-  return memories.filter((memory) => readable.has(memory.id));
 }
