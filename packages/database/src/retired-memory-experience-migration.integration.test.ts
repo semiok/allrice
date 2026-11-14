@@ -162,6 +162,20 @@ suite(
       f = await historical();
       const db = f.db,
         c = f.current;
+      // Current task/preview identity transport intentionally has no V2 memory
+      // schema marker. Empty MEMORY must not select its Run for retirement.
+      await db`update allrice_employee_runs set prompt_snapshot=${db.json({
+        employeeDocuments: {
+          persona: 'Synthetic current PERSONA identity',
+          user: 'Synthetic allowed organizational facts',
+          memory: '',
+        },
+        memories: [],
+      })} where run_id=${c.run}`;
+      const currentRun =
+        await db`select to_jsonb(r) value from allrice_runs r where id=${c.run}`;
+      const currentEmployeeRun =
+        await db`select to_jsonb(r) value from allrice_employee_runs r where run_id=${c.run}`;
       const old = await memory(f, 'v1'),
         backfill = await memory(f, 'backfill'),
         oldApi = await memory(f, 'legacy_api');
@@ -212,6 +226,12 @@ suite(
       const monthly =
         await db`select proname,pg_get_functiondef(p.oid) definition from pg_proc p where pronamespace=current_schema()::regnamespace and proname like 'allrice_ordinary_monthly_%' order by proname`;
       await migrate(db);
+      expect(
+        await db`select to_jsonb(r) value from allrice_runs r where id=${c.run}`,
+      ).toEqual(currentRun);
+      expect(
+        await db`select to_jsonb(r) value from allrice_employee_runs r where run_id=${c.run}`,
+      ).toEqual(currentEmployeeRun);
       expect(
         await db`select id from allrice_memories where id in ${db([old, backfill, oldApi])}`,
       ).toEqual([]);

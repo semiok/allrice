@@ -93,8 +93,11 @@ union select run_id from allrice_jobs where payload->>'type'='allrice.experience
 union select run_id from allrice_employee_runs
   where memory_context_state->>'schemaVersion'='1'
     or jsonb_array_length(experience_reads)>0 or experience_action_receipt is not null
-    or (prompt_snapshot ? 'employeeDocuments' and
-      prompt_snapshot->'employeeDocuments'->>'schemaVersion' is distinct from '2')
+    -- V1-shaped identity-only task/preview transport is still current. Only
+    -- an actual nonempty pre-V2 MEMORY body proves the retired projection.
+    or (prompt_snapshot->'employeeDocuments'->>'schemaVersion' is distinct from '2'
+      and jsonb_typeof(prompt_snapshot#>'{employeeDocuments,memory}')='string'
+      and length(prompt_snapshot#>>'{employeeDocuments,memory}')>0)
     or coalesce(jsonb_array_length(prompt_snapshot->'memories'),0)>0;
 
 -- Current A1 material and current V2 frozen Runs are not expendable history.
