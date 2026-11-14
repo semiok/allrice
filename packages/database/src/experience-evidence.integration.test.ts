@@ -585,8 +585,8 @@ suite(
             await db`select status,experience_execution_run_id,experience_capture_state from allrice_employee_runs where run_id=${command!.followupRunId}`;
           expect(child).toMatchObject({
             status: 'canceled',
-            experience_execution_run_id: r.sent.run.id,
-            experience_capture_state: 'pending',
+            experience_execution_run_id: null,
+            experience_capture_state: null,
           });
         }
         await collectPendingExperienceEvidence({ database: db, limit: 16 });
@@ -602,8 +602,7 @@ suite(
           await db`select status,experience_capture_state from allrice_employee_runs where run_id=${r.sent.run.id}`;
         expect(terminal).toMatchObject({
           status: 'succeeded',
-          experience_capture_state:
-            mode === 'late_method_authoring' ? null : 'pending',
+          experience_capture_state: null,
         });
       },
     );
@@ -639,7 +638,7 @@ suite(
         const [terminal] =
           await db`select experience_capture_state,status from allrice_employee_runs where run_id=${sent.run.id}`;
         expect(terminal).toMatchObject({
-          experience_capture_state: 'pending',
+          experience_capture_state: null,
           status: 'succeeded',
         });
         return {

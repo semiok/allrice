@@ -8,10 +8,10 @@ import { LocalStorageAdapter } from '@allrice/storage';
 
 import {
   withPlatformImageTools,
+  withoutTaskMemoryTools,
   isMemoryIndexDocuments,
   modelProviderRuntimeSupported,
   EmployeeKernelRequestSchema,
-  renderMemoryContext,
   RouteDecisionSchema,
   type HarnessEvent,
   type HarnessExecutionSnapshot,
@@ -375,27 +375,28 @@ export async function executeEmployeeRun({
       : undefined;
   let contentRuntime: Awaited<ReturnType<typeof prepareEmployeeContentContext>>;
   try {
-    const experience = documentMemory
-      ? { memories: [], receipt: null }
-      : await prepareRunExperiences(contentScope, {
-          ...workflowLease,
-          attempt: execution.job.attempt,
-        });
+    const experience =
+      documentMemory || personaTask
+        ? { memories: [], receipt: null }
+        : await prepareRunExperiences(contentScope, {
+            ...workflowLease,
+            attempt: execution.job.attempt,
+          });
     resolved = {
       ...resolved,
       promptSnapshot: {
         ...resolved.promptSnapshot,
-        memories: isMemoryIndexDocuments(
-          resolved.promptSnapshot.employeeDocuments,
-        )
-          ? []
-          : [
-              ...resolved.promptSnapshot.memories.slice(
-                0,
-                20 - experience.memories.length,
-              ),
-              ...experience.memories,
-            ],
+        memories:
+          personaTask ||
+          isMemoryIndexDocuments(resolved.promptSnapshot.employeeDocuments)
+            ? []
+            : [
+                ...resolved.promptSnapshot.memories.slice(
+                  0,
+                  20 - experience.memories.length,
+                ),
+                ...experience.memories,
+              ],
         systemPrompt:
           resolved.promptSnapshot.systemPrompt +
           (experience.receipt
@@ -664,10 +665,12 @@ export async function executeEmployeeRun({
       userId: execution.job.ownerId,
     }),
   );
-  const eligibleMemories = await filterEmployeeMethodMemories(
-    contentScope,
-    resolved.promptSnapshot.memories,
-  );
+  const eligibleMemories = personaTask
+    ? []
+    : await filterEmployeeMethodMemories(
+        contentScope,
+        resolved.promptSnapshot.memories,
+      );
   if (
     documentMemory &&
     eligibleMemories.length !== resolved.promptSnapshot.memories.length
@@ -681,26 +684,26 @@ export async function executeEmployeeRun({
     ...resolved,
     promptSnapshot: { ...resolved.promptSnapshot, memories: eligibleMemories },
   };
-  resolved.promptSnapshot.memories = await prepareRunMemoryContext(
-    {
-      scope: contentScope,
-      worker: { ...workflowLease, attempt: execution.job.attempt },
-    },
-    resolved.promptSnapshot.memories,
-    documentMemory
-      ? resolved.promptSnapshot.employeeDocuments?.memory
-      : undefined,
-    documentMemory &&
-      isMemoryIndexDocuments(resolved.promptSnapshot.employeeDocuments)
-      ? 2
-      : 1,
-  );
+  resolved.promptSnapshot.memories = personaTask
+    ? []
+    : await prepareRunMemoryContext(
+        {
+          scope: contentScope,
+          worker: { ...workflowLease, attempt: execution.job.attempt },
+        },
+        resolved.promptSnapshot.memories,
+        documentMemory
+          ? resolved.promptSnapshot.employeeDocuments?.memory
+          : undefined,
+        documentMemory &&
+          isMemoryIndexDocuments(resolved.promptSnapshot.employeeDocuments)
+          ? 2
+          : 1,
+      );
   if (personaTask && resolved.promptSnapshot.employeeDocuments)
     resolved.promptSnapshot.employeeDocuments = {
       ...resolved.promptSnapshot.employeeDocuments,
-      // Same selected items and renderer as the original internal input. The
-      // ledger already charged these complete literal bytes; no new pins/spend.
-      memory: renderMemoryContext(resolved.promptSnapshot.memories),
+      memory: '',
     };
   const kernelInput = {
     employeeAssignmentId: input.employeeAssignmentId,
@@ -912,7 +915,7 @@ export async function executeEmployeeRun({
       executionSnapshot.schemaVersion === 2
         ? executionSnapshot.capabilitySnapshot
         : null;
-    const allowedToolNames =
+    const admittedToolNames =
       executionSnapshot.employee.definition.schemaVersion === 2
         ? withPlatformImageTools(
             capabilitySnapshot?.bindings.toolNames ??
@@ -924,6 +927,16 @@ export async function executeEmployeeRun({
               : undefined,
           )
         : undefined;
+    // A restored task may retain a pre-retirement frozen allowlist. Apply the
+    // task boundary for this execution without rewriting that historical pin.
+    const allowedToolNames = personaTask
+      ? withoutTaskMemoryTools(
+          admittedToolNames ??
+            riceToolDefinitionsForCapabilities(
+              resolved.grantedCapabilities,
+            ).map((tool) => tool.name),
+        )
+      : admittedToolNames;
     const authorizedTools = repositoryReviewTask
       ? [platformRepositoryReviewToolDefinition]
       : repairTask
