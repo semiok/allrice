@@ -905,8 +905,7 @@ suite(
       });
       let timeout: ReturnType<typeof setTimeout> | undefined;
       let candidateWrite:
-        | ReturnType<typeof createRememberedMemoryCandidate>
-        | undefined;
+        ReturnType<typeof createRememberedMemoryCandidate> | undefined;
       try {
         await ready;
         candidateWrite = createRememberedMemoryCandidate(
