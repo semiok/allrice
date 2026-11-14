@@ -346,8 +346,9 @@ suite(
 
     it('retains the enrolled monthly clock and rejects resets to the legacy clock', async () => {
       expect(await store.loadCalendarControls(writer)).toEqual([c]);
-      const [business] =
-        await f.db`select clock_owner,schedule,conversation_mode,next_run_at from allrice_automations where id=${c.automationId}`;
+      const readBusiness = () =>
+        f.db`select * from allrice_automations where id=${c.automationId}`;
+      const [business] = await readBusiness();
       expect(business).toMatchObject({
         clock_owner: 'native_recurring',
         schedule: { frequency: 'native_recurring', rule: v.rule },
@@ -361,8 +362,23 @@ suite(
       await expect(fixed.loadControls(writer)).rejects.toThrow();
       await expect(f.db`update allrice_automations set clock_owner='legacy',native_recurring_request_id=null,
         native_recurring_request_digest=null,native_recurring_revision=null where id=${c.automationId}`).rejects.toMatchObject(
-        { code: 'P1921' },
+        {
+          code: '23514',
+          message:
+            'automation conversation source/create identity is immutable',
+        },
       );
+      expect([...(await readBusiness())]).toEqual([business]);
+      await expect(
+        f.db.begin(
+          (tx) =>
+            tx`update allrice_automations set next_run_at=null where id=${c.automationId}`,
+        ),
+      ).rejects.toMatchObject({
+        code: 'P1921',
+        message: 'ordinary monthly lacks exact scoped immutable version/plan',
+      });
+      expect([...(await readBusiness())]).toEqual([business]);
       expect(
         (
           await f.db`select clock_owner from allrice_automations where id=${c.automationId}`
