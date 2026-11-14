@@ -20,6 +20,7 @@ import {
   readSmokeCsvReply,
   readSmokeCsvProof,
   findSmokeCsvDelivery,
+  fetchSmokeCsvPng,
   validateSmokeCsvPng,
   decodeSmokeCsvPng,
 } from './smoke-reply.mjs';
@@ -311,15 +312,10 @@ try {
       base,
       fromMarkdown,
     });
-    const response = await page.request.get(delivery.href);
-    if (!response.ok())
-      throw Error(`csv_png_download_http_${response.status()}`);
-    const bytes = await response.body();
-    const png = validateSmokeCsvPng(
-      bytes,
-      delivery.object,
-      response.headers()['content-type'] ?? '',
-    );
+    const response = await page.evaluate(fetchSmokeCsvPng, delivery.href);
+    if (!response.ok) throw Error(`csv_png_download_http_${response.status}`);
+    const bytes = Buffer.from(response.bytes);
+    const png = validateSmokeCsvPng(bytes, delivery.object, response.mediaType);
     const decoded = await page.evaluate(decodeSmokeCsvPng, [...bytes]);
     if (decoded.width !== png.width || decoded.height !== png.height)
       throw Error('csv_png_decode_mismatch');

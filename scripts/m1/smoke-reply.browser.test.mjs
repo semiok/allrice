@@ -1,6 +1,8 @@
 // Synthetic public controls and ChatTranscript DOM; no credentials or model Run.
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
+import { once } from 'node:events';
+import { createServer } from 'node:http';
 import { crc32 } from 'node:zlib';
 import {
   afterAll,
@@ -15,6 +17,7 @@ import {
   readSmokeReply,
   readSmokeCsvReply,
   findSmokeCsvDelivery,
+  fetchSmokeCsvPng,
   validateSmokeCsvPng,
   decodeSmokeCsvPng,
 } from './smoke-reply.mjs';
@@ -491,6 +494,109 @@ suite('smoke reply evidence belongs to the requested assistant turn', () => {
       'csv_turn_not_confirmed',
     );
   });
+  async function withCsvDownloadServer(check) {
+    const url = await page.evaluate(() => {
+      const canvas = globalThis.document.createElement('canvas');
+      canvas.width = 1;
+      canvas.height = 1;
+      return canvas.toDataURL('image/png');
+    });
+    const bytes = Buffer.from(url.split(',')[1], 'base64');
+    const object = {
+      mediaType: 'image/png',
+      sizeBytes: bytes.length,
+      checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+    };
+    const server = createServer((request, response) => {
+      if (request.url === csvHref) {
+        const authenticated = request.headers.cookie
+          ?.split('; ')
+          .includes('allrice_session=smoke-png-fixture');
+        response.writeHead(authenticated ? 200 : 401, {
+          'content-type': authenticated ? 'image/png' : 'application/json',
+        });
+        response.end(
+          authenticated ? bytes : '{"error":"authentication_required"}',
+        );
+      } else {
+        if (request.url === '/login')
+          response.setHeader(
+            'set-cookie',
+            'allrice_session=smoke-png-fixture; Path=/; HttpOnly; Secure; SameSite=Lax',
+          );
+        response.end('<!doctype html><title>CSV download fixture</title>');
+      }
+    });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    try {
+      await check({
+        origin: `http://127.0.0.1:${server.address().port}`,
+        bytes,
+        object,
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  }
+
+  it('downloads exact CSV PNG bytes using the page Secure HttpOnly login cookie on HTTP 127.0.0.1', async () => {
+    await withCsvDownloadServer(async ({ origin, bytes, object }) => {
+      await page.goto(`${origin}/login`);
+      expect(await page.context().cookies()).toEqual([
+        expect.objectContaining({
+          name: 'allrice_session',
+          domain: '127.0.0.1',
+          httpOnly: true,
+          secure: true,
+        }),
+      ]);
+      const response = await page.evaluate(fetchSmokeCsvPng, origin + csvHref);
+      expect(response).toMatchObject({
+        ok: true,
+        status: 200,
+        mediaType: 'image/png',
+      });
+      const downloaded = Buffer.from(response.bytes);
+      expect(downloaded).toEqual(bytes);
+      expect(
+        validateSmokeCsvPng(downloaded, object, response.mediaType),
+      ).toMatchObject({
+        width: 1,
+        height: 1,
+      });
+      expect(await page.evaluate(decodeSmokeCsvPng, response.bytes)).toEqual({
+        width: 1,
+        height: 1,
+      });
+    });
+  });
+
+  it('keeps unauthenticated CSV downloads denied and refuses a different origin', async () => {
+    await withCsvDownloadServer(async ({ origin, object }) => {
+      await page.goto(origin);
+      const response = await page.evaluate(fetchSmokeCsvPng, origin + csvHref);
+      expect(response).toMatchObject({
+        ok: false,
+        status: 401,
+        mediaType: 'application/json',
+      });
+      expect(() =>
+        validateSmokeCsvPng(
+          Buffer.from(response.bytes),
+          object,
+          response.mediaType,
+        ),
+      ).toThrow('csv_png_bytes_or_type_invalid');
+      await expect(
+        page.evaluate(
+          fetchSmokeCsvPng,
+          origin.replace('127.0.0.1', 'localhost') + csvHref,
+        ),
+      ).rejects.toThrow('csv_png_download_origin_mismatch');
+    });
+  });
+
   it('decodes captured PNG bytes and rejects a CRC-valid but undecodable payload', async () => {
     const url = await page.evaluate(() => {
       const canvas = globalThis.document.createElement('canvas');
