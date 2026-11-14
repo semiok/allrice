@@ -966,7 +966,6 @@ async function generationIsReadable(
       if (error instanceof ReferencePublicationRuntimeError)
         throw new PublicationContentUnavailableError();
       if (
-        error instanceof ExperienceError ||
         error instanceof PersonalSkillError ||
         error instanceof EmployeeRuntimeContentError ||
         error instanceof ZodError ||

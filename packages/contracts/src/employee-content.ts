@@ -54,6 +54,7 @@ export const EmployeeContentReferenceSchema = z
       'company_rule',
       'knowledge',
       'workflow',
+      'experience',
     ]),
     contentId: UuidSchema,
     revisionId: UuidSchema,

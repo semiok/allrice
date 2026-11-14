@@ -826,7 +826,7 @@ export function riceToolDefinitionsForTurn(
     allowedToolNames,
     frozenMcpTools,
     localMcp,
-    employeeDocuments,
+    _employeeDocuments,
   ).filter(
     (definition) =>
       ['read_only', 'managed_write'].includes(

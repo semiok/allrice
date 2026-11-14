@@ -209,7 +209,7 @@ interface MemoryRow {
   lifecycle_state: MemoryLifecycleState;
   memory_class: MemoryClass;
   revision: number;
-  trust_level: WorkspaceMemory['trust'];
+  trust_level: 'user_confirmed' | 'derived';
   confidence: number | string;
   source_label: string;
   captured_at: Date;
