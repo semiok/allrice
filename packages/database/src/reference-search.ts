@@ -336,7 +336,7 @@ export async function assertPreparedReferencesReadable(
       from allrice_knowledge_revisions r join allrice_storage_objects o on o.id=r.file_object_id
       join allrice_knowledge_processing p on p.revision_id=r.id
       where r.id=${reference.revisionId} and r.knowledge_source_id=${reference.sourceId}
-        and r.status='published' and r.checksum=${reference.manifestDigest} and o.checksum=${reference.checksum}
+        and r.status='published' and r.checksum=${referenceReadPin(reference).digest} and o.checksum=${reference.checksum}
       for share of r,o,p`;
     if (
       !current ||
