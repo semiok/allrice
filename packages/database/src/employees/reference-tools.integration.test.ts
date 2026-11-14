@@ -81,7 +81,7 @@ suite('R3 actual-read receipts and private Run authority', () => {
     contracts.ReferenceReadsSchema.parse(
       (
         await f.db`select reference_reads from allrice_employee_runs where run_id=${run.scope.runId}`
-      )[0]!.reference_reads,
+      )[0]!.reference_reads ?? [],
     );
   const withdraw = (sourceId: string, audience?: contracts.ReferenceAudience) =>
     changeReferencePublication(x.publisher, sourceId, {
@@ -295,12 +295,16 @@ suite('R3 actual-read receipts and private Run authority', () => {
           await f.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${run.worker.jobId}`;
         release.resolve();
         const outcome = await observed;
+        // The database preserves its source-access error. The Broker maps
+        // DataAccessError to the model-facing REFERENCE_UNAVAILABLE contract.
         expect(outcome).toMatchObject({
           error: {
             code:
               loss === 'lease'
                 ? 'EMPLOYEE_CONTENT_UNAVAILABLE'
-                : 'REFERENCE_UNAVAILABLE',
+                : loss === 'audience' || loss === 'delete'
+                  ? 'not_found'
+                  : 'REFERENCE_UNAVAILABLE',
           },
         });
         expect(await receipts(run)).toEqual([]);

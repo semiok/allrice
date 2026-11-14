@@ -244,7 +244,8 @@ suite('R3 publication search uses complete text and current readers', () => {
 
   it('never treats a pin from another organization or an archived department as permission', async () => {
     const department = randomUUID();
-    await f.db`insert into allrice_departments(id,organization_id,name) values(${department},${owner.organizationId},'Finance')`;
+    await f.db`insert into allrice_departments(id,organization_id,name,create_request_id,create_name)
+      values(${department},${owner.organizationId},'Finance',${randomUUID()},'Finance')`;
     const saved = await publish('财务政策', {
       audience: { scope: 'departments', departmentIds: [department] },
     });
@@ -356,7 +357,8 @@ suite('R3 publication search uses complete text and current readers', () => {
 
   it('uses current departments and current membership, without an admin audience override', async () => {
     const department = randomUUID();
-    await f.db`insert into allrice_departments(id,organization_id,name) values(${department},${owner.organizationId},'Sales')`;
+    await f.db`insert into allrice_departments(id,organization_id,name,create_request_id,create_name)
+      values(${department},${owner.organizationId},'Sales',${randomUUID()},'Sales')`;
     const saved = await publish('部门指标', {
       audience: { scope: 'departments', departmentIds: [department] },
     });
@@ -408,9 +410,18 @@ suite('R3 publication search uses complete text and current readers', () => {
 
   it('has deterministic pages for tied timestamps and binds cursors to the current reader/query', async () => {
     const items = [];
-    for (const label of ['甲', '乙', '丙'])
-      items.push(await publish('分页政策 ' + label, { ready: false }));
-    await f.db`update allrice_knowledge_revisions set created_at='2026-01-01T00:00:00.123456Z' where id in ${f.db(items.map((item) => item.revisionId))}`;
+    // Assign tied timestamps at INSERT in this isolated fixture database;
+    // published revisions remain immutable throughout the test.
+    await f.db`alter table allrice_knowledge_revisions alter column created_at set default '2026-01-01T00:00:00.123456Z'::timestamptz`;
+    try {
+      for (const label of ['甲', '乙', '丙'])
+        items.push(await publish('分页政策 ' + label, { ready: false }));
+    } finally {
+      await f.db`alter table allrice_knowledge_revisions alter column created_at set default now()`;
+    }
+    expect(new Set(items.map((item) => item.reference.createdAt))).toEqual(
+      new Set(['2026-01-01T00:00:00.123Z']),
+    );
     const first = await queryReferencePublications(owner, {
       query: '政策',
       limit: 1,

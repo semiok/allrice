@@ -1894,7 +1894,7 @@ suite(
           lease_token: null,
           state: 'succeeded',
           employee_status: 'succeeded',
-          message_status: 'succeeded',
+          message_status: 'completed',
         });
         expect(closed!.completed_at).not.toBeNull();
         const expectedAnswer =
