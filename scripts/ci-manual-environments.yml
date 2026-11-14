@@ -89,6 +89,8 @@ files:
   db:
     - apps/web/lib/execution/model-failure-api.integration.test.ts
     - apps/web/lib/reference-publications.integration.test.ts
+    - apps/web/lib/reference-search.integration.test.ts
+    - apps/web/lib/reference-input.integration.test.ts
     - apps/web/lib/reference-f3.integration.test.ts
     - apps/web/lib/execution/native-subagent-authorized-query.integration.test.mjs
     - apps/web/lib/execution/native-subagent-control.integration.test.mjs

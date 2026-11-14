@@ -193,7 +193,30 @@ export const ReferenceRevisionSchema = z
   .strict();
 export type ReferenceRevision = z.infer<typeof ReferenceRevisionSchema>;
 
-/** This reports reference dependencies only; ordinary send admission still applies. */
+export const ReferenceInputSelectionResultSchema = z
+  .object({
+    viewerId: UuidSchema,
+    workspaceId: UuidSchema,
+    selection: ReferenceSelectionSchema,
+  })
+  .strict();
+
+/** Rejected IDs must be a subset of the caller's inputs, with no source metadata. */
+export const ReferenceSelectionErrorSchema = z
+  .object({
+    error: z
+      .object({
+        code: z.literal('REFERENCE_SELECTION_UNAVAILABLE'),
+        message: z.string().min(1),
+        requestId: UuidSchema,
+        retryable: z.literal(false),
+        referenceRevisionIds: z.array(UuidSchema).min(1).max(3),
+      })
+      .strict(),
+  })
+  .strict();
+
+/** Legacy identity projection; reference history never disables continuation. */
 export const SessionReferenceEligibilitySchema = z
   .object({
     viewerId: UuidSchema,

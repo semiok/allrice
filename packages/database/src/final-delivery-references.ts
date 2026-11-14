@@ -129,12 +129,23 @@ export async function readFinalDeliveryReferences(input: {
     });
   }
 
-  // Uses the existing same-tx principal/source/legacy publication/revision/
-  // processing/copy ACL and SHARE locks. The immutable pin is not permission.
-  await assertReferenceSelections(principal, parsed.data, tx, true);
   for (const selection of [...parsed.data].sort((a, b) =>
     a.revisionId.localeCompare(b.revisionId),
   )) {
+    // Independent publications are model inputs, never authority to deliver
+    // their uploader's original file. This immutable identity lookup reads no
+    // bytes and grants no access; losing input ACL cannot block old context.
+    const [publication] = await tx`select r.id from allrice_knowledge_sources s
+      join allrice_knowledge_revisions r on r.knowledge_source_id=s.id
+      where s.id=${selection.sourceId} and r.id=${selection.revisionId}
+        and s.organization_id=${principal.organizationId} and s.workspace_id=${principal.workspaceId}
+        and s.publication_kind is not null and r.checksum=${selection.digest}
+        and r.source_artifact_version_id is null and r.source_target_key is null
+        and r.artifact_snapshot is null`;
+    if (publication) continue;
+    // Legacy original-delivery candidates still need current source/copy ACL
+    // and the same transaction's locks; a frozen pin is not permission.
+    await assertReferenceSelections(principal, [selection], tx, true);
     const [revision] = await tx<
       {
         source_artifact_version_id: string | null;

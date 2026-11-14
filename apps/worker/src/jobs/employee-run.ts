@@ -55,6 +55,7 @@ import {
   loadPersonalRuntimeSceneSkill,
   listPersonalRuntimeSceneSkills,
   loadEmployeeRuntimeReferences,
+  executeEmployeeReferenceTool,
   readEmployeeReferenceCitations,
   adoptEmployeeRuntimeScene,
   EmployeeRuntimeContentError,
@@ -1784,6 +1785,19 @@ export async function executeEmployeeRun({
                     ? taskTool(call)
                     : executeRiceTool({
                         nativeSkills: resolved.nativeSkills,
+                        ...(contentRuntime
+                          ? {
+                              executeReferenceTool: (name, args, toolSignal) =>
+                                executeEmployeeReferenceTool(
+                                  contentScope,
+                                  contentRuntime!.generationId,
+                                  workflowLease,
+                                  name,
+                                  args,
+                                  toolSignal,
+                                ),
+                            }
+                          : {}),
                         ...(contentRuntime?.snapshot.personalScenes
                           ? {
                               readPersonalSceneResource: async (

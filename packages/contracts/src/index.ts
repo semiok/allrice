@@ -151,6 +151,8 @@ export * from './personal-scene-files.ts';
 export * from './personal-scene-reads.ts';
 export * from './employee-details.ts';
 export * from './reference-library.ts';
+export * from './reference-search.ts';
+export * from './reference-tool-grants.ts';
 
 export * from './personal-skills.ts';
 export * from './personal-skill-github.ts';
