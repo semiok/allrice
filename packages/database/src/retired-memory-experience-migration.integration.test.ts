@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { Sql } from 'postgres';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,20 @@ import * as client from './core/client.ts';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1' ? describe : describe.skip;
 const retirement = '0244_retire_legacy_memory_experience.sql';
+const replacedCalendarFunctions = [
+  'allrice_native_calendar_control_valid',
+  'allrice_native_calendar_revision_valid',
+  'allrice_native_calendar_plan_proved',
+  'allrice_native_calendar_business_handoff_proved',
+  'allrice_native_calendar_decision_fence',
+  'allrice_native_calendar_no_business_run',
+  'allrice_native_calendar_period_plan_fence',
+];
+const functionSettings = (db: Sql) =>
+  db`select proname,proconfig from pg_proc where pronamespace=current_schema()::regnamespace
+    and proname in ${db(replacedCalendarFunctions)} order by proname`;
+const contentDigest = (text: string) =>
+  `sha256:${createHash('sha256').update(text).digest('hex')}`;
 const sqlFor = (file: string) =>
   readFile(new URL(`../migrations/${file}`, import.meta.url), 'utf8');
 const snapshot = (db: Sql, table: string) =>
@@ -65,7 +79,13 @@ async function historical() {
 type Fixture = Awaited<ReturnType<typeof historical>>;
 async function memory(
   f: Fixture,
-  kind: 'v1' | 'backfill' | 'reconfirmed' | 'v2' | 'ambiguous' | 'legacy_api',
+  kind:
+    | 'v1'
+    | 'backfill'
+    | 'reconfirmed'
+    | 'v2'
+    | 'ambiguous'
+    | 'ambiguous_receipt',
 ) {
   const db = f.db,
     id = randomUUID(),
@@ -98,9 +118,9 @@ async function memory(
           }),
         })})`;
   }
-  if (['v2', 'reconfirmed', 'legacy_api'].includes(kind)) {
+  if (['v2', 'reconfirmed', 'ambiguous_receipt'].includes(kind)) {
     const response =
-      kind === 'legacy_api'
+      kind === 'ambiguous_receipt'
         ? {
             id,
             revision,
@@ -120,6 +140,76 @@ async function memory(
       request_digest,memory_id,response) values(${c.org},${c.workspace},${c.user},${f.instanceId},${id},${kind === 'reconfirmed' ? 'correct' : 'create'},
         ${runtimePolicyDigest(response)},${id},${db.json(response)})`;
   }
+  return id;
+}
+// Baseline 06926034 createRememberedMemoryCandidate stores a complete V2 pair,
+// but mapMemory still returns a contentDigest receipt without pairDigest. Its
+// native-call key is useful context, never proof that a generic old shape is V1.
+async function currentPendingPair(f: Fixture) {
+  const db = f.db,
+    c = f.current,
+    id = randomUUID(),
+    pair = {
+      summary: 'Synthetic current pending pair',
+      details: 'Complete current candidate details',
+    },
+    content = `${pair.summary}\n${pair.details}`;
+  const [row] = await db<
+    { captured_at: Date; created_at: Date; updated_at: Date }[]
+  >`insert into allrice_memories(id,organization_id,workspace_id,owner_id,employee_id,instance_id,content,summary,details,
+    visibility,source_type,source_id,source_label,lifecycle_state,memory_class,revision,trust_level,confidence)
+    values(${id},${c.org},${c.workspace},${c.user},${f.employeeId},${f.instanceId},${content},${pair.summary},${pair.details},
+      'private','message',${c.message},'模型提取候选','candidate','work_note',1,'derived',0.8)
+    returning captured_at,created_at,updated_at`;
+  if (!row) throw Error('synthetic current candidate missing');
+  await db`insert into allrice_memory_revisions(organization_id,workspace_id,memory_id,revision,content,summary,details,
+    trust_level,lifecycle_state,memory_class,confidence,reason,changed_by)
+    values(${c.org},${c.workspace},${id},1,${content},${pair.summary},${pair.details},'derived','candidate','work_note',0.8,
+      'created from 模型提取候选',${c.user})`;
+  const key = `candidate:v2:${contentDigest(
+    JSON.stringify([
+      'workspace.memory.remember',
+      c.run,
+      'synthetic-native-session',
+      'synthetic-call',
+    ]),
+  )}`;
+  const response = {
+    id,
+    organizationId: c.org,
+    workspaceId: c.workspace,
+    employeeId: f.employeeId,
+    instanceId: f.instanceId,
+    ownerId: c.user,
+    content,
+    contentDigest: contentDigest(content),
+    visibility: 'private',
+    sourceType: 'message',
+    sourceId: c.message,
+    sourceLabel: '模型提取候选',
+    lifecycleState: 'candidate',
+    memoryClass: 'work_note',
+    revision: 1,
+    trust: 'derived',
+    confidence: 0.8,
+    capturedAt: row.captured_at.toISOString(),
+    expiresAt: null,
+    lastVerifiedAt: null,
+    supersedesMemoryId: null,
+    lastRecalledAt: null,
+    recallCount: 0,
+    createdAt: row.created_at.toISOString(),
+    updatedAt: row.updated_at.toISOString(),
+  };
+  const request = {
+    version: 2,
+    pair,
+    sourceType: 'message',
+    sourceId: c.message,
+  };
+  await db`insert into allrice_employee_memory_operations(organization_id,workspace_id,owner_id,instance_id,operation_key,operation,
+    request_digest,memory_id,response) values(${c.org},${c.workspace},${c.user},${f.instanceId},${key},'create',
+      ${contentDigest(JSON.stringify({ operation: 'create', request }))},${id},${db.json(response)})`;
   return id;
 }
 async function brand(f: Fixture, memoryId: string) {
@@ -177,12 +267,13 @@ suite(
       const currentEmployeeRun =
         await db`select to_jsonb(r) value from allrice_employee_runs r where run_id=${c.run}`;
       const old = await memory(f, 'v1'),
-        backfill = await memory(f, 'backfill'),
-        oldApi = await memory(f, 'legacy_api');
+        backfill = await memory(f, 'backfill');
       const retained = [
         await memory(f, 'v2'),
         await memory(f, 'reconfirmed'),
         await memory(f, 'ambiguous'),
+        await memory(f, 'ambiguous_receipt'),
+        await currentPendingPair(f),
       ];
       await brand(f, old);
       await db`insert into allrice_experience_reviews(memory_id,organization_id,workspace_id,owner_id,client_request_id,request_digest,run_id,session_id,
@@ -223,9 +314,11 @@ suite(
         await db`select to_jsonb(r) value from allrice_memory_revisions r where memory_id in ${db(retained)} order by id`;
       const operations =
         await db`select to_jsonb(o) value from allrice_employee_memory_operations o where memory_id in ${db(retained)} order by memory_id`;
+      const settings = await functionSettings(db);
       const monthly =
         await db`select proname,pg_get_functiondef(p.oid) definition from pg_proc p where pronamespace=current_schema()::regnamespace and proname like 'allrice_ordinary_monthly_%' order by proname`;
       await migrate(db);
+      expect(await functionSettings(db)).toEqual(settings);
       expect(
         await db`select to_jsonb(r) value from allrice_runs r where id=${c.run}`,
       ).toEqual(currentRun);
@@ -233,7 +326,7 @@ suite(
         await db`select to_jsonb(r) value from allrice_employee_runs r where run_id=${c.run}`,
       ).toEqual(currentEmployeeRun);
       expect(
-        await db`select id from allrice_memories where id in ${db([old, backfill, oldApi])}`,
+        await db`select id from allrice_memories where id in ${db([old, backfill])}`,
       ).toEqual([]);
       expect(
         await db`select to_jsonb(m) value from allrice_memories m where id in ${db(retained)} order by id`,
@@ -345,6 +438,37 @@ suite(
             await empty.db`select allrice_native_calendar_control_valid('{"dispatch":{"consumer":"experience-consolidation-v1"}}') valid`
           )[0]!.valid,
         ).toBe(false);
+        const [scope] = await empty.db<
+          { name: string }[]
+        >`select current_schema() name`;
+        if (!scope || !/^p25_[a-f0-9]{32}$/.test(scope.name))
+          throw Error('owned schema required');
+        const settings = await functionSettings(empty.db);
+        for (const name of replacedCalendarFunctions.slice(0, 2))
+          expect(
+            settings.find((row) => row.proname === name)?.proconfig,
+          ).toEqual([`search_path=pg_catalog, ${scope.name}`]);
+        await empty.db.begin(async (tx) => {
+          await tx.unsafe("set local search_path = ''");
+          // Resolve the ordinary lower validators with the same empty session
+          // path used by standard COPY restore; these incomplete records fail.
+          for (const [name, input] of [
+            [
+              'allrice_native_calendar_control_valid',
+              { dispatch: { consumer: 'ordinary-monthly-v1' } },
+            ],
+            [
+              'allrice_native_calendar_revision_valid',
+              { consumer: 'ordinary-monthly-v1' },
+            ],
+          ] as const) {
+            const [result] = await tx.unsafe<{ valid: boolean }[]>(
+              `select "${scope.name}".${name}($1::jsonb) valid`,
+              [JSON.stringify(input)],
+            );
+            expect(result?.valid).toBe(false);
+          }
+        });
         expect(
           (
             await empty.db`select count(*)::int count from information_schema.columns where table_schema=current_schema() and

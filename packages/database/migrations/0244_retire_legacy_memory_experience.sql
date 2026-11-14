@@ -22,8 +22,9 @@ where r.reason='system:0236_employee_memory_pairs from revision '||(r.revision-1
       and a.metadata->>'pairDigest'=allrice_native_control_document_digest(
         jsonb_build_object('version',2,'summary',r.summary,'details',r.details)));
 
--- V2 API receipts carry the exact pair/revision; legacy API receipts carried
--- content/contentDigest instead. Request hashes are not reversible provenance.
+-- Owner V2 receipts carry the exact pair/revision. Candidate V2 receipts may
+-- still use content/contentDigest, so that shape proves no legacy origin.
+-- Request hashes and caller-chosen operation keys are not provenance either.
 create temporary table met223_v2_memories on commit drop as
 select distinct m.id from allrice_memories m
 join allrice_employee_memory_operations op on op.memory_id=m.id
@@ -49,12 +50,7 @@ where not exists(select 1 from met223_v2_memories v where v.id=m.id)
   and (m.summary is null
     or exists(select 1 from allrice_experience_reviews e where e.memory_id=m.id)
     or exists(select 1 from allrice_brand_content_experiences b where b.memory_id=m.id)
-    or exists(select 1 from met223_pair_backfills b where b.memory_id=m.id and b.revision=m.revision)
-    or exists(select 1 from allrice_employee_memory_operations op
-      where op.memory_id=m.id and op.organization_id=m.organization_id
-        and op.workspace_id=m.workspace_id and op.owner_id=m.owner_id
-        and op.response->>'id'=m.id::text and op.response->'revision'=to_jsonb(m.revision)
-        and op.response ? 'contentDigest' and not (op.response ? 'pairDigest')));
+    or exists(select 1 from met223_pair_backfills b where b.memory_id=m.id and b.revision=m.revision));
 
 do $$
 declare item record;
@@ -342,6 +338,22 @@ begin
     raise exception 'calendar native period lacks exact business plan' using errcode='23514';
   end if;
   return new;
+end $$;
+
+-- CREATE OR REPLACE clears proconfig. Preserve 0225's exact CHECK-entry
+-- namespace binding; other callees inherit it, and triggers run after COPY.
+do $$
+declare
+  app_schema text := current_schema();
+  signature text;
+begin
+  foreach signature in array array[
+    'allrice_native_calendar_control_valid(c jsonb)',
+    'allrice_native_calendar_revision_valid(v jsonb)'
+  ] loop
+    execute format('alter function %I.%s set search_path = pg_catalog, %I',
+      app_schema, signature, app_schema);
+  end loop;
 end $$;
 
 drop function allrice_experience_calendar_dispatch_fence();

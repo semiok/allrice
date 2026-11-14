@@ -9,6 +9,7 @@ import type {
   NativeCalendarControl,
 } from './native-schedule-calendar-state.ts';
 import type { createNativeRecurringSqlStore } from './native-schedule-recurring-sql.ts';
+import { prepareCalendarRetirementsInTransaction } from './native-schedule-calendar-business.ts';
 import {
   lockOrdinaryMonthlyAdmissions,
   materializeOrdinaryMonthlyCalendar,
@@ -37,5 +38,9 @@ export async function materializeNativeCalendar(
   writer: NativeOnceWriter,
   reference: NativeOnceReference,
 ) {
+  // A put_task may finish after its period was closed during native create.
+  // Prepare shared retirements even when no open producer plan remains.
+  if (await calendar.withTransaction(prepareCalendarRetirementsInTransaction))
+    return true;
   return materializeOrdinaryMonthlyCalendar(calendar, writer, reference);
 }
