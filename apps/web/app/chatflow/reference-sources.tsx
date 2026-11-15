@@ -104,7 +104,9 @@ export function ReferenceSourcePanel({
           <FileTypeIcon path={source.name} size={32} />
           <h2>{source.name}</h2>
         </div>
-        <Tag tone="outline">{source.kind}</Tag>
+        <div className={css.kind}>
+          <Tag tone="outline">{source.kind}</Tag>
+        </div>
         {source.path && (
           <div className={css.member}>
             <span>包内文件</span>
