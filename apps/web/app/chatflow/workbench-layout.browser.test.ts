@@ -4834,9 +4834,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
         try {
           const reply = f.page.locator(`#message-${id(9685)}`);
-          await reply
-            .getByRole('button', { name: '工作过程', exact: true })
-            .click();
+          const process = reply
+            .getByRole('region', { name: '工作过程', exact: true })
+            .getByRole('button')
+            .first();
+          if ((await process.getAttribute('aria-expanded')) !== 'true')
+            await process.click();
           const step = reply.locator(`[data-step-id="tool:${callId}"]`);
           await step.getByText(scenario.expected, { exact: true }).waitFor();
           expect(await step.getAttribute('data-failed')).toBe('true');
@@ -4889,6 +4892,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ).toBeUndefined();
           }
           expect(reads).toEqual([]);
+        } catch (error) {
+          await f.page.screenshot({
+            path: `${screenshots}/failure-${width}-${appearance}-${scenario.scene}.png`,
+          });
+          await writeFile(
+            `${screenshots}/failure-${width}-${appearance}-${scenario.scene}.txt`,
+            await f.page.locator('body').innerText(),
+          );
+          throw error;
         } finally {
           await f.close();
         }
@@ -4953,10 +4965,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             }),
           );
       }, events);
-      const process = f.page.getByRole('button', {
-        name: '工作过程',
-        exact: true,
-      });
+      const process = f.page
+        .getByRole('region', { name: '工作过程', exact: true })
+        .getByRole('button')
+        .first();
       if ((await process.getAttribute('aria-expanded')) !== 'true')
         await process.click();
       await f.page
