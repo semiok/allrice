@@ -78,6 +78,10 @@ import { employeeDetailsFixture } from '../../test/employee-details-fixture';
 import { employeeHubErrorResponse } from '../../lib/employeehub/responses';
 import { EmployeeInstanceError } from '../../../../packages/database/src/employees/employee-instances.ts';
 import { layoutPreferenceKey } from './use-workbench-layout';
+import {
+  referenceReadFailureFixtures,
+  referenceReadErrorFixture,
+} from '../../test/reference-read-failure-fixtures';
 
 const settingsReviewDir = process.env.ALLRICE_SETTINGS_REVIEW_DIR;
 const suite =
@@ -4716,6 +4720,257 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
     30_000,
   );
+
+  it.each([
+    { width: 1440, appearance: 'light' as const },
+    { width: 1440, appearance: 'dark' as const },
+    { width: 390, appearance: 'light' as const },
+    { width: 390, appearance: 'dark' as const },
+  ])(
+    'shows R4 read errors and retains historical sources after lost access (%o)',
+    async ({ width, appearance }) => {
+      const screenshots = '.local/integration-collection/r4c-read-errors';
+      await mkdir(screenshots, { recursive: true });
+      for (const scenario of referenceReadFailureFixtures) {
+        const checksum = `sha256:${'a'.repeat(64)}`;
+        const historical: Message = {
+          id: id(9680),
+          role: 'assistant',
+          runId: null,
+          status: 'completed',
+          createdAt: now,
+          content: {
+            text: '此前已读取的目录仍保留在这段对话里。',
+            citations: [
+              {
+                type: 'reference',
+                id: id(9681),
+                label: '秋冬新品资料.zip',
+                referenceLabel: 'R1',
+                reference: {
+                  sourceId: id(9682),
+                  revisionId: id(9683),
+                  revision: 1,
+                  fileName: '秋冬新品资料.zip',
+                  purpose: '',
+                  checksum,
+                  digest: checksum,
+                  ownership: { scope: 'company', organizationId: org },
+                },
+                locator: {
+                  kind: 'archive_directory',
+                  directoryChecksum: checksum,
+                  pageChecksum: checksum,
+                  startEntryIndex: 0,
+                  endEntryIndex: 4,
+                  totalEntries: 4,
+                },
+              },
+            ],
+          },
+        };
+        const callId = `r4-${scenario.scene}`;
+        const events: ChatFlowEventEnvelope[] = (
+          ['tool.started', 'tool.failed'] as const
+        ).map((type, index) => ({
+          schemaVersion: 3,
+          eventId: id(9690 + index),
+          organizationId: org,
+          workspaceId: workspace,
+          conversationId: A,
+          runId: run,
+          generation: 1,
+          cursor: `${run}:${index + 1}`,
+          sequence: index + 1,
+          harness: 'dsh',
+          type,
+          occurredAt: now,
+          sourceEvent: {
+            id: `dsh:${index + 1}`,
+            type: index ? 'tool/result' : 'tool/call',
+            occurredAt: now,
+            payload: {
+              name: scenario.tool,
+              callId,
+              ...(index
+                ? { referenceReadError: referenceReadErrorFixture(scenario) }
+                : {}),
+            },
+          },
+          payload: {
+            name: scenario.tool,
+            toolCallId: callId,
+            ...(index ? { summary: '工具执行失败' } : {}),
+          },
+        }));
+        const f = await fixture({
+          width,
+          appearance,
+          nativeEvents: events,
+          initialMessages: [
+            ...(scenario.scene === 'unavailable' ? [historical] : []),
+            {
+              id: id(9684),
+              role: 'user',
+              runId: null,
+              status: 'completed',
+              createdAt: now,
+              content: { text: '请读取这份资料。' },
+            },
+            {
+              id: id(9685),
+              role: 'assistant',
+              runId: run,
+              status: 'completed',
+              createdAt: now,
+              content: { text: '本次读取未取得新内容。' },
+            },
+          ],
+        });
+        const reads: string[] = [];
+        f.page.on('request', (request) => {
+          if (/\/api\/v1\/(references|files)\//.test(request.url()))
+            reads.push(request.url());
+        });
+        try {
+          const reply = f.page.locator(`#message-${id(9685)}`);
+          await reply
+            .getByRole('button', { name: '工作过程', exact: true })
+            .click();
+          const step = reply.locator(`[data-step-id="tool:${callId}"]`);
+          await step.getByText(scenario.expected, { exact: true }).waitFor();
+          expect(await step.getAttribute('data-failed')).toBe('true');
+          expect(
+            await reply.locator('[aria-label="参考资料来源"]').count(),
+          ).toBe(0);
+          expect(await step.innerText()).not.toMatch(
+            /REFERENCE_|archive_crc|image_pixels|自动重试/,
+          );
+          expect(
+            await step.evaluate(
+              (node) => node.scrollWidth <= node.clientWidth + 1,
+            ),
+          ).toBe(true);
+          const composer = f.page.getByRole('textbox', {
+            name: /^给 .+ 的消息$/,
+          });
+          expect(await composer.isEditable()).toBe(true);
+          await f.page.screenshot({
+            path: `${screenshots}/${width}-${appearance}-${scenario.scene}.png`,
+          });
+          if (scenario.scene === 'unavailable') {
+            const oldSource = f.page.getByRole('button', {
+              name: '[R1] 秋冬新品资料.zip',
+              exact: true,
+            });
+            await oldSource.click();
+            const source = f.page.getByRole('region', {
+              name: '引用来源',
+              exact: true,
+            });
+            await source.waitFor();
+            expect(await source.innerText()).toContain(
+              '目录第 1–4 项，共 4 项',
+            );
+            expect(await source.locator('img,a[download]').count()).toBe(0);
+            await f.page
+              .getByRole('button', { name: '关闭工作台', exact: true })
+              .click();
+            await composer.fill('请继续讨论刚才的结论。');
+            await f.page
+              .getByRole('button', { name: '发送', exact: true })
+              .click();
+            await expect.poll(() => f.state.messageInputs.length).toBe(1);
+            expect(f.state.messageInputs[0]?.text).toBe(
+              '请继续讨论刚才的结论。',
+            );
+            expect(
+              f.state.messageInputs[0]?.referenceRevisionIds,
+            ).toBeUndefined();
+          }
+          expect(reads).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      }
+    },
+    90_000,
+  );
+
+  it('displays a live R4 failed call from SSE without creating a successful citation', async () => {
+    const scenario = referenceReadFailureFixtures[2];
+    const f = await fixture({ running: true, controlledStream: true });
+    try {
+      await expect
+        .poll(() =>
+          f.page.evaluate(() => document.documentElement.dataset.streamReady),
+        )
+        .toBe('true');
+      const events: ChatFlowEventEnvelope[] = [
+        {
+          type: 'tool.started' as const,
+          payload: { name: scenario.tool, toolCallId: 'live-r4' },
+        },
+        {
+          type: 'tool.failed' as const,
+          payload: {
+            name: scenario.tool,
+            toolCallId: 'live-r4',
+            summary: '工具执行失败',
+          },
+        },
+      ].map((row, index) => ({
+        schemaVersion: 3,
+        eventId: id(9695 + index),
+        organizationId: org,
+        workspaceId: workspace,
+        conversationId: A,
+        runId: run,
+        generation: 1,
+        cursor: `${run}:${index + 1}`,
+        sequence: index + 1,
+        harness: 'dsh',
+        occurredAt: now,
+        ...row,
+        sourceEvent: {
+          id: `dsh:${index + 1}`,
+          type: index ? 'tool/result' : 'tool/call',
+          occurredAt: now,
+          payload: {
+            name: scenario.tool,
+            callId: 'live-r4',
+            ...(index
+              ? { referenceReadError: referenceReadErrorFixture(scenario) }
+              : {}),
+          },
+        },
+      }));
+      await f.page.evaluate((events) => {
+        for (const event of events)
+          window.dispatchEvent(
+            new CustomEvent('allrice-test-stream', {
+              detail: `data: ${JSON.stringify(event)}\n\n`,
+            }),
+          );
+      }, events);
+      const process = f.page.getByRole('button', {
+        name: '工作过程',
+        exact: true,
+      });
+      if ((await process.getAttribute('aria-expanded')) !== 'true')
+        await process.click();
+      await f.page
+        .locator('[data-step-id="tool:live-r4"]')
+        .getByText(scenario.expected, { exact: true })
+        .waitFor();
+      expect(await f.page.locator('[aria-label="参考资料来源"]').count()).toBe(
+        0,
+      );
+      expect(f.state.messageInputs).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  }, 30_000);
 
   it.each([1440, 390])(
     'expands native work process downward from the clicked header at %ipx',
