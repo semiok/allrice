@@ -918,35 +918,29 @@ function WorkProcessSteps({
                   policy.mode === 'verbose' || step.status === 'failed'
                 }
                 details={
-                  item?.stopped
-                    ? `${step.label} · 已停止`
-                    : step.error
-                      ? `${step.title.split(' · ')[0]} · ${step.error}`
-                      : question
-                        ? question.request.questions.map((item) => ({
-                            label: '问题',
-                            value: item.question,
-                          }))
-                        : materialized ||
-                            (subagentCallKind === 'create' &&
-                              step.status === 'completed')
-                          ? []
-                          : [
-                              ...(step.input
-                                ? [{ label: '输入', value: step.input }]
-                                : []),
-                              ...(step.result
-                                ? [
-                                    {
-                                      label:
-                                        step.status === 'failed'
-                                          ? '原因'
-                                          : '结果',
-                                      value: step.result,
-                                    },
-                                  ]
-                                : []),
-                            ]
+                  question
+                    ? question.request.questions.map((item) => ({
+                        label: '问题',
+                        value: item.question,
+                      }))
+                    : materialized ||
+                        (subagentCallKind === 'create' &&
+                          step.status === 'completed')
+                      ? []
+                      : [
+                          ...(step.input
+                            ? [{ label: '输入', value: step.input }]
+                            : []),
+                          ...(step.result
+                            ? [
+                                {
+                                  label:
+                                    step.status === 'failed' ? '原因' : '结果',
+                                  value: step.result,
+                                },
+                              ]
+                            : []),
+                        ]
                 }
               >
                 {materialized && step.result && (

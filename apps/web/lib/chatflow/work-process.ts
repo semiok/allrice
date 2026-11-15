@@ -111,6 +111,10 @@ function classification(
   if (item.kind === 'search' || /search|grep|glob/.test(name))
     return ['search', '搜索'];
   if (name === 'market.history') return ['analyze', '分析'];
+  if (
+    ['python.execute', 'python_execute', 'cloud.process.execute'].includes(name)
+  )
+    return ['analyze', '计算'];
   if (name.startsWith('market.')) return ['market', '行情'];
   if (/browser/.test(name)) return ['browse', '浏览'];
   if (/read|fetch/.test(name)) return ['read', '阅读'];

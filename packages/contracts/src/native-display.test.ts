@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { toolActivityDetail } from './native-display';
+import { toolActivityDetail } from './native-display.js';
 describe('public Python activity description', () => {
   it.each(['python.execute', 'python_execute'])(
     'only releases the known safe description for %s',
