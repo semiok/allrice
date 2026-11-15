@@ -1,14 +1,10 @@
-import {
-  referenceLibraryOptions,
-  saveArtifactReference,
-} from '@allrice/database';
+import { referenceLibraryOptions, DataAccessError } from '@allrice/database';
 import { UuidSchema } from '@allrice/contracts';
 import {
   referenceContext,
   referenceError,
   referenceHeaders,
 } from '../../../../../lib/reference-library';
-import { getStorageAdapter } from '../../../../../lib/storage/runtime';
 export const runtime = 'nodejs';
 export async function GET(request: Request) {
   try {
@@ -26,13 +22,8 @@ export async function GET(request: Request) {
 }
 export async function POST(request: Request) {
   try {
-    const context = await referenceContext(request);
-    const saved = await saveArtifactReference(
-      context,
-      await request.json(),
-      getStorageAdapter(),
-    );
-    return Response.json(saved, { status: 201, headers: referenceHeaders });
+    await referenceContext(request, true);
+    throw new DataAccessError('not_found');
   } catch (error) {
     return referenceError(error);
   }

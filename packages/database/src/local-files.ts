@@ -1,3 +1,4 @@
+import { resourcePrincipal } from './resource-principal.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import {
@@ -731,4 +732,3 @@ export async function readLocalFileDownload(
     throw new DataAccessError('grant_invalid');
   return file.object;
 }
-import { resourcePrincipal } from './resource-principal.ts';

@@ -6,7 +6,6 @@ import {
   ReferenceRevisionSchema,
 } from './reference-library.ts';
 import { platformFileMaximumBase64Characters } from './storage.ts';
-import { WorkbenchFileSharingSchema } from './file-audience.ts';
 export { WorkbenchFileSharingSchema } from './file-audience.ts';
 export type { WorkbenchFileSharing } from './file-audience.ts';
 
@@ -110,24 +109,5 @@ export const WorkbenchFileUploadSchema = z
     fileName: z.string().trim().min(1).max(160),
     mediaType: z.string().min(1).max(255),
     contentBase64: z.string().min(1).max(platformFileMaximumBase64Characters),
-    sharing: WorkbenchFileSharingSchema.default({
-      scope: 'personal',
-      departmentIds: [],
-    }),
   })
   .strict();
-
-export const WorkbenchFileUpdateSchema = z
-  .object({
-    workspaceId: UuidSchema,
-    requestId: UuidSchema,
-    expectedRevision: z.number().int().nonnegative(),
-    sharing: WorkbenchFileSharingSchema.optional(),
-    isReference: z.boolean().optional(),
-  })
-  .strict()
-  .refine(
-    (value) => value.sharing !== undefined || value.isReference !== undefined,
-    { message: '请指定要调整的文件范围或长期参考状态。' },
-  );
-export type WorkbenchFileUpdate = z.infer<typeof WorkbenchFileUpdateSchema>;

@@ -1,3 +1,4 @@
+import { resourcePrincipal } from './resource-principal.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import {
@@ -667,4 +668,3 @@ export async function folderTriggerOptions(
     })),
   };
 }
-import { resourcePrincipal } from './resource-principal.ts';

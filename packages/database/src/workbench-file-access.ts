@@ -122,22 +122,6 @@ export async function workbenchFileAccess(
   };
 }
 
-export function canSetWorkbenchFileSharing(
-  principal: ContentPrincipal,
-  policyOwnerId: string,
-  sharing: WorkbenchFileSharing,
-) {
-  if (!principal.writable) return false;
-  if (sharing.scope === 'personal') return principal.userId === policyOwnerId;
-  if (principal.maintenanceLevel === 'company') return true;
-  return (
-    sharing.scope === 'departments' &&
-    principal.maintenanceLevel === 'department' &&
-    sharing.departmentIds.length > 0 &&
-    sharing.departmentIds.every((id) => id === principal.departmentId)
-  );
-}
-
 /** Evaluate the original immutable file, never the snapshot creator's role. */
 export async function workbenchOriginFileAccess(
   context: ContentIdentity,
@@ -226,15 +210,49 @@ export async function workbenchReferenceAccess(
 ) {
   if (!(await workbenchFileSchemaReady(sql))) return null;
   const [binding] = await sql<{ origin_object_id: string }[]>`
-    select origin_object_id from allrice_workbench_reference_bindings
-    where source_id=${sourceId} and organization_id=${context.organizationId}
+    select b.origin_object_id from allrice_workbench_reference_bindings b
+    join allrice_knowledge_sources s on s.id=b.source_id and s.organization_id=b.organization_id
+    where b.source_id=${sourceId} and b.organization_id=${context.organizationId}
+      and s.publication_kind is null and s.legacy_company_asset_id is null
   `;
-  return binding
-    ? workbenchOriginFileAccess(
-        context,
-        binding.origin_object_id,
-        sql,
-        lockForWrite,
-      )
-    : null;
+  if (binding)
+    return workbenchOriginFileAccess(
+      context,
+      binding.origin_object_id,
+      sql,
+      lockForWrite,
+    );
+  // Older artifact snapshots predate workbench bindings. Follow their exact
+  // version/policy relation, never the retained copy creator or source author.
+  const origins = await sql<{ owner_id: string; workspace_id: string }[]>`
+    select o.owner_id,o.workspace_id from allrice_knowledge_sources s
+    join allrice_knowledge_revisions r on r.knowledge_source_id=s.id
+    join allrice_deliverable_versions v on v.id=r.source_artifact_version_id
+      and v.organization_id=s.organization_id
+    join allrice_storage_objects o on o.id=v.object_id and o.organization_id=s.organization_id
+    where s.id=${sourceId} and s.organization_id=${context.organizationId}
+      and s.publication_kind is null and s.legacy_company_asset_id is null
+    union
+    select o.owner_id,o.workspace_id from allrice_knowledge_sources s
+    join allrice_workbench_file_policies p on p.reference_source_id=s.id
+      and p.organization_id=s.organization_id
+    join allrice_storage_objects o on o.id=p.object_id and o.organization_id=s.organization_id
+    where s.id=${sourceId} and s.organization_id=${context.organizationId}
+      and s.publication_kind is null and s.legacy_company_asset_id is null
+  `;
+  if (!origins.length) return null;
+  let canMaintain = true;
+  for (const origin of origins) {
+    const principal = await readContentPrincipal(
+      { ...context, workspaceId: origin.workspace_id },
+      sql,
+      lockForWrite,
+    );
+    if (principal?.userId !== origin.owner_id)
+      return { canRead: false, canMaintain: false };
+    canMaintain &&= principal.writable;
+  }
+  // A finished retained snapshot keeps its existing lifetime even if the
+  // original bytes are later deleted; current owner membership still applies.
+  return { canRead: true, canMaintain };
 }
