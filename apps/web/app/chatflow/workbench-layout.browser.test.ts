@@ -21966,6 +21966,36 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         }
         const inner = detail.locator('[data-document-zoom-scrollport]');
         diagnostics = await observeScrollDiagnostics(inner);
+        if (kind.startsWith('image')) {
+          const geometry = await detail.evaluate((node) => {
+            const rect = (selector: string) =>
+              node.querySelector(selector)!.getBoundingClientRect().toJSON();
+            return {
+              supported: CSS.supports('height', 'round(down, 100%, 1px)'),
+              inner: rect('[data-document-zoom-scrollport]'),
+              frame: rect('[data-document-zoom-frame]'),
+              host: rect('[class*="deliveryViewport"]'),
+              reading: rect('[class*="deliveryReadingArea"]'),
+            };
+          });
+          await diagnostics.mark('image-scrollport-geometry', geometry);
+          expect(geometry.supported).toBe(true);
+          expect(geometry.inner.height).toBe(Math.floor(geometry.frame.height));
+          expect(geometry.frame.height - geometry.inner.height).toBeLessThan(1);
+          expect(geometry.host).toEqual(geometry.frame);
+          for (const key of ['x', 'y', 'height'] as const)
+            expect(geometry.reading[key]).toBe(geometry.frame[key]);
+          // Platforms with non-overlay scrollbars reserve width in the reader.
+          expect(geometry.frame.right).toBeLessThanOrEqual(
+            geometry.reading.right,
+          );
+          for (const key of ['x', 'y', 'width'] as const)
+            expect(geometry.inner[key]).toBe(geometry.frame[key]);
+          // The real long-image cases retain the fractional outer viewport
+          // that exposed the failure; only the inner viewport is rounded.
+          if (kind === 'image-tall')
+            expect(geometry.frame.height % 1).toBeGreaterThan(0);
+        }
         const hit = inner;
         const box = (await hit.boundingBox())!;
         await f.page.mouse.move(
@@ -22000,9 +22030,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .toBeLessThanOrEqual(1);
         await diagnostics.mark('after-wheel-100000-inner-bottom');
         if (kind === 'image-tall') {
-          // Separate physical gestures: Chromium latches unphased wheel input
-          // for 500ms; 550ms includes a small dispatch margin. A settled scroll
-          // position alone does not end that input transaction.
+          // Keep the existing separator before the next independent gesture.
+          // The d6 first failures show this interval alone does not repair the
+          // fractional inner boundary; no additional wheel input is added.
           // https://chromium.googlesource.com/chromium/src/+/HEAD/content/browser/renderer_host/input/mouse_wheel_phase_handler.h
           await f.page.waitForTimeout(550);
           await diagnostics.mark('after-native-wheel-gesture-interval');

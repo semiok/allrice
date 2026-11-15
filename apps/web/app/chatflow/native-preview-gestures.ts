@@ -3,11 +3,18 @@
 import { useEffect, useState, type RefCallback } from 'react';
 
 /** Attach through DSH's public scrollport ref; native zoom and scrolling stay owned by DSH. */
-export function useNativePreviewGestures(): RefCallback<HTMLElement> {
+export function useNativePreviewGestures({
+  roundHeight = false,
+}: { roundHeight?: boolean } = {}): RefCallback<HTMLElement> {
   const [scrollport, setScrollport] = useState<HTMLElement | null>(null);
   useEffect(() => {
     if (!scrollport) return;
     const node = scrollport;
+    const height = node.style.getPropertyValue('height');
+    const heightPriority = node.style.getPropertyPriority('height');
+    // Approved <1px image-only adjustment: fractional viewport heights can
+    // leave Chromium's native scroll chain stuck at its rounded inner edge.
+    if (roundHeight) node.style.setProperty('height', 'round(down, 100%, 1px)');
     let drag:
       | { id: number; x: number; y: number; left: number; top: number }
       | undefined;
@@ -88,6 +95,10 @@ export function useNativePreviewGestures(): RefCallback<HTMLElement> {
     node.addEventListener('lostpointercapture', end);
     return () => {
       end();
+      if (roundHeight) {
+        if (height) node.style.setProperty('height', height, heightPriority);
+        else node.style.removeProperty('height');
+      }
       node.removeEventListener('wheel', wheel, true);
       node.removeEventListener('pointerdown', down);
       node.removeEventListener('pointermove', move);
@@ -95,6 +106,6 @@ export function useNativePreviewGestures(): RefCallback<HTMLElement> {
       node.removeEventListener('pointercancel', end);
       node.removeEventListener('lostpointercapture', end);
     };
-  }, [scrollport]);
+  }, [scrollport, roundHeight]);
   return setScrollport;
 }

@@ -36,7 +36,7 @@ const labels = {
 
 /** Allrice supplies existing rendered bytes; DSH owns fit-width, zoom and gestures. */
 export function NativeImagePreview({ src, alt }: { src: string; alt: string }) {
-  const scrollport = useNativePreviewGestures();
+  const scrollport = useNativePreviewGestures({ roundHeight: true });
   const data = useMemo(
     () => previewBytes(src.slice(src.indexOf(',') + 1)),
     [src],

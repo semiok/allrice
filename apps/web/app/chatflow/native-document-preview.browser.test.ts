@@ -383,6 +383,25 @@ suite('DSH native document previews', () => {
           await page.evaluate(() => Reflect.get(window, 'previewEscaped')),
         ).toBeUndefined();
         expect(await page.locator('[data-document-zoom-mode]').count()).toBe(1);
+        const scrollport = (await page
+          .locator('[data-document-zoom-scrollport]')
+          .elementHandle())!;
+        expect(await scrollport.evaluate((node) => node.style.height)).toBe(
+          'round(down, 100%, 1px)',
+        );
+        await page.evaluate(() => Reflect.get(window, 'setPreviewItems')([]));
+        await expect
+          .poll(() => scrollport.evaluate((node) => node.isConnected))
+          .toBe(false);
+        await expect
+          .poll(() => scrollport.evaluate((node) => node.style.height))
+          .toBe('');
+        expect(
+          await scrollport.evaluate((node) =>
+            node.style.getPropertyPriority('height'),
+          ),
+        ).toBe('');
+        await scrollport.dispose();
         expect(errors).toEqual([]);
       } finally {
         await page.close();
