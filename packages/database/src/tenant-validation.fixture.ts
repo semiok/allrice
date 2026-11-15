@@ -21,7 +21,7 @@ export async function tenantValidationFixture(
   const artifact = await a.artifact(
     run,
     '# Synthetic report\n\nIsolated fixture, not a real model answer.',
-    owner,
+    undefined,
     { immutable: options.artifactImmutable },
   );
   const targetId = randomUUID(),
