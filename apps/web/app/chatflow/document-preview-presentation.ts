@@ -15,7 +15,5 @@ export function documentPreviewPresentation(
     return `${styles.previewCanvas} ${styles.previewImage}`;
   if (preview.kind === 'spreadsheet')
     return `${styles.previewCanvas} ${styles.previewSpreadsheet}`;
-  if (preview.kind === 'pdf' || preview.kind === 'office')
-    return styles.previewCanvas;
   return '';
 }

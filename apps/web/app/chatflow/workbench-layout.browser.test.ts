@@ -16276,12 +16276,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     ),
                 )
                 .toBe(480);
-            expect(
-              await preview.evaluate(
-                (n) => getComputedStyle(n).backgroundColor,
-              ),
-            ).toBe(theme === 'dark' ? 'rgb(15, 15, 15)' : 'rgb(245, 245, 245)');
             if (kind === 'md' || kind === 'image' || kind === 'xlsx') {
+              expect(
+                await preview.evaluate(
+                  (n) => getComputedStyle(n).backgroundColor,
+                ),
+              ).toBe(
+                theme === 'dark' ? 'rgb(15, 15, 15)' : 'rgb(245, 245, 245)',
+              );
               const paper =
                 kind === 'md'
                   ? preview.getByRole('region', {
