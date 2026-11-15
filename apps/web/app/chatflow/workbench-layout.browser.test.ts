@@ -14225,7 +14225,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await menu.getByRole('menuitem', { name, exact: true }).click();
             await f.panel.getByRole('region', { name, exact: true }).waitFor();
             await menu.waitFor({ state: 'hidden' });
-            expect(await f.page.getByRole('dialog').count()).toBe(0);
+            // The existing mobile workbench is itself a modal; opening a
+            // directory must not add any separate picker dialog.
+            expect(
+              await f.page
+                .getByRole('dialog')
+                .evaluateAll((nodes) => nodes.map((node) => node.id)),
+            ).toEqual(width === 390 ? ['artifact-workbench'] : []);
             expect(await input.inputValue()).toBe('打开资料目录时保留当前草稿');
             expect(f.state.messageInputs).toEqual([]);
             const box = (await f.panel.boundingBox())!;
@@ -14501,6 +14507,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('button', { name: '‹ 交付成果', exact: true })
             .waitFor();
 
+          // The fullscreen mobile workbench covers the outer header. Use its
+          // existing close action before switching to another directory.
+          if ((await f.panel.getAttribute('data-fullscreen')) === 'true') {
+            await f.panel
+              .getByRole('button', { name: '关闭工作台', exact: true })
+              .click();
+            await f.panel.waitFor({ state: 'hidden' });
+          }
           const materialsEntry = f.page
             .locator('header')
             .getByRole('button', { name: '企业资料', exact: true });

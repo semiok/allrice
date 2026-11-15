@@ -2829,10 +2829,13 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
             }
             if (touch) await add.tap();
             else await add.click();
-            await f.page
-              .getByRole('menu')
-              .getByText('添加到本轮', { exact: true })
-              .waitFor();
+            const menu = f.page.getByRole('menu');
+            await menu.waitFor();
+            expect(await menu.getByRole('menuitem').allTextContents()).toEqual([
+              '交付成果',
+              '企业资料',
+              '本地上传',
+            ]);
             await f.page.keyboard.press('Escape');
             await card
               .locator('..')
