@@ -14311,6 +14311,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       it(`MET247 native file rows keep shared geometry, dates and independent actions at ${width}px ${theme}`, async () => {
         const f = await materialFixture({ width, appearance: theme });
         try {
+          const composer = f.page.getByRole('textbox', {
+            name: /给 .* 的消息/,
+          });
+          const waitForReferenceFocus = () =>
+            expect
+              .poll(() =>
+                composer.evaluate((node) => document.activeElement === node),
+              )
+              .toBe(true);
           const dates = await f.page.evaluate(() => {
             const today = new Date();
             today.setHours(10, 30, 0, 0);
@@ -14518,6 +14527,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.page
             .getByRole('button', { name: `移除资料 ${name} v1`, exact: true })
             .waitFor();
+          // The reference callback focuses the composer on the next frame.
+          // Wait before issuing a key to a file row so it cannot steal Enter.
+          await waitForReferenceFocus();
           if (!(await files.isVisible())) await filesEntry.click();
           await deliveryRow.waitFor();
           expect(
@@ -14582,6 +14594,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await expect
             .poll(() => f.materials.selections)
             .toEqual([first.revisionId]);
+          await f.page
+            .getByRole('button', { name: `移除资料 ${name}`, exact: true })
+            .waitFor();
+          // A received request is not a completed selection. Mobile closes the
+          // panel and returns focus before it can be reopened for searching.
+          await waitForReferenceFocus();
           expect(f.materials.reads).toEqual([]);
           if (!(await materials.isVisible())) await materialsEntry.click();
           const search = materials.getByRole('searchbox', {
