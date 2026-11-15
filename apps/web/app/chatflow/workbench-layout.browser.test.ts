@@ -5721,7 +5721,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         layout: false,
       },
     ]),
-  )('keeps compact cloud $contract at $widthpx', async ({ width, layout }) => {
+  )('keeps compact cloud $contract at $width px', async ({ width, layout }) => {
     const f = await fixture({ width, running: true, touch: width < 760 });
     const operation = {
       snapshot: {
