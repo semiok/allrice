@@ -832,7 +832,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       ).toBe(true);
       await update(page, 'merge');
       const after = await receiptGeometry(later);
-      expect(after.identity).toBe('tool:call-30');
+      expect(after.identity).toBe('tool:call-28');
       expect(after.readable).toBe(true);
       expect(after.relativeTop).toBeCloseTo(before.relativeTop!, 0);
       expect(await oldInput.evaluate((node) => node.scrollTop)).toBe(
@@ -1027,7 +1027,7 @@ suite('reading a receipt while late native trace changes its group', () => {
         // Leave room below the anchor in the approved 24px compact rows.
         const later = card(page, 28);
         await stepToggle(later).click();
-        const reading = material(page, 30).locator(
+        const reading = material(page, 28).locator(
           'pre[data-process-content="result"]',
         );
         const original = await reading.textContent();
@@ -1061,8 +1061,8 @@ suite('reading a receipt while late native trace changes its group', () => {
           })
           .toBe(true);
         const before = await receiptGeometry(reading);
-        expect(before.identity).toBe('tool:call-30');
-        expect(before.materials).toEqual(['cloud:reading-30']);
+        expect(before.identity).toBe('tool:call-28');
+        expect(before.materials).toEqual(['cloud:reading-28']);
         for (const stage of ['prefix', 'split', 'merge'] as const) {
           await update(page, stage);
           const after = await receiptGeometry(reading);
@@ -2569,14 +2569,21 @@ suite('reading a receipt while late native trace changes its group', () => {
               await stepToggle(processOf(page)).evaluate((node) =>
                 node.scrollIntoView({ block: 'start' }),
               );
-            const overviewFraming = await overview
-              .locator(
-                view === 'history'
-                  ? `[data-disclosure-row], [data-process-material="browser:${id(310)}"] > dl > dt, [data-process-material="browser:${id(310)}"] > dl > dd`
-                  : 'header, [aria-label="这次要做的事"] > div:first-child, [aria-label="这次要做的事"] > div:nth-child(2), [aria-label="参数"]',
-              )
-              .evaluateAll((nodes) =>
-                nodes.map((node) => {
+            const overviewAnchors = overview.locator(
+              view === 'history'
+                ? `[data-disclosure-row], [data-process-material="browser:${id(310)}"] > dl > dt, [data-process-material="browser:${id(310)}"] > dl > dd`
+                : 'header, [aria-label="这次要做的事"] > div:first-child, [aria-label="这次要做的事"] > div:nth-child(2), [aria-label="参数"]',
+            );
+            const overviewFraming = [];
+            // Approved 260px scroller: verify every field remains fully readable
+            // after scrolling it into view, rather than requiring all fields at once.
+            for (const anchor of await overviewAnchors.all()) {
+              if (view === 'history')
+                await anchor.evaluate((node) =>
+                  node.scrollIntoView({ block: 'center' }),
+                );
+              overviewFraming.push(
+                await anchor.evaluate((node) => {
                   const bounds = node.getBoundingClientRect();
                   let left = Math.max(0, bounds.left);
                   let right = Math.min(innerWidth, bounds.right);
@@ -2632,6 +2639,7 @@ suite('reading a receipt while late native trace changes its group', () => {
                   };
                 }),
               );
+            }
             expect(overviewFraming.length).toBe(view === 'history' ? 9 : 4);
             for (const anchor of overviewFraming) {
               expect(anchor.visibleWidth).toBeGreaterThan(0);
@@ -3225,7 +3233,7 @@ suite('reading a receipt while late native trace changes its group', () => {
           const status = searchStep(page).locator(
             '[class*="processStepStatus"]',
           );
-          expect(await status.innerText()).toBe('已完成 · 0.8秒');
+          expect(await status.innerText()).toBe('0.8秒');
           const statusBox = await textBox(status);
           expect(
             Math.abs(

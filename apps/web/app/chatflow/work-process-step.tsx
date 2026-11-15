@@ -95,7 +95,7 @@ export function WorkProcessStepView({
         }
         collapsedContent={
           <>
-            {(failed || stopped) && (
+            {(failed || stopped || running) && (
               <span className={styles.processAccessibleStatus}>
                 {status ?? (stopped ? '已停止' : failed ? '失败' : '运行中')}
               </span>
