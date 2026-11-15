@@ -1,3 +1,4 @@
+import { PATCH as retiredFilePatch } from '../app/api/v1/workbench/files/[id]/route';
 import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type {
@@ -74,10 +75,7 @@ import {
   captureReferenceSelections,
   hasRevokedReferencePublicationHistory,
 } from '../../../packages/database/src/reference-runtime.ts';
-import {
-  readWorkbenchFile,
-  updateWorkbenchFile,
-} from '../../../packages/database/src/workbench-files.ts';
+import { readWorkbenchFile } from '../../../packages/database/src/workbench-files.ts';
 import {
   createChatSession,
   getEmployeeWorkspace,
@@ -655,9 +653,9 @@ suite(
       ))!;
       await f.db`insert into allrice_workbench_file_policies(object_id,organization_id,workspace_id,owner_id,file_name,scope)
         values(${original.object.id},${owner.organizationId},${owner.workspaceId},${owner.actor.id},'evidence.txt','company')`;
-      expect(
-        (await readWorkbenchFile(reader, original.object.id)).canMaintain,
-      ).toBe(false);
+      await expect(
+        readWorkbenchFile(reader, original.object.id),
+      ).rejects.toMatchObject({ code: 'not_found' });
       await expect(
         publishReference(
           reader,
@@ -697,17 +695,30 @@ suite(
       expect(
         await f.db`select source_id from allrice_workbench_reference_bindings where source_id=${one.sourceId}`,
       ).toHaveLength(0);
-      await updateWorkbenchFile(
-        owner,
-        original.object.id,
-        {
-          workspaceId: owner.workspaceId,
-          requestId: randomUUID(),
-          expectedRevision: 1,
-          sharing: { scope: 'personal', departmentIds: [] },
-        },
-        browser.storage!,
+      browser.context = owner;
+      const retired = await retiredFilePatch(
+        new Request(
+          `https://example.test/api/v1/workbench/files/${original.object.id}?workspaceId=${owner.workspaceId}`,
+          {
+            method: 'PATCH',
+            headers: {
+              origin: 'https://example.test',
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              workspaceId: owner.workspaceId,
+              requestId: randomUUID(),
+              expectedRevision: 1,
+              sharing: { scope: 'personal', departmentIds: [] },
+            }),
+          },
+        ),
+        { params: Promise.resolve({ id: original.object.id }) },
       );
+      expect(retired.status).toBe(404);
+      expect(
+        (await readWorkbenchFile(owner, original.object.id)).object.id,
+      ).toBe(original.object.id);
       await expect(
         readWorkbenchFile(reader, original.object.id),
       ).rejects.toMatchObject({ code: 'not_found' });
@@ -835,20 +846,31 @@ suite(
           mediaType: 'text/plain',
           contentBase64: input.contentBase64,
         }),
-      ).rejects.toMatchObject({ code: 'source_unavailable' });
-      await expect(
-        updateWorkbenchFile(
-          s.owner,
-          retained.object.id,
-          {
-            workspaceId: s.owner.workspaceId,
-            requestId: randomUUID(),
-            expectedRevision: 1,
-            sharing: { scope: 'personal', departmentIds: [] },
-          },
-          browser.storage!,
-        ),
-      ).rejects.toMatchObject({ code: 'invalid_file' });
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      browser.context = s.owner;
+      expect(
+        (
+          await retiredFilePatch(
+            new Request(
+              `https://example.test/api/v1/workbench/files/${retained.object.id}?workspaceId=${s.owner.workspaceId}`,
+              {
+                method: 'PATCH',
+                headers: {
+                  origin: 'https://example.test',
+                  'content-type': 'application/json',
+                },
+                body: JSON.stringify({
+                  workspaceId: s.owner.workspaceId,
+                  requestId: randomUUID(),
+                  expectedRevision: 1,
+                  sharing: { scope: 'personal', departmentIds: [] },
+                }),
+              },
+            ),
+            { params: Promise.resolve({ id: retained.object.id }) },
+          )
+        ).status,
+      ).toBe(404);
       await expect(
         change(s.owner, published.sourceId, 'revoke'),
       ).rejects.toMatchObject({ code: 'source_unavailable' });
@@ -864,7 +886,9 @@ suite(
       });
       await f.db`insert into allrice_storage_access_grants(nonce,object_id,subject_id,operation,expires_at)
       values(${grant.nonce},${grant.objectId},${grant.subjectId},'read',${grant.expiresAt})`;
-      await expect(resolveStorageGrant(grant)).rejects.toMatchObject({
+      await expect(
+        resolveStorageGrant(grant, async () => s.owner),
+      ).rejects.toMatchObject({
         code: 'grant_invalid',
       });
       await expect(

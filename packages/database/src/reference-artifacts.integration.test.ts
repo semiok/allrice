@@ -1,3 +1,5 @@
+import { legacyReferenceFixture } from './legacy-reference.fixture.ts';
+import { POST as retiredSave } from '../../../apps/web/app/api/v1/references/artifacts/route';
 import { randomUUID } from 'node:crypto';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -17,12 +19,15 @@ import {
 import { getWorkbenchArtifact, readArtifactBytes } from './artifact-review.ts';
 import {
   changeReference,
-  completeReferenceUpload,
   getReferenceFile,
   listReferenceRevisions,
   prepareReferenceUpload,
-  saveArtifactReference,
 } from './reference-library.ts';
+
+const browser = vi.hoisted(() => ({ context: null as RequestContext | null }));
+vi.mock('../../../apps/web/lib/identity/session', () => ({
+  getRequestContext: async () => browser.context,
+}));
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -80,156 +85,150 @@ suite(
       };
       return { a, owner, reader, input };
     }
-    const save = (owner: RequestContext, input: unknown, port = storage) =>
-      saveArtifactReference(owner, input, port);
     const file = (owner: RequestContext, id: string) =>
       getReferenceFile(owner, owner.workspaceId!, id);
-    function storageWith(overrides: Partial<StoragePort>): StoragePort {
-      return {
-        get: storage.get.bind(storage),
-        put: storage.put.bind(storage),
-        delete: storage.delete.bind(storage),
-        exists: storage.exists.bind(storage),
-        ...overrides,
-      };
-    }
-    it('uses the enterprise label for new empty-purpose saves while preserving stored descriptions, digests and exact receipts', async () => {
-      const { a, owner, input } = await setup();
-      const purpose = async (revisionId: string) =>
-        (await listReferenceRevisions(owner, owner.workspaceId!)).find(
-          (r) => r.revisionId === revisionId,
-        )!.purpose;
-      const preservedInput = { ...input, purpose: '参考资料' };
-      const preserved = await save(owner, preservedInput);
-      const before =
-        await f.db`select description,checksum,request_input from allrice_knowledge_revisions where id=${preserved.revisionId}`;
-      const artifact = await a.createArtifact(
-        a.task.runId,
-        'New default description fixture',
-      );
-      const emptyArtifact = {
-        ...input,
-        requestId: randomUUID(),
-        artifactVersionId: artifact.artifactId,
-        purpose: '',
-      };
-      const saved = await save(owner, emptyArtifact);
-      expect(await purpose(saved.revisionId)).toBe('企业资料');
-      expect(await save(owner, emptyArtifact)).toEqual(saved);
-      const upload = {
-        workspaceId: owner.workspaceId,
-        requestId: randomUUID(),
-        scope: 'company' as const,
-        fileName: 'empty-purpose.txt',
-        purpose: '',
-        mediaType: 'text/plain',
-        contentBase64: Buffer.from('Independent upload').toString('base64'),
-      };
-      const pending = await prepareReferenceUpload(owner, upload);
-      await storage.put(
-        pending.object,
-        new Blob([new Uint8Array(pending.bytes)]).stream(),
-      );
-      await completeReferenceUpload(
-        owner,
-        owner.workspaceId!,
-        pending.revisionId,
-      );
-      expect(await purpose(pending.revisionId)).toBe('企业资料');
-      expect((await prepareReferenceUpload(owner, upload)).revisionId).toBe(
-        pending.revisionId,
-      );
-      expect(await save(owner, preservedInput)).toEqual(preserved);
-      expect(await purpose(preserved.revisionId)).toBe('参考资料');
-      expect(
-        await f.db`select description,checksum,request_input from allrice_knowledge_revisions where id=${preserved.revisionId}`,
-      ).toEqual(before);
-      expect((await file(owner, preserved.revisionId)).object.checksum).toBe(
-        a.artifact.digest,
-      );
-    });
-    it('copies exact bytes once under concurrent aliases; does not publish private conversation or link original storage', async () => {
-      const { a, owner, reader, input } = await setup();
-      const alias = { ...input, requestId: randomUUID() };
-      const [one, two] = await Promise.all([
-        save(owner, input),
-        save(owner, alias),
-      ]);
-      expect(two).toEqual(one);
+    async function legacy(
+      owner: RequestContext,
+      versionId: string,
+      extra: Record<string, unknown> = {},
+    ) {
+      const [v] =
+        await f.db`select d.*,o.media_type from allrice_deliverable_versions d
+        join allrice_storage_objects o on o.id=d.object_id where d.id=${versionId}`;
       const original = await getWorkbenchArtifact(
         owner,
-        a.task.chatSessionId!,
-        input.artifactVersionId,
+        v!.session_id,
+        versionId,
         f.db,
       );
-      const retained = await file(reader, one.revisionId);
-      expect(retained.object.id).not.toBe(original.object.id);
-      expect(retained.object.checksum).toBe(a.artifact.digest);
-      expect(retained.object.immutable).toBe(true);
-      expect(retained.object.retentionUntil).toBeNull();
-      expect(await readArtifactBytes(storage, retained.object)).toEqual(
-        await readArtifactBytes(storage, original.object),
-      );
-      const refs = await listReferenceRevisions(reader, reader.workspaceId!);
-      expect(refs).toHaveLength(1);
-      expect(refs[0]!.origin).toEqual({
-        fileName: original.version.fileName,
-        version: 1,
-        checksum: original.object.checksum,
-      });
-      const publicJson = JSON.stringify(refs);
-      for (const secret of [
-        a.task.chatSessionId!,
-        a.task.runId,
-        original.object.key,
-        'PRIVATE_TEST_SECRET',
-      ])
-        expect(publicJson).not.toContain(secret);
-      await expect(
-        getWorkbenchArtifact(
-          reader,
-          a.task.chatSessionId!,
-          input.artifactVersionId,
-          f.db,
-        ),
-      ).rejects.toThrow('artifact_not_found');
-      await expect(
-        save(reader, {
-          ...input,
-          workspaceId: reader.workspaceId,
-          scope: 'personal',
-        }),
-      ).rejects.toThrow('source_unavailable');
-      await expect(
-        save(owner, { ...alias, purpose: 'changed input under same alias' }),
-      ).rejects.toThrow('request_conflict');
-      await expect(
-        save(owner, { ...alias, scope: 'personal' }),
-      ).rejects.toThrow('request_conflict');
-      expect(
-        await save(owner, {
-          ...input,
+      const bytes = await readArtifactBytes(storage, original.object);
+      const saved = await legacyReferenceFixture(
+        owner,
+        {
+          workspaceId: owner.workspaceId,
           requestId: randomUUID(),
-          purpose: 'does not overwrite canonical purpose',
+          scope: 'company',
+          fileName: v!.file_name,
+          purpose: 'PRE_R0_PURPOSE',
+          mediaType: v!.media_type,
+          contentBase64: bytes.toString('base64'),
+          ...extra,
+        },
+        f.db,
+        {
+          versionId,
+          snapshot: {
+            fileName: v!.file_name,
+            version: v!.version,
+            checksum: original.object.checksum,
+            sessionId: v!.session_id,
+          },
+        },
+      );
+      await storage.put(
+        saved.object,
+        new Blob([new Uint8Array(saved.bytes)]).stream(),
+      );
+      await f.db`update allrice_storage_objects set state='ready' where id=${saved.object.id}`;
+      return saved;
+    }
+    async function post(context: RequestContext | null, input: unknown) {
+      browser.context = context;
+      return retiredSave(
+        new Request('https://example.test/api/v1/references/artifacts', {
+          method: 'POST',
+          headers: {
+            origin: 'https://example.test',
+            host: 'example.test',
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(input),
         }),
-      ).toEqual(one);
-      const [count] =
-        await f.db`select count(*)::int n from allrice_knowledge_revisions where source_artifact_version_id=${input.artifactVersionId}`;
-      expect(count!.n).toBe(1);
+      );
+    }
+    async function counts(organizationId: string) {
+      const [row] = await f.db`select
+        (select count(*) from allrice_knowledge_sources where organization_id=${organizationId}) as sources,
+        (select count(*) from allrice_knowledge_revisions where organization_id=${organizationId}) as revisions,
+        (select count(*) from allrice_storage_objects where organization_id=${organizationId}) as objects,
+        (select count(*) from allrice_knowledge_save_requests where organization_id=${organizationId}) as requests,
+        (select count(*) from allrice_messages where organization_id=${organizationId}) as messages`;
+      return row;
+    }
+    it('refuses retired artifact saves for every old target and concurrent alias without reading bytes or reserving a copy', async () => {
+      const { owner, input } = await setup();
+      const departmentId = randomUUID();
+      await f.db`insert into allrice_departments(id,organization_id,name,create_request_id,create_name)
+        values(${departmentId},${owner.organizationId},'Old target',${randomUUID()},'Old target')`;
+      const before = await counts(owner.organizationId);
+      const get = vi.spyOn(storage, 'get');
+      try {
+        for (const scope of ['personal', 'department', 'company', 'platform']) {
+          const responses = await Promise.all(
+            [input.requestId, randomUUID()].map((requestId) =>
+              post(owner, {
+                ...input,
+                scope,
+                requestId,
+                ...(scope === 'department' ? { departmentId } : {}),
+              }),
+            ),
+          );
+          expect(responses.map((r) => r.status)).toEqual([404, 404]);
+          for (const response of responses)
+            expect(await response.text()).not.toContain(
+              'CLIENT_PATH_MUST_NOT_BE_USED',
+            );
+        }
+        expect(
+          (
+            await post(owner, {
+              ...input,
+              objectKey: 'CLIENT_PATH_MUST_NOT_BE_USED',
+            })
+          ).status,
+        ).toBe(404);
+        expect(get).not.toHaveBeenCalled();
+        expect(await counts(owner.organizationId)).toEqual(before);
+        expect((await post(null, input)).status).toBe(401);
+      } finally {
+        get.mockRestore();
+      }
     });
-    it('keeps artifact v1 and v2 independent, including after the saved reference receives a manual revision', async () => {
+    it('does not reexecute a historical artifact receipt or change retained purpose, digest and object identity', async () => {
+      const { owner, input } = await setup();
+      const saved = await legacy(owner, input.artifactVersionId);
+      await f.db`insert into allrice_knowledge_save_requests(organization_id,actor_id,request_id,operation,input,revision_id)
+        values(${owner.organizationId},${owner.actor.id},${input.requestId},'artifact',${f.db.json(input)},${saved.revisionId})`;
+      const before =
+        await f.db`select description,checksum,request_input,file_object_id from allrice_knowledge_revisions where id=${saved.revisionId}`;
+      const beforeCounts = await counts(owner.organizationId);
+      for (const request of [
+        input,
+        { ...input, requestId: randomUUID() },
+        { ...input, purpose: 'replacement' },
+      ])
+        expect((await post(owner, request)).status).toBe(404);
+      expect(
+        await f.db`select description,checksum,request_input,file_object_id from allrice_knowledge_revisions where id=${saved.revisionId}`,
+      ).toEqual(before);
+      expect(await counts(owner.organizationId)).toEqual(beforeCounts);
+      expect((await file(owner, saved.revisionId)).object.id).toBe(
+        saved.object.id,
+      );
+      expect(await readArtifactBytes(storage, saved.object)).toEqual(
+        saved.bytes,
+      );
+    });
+    it('keeps exact historical artifact versions separate and rejects the retired manual version update', async () => {
       const { a, owner, input } = await setup();
-      const first = await save(owner, input);
+      const first = await legacy(owner, input.artifactVersionId);
       const secondArtifact = await a.createArtifact(
         a.task.runId,
         'Corrected v2 amount 125',
       );
       await f.db`update allrice_deliverable_versions set series_id=(select series_id from allrice_deliverable_versions where id=${input.artifactVersionId}),version=2,parent_version_id=${input.artifactVersionId} where id=${secondArtifact.artifactId}`;
-      const second = await save(owner, {
-        ...input,
-        requestId: randomUUID(),
-        artifactVersionId: secondArtifact.artifactId,
-      });
+      const second = await legacy(owner, secondArtifact.artifactId);
       expect(second.sourceId).not.toBe(first.sourceId);
       expect((await file(owner, first.revisionId)).object.checksum).toBe(
         a.artifact.digest,
@@ -237,113 +236,171 @@ suite(
       expect((await file(owner, second.revisionId)).object.checksum).toBe(
         secondArtifact.digest,
       );
-      const manual = await prepareReferenceUpload(owner, {
-        workspaceId: owner.workspaceId,
-        requestId: randomUUID(),
-        sourceId: first.sourceId,
-        expectedRevision: 1,
-        scope: 'company',
-        fileName: 'manual.txt',
-        mediaType: 'text/plain',
-        contentBase64: Buffer.from('manual v2').toString('base64'),
-      });
-      await storage.put(
-        manual.object,
-        new Blob([new Uint8Array(manual.bytes)]).stream(),
-      );
-      await completeReferenceUpload(
-        owner,
-        owner.workspaceId!,
-        manual.revisionId,
-      );
-      expect(await save(owner, { ...input, requestId: randomUUID() })).toEqual(
-        first,
-      );
+      await expect(
+        prepareReferenceUpload(owner, {
+          workspaceId: owner.workspaceId,
+          requestId: randomUUID(),
+          sourceId: first.sourceId,
+          expectedRevision: 1,
+          scope: 'company',
+          fileName: 'manual.txt',
+          mediaType: 'text/plain',
+          contentBase64: Buffer.from('manual v2').toString('base64'),
+        }),
+      ).rejects.toThrow('authorization_denied');
       await expect(
         f.db`update allrice_knowledge_revisions set artifact_snapshot='{}' where id=${first.revisionId}`,
       ).rejects.toThrow('Reference revision is immutable');
-    });
-    it('shares request IDs with uploads and refuses changed operations in both directions', async () => {
-      const { owner, input } = await setup();
-      const upload = {
-        workspaceId: owner.workspaceId,
-        requestId: input.requestId,
-        scope: 'personal',
-        fileName: 'separate.txt',
-        mediaType: 'text/plain',
-        contentBase64: Buffer.from('upload').toString('base64'),
-      };
-      await save(owner, input);
-      await expect(prepareReferenceUpload(owner, upload)).rejects.toThrow(
-        'request_conflict',
+      const json = JSON.stringify(
+        await listReferenceRevisions(owner, owner.workspaceId!),
       );
-      const requestId = randomUUID();
-      await prepareReferenceUpload(owner, { ...upload, requestId });
-      await expect(save(owner, { ...input, requestId })).rejects.toThrow(
-        'request_conflict',
+      expect(json).not.toContain(a.task.chatSessionId!);
+      expect(json).not.toContain(
+        (await file(owner, first.revisionId)).object.key,
       );
     });
-    it('normalizes UUIDs before target identity, dedup and ownership so ordinary department colleagues can read', async () => {
+    it('uses the original owner for an unbound old artifact source even when another member created the company copy', async () => {
       const { owner, reader, input } = await setup();
-      const departmentId = randomUUID();
-      await f.db`insert into allrice_departments(id,organization_id,name,create_request_id,create_name) values(${departmentId},${owner.organizationId},'Department',${randomUUID()},'Department')`;
-      await f.db`insert into allrice_organization_people(organization_id,user_id,display_name,department_id) values(${reader.organizationId},${reader.actor.id},'Department reader',${departmentId})`;
-      const value = { ...input, scope: 'department', departmentId };
-      const upper = {
-        ...value,
-        requestId: randomUUID().toUpperCase(),
-        workspaceId: input.workspaceId.toUpperCase(),
-        artifactVersionId: input.artifactVersionId.toUpperCase(),
-        departmentId: departmentId.toUpperCase(),
-      };
-      const [one, two] = await Promise.all([
-        save(owner, value),
-        save(owner, upper),
-      ]);
-      expect(one).toEqual(two);
-      expect(
-        await save(owner, {
-          ...upper,
-          requestId: upper.requestId.toLowerCase(),
-        }),
-      ).toEqual(one);
-      expect((await file(reader, one.revisionId)).object.checksum).toBe(
-        (await file(owner, one.revisionId)).object.checksum,
+      await f.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role)
+        values(${owner.organizationId},${owner.workspaceId},${reader.actor.id},'member') on conflict do nothing`;
+      const creator = (await authenticateSession(
+        (await createSession(reader.actor.id)).token,
+        {
+          organizationId: owner.organizationId,
+          workspaceId: owner.workspaceId!,
+        },
+      ))!;
+      const original = await getWorkbenchArtifact(
+        owner,
+        (
+          await f.db`select session_id from allrice_deliverable_versions where id=${input.artifactVersionId}`
+        )[0]!.session_id,
+        input.artifactVersionId,
+        f.db,
       );
-      const refs = await listReferenceRevisions(reader, reader.workspaceId!);
-      expect(refs[0]!.ownership).toEqual({
-        scope: 'department',
-        organizationId: owner.organizationId,
-        departmentId,
-      });
-      await f.db`update allrice_organization_people set department_id=null where organization_id=${reader.organizationId} and user_id=${reader.actor.id}`;
-      await expect(file(reader, one.revisionId)).rejects.toThrow('not_found');
+      const bytes = await readArtifactBytes(storage, original.object);
+      const saved = await legacyReferenceFixture(
+        creator,
+        {
+          workspaceId: owner.workspaceId,
+          requestId: randomUUID(),
+          scope: 'company',
+          fileName: 'old shared.txt',
+          mediaType: 'text/plain',
+          contentBase64: bytes.toString('base64'),
+        },
+        f.db,
+        {
+          versionId: input.artifactVersionId,
+          snapshot: {
+            fileName: original.version.fileName,
+            version: original.version.version,
+            checksum: original.object.checksum,
+          },
+        },
+      );
+      await storage.put(
+        saved.object,
+        new Blob([new Uint8Array(saved.bytes)]).stream(),
+      );
+      await f.db`update allrice_storage_objects set state='ready' where id=${saved.object.id}`;
+      expect(
+        await f.db`select source_id from allrice_workbench_reference_bindings where source_id=${saved.sourceId}`,
+      ).toHaveLength(0);
+      expect((await file(owner, saved.revisionId)).object.checksum).toBe(
+        original.object.checksum,
+      );
+      await expect(file(creator, saved.revisionId)).rejects.toThrow(
+        'not_found',
+      );
+      await expect(file(reader, saved.revisionId)).rejects.toThrow('not_found');
+      expect(
+        await listReferenceRevisions(
+          creator,
+          creator.workspaceId!,
+          saved.sourceId,
+        ),
+      ).toEqual([]);
     });
-    it('retains a ready reference across original archive/deletion and author deactivation; archive/revocation still closes new reads', async () => {
+    it('honors an exact old policy-source origin without treating independent company sources as originals', async () => {
       const { a, owner, reader, input } = await setup();
-      const saved = await save(owner, input);
-      await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${a.task.chatSessionId}`;
       const original = await getWorkbenchArtifact(
         owner,
         a.task.chatSessionId!,
         input.artifactVersionId,
         f.db,
       );
-      await unlink(join(f.storageRoot, original.object.key));
-      expect(await save(owner, input)).toEqual(saved);
-      expect(await save(owner, { ...input, requestId: randomUUID() })).toEqual(
-        saved,
+      const saved = await legacyReferenceFixture(
+        owner,
+        {
+          workspaceId: owner.workspaceId,
+          requestId: randomUUID(),
+          scope: 'company',
+          fileName: 'independent.txt',
+          mediaType: 'text/plain',
+          contentBase64: Buffer.from('INDEPENDENT_RESOURCE').toString('base64'),
+        },
+        f.db,
       );
-      await f.db`update allrice_users set status='disabled' where id=${owner.actor.id}`;
+      await storage.put(
+        saved.object,
+        new Blob([new Uint8Array(saved.bytes)]).stream(),
+      );
+      await f.db`update allrice_storage_objects set state='ready' where id=${saved.object.id}`;
+      expect((await file(reader, saved.revisionId)).object.id).toBe(
+        saved.object.id,
+      );
+      await f.db`insert into allrice_workbench_file_policies(object_id,organization_id,workspace_id,owner_id,file_name,scope,reference_source_id)
+        values(${original.object.id},${owner.organizationId},${owner.workspaceId},${owner.actor.id},'old original.txt','company',${saved.sourceId})`;
       expect(
-        (
-          await readArtifactBytes(
-            storage,
-            (await file(reader, saved.revisionId)).object,
-          )
-        ).length,
-      ).toBeGreaterThan(0);
-      await expect(save(owner, input)).rejects.toThrow('authorization_denied');
+        await f.db`select source_id from allrice_workbench_reference_bindings where source_id=${saved.sourceId}`,
+      ).toHaveLength(0);
+      expect((await file(owner, saved.revisionId)).object.id).toBe(
+        saved.object.id,
+      );
+      await expect(file(reader, saved.revisionId)).rejects.toThrow('not_found');
+      expect(
+        await listReferenceRevisions(
+          reader,
+          reader.workspaceId!,
+          saved.sourceId,
+        ),
+      ).toEqual([]);
+      await f.db`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${original.object.id}`;
+      expect(
+        await readArtifactBytes(
+          storage,
+          (await file(owner, saved.revisionId)).object,
+        ),
+      ).toEqual(saved.bytes);
+    });
+    it('keeps the owner retained lifetime across original archive/deletion, while current identity and archive still gate new reads', async () => {
+      const { a, owner, reader, input } = await setup();
+      const saved = await legacy(owner, input.artifactVersionId, {
+        scope: 'personal',
+      });
+      const original = await getWorkbenchArtifact(
+        owner,
+        a.task.chatSessionId!,
+        input.artifactVersionId,
+        f.db,
+      );
+      const before = await counts(owner.organizationId);
+      await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${a.task.chatSessionId}`;
+      await f.db`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${original.object.id}`;
+      await unlink(join(f.storageRoot, original.object.key));
+      expect(
+        await readArtifactBytes(
+          storage,
+          (await file(owner, saved.revisionId)).object,
+        ),
+      ).toEqual(saved.bytes);
+      await expect(file(reader, saved.revisionId)).rejects.toThrow('not_found');
+      await f.db`update allrice_users set status='disabled' where id=${owner.actor.id}`;
+      await expect(file(owner, saved.revisionId)).rejects.toThrow('not_found');
+      expect(await readArtifactBytes(storage, saved.object)).toEqual(
+        saved.bytes,
+      );
       await f.db`update allrice_users set status='active' where id=${owner.actor.id}`;
       await changeReference(owner, saved.sourceId, {
         workspaceId: owner.workspaceId,
@@ -351,173 +408,21 @@ suite(
         expectedRevision: 1,
         action: 'archive',
       });
-      await expect(file(reader, saved.revisionId)).rejects.toThrow('not_found');
-      await expect(save(owner, input)).rejects.toThrow('not_found');
-    });
-    it('rechecks target authority after reading and after copying, keeping denied copies pending and resumable', async () => {
-      const { owner, input } = await setup();
-      const revoke = () =>
-        f.db`update allrice_organization_people set content_maintenance_level='personal' where organization_id=${owner.organizationId} and user_id=${owner.actor.id}`;
-      const restore = () =>
-        f.db`update allrice_organization_people set content_maintenance_level='company' where organization_id=${owner.organizationId} and user_id=${owner.actor.id}`;
+      await expect(file(owner, saved.revisionId)).rejects.toThrow('not_found');
       await expect(
-        save(
-          owner,
-          input,
-          storageWith({
-            get: async (o) => {
-              const stream = await storage.get(o);
-              await revoke();
-              return stream;
-            },
-          }),
-        ),
-      ).rejects.toThrow('authorization_denied');
-      const [none] =
-        await f.db`select count(*)::int n from allrice_knowledge_revisions where source_artifact_version_id=${input.artifactVersionId}`;
-      expect(none!.n).toBe(0);
-      await restore();
-      await expect(
-        save(
-          owner,
-          input,
-          storageWith({
-            put: async (o, s) => {
-              await storage.put(o, s);
-              await revoke();
-            },
-          }),
-        ),
-      ).rejects.toThrow('not_found');
-      const [pending] =
-        await f.db`select r.id,o.state from allrice_knowledge_revisions r join allrice_storage_objects o on o.id=r.file_object_id where r.source_artifact_version_id=${input.artifactVersionId}`;
-      expect(pending!.state).toBe('pending');
-      await expect(file(owner, pending!.id)).rejects.toThrow('not_found');
-      await restore();
-      expect((await save(owner, input)).revisionId).toBe(pending!.id);
-    });
-    it('rechecks original source after read and copy without converting a vanished file to a successful reference', async () => {
-      const { owner, input } = await setup();
-      const setSource = (state: 'ready' | 'pending') =>
-        f.db`update allrice_storage_objects set retention_until=${state === 'ready' ? f.db`null` : f.db`clock_timestamp()`} where id=(select object_id from allrice_deliverable_versions where id=${input.artifactVersionId})`;
-      await expect(
-        save(
-          owner,
-          input,
-          storageWith({
-            get: async (o) => {
-              const s = await storage.get(o);
-              await setSource('pending');
-              return s;
-            },
-          }),
-        ),
-      ).rejects.toThrow('source_unavailable');
-      await setSource('ready');
-      await expect(
-        save(
-          owner,
-          input,
-          storageWith({
-            put: async (o, s) => {
-              await storage.put(o, s);
-              await setSource('pending');
-            },
-          }),
-        ),
-      ).rejects.toThrow('source_unavailable');
-      await setSource('ready');
-      const recovered = await save(owner, input);
-      expect((await file(owner, recovered.revisionId)).object.checksum).toBe(
-        (
-          await getWorkbenchArtifact(
-            owner,
-            (
-              await f.db`select session_id from allrice_deliverable_versions where id=${input.artifactVersionId}`
-            )[0]!.session_id,
-            input.artifactVersionId,
-            f.db,
-          )
-        ).object.checksum,
-      );
-    });
-    it('resumes the same object after a storage response loss and rejects corrupted bytes before reservation', async () => {
-      const { owner, input } = await setup();
-      await expect(
-        save(
-          owner,
-          input,
-          storageWith({ get: async () => new Blob(['corrupt']).stream() }),
-        ),
-      ).rejects.toThrow('content_changed');
-      let copied: string | undefined;
-      await expect(
-        save(
-          owner,
-          input,
-          storageWith({
-            put: async (o, s) => {
-              copied = o.id;
-              await storage.put(o, s);
-              throw Error('lost storage acknowledgement');
-            },
-          }),
-        ),
-      ).rejects.toThrow('lost storage acknowledgement');
-      const result = await save(owner, input);
-      expect((await file(owner, result.revisionId)).object.id).toBe(copied);
-      const [count] =
-        await f.db`select count(*)::int n from allrice_knowledge_revisions where source_artifact_version_id=${input.artifactVersionId}`;
-      expect(count!.n).toBe(1);
-    });
-    it('rejects foreign, tooling and non-root outputs, and never accepts client object paths or platform targets', async () => {
-      const { a, owner, input } = await setup();
-      const foreign = await setup();
-      await expect(
-        save(foreign.owner, {
-          ...input,
-          workspaceId: foreign.owner.workspaceId,
-        }),
-      ).rejects.toThrow('source_unavailable');
-      for (const extra of [
-        { scope: 'platform' },
-        { objectKey: 'private/path' },
-        { ownerId: owner.actor.id },
-      ])
-        await expect(save(owner, { ...input, ...extra })).rejects.toThrow();
-      for (const [kind, provenance] of [
-        ['command_output', 'tool_result'],
-        ['document', 'project_snapshot'],
-      ] as const) {
-        const objectId = randomUUID(),
-          versionId = randomUUID();
-        await f.db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,immutable)
-          select ${objectId},organization_id,workspace_id,owner_id,replace(object_key,id::text,${objectId}),'artifacts',media_type,size_bytes,checksum,'ready',true
-          from allrice_storage_objects where id=(select object_id from allrice_deliverable_versions where id=${input.artifactVersionId})`;
-        await f.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
-          select ${versionId},organization_id,workspace_id,owner_id,${objectId},${randomUUID()},1,session_id,'not-business.txt','text' from allrice_deliverable_versions where id=${input.artifactVersionId}`;
-        await f.db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest)
-          select ${versionId},organization_id,workspace_id,owner_id,run_id,${kind},jsonb_set(provenance,'{kind}',${f.db.json(provenance!)}),${randomUUID()},request_digest
-          from allrice_workbench_artifacts where version_id=${input.artifactVersionId}`;
-        await expect(
-          save(owner, {
-            ...input,
-            requestId: randomUUID(),
-            artifactVersionId: versionId,
-          }),
-        ).rejects.toThrow('source_unavailable');
-      }
-      // An unrelated tool Run has no root employee Run matching its owner/Session.
-      const child = randomUUID();
-      await f.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input) values(${child},${owner.organizationId},${owner.workspaceId!},${owner.actor.id},'succeeded','{}','{}')`;
-      const childArtifact = await a.createArtifact(child);
-      await expect(
-        save(owner, {
-          ...input,
+        changeReference(owner, saved.sourceId, {
+          workspaceId: owner.workspaceId,
           requestId: randomUUID(),
-          artifactVersionId: childArtifact.artifactId,
+          expectedRevision: 1,
+          action: 'restore',
         }),
       ).rejects.toThrow('source_unavailable');
+      expect((await counts(owner.organizationId))!.messages).toBe(
+        before!.messages,
+      );
+      expect(await readArtifactBytes(storage, saved.object)).toEqual(
+        saved.bytes,
+      );
     });
   },
 );

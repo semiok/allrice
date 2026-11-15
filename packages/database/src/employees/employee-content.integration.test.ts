@@ -1,3 +1,4 @@
+import { legacyReferenceFixture } from '../legacy-reference.fixture.ts';
 import { removePersonalSceneSkill } from './personal-scene-remove.ts';
 import { assembleEmployeeKernel } from '../../../../apps/worker/src/employee-kernel.ts';
 import {
@@ -9,7 +10,6 @@ import { failJob } from '../execution/queue.ts';
 import { personalWorkflowHistoryUnavailableMessage } from '@allrice/contracts';
 import { updateQueuedMessage } from '../conversation/queued-messages.ts';
 import {
-  prepareReferenceUpload,
   completeReferenceUpload,
   changeReference,
   publishReference,
@@ -2446,7 +2446,7 @@ suite(
         mediaType: 'text/plain',
         contentBase64: Buffer.from(body).toString('base64'),
       };
-      const ref = await prepareReferenceUpload(s.a, input);
+      const ref = await legacyReferenceFixture(s.a, input, f.db);
       await runtimeFixtureStorage(f.db).put(
         ref.object,
         new Blob([new Uint8Array(ref.bytes)]).stream(),

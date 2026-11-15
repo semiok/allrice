@@ -1,3 +1,4 @@
+import { legacyReferenceFixture } from './legacy-reference.fixture.ts';
 /** Synthetic data shared by database and browser acceptance. No production
  * entry point imports this fixture; no model or external service is called. */
 import { randomUUID } from 'node:crypto';
@@ -26,10 +27,7 @@ import {
 } from './employees/employee-instances.ts';
 import { mutateEmployeeContent } from './employees/employee-content.ts';
 import { seedHistoricalEmployeeContent } from './employees/employee-method-history.fixture.ts';
-import {
-  prepareReferenceUpload,
-  completeReferenceUpload,
-} from './reference-library.ts';
+import { completeReferenceUpload } from './reference-library.ts';
 import {
   claimReferenceProcessing,
   finishReferenceProcessing,
@@ -119,16 +117,20 @@ export async function createOrganizationAiDirectoryFixture(
     sourceId?: string,
   ) => {
     const body = `固定参考资料 ${fileName}`;
-    const prepared = await prepareReferenceUpload(owner, {
-      workspaceId,
-      requestId: randomUUID(),
-      scope,
-      fileName,
-      purpose: body,
-      mediaType: 'text/plain',
-      contentBase64: Buffer.from(body).toString('base64'),
-      ...(sourceId ? { sourceId, expectedRevision: 1 } : {}),
-    });
+    const prepared = await legacyReferenceFixture(
+      owner,
+      {
+        workspaceId,
+        requestId: randomUUID(),
+        scope,
+        fileName,
+        purpose: body,
+        mediaType: 'text/plain',
+        contentBase64: Buffer.from(body).toString('base64'),
+        ...(sourceId ? { sourceId, expectedRevision: 1 } : {}),
+      },
+      db,
+    );
     await runtimeFixtureStorage(db).put(
       prepared.object,
       new Blob([new Uint8Array(prepared.bytes)]).stream(),

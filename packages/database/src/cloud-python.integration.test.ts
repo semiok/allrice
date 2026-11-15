@@ -9,7 +9,6 @@ import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createCloudExecutionFixture } from './cloud-execution.fixture.ts';
 import { publishCloudOperationArtifacts } from './cloud-execution.ts';
 import { listCloudRuntimeOperations } from './cloud-operation-view.ts';
-import { completeStorageDelete, prepareStorageDelete } from './data.ts';
 import {
   getWorkbenchArtifact,
   listWorkbenchArtifacts,
@@ -458,9 +457,10 @@ suite(
                 })
               ).object;
         if (kind === 'deleted') {
-          const file = await prepareStorageDelete(f.context, parent.id);
-          await f.storage.delete(file.object);
-          await completeStorageDelete(f.context, parent.id);
+          // Historical deletion is fixture state; ordinary DELETE cannot
+          // remove managed delivery objects after R0.
+          await f.storage.delete(parent);
+          await db`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${parent.id}`;
         }
         const before =
           await db`select id from allrice_deliverable_versions where organization_id=${f.org} order by id`;
@@ -490,8 +490,8 @@ suite(
       'does not publish a cloud revision when %s after the captured compute stopped',
       async (reason) => {
         const f = await fixture(),
-          // Deletion races use a legacy mutable export, preserving the normal
-          // immutable-object guard for captured Python outputs.
+          // Historical disappearance is seeded below; ordinary DELETE cannot
+          // remove managed exports, mutable or immutable, after R0.
           parent = await seedOutputParent(f, {
             immutable: reason !== 'parent-deleted',
           }),
@@ -518,12 +518,8 @@ suite(
         vi.spyOn(backend, 'execute').mockImplementationOnce(async () => {
           const stopped = await execute();
           if (reason === 'parent-deleted') {
-            const file = await prepareStorageDelete(
-              f.context,
-              parent.object.id,
-            );
-            await f.storage.delete(file.object);
-            await completeStorageDelete(f.context, parent.object.id);
+            await f.storage.delete(parent.object);
+            await db`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${parent.object.id}`;
           } else
             await db`update allrice_cloud_execution_grants set revoked_at=clock_timestamp() where id=${f.grant.id}`;
           return stopped;

@@ -1,3 +1,4 @@
+import { legacyReferenceFixture } from './legacy-reference.fixture.ts';
 import {
   captureReferenceSelections,
   retrieveSelectedReferenceKnowledge,
@@ -173,7 +174,10 @@ suite(
       ...extra,
     });
     async function upload(c: RequestContext, v = input(c)) {
-      const p = await prepareReferenceUpload(c, v);
+      const p =
+        v.scope !== 'platform' && (v.scope !== 'personal' || v.sourceId)
+          ? await legacyReferenceFixture(c, v, f.db)
+          : await prepareReferenceUpload(c, v);
       await runtimeFixtureStorage(f.db).put(
         p.object,
         new Blob([new Uint8Array(p.bytes)]).stream(),
@@ -195,13 +199,13 @@ suite(
       });
     }
 
-    it('uploads once, processes the same fixed revision and permits another company workspace to download exact bytes', async () => {
+    it('preserves existing independent company resources across workspaces while refusing retired shared creation and updates', async () => {
       const a = await setup(),
         v = input(a.owner, 'company'),
         p = await upload(a.owner, v);
-      const replay = await prepareReferenceUpload(a.owner, v);
-      expect(replay.object.id).toBe(p.object.id);
-      expect(replay.alreadyReady).toBe(true);
+      await expect(prepareReferenceUpload(a.owner, v)).rejects.toThrow(
+        'authorization_denied',
+      );
       const [w] =
         await f.db`insert into allrice_workspaces(organization_id,slug,name) values(${a.company.organizationId},${'other-' + randomUUID()},'Other') returning id`;
       await f.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values(${a.company.organizationId},${w!.id},${a.reader.actor.id},'member')`;
@@ -438,9 +442,9 @@ suite(
         await expect(saveStorageGrant(a.owner, grant)).rejects.toThrow(
           'not_found',
         );
-        await expect(resolveStorageGrant(grant)).rejects.toThrow(
-          'grant_invalid',
-        );
+        await expect(
+          resolveStorageGrant(grant, async () => a.owner),
+        ).rejects.toThrow('grant_invalid');
         expect(
           (await listWorkspaceFiles(a.owner, a.owner.workspaceId!)).some(
             (r) => r.id === p.object.id,
@@ -876,7 +880,7 @@ suite(
             expectedRevision: 2,
           }),
         ),
-      ).rejects.toThrow('version_conflict');
+      ).rejects.toThrow('authorization_denied');
       await expect(
         f.db`update allrice_knowledge_revisions set file_name='changed.txt' where id=${p.revisionId}`,
       ).rejects.toThrow('immutable');
@@ -900,7 +904,7 @@ suite(
         getReferenceFile(a.owner, a.owner.workspaceId!, p.revisionId),
       ).rejects.toThrow('not_found');
     });
-    it('cannot finish an index after archive, or reapply an old archive request after restoration', async () => {
+    it('cannot finish an index after archive or revive it through retired restore and archive receipt replay', async () => {
       for (let n = 0; n < 30; n++) {
         const c = await claimReferenceProcessing();
         if (!c) break;
@@ -923,7 +927,9 @@ suite(
         ]),
       ).rejects.toThrow('资料已停用');
       await failReferenceProcessing(claim!, '资料已停用');
-      await act(a.owner, p, 'restore');
+      await expect(act(a.owner, p, 'restore')).rejects.toThrow(
+        'source_unavailable',
+      );
       await changeReference(a.owner, p.sourceId, action);
       expect(
         (
@@ -933,7 +939,7 @@ suite(
             p.sourceId,
           )
         )[0]!.status,
-      ).toBe('active');
+      ).toBe('archived');
       expect(
         (
           await f.db`select count(*)::int n from allrice_knowledge_documents where knowledge_revision_id=${p.revisionId}`
