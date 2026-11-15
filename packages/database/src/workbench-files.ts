@@ -44,6 +44,7 @@ import {
   canSetWorkbenchFileSharing,
   readWorkbenchFilePolicy,
   workbenchFileAccess,
+  workbenchOriginFileAccess,
   type FilePolicyDatabase,
 } from './workbench-file-access.ts';
 
@@ -138,6 +139,11 @@ export async function readWorkbenchFile(
   const principal = await readContentPrincipal(context, sql);
   if (!principal) throw new DataAccessError('authorization_denied');
   const row = await facts(objectId, sql);
+  if (
+    !row.source_id &&
+    !(await workbenchOriginFileAccess(context, objectId, sql)).canRead
+  )
+    throw new DataAccessError('not_found');
   if (row.source_id) {
     const [binding] = await sql<{ origin_object_id: string }[]>`
       select origin_object_id from allrice_workbench_reference_bindings
@@ -755,9 +761,7 @@ export async function readWorkbenchFileCatalog(
     left join allrice_workbench_file_policies p on p.object_id=o.id or (d.series_id is not null and p.series_id=d.series_id)
     left join lateral (select file_name from allrice_file_references where object_id=o.id order by created_at desc limit 1) f on true
     where o.organization_id=${context.organizationId} and o.state='ready' and o.deleted_at is null and (o.category in ('uploads','exports') or (o.category='artifacts' and d.series_id is not null))
-      and (o.workspace_id=${input.workspaceId} or p.scope in ('departments','company'))
-      and (o.owner_id=${context.actor.id} or o.visibility<>'private' or p.scope='company'
-        or (p.scope='departments' and (${principal.maintenanceLevel === 'company'} or ${principal.departmentId}::uuid=any(p.department_ids))))
+      and o.workspace_id=${input.workspaceId} and o.owner_id=${context.actor.id}
       and (${input.scope !== 'my'} or o.owner_id=${context.actor.id})
       and (${input.scope !== 'current'} or exists(select 1 from allrice_file_references f where f.object_id=o.id and f.session_id=${input.sessionId ?? null})
         or exists(select 1 from allrice_deliverable_versions v where v.object_id=o.id and v.session_id=${input.sessionId ?? null}))

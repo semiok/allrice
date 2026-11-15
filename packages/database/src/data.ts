@@ -21,7 +21,7 @@ import type { TransactionSql } from 'postgres';
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { readContentPrincipal } from './content-maintenance.ts';
-import { workbenchFileAccess } from './workbench-file-access.ts';
+import { workbenchOriginFileAccess } from './workbench-file-access.ts';
 
 const CreateStorageMetadataSchema = z
   .object({
@@ -295,6 +295,8 @@ export async function getStoredFile(
       and organization_id = ${context.organizationId}
       and (${context.workspaceId}::uuid is null or workspace_id = ${context.workspaceId})
       and state = 'ready'
+      and deleted_at is null
+      and (retention_until is null or retention_until>clock_timestamp())
       and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=allrice_storage_objects.id)
       and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=allrice_storage_objects.id)
       and not exists(select 1 from allrice_company_asset_materials m where m.object_id=allrice_storage_objects.id)
@@ -303,8 +305,8 @@ export async function getStoredFile(
   const row = rows[0];
   if (!row) throw new DataAccessError('not_found');
   try {
-    const access = await workbenchFileAccess(context, row.id, sql);
-    if (access) {
+    if (row.category !== 'memory') {
+      const access = await workbenchOriginFileAccess(context, row.id, sql);
       if (!access.canRead) throw new DataAccessError('authorization_denied');
     } else authorizeFile(context, row, 'resource:read');
   } catch (error) {
@@ -421,7 +423,12 @@ export async function saveStorageGrant(
   });
 }
 
-export async function resolveStorageGrant(grant: SignedAccessGrant) {
+export async function resolveStorageGrant(
+  grant: SignedAccessGrant,
+  authenticate: (
+    target: Pick<StorageObject, 'organizationId' | 'workspaceId'>,
+  ) => Promise<RequestContext | null>,
+) {
   const sql = getDatabase();
   const rows = await sql<StorageObjectRow[]>`
     select o.*
@@ -441,17 +448,26 @@ export async function resolveStorageGrant(grant: SignedAccessGrant) {
   `;
   const row = rows[0];
   if (!row) throw new DataAccessError('grant_invalid');
-  const access = await workbenchFileAccess(
-    {
-      actor: { type: 'user', id: grant.subjectId },
-      organizationId: row.organization_id,
-      workspaceId: row.workspace_id,
-    },
-    row.id,
-    sql,
-  );
-  if (access && !access.canRead) throw new DataAccessError('grant_invalid');
-  return mapStoredFile(row);
+  // Memory has its own resource policy; R0 retires ordinary file sharing only.
+  if (row.category === 'memory') return mapStoredFile(row);
+  // The target comes from the validated grant's object, never browser headers.
+  // Authentication keeps the host/portal boundary before selecting this scope.
+  const context = await authenticate({
+    organizationId: row.organization_id,
+    workspaceId: row.workspace_id,
+  });
+  if (!context) throw new DataAccessError('authentication_required');
+  if (
+    context.actor.type !== 'user' ||
+    !context.sessionId ||
+    context.actor.id !== grant.subjectId ||
+    context.actor.id !== row.owner_id ||
+    context.organizationId !== row.organization_id ||
+    context.workspaceId !== row.workspace_id ||
+    !(await readContentPrincipal(context, sql))
+  )
+    throw new DataAccessError('grant_invalid');
+  return getStoredFile(context, row.id, sql);
 }
 
 function vectorLiteral(values: number[]) {

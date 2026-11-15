@@ -57,28 +57,11 @@ export async function readWorkbenchFilePolicy(
 export function evaluateWorkbenchFilePolicy(
   principal: ContentPrincipal | null,
   policy: WorkbenchFilePolicy,
-  activeDepartmentIds: readonly string[],
 ) {
   if (!principal || principal.organizationId !== policy.organization_id)
     return { canRead: false, canMaintain: false };
   const owner = principal.userId === policy.owner_id;
-  const departmentShared =
-    policy.scope === 'departments' &&
-    activeDepartmentIds.length > 0 &&
-    (principal.maintenanceLevel === 'company' ||
-      (principal.departmentId !== null &&
-        activeDepartmentIds.includes(principal.departmentId)));
-  const canRead = owner || policy.scope === 'company' || departmentShared;
-  const canMaintain =
-    canRead &&
-    principal.writable &&
-    (owner ||
-      (policy.scope !== 'personal' &&
-        principal.maintenanceLevel === 'company') ||
-      (departmentShared &&
-        principal.maintenanceLevel === 'department' &&
-        policy.department_ids.every((id) => id === principal.departmentId)));
-  return { canRead, canMaintain };
+  return { canRead: owner, canMaintain: owner && principal.writable };
 }
 
 /** null means this is a legacy resource and its existing authority applies. */
@@ -133,11 +116,7 @@ export async function workbenchFileAccess(
             principal?.writable
           ),
         }
-      : evaluateWorkbenchFilePolicy(
-          principal,
-          current,
-          departments.map((d) => d.id),
-        )),
+      : evaluateWorkbenchFilePolicy(principal, current)),
     policy: current,
     departments,
   };
@@ -191,8 +170,18 @@ export async function workbenchOriginFileAccess(
     ${lockForWrite ? sql`for share of o,w` : sql``}
   `;
   if (!origin) return denied;
-  if (current)
-    return { canRead: current.canRead, canMaintain: current.canMaintain };
+  if (current) {
+    const principal = await readContentPrincipal(
+      { ...context, workspaceId: origin.workspace_id },
+      sql,
+      lockForWrite,
+    );
+    const owner = principal?.userId === origin.owner_id;
+    return {
+      canRead: owner && current.canRead,
+      canMaintain: owner && current.canMaintain,
+    };
+  }
   const [reference] = await sql<
     {
       ownership: unknown;
@@ -216,25 +205,15 @@ export async function workbenchOriginFileAccess(
     return { canRead: access.canRead, canMaintain: access.canMaintain };
   }
   const principal = await readContentPrincipal(
-    {
-      ...context,
-      workspaceId:
-        origin.visibility === 'organization'
-          ? context.workspaceId
-          : origin.workspace_id,
-    },
+    { ...context, workspaceId: origin.workspace_id },
     sql,
     lockForWrite,
   );
   if (!principal) return denied;
   const owner = origin.owner_id === principal.userId;
-  const canRead = owner || origin.visibility !== 'private';
   return {
-    canRead,
-    canMaintain:
-      canRead &&
-      principal.writable &&
-      (owner || principal.maintenanceLevel === 'company'),
+    canRead: owner,
+    canMaintain: owner && principal.writable,
   };
 }
 
