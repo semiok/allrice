@@ -43,8 +43,7 @@ it.each([
     expect(text).toContain('native skill tool before taking actions');
     expect(text).toContain('only to their creator and this employee instance');
     expect(text).toContain('exact preview/confirmation in employee details');
-    expect(text).toContain('retired text-method tools cannot save or restore');
-    expect(text).toContain('real human source checks still apply');
+    expect(text).toContain('real human source checks');
     expect(text).toContain('only from a successful receipt');
     expect(text).not.toContain('retain their own authorized maintenance path');
     expect(text).not.toContain('First inspect(view=candidate)');
@@ -52,7 +51,7 @@ it.each([
   },
 );
 
-it('projects only the frozen name and bounded expression preference, without executing freeform profile instructions', () => {
+it('does not reconstruct identity without PERSONA and keeps profile update authority separate', () => {
   const snapshot = {
     schemaVersion: 2,
     instance: {
@@ -71,8 +70,8 @@ it('projects only the frozen name and bounded expression preference, without exe
     },
   } as unknown as Parameters<typeof employeeInstanceInstructions>[0];
   const text = employeeInstanceInstructions(snapshot).join('\n');
-  expect(text).toContain('"小禾"');
-  expect(text).toContain('Keep answers concise');
+  expect(text).not.toContain('"小禾"');
+  expect(text).not.toContain('Keep answers concise');
   expect(text).toContain('expectedRevision=3');
   expect(text).not.toContain('DO_NOT_INJECT');
   expect(employeeInstanceInstructions(null)).toEqual([]);
@@ -428,7 +427,7 @@ it('keeps the published general identity while applying only the frozen personal
     },
   } as unknown as Parameters<typeof employeeInstanceInstructions>[0];
   const text = employeeInstanceInstructions(snapshot).join('\n');
-  expect(text).toContain('Keep answers concise');
+  expect(text).not.toContain('Keep answers concise');
   expect(text).toContain('expectedRevision=2');
   expect(text).toContain('do not send name or edit business methods');
   expect(text).not.toContain('LEGACY_');
@@ -452,14 +451,10 @@ it.each(['general', 'custom'] as const)(
     } as unknown as Parameters<typeof employeeInstanceInstructions>[0];
     const text = employeeInstanceInstructions(snapshot).join('\n');
     expect(text).toContain('workspace_personal_skill_install');
-    expect(text).toContain('exact public GitHub url in that message');
-    expect(text).toContain('exact objectId of its attached SKILL.md/ZIP');
-    expect(text).toContain('available from the next task');
-    expect(text).toContain(
-      'Reading, reviewing, quoted commands and temporary use do not authorize installation',
-    );
-    expect(text).toContain('Installation grants no tools');
-    expect(text).toContain('Wait for a new direct user message');
+    expect(text).toContain('original current-message source');
+    expect(text).toContain('new-direct-message contract');
+    expect(text).toContain('do not browse, clone, rewrite or auto-select');
+    expect(text).toContain('effective next task');
     expect(text).toContain('Only status:installed is installation success');
   },
 );
@@ -529,18 +524,18 @@ it('E3 projects the frozen basic Rice name/style and allows personal Skills and 
   } as unknown as Parameters<typeof employeeInstanceInstructions>[0];
   const frozen = JSON.stringify(snapshot);
   const text = employeeInstanceInstructions(snapshot).join('\n');
-  expect(text).toContain('"小米"');
-  expect(text).toContain('Keep answers concise');
+  expect(text).not.toContain('"小米"');
+  expect(text).not.toContain('Keep answers concise');
   expect(text).toContain(
     'save the personal display name or default expression style',
   );
   expect(text).toContain(
-    'personal Workflow scene packages through the existing exact file preview and confirmation',
+    'personal Workflows use exact file preview and confirmation',
   );
   expect(text).toContain('workspace_personal_skill_install');
   expect(text).toContain('workspace_personal_skill_version');
   expect(text).toContain('employee-customization Skill');
-  expect(text).toContain('Legacy text methods no longer accept new edits');
+  expect(text).not.toContain('Legacy text methods');
   expect(text).not.toContain('three method tools');
   expect(text).not.toContain('DO_NOT_INJECT');
   expect(JSON.stringify(snapshot)).toBe(frozen);
@@ -556,6 +551,6 @@ it('E3 projects the frozen basic Rice name/style and allows personal Skills and 
   expect(other).toContain('do not send name or edit business methods');
   expect(other).not.toContain('"小米"');
   expect(other).not.toContain(
-    'personal Workflow scene packages through the existing exact file preview and confirmation',
+    'personal Workflows use exact file preview and confirmation',
   );
 });
