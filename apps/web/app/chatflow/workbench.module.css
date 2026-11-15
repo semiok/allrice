@@ -502,7 +502,10 @@
   border-radius: 8px;
   font-size: 13px;
 }
-.nativeDock :global([data-dockkit-tab-title]:has([data-materials-tab])) {
+.panel.nativeDock
+  :global(
+    [data-dockkit-strip] [data-dockkit-tab-title]:has([data-materials-tab])
+  ) {
   flex: none;
   overflow: visible;
   padding-right: 22px;
