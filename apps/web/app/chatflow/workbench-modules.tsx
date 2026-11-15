@@ -17,9 +17,10 @@ import {
 import { z } from 'zod';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import css from './workbench-modules.module.css';
-export type WorkbenchModule = 'files' | 'experience' | 'workflow';
+export type WorkbenchModule = 'files' | 'materials' | 'experience' | 'workflow';
 export const moduleLabels = {
   files: '交付成果',
+  materials: '企业资料',
   experience: '记忆',
   workflow: '能力',
 };
@@ -67,7 +68,12 @@ export function WorkbenchIcon({
       strokeLinejoin="round"
       aria-hidden="true"
     >
-      {kind === 'star' ? (
+      {kind === 'materials' ? (
+        <>
+          <path d="M3 4h6a3 3 0 0 1 3 3v14a3 3 0 0 0-3-3H3V4Z" />
+          <path d="M12 7a3 3 0 0 1 3-3h6v14h-6a3 3 0 0 0-3 3" />
+        </>
+      ) : kind === 'star' ? (
         <path
           fill={filled ? 'currentColor' : 'none'}
           d="m12 2.75 2.85 5.78 6.38.93-4.62 4.5 1.09 6.36L12 17.32l-5.7 3 1.09-6.36-4.62-4.5 6.38-.93L12 2.75Z"
@@ -120,6 +126,7 @@ export function WorkbenchEntries(props: {
       {(
         [
           'files',
+          'materials',
           ...(props.experience ? ['experience'] : []),
           ...(props.workflow ? ['workflow'] : []),
         ] as WorkbenchModule[]

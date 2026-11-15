@@ -43,6 +43,7 @@ import { clearWorkbenchFileLink } from './workbench-file-link';
 import type {
   ReferenceRevision,
   EmployeeAccentColor,
+  WorkbenchDeliverable,
 } from '@allrice/contracts';
 import reader from './document-reader.module.css';
 import { isToolResultExport } from '../../lib/chatflow/document-reader-model';
@@ -190,6 +191,11 @@ type Props = {
   onOpenReference?: (reference: ReferenceSelection) => void;
   onUseFileReference?: (reference: ReferenceRevision) => void;
   onTemplateFile?: (reference: ReferenceRevision) => void;
+  onPublishFile?: (file: WorkbenchDeliverable) => void;
+  onOpenPublication?: (publication: {
+    sourceId: string;
+    revisionId: string;
+  }) => void;
 };
 
 /** Focus-contained narrow panel; keeps the same component mounted when resized. */
@@ -290,7 +296,9 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     activeModule.current?.(
       !props.open || !activeTab
         ? null
-        : ['files', 'experience', 'workflow'].includes(activeTab.kind)
+        : ['files', 'materials', 'experience', 'workflow'].includes(
+              activeTab.kind,
+            )
           ? (activeTab.kind as WorkbenchModule)
           : ['scheduleTask', 'sessionSchedules'].includes(activeTab.kind)
             ? 'schedule'
@@ -332,7 +340,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
           : null;
       if (
         tab &&
-        ['files', 'experience', 'workflow'].includes(tab.kind) &&
+        ['files', 'materials', 'experience', 'workflow'].includes(tab.kind) &&
         !(
           paneId === enteringMemoryPaneId &&
           tab.kind === 'experience' &&
@@ -356,6 +364,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
     if (
       (!props.desktop &&
         !memoryRequest &&
+        request?.kind !== 'materials' &&
         request?.kind !== 'workflow' &&
         !(props.personalDeliverables && request?.kind === 'files')) ||
       !request ||
@@ -633,7 +642,9 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                       tab.kind === 'nativeSubagent' || undefined
                     }
                   >
-                    {['files', 'experience', 'workflow'].includes(tab.kind) ? (
+                    {['files', 'materials', 'experience', 'workflow'].includes(
+                      tab.kind,
+                    ) ? (
                       <span className={moduleUi[tab.kind]}>
                         <WorkbenchIcon
                           kind={tab.kind as WorkbenchModule}
@@ -791,9 +802,12 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
               />
             ) : (props.desktop ||
                 tab.kind === 'files' ||
+                tab.kind === 'materials' ||
                 tab.kind === 'workflow' ||
                 !!personalMemoryTarget(tab.kind, tab.contentId)) &&
-              ['files', 'experience', 'workflow'].includes(tab.kind) ? (
+              ['files', 'materials', 'experience', 'workflow'].includes(
+                tab.kind,
+              ) ? (
               props.renderModule?.(
                 tab.kind as WorkbenchModule,
                 props.open &&
@@ -873,6 +887,8 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                   );
                 }}
                 onSource={props.onOpenSourceSession}
+                onPublish={props.onPublishFile}
+                onOpenPublication={props.onOpenPublication}
                 fileActions={
                   props.onUseFileReference
                     ? {
@@ -1027,6 +1043,8 @@ function ArtifactTabBody(
             props.onFiles();
           }}
           onSource={props.onOpenSourceSession}
+          onPublish={props.onPublishFile}
+          onOpenPublication={props.onOpenPublication}
           fileActions={
             props.onUseFileReference
               ? {

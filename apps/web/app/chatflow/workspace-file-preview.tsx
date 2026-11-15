@@ -31,6 +31,7 @@ import detail from './workbench-files-panel.module.css';
 import { employeeAccentStyle } from './employee-navigation';
 import { useWorkbenchFileFavorite } from './use-workbench-file-favorite';
 import { WorkbenchIcon } from './workbench-modules';
+import { useReferencePublicationOptions } from './use-reference-publication-options';
 
 /** Used by business file cards as well as the owner directory. Resolve metadata
  * before the toolbar mounts, including when an old card points at a denied file. */
@@ -44,6 +45,11 @@ export function WorkbenchDeliverablePreview(props: {
   employeeColors?: Record<string, EmployeeAccentColor | undefined>;
   onBack: () => void;
   onSource?: (sessionId: string) => void;
+  onPublish?: (file: WorkbenchDeliverable) => void;
+  onOpenPublication?: (publication: {
+    sourceId: string;
+    revisionId: string;
+  }) => void;
   fileActions?: Pick<
     WorkbenchFileReferenceProps,
     'sessionId' | 'readOnly' | 'onUse' | 'onTemplate'
@@ -54,6 +60,7 @@ export function WorkbenchDeliverablePreview(props: {
     key: string;
     file: WorkbenchDeliverable;
     quotable: boolean;
+    publicationViewerId?: string;
   } | null>(null);
   const [failure, setFailure] = useState<{
     key: string;
@@ -99,6 +106,7 @@ export function WorkbenchDeliverablePreview(props: {
             key,
             file,
             quotable: data.quotableFileIds.includes(file.objectId),
+            publicationViewerId: data.viewerId,
           });
         } else {
           setSnapshot(null);
@@ -146,6 +154,11 @@ export function WorkbenchDeliverablePreview(props: {
         title={snapshot.file.fileName}
         unified
         deliverable={snapshot.file}
+        onPublish={
+          snapshot.publicationViewerId === props.viewerId
+            ? props.onPublish
+            : undefined
+        }
         quotable={snapshot.quotable}
         metadataError={failure?.key === key}
         onReloadMetadata={() => setAttempt((n) => n + 1)}
@@ -170,6 +183,11 @@ export function WorkspaceFilePreview(props: {
   onReloadMetadata?: () => void;
   onBack?: () => void;
   onSource?: (sessionId: string) => void;
+  onPublish?: (file: WorkbenchDeliverable) => void;
+  onOpenPublication?: (publication: {
+    sourceId: string;
+    revisionId: string;
+  }) => void;
   fileActions?: Pick<
     WorkbenchFileReferenceProps,
     'sessionId' | 'readOnly' | 'onUse' | 'onTemplate'
@@ -204,6 +222,31 @@ export function WorkspaceFilePreview(props: {
     !!props.fileActions?.readOnly ||
     reference.using !== null;
   const favoriteLabel = props.deliverable?.favorite ? '取消收藏' : '收藏';
+  const publication = props.deliverable?.publication;
+  const publicationOptions = useReferencePublicationOptions({
+    workspaceId: props.workspaceId,
+    viewerId: props.viewerId,
+    headers: props.tenantHeaders,
+    active: !!props.active && !!publication,
+  }).options;
+  const publicationLabel = publication ? '已添加为企业资料' : '添加为企业资料';
+  const publishDisabled =
+    !!publication || props.deliverable?.canPublishReference !== true;
+  const publish = () => {
+    if (props.deliverable && !publishDisabled)
+      props.onPublish?.(props.deliverable);
+  };
+  const audienceLabel =
+    publication?.audience.scope === 'company'
+      ? '全公司'
+      : publication?.audience.scope === 'personal'
+        ? '仅自己'
+        : publicationOptions?.departments
+            ?.filter((department) =>
+              publication?.audience.departmentIds.includes(department.id),
+            )
+            .map((department) => department.name)
+            .join('、');
   const favoriteDisabled = favorite.disabled || !!favorite.using;
   const toggleFavorite = () => {
     if (props.deliverable)
@@ -316,6 +359,12 @@ export function WorkspaceFilePreview(props: {
           />
           {favoriteLabel}
         </button>
+        {props.onPublish && (
+          <button type="button" disabled={publishDisabled} onClick={publish}>
+            <WorkbenchIcon kind="materials" size={18} />
+            {publicationLabel}
+          </button>
+        )}
       </div>
       {(reference.error ||
         favorite.error ||
@@ -423,6 +472,23 @@ export function WorkspaceFilePreview(props: {
               : '工具记录'
             : props.title
         }
+        beforeActions={
+          publication &&
+          audienceLabel && (
+            <div className={detail.publicationNotice}>
+              <WorkbenchIcon kind="materials" size={18} />
+              <span>已添加为企业资料 · {audienceLabel}</span>
+              {props.onOpenPublication && (
+                <button
+                  type="button"
+                  onClick={() => props.onOpenPublication?.(publication)}
+                >
+                  查看 ›
+                </button>
+              )}
+            </div>
+          )
+        }
         downloadUrl={downloadUrl}
         quickActions={
           props.deliverable ? (
@@ -468,6 +534,21 @@ export function WorkspaceFilePreview(props: {
                   />
                 </button>
               </Tooltip>
+              {props.onPublish && (
+                <Tooltip label={publicationLabel} side="bottom" portal>
+                  <span>
+                    <button
+                      type="button"
+                      className={reader.iconButton}
+                      aria-label={publicationLabel}
+                      disabled={publishDisabled}
+                      onClick={publish}
+                    >
+                      <WorkbenchIcon kind="materials" />
+                    </button>
+                  </span>
+                </Tooltip>
+              )}
             </>
           ) : undefined
         }

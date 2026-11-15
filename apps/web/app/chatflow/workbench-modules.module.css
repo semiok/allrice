@@ -42,6 +42,9 @@
 .files {
   color: light-dark(#b67a0e, #f4ba4c);
 }
+.materials {
+  color: light-dark(#b64e73, #e48aa7);
+}
 .experience {
   color: light-dark(#8551ce, #b18aef);
 }

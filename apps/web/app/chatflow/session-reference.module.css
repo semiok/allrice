@@ -124,6 +124,11 @@
   cursor: pointer;
   padding: 0 2px;
 }
+.unavailableChip {
+  color: light-dark(#b53549, #f79bae);
+  border-color: light-dark(#e6a4af, #943f52);
+  background: light-dark(#fff1f3, #6a20302b);
+}
 @media (max-width: 600px) {
   .body {
     padding: 16px;

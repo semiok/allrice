@@ -6,6 +6,15 @@
   min-height: 0;
   height: 100%;
 }
+.materialPurpose {
+  flex: 1 1 100%;
+  margin: 0;
+  padding: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
 .toolbar {
   flex-wrap: wrap;
   height: auto;
