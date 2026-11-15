@@ -1,6 +1,6 @@
-import { isBoundedReferenceToolName } from '@allrice/contracts';
 /// <reference types="./dsh-web-cancellation-types.d.ts" />
 
+import { isBoundedReferenceToolName } from '@allrice/contracts';
 import { createWebCallScope } from '../../dsh/allrice-web-cancellation.mjs';
 import {
   personalScenePromptParts,

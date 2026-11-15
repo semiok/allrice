@@ -1,3 +1,5 @@
+/// <reference types="./dsh-web-cancellation-types.d.ts" />
+
 import {
   ReferenceContentCallSchema,
   ReferenceImageRouteResultSchema,
@@ -6,7 +8,6 @@ import {
   referenceImagePolicy,
 } from '@allrice/contracts';
 import type { ReferenceImagePort } from '@allrice/database';
-/// <reference types="./dsh-web-cancellation-types.d.ts" />
 
 import { randomUUID } from 'node:crypto';
 import { requestCancellableWeb } from '../../dsh/allrice-web-cancellation.mjs';

@@ -79,6 +79,13 @@ it('extracts all PDF physical pages and preserves their locations', async () => 
   expect(parsed.fullText.units.map((unit) => unit.pageNumber)).toEqual([1, 2]);
 });
 it('refuses partial Office text, malformed UTF-8, executable/nested bytes, oversized plain text and cancellation', async () => {
+  await expect(
+    parseReferenceArchiveText(
+      Buffer.from('%PDF-1.7 invalid'),
+      'member.pdf',
+      signal(),
+    ),
+  ).rejects.toMatchObject({ reason: 'text_unavailable' });
   const long = await Packer.toBuffer(
     new Document({
       sections: [{ children: [new Paragraph('x'.repeat(200000))] }],

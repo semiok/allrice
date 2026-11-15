@@ -80,7 +80,7 @@ export function checkReferenceImageSignal(signal: AbortSignal) {
     throw new ReferenceImageReadError({
       code: 'REFERENCE_READ_TIMEOUT',
       reason: 'operation_budget',
-      message: '本次图片读取超过时限，未自动重试。',
+      message: '本次资料读取超过时限，未自动重试。',
       retryable: true,
     });
   signal.throwIfAborted();

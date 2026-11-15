@@ -99,7 +99,7 @@ export async function parseReferenceArchiveText(
         [
           'OFFICE_CHART_TEXT_INCOMPLETE',
           'PDF_PASSWORD_REQUIRED',
-          'PDF_INVALID',
+          'PDF_PARSE_FAILED',
           'TOOL_FILE_TYPE_UNSUPPORTED',
         ].includes(error.code)
       )

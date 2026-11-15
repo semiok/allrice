@@ -202,8 +202,25 @@ describe('v1.8 strict archive contracts', () => {
       },
     };
     expect(KnowledgeDefinitionSchema.safeParse(definition).success).toBe(true);
+    const input = {
+      workspaceId: randomUUID(),
+      slug: 'archive',
+      name: 'Archive',
+      description: 'Archive',
+      definition: { ...definition, referenceArchiveFacts: undefined },
+      acl: [
+        {
+          principalType: 'user',
+          principalId: randomUUID(),
+          permission: 'read',
+        },
+      ],
+    };
+    expect(CreateKnowledgeSourceInputSchema.safeParse(input).success).toBe(
+      true,
+    );
     expect(
-      CreateKnowledgeSourceInputSchema.safeParse({ name: 'forged', definition })
+      CreateKnowledgeSourceInputSchema.safeParse({ ...input, definition })
         .success,
     ).toBe(false);
   });
