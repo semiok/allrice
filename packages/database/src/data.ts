@@ -335,6 +335,7 @@ export async function prepareStorageDelete(
       and organization_id = ${context.organizationId}
       and (${context.workspaceId}::uuid is null or workspace_id = ${context.workspaceId})
       and state = 'ready'
+      and not exists(select 1 from allrice_deliverable_versions d where d.object_id=allrice_storage_objects.id)
       and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=allrice_storage_objects.id)
   `;
   const row = rows[0];
@@ -354,6 +355,7 @@ export async function completeStorageDelete(
     where id = ${UuidSchema.parse(objectId)}
       and organization_id = ${context.organizationId}
       and state = 'ready'
+      and not exists(select 1 from allrice_deliverable_versions d where d.object_id=allrice_storage_objects.id)
       and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=allrice_storage_objects.id)
     returning *
   `;

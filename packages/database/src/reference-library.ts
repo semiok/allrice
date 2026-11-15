@@ -953,7 +953,19 @@ async function requirePublicationFile(
   knownFile?: PublicationFileFacts,
 ) {
   const { readWorkbenchFile } = await import('./workbench-files.ts');
-  const file = knownFile ?? (await readWorkbenchFile(context, objectId, tx));
+  let file = knownFile;
+  if (!file) {
+    try {
+      file = await readWorkbenchFile(context, objectId, tx);
+    } catch (error) {
+      if (
+        error instanceof DataAccessError &&
+        (error.code === 'not_found' || error.code === 'authorization_denied')
+      )
+        throw new ReferenceLibraryError('source_unavailable');
+      throw error;
+    }
+  }
   if (
     file.object.ownerId !== context.actor.id ||
     file.object.organizationId !== context.organizationId ||
