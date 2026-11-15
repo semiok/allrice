@@ -318,10 +318,7 @@ export const baseline: readonly BaselineEntry[] = [
     owner: 'adjustEmployeeContentPrompt',
     kind: 'own-text',
     use: '按系统自己的维度名称（执行要求、执行流程）选调整提示词',
-    sites: [
-      String.raw`=== "执行要求"`,
-      String.raw`=== "执行流程"`,
-    ],
+    sites: [String.raw`=== "执行要求"`, String.raw`=== "执行流程"`],
   },
   {
     file: 'apps/web/app/chatflow/workspace-file-tree.tsx',
