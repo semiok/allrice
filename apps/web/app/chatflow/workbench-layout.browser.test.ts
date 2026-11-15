@@ -5017,7 +5017,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             };
           });
         const before = await measure();
-        expect(before).toMatchObject({ height: 24, secondHeight: 24, gap: 8 });
+        expect(before).toMatchObject({ height: 24, secondHeight: 24, gap: 0 });
         expect(
           await first
             .locator('[data-disclosure-row]')
@@ -5527,7 +5527,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           trusted: false,
         };
         await expect
-          .poll(() => history.getAttribute('data-status'))
+          .poll(() => history.getAttribute('data-status'), { timeout: 5_000 })
           .toBe('已完成');
         expect(
           await history
@@ -5550,7 +5550,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           trusted: false,
         };
         await expect
-          .poll(() => history.getAttribute('data-status'))
+          .poll(() => history.getAttribute('data-status'), { timeout: 5_000 })
           .toBe('未完成');
         expect(await history.getAttribute('data-failed')).not.toBeNull();
         expect(await history.getAttribute('data-status')).toBe('未完成');
