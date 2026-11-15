@@ -141,6 +141,18 @@ suite('R4 conversation source attribution', () => {
             expect(
               await panel.evaluate((n) => n.scrollWidth <= n.clientWidth + 1),
             ).toBe(true);
+            await expect
+              .poll(() =>
+                panel.evaluate((n) => {
+                  const box = n.getBoundingClientRect();
+                  return (
+                    box.width > 0 &&
+                    box.left >= 0 &&
+                    box.right <= innerWidth + 1
+                  );
+                }),
+              )
+              .toBe(true);
             await page.screenshot({
               path: join(
                 evidence,
