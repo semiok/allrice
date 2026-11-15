@@ -16300,6 +16300,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                   (n) => getComputedStyle(n).backgroundColor,
                 ),
               ).toBe('rgb(255, 255, 255)');
+              if (kind === 'xlsx') {
+                const card = (await paper.boundingBox())!;
+                const canvas = (await preview.boundingBox())!;
+                const inset = width === 390 ? 16 : 24;
+                expect(
+                  Math.abs(card.width - (canvas.width - inset * 2)),
+                ).toBeLessThan(1);
+              }
             }
             const lastPage = detail.locator(
               `[data-pdf-page="${pdfPageCount}"]`,
