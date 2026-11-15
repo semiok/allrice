@@ -302,6 +302,8 @@ export function WorkProcess({
           : canceled
             ? '已停止'
             : '工作过程';
+  // r1-exempt(own-text): This title is produced immediately above; it selects only the approved employee color.
+  const executingTitle = title === '执行中…';
   const expandable = Boolean(
     (process.steps.length && !onlyLiveThinking(process.steps, running)) ||
     Children.toArray(children).length ||
@@ -462,7 +464,7 @@ export function WorkProcess({
         aria-owns={ownedIds || undefined}
         data-transcript-view={policy.mode}
         data-process-open={display.open}
-        data-executing={title === '执行中…' || undefined}
+        data-executing={executingTitle || undefined}
       >
         <DisclosureRow
           icon={<IconThinkOutline14 />}
@@ -480,7 +482,7 @@ export function WorkProcess({
           expandOnRowClick
           keepContentWhenOpen
           onToggle={toggle}
-          rowClassName={`${styles.processHeader} ${title === '执行中…' ? styles.processExecuting : ''}`}
+          rowClassName={`${styles.processHeader} ${executingTitle ? styles.processExecuting : ''}`}
           titleClassName={styles.processTitle}
           collapsedContent={
             <>
@@ -552,7 +554,7 @@ export function WorkProcess({
       aria-label={label}
       data-transcript-view={policy.mode}
       data-process-open={display.open}
-      data-executing={title === '执行中…' || undefined}
+      data-executing={executingTitle || undefined}
     >
       <DisclosureRow
         icon={<IconThinkOutline14 />}
@@ -569,7 +571,7 @@ export function WorkProcess({
         expandable={display.canFold}
         expandOnRowClick
         keepContentWhenOpen
-        rowClassName={`${reasoning.row} ${styles.processHeader} ${title === '执行中…' ? styles.processExecuting : ''}`}
+        rowClassName={`${reasoning.row} ${styles.processHeader} ${executingTitle ? styles.processExecuting : ''}`}
         leadingClassName={reasoning.leading}
         titleClassName={`${reasoning.title} ${styles.processTitle} ${microStatus ? styles.processStatus : ''}`}
         chevronClassName={reasoning.chevron}

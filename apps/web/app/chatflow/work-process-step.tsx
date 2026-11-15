@@ -53,6 +53,7 @@ export function WorkProcessStepView({
   });
   // Native ToolRow has no success tail; running uses TextShimmer plus an
   // accessible state. Keep reliable elapsed time and unresolved SaaS states.
+  // r1-exempt(display): Hide only duplicate display labels; execution status and authorized facts remain unchanged.
   const displayedStatus =
     failed ||
     stopped ||

@@ -189,6 +189,7 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
               ? [
                   toolLabel ?? fallback,
                   input?.replace(
+                    // r1-exempt(display): Remove an existing activity-label prefix only from the row title, never from execution inputs.
                     /^(?:搜索资料|阅读文件|生成文件|修改文件|查找文件)：/,
                     '',
                   ),
