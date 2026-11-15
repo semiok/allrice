@@ -4703,9 +4703,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           f.page.goto(f.page.url().replace(A, B)),
         ]);
         await history.finished();
-        await f.page
-          .getByRole('textbox', { name: /^给 .+ 的消息$/ })
-          .waitFor();
+        await f.page.getByRole('textbox', { name: /^给 .+ 的消息$/ }).waitFor();
         expect(
           await f.page
             .getByRole('button', { name: '[R1] 产品图/主图.png', exact: true })
