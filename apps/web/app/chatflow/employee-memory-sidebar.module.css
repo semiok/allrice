@@ -84,7 +84,6 @@
 }
 .body {
   overflow-y: auto;
-  overscroll-behavior: contain;
   flex: 1;
   min-height: 0;
   padding-bottom: 16px;
@@ -299,7 +298,6 @@
   padding: 4px 24px 24px;
   flex: 1;
   overflow-y: auto;
-  overscroll-behavior: contain;
   min-height: 0;
 }
 .detailTitle {

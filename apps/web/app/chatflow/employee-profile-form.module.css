@@ -329,7 +329,6 @@
   min-height: 0;
   padding: 20px 24px;
   overflow-y: auto;
-  overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
 .editForm .identity {

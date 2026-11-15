@@ -209,7 +209,6 @@
 .detailBody {
   min-height: 0;
   overflow-y: auto;
-  overscroll-behavior: contain;
   padding: var(--ar-space-5) var(--ar-space-6);
 }
 

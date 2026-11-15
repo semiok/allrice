@@ -31,7 +31,6 @@
   min-height: 0;
   min-width: 0;
   overflow: auto;
-  overscroll-behavior: contain;
 }
 .deliveryDetail .deliveryPreview {
   box-sizing: border-box;
