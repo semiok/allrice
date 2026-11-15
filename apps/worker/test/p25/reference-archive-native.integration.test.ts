@@ -33,6 +33,13 @@ import { p24Fixture } from '../p24/fixture.js';
 
 const png =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWP4z8AAAAMBAQCc479ZAAAAAElFTkSuQmCC';
+const imagePath =
+  'a'.repeat(100) +
+  '/' +
+  'b'.repeat(100) +
+  '/' +
+  'c'.repeat(100) +
+  '/diagram.png';
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -65,7 +72,7 @@ suite('R4b real native directory/text/image results and cold history', () => {
         contentBase64: Buffer.from(
           zipSync(
             {
-              'diagram.png': Buffer.from(png, 'base64'),
+              [imagePath]: Buffer.from(png, 'base64'),
               'note.txt': Buffer.from('archive member text evidence'),
             },
             { level: 0 },
@@ -103,7 +110,7 @@ suite('R4b real native directory/text/image results and cold history', () => {
       }
       if (index === 2 || index === 3) {
         expect(JSON.stringify(request.messages)).not.toContain('image_url');
-        const path = index === 2 ? 'note.txt' : 'diagram.png';
+        const path = index === 2 ? 'note.txt' : imagePath;
         return {
           nativeTool: {
             name: 'workspace_reference_archive_read',
@@ -266,7 +273,9 @@ suite('R4b real native directory/text/image results and cold history', () => {
         imageReceipt.citation.locator.kind !== 'image'
       )
         throw Error('image receipt required');
+      expect(imageReceipt.citation.locator.member?.path).toBe(imagePath);
       const attachment = imageReceipt.citation.locator.image;
+      expect(attachment.name).toBe('diagram.png');
       const results = notices
         .filter((n) => n.method === 'session.event')
         .map((n) => n.params.event as { type: string; data: unknown })

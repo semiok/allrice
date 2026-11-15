@@ -846,6 +846,10 @@ export async function openReferenceArchive(
             );
         });
       });
+      if (header.generalPurposeBitFlag & 0x2041)
+        archiveReadFail('archive_encrypted');
+      if (![0, 8].includes(header.compressionMethod))
+        archiveReadFail('archive_compression');
       if (
         header.generalPurposeBitFlag !== entry.generalPurposeBitFlag ||
         header.compressionMethod !== entry.compressionMethod ||

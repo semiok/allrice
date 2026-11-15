@@ -224,8 +224,8 @@ suite('R4b exact parent ZIP permissions and typed read ledger', () => {
     const same = await list(run, { ...saved.pin, limit: 10 });
     expect(same).toEqual(first);
     expect(await receipts(run)).toHaveLength(1);
-    let cursor = first.nextCursor,
-      collected = [...first.entries];
+    let cursor = first.nextCursor;
+    const collected = [...first.entries];
     while (cursor) {
       const page = await list(run, { ...saved.pin, cursor });
       expect(page.citation.locator.startEntryIndex).toBe(cursor.nextEntryIndex);
@@ -242,7 +242,7 @@ suite('R4b exact parent ZIP permissions and typed read ledger', () => {
     expect(port.native.save).toHaveBeenCalledWith({
       data: png,
       mediaType: 'image/png',
-      name: '图片/17.png',
+      name: '17.png',
     });
     expect(result).toMatchObject({
       kind: 'image',

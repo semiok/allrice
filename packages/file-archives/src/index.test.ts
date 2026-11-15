@@ -577,3 +577,96 @@ describe('v1.8 lazy publication ZIP directory/member reads', () => {
     ).rejects.toBe(infrastructure);
   });
 });
+
+it('accepts a bounded ZIP64 directory envelope and rejects unsafe wide integers', async () => {
+  const ordinary = Buffer.from(
+    zipSync({ 'wide.txt': Buffer.from('ZIP64 source') }, { level: 0 }),
+  );
+  const offset = ordinary.length - 22;
+  const record = Buffer.alloc(56),
+    locator = Buffer.alloc(20),
+    end = Buffer.from(ordinary.subarray(offset));
+  record.writeUInt32LE(0x06064b50);
+  record.writeBigUInt64LE(44n, 4);
+  record.writeUInt16LE(45, 12);
+  record.writeUInt16LE(45, 14);
+  record.writeBigUInt64LE(1n, 24);
+  record.writeBigUInt64LE(1n, 32);
+  record.writeBigUInt64LE(BigInt(end.readUInt32LE(12)), 40);
+  record.writeBigUInt64LE(BigInt(end.readUInt32LE(16)), 48);
+  locator.writeUInt32LE(0x07064b50);
+  locator.writeBigUInt64LE(BigInt(offset), 8);
+  locator.writeUInt32LE(1, 16);
+  end.writeUInt16LE(0xffff, 8);
+  end.writeUInt16LE(0xffff, 10);
+  end.writeUInt32LE(0xffffffff, 12);
+  end.writeUInt32LE(0xffffffff, 16);
+  const input = Buffer.concat([
+    ordinary.subarray(0, offset),
+    record,
+    locator,
+    end,
+  ]);
+  const archive = await openReferenceArchive(input);
+  try {
+    expect(await archive.readMember(0)).toEqual(Buffer.from('ZIP64 source'));
+  } finally {
+    archive.close();
+  }
+  input.writeBigUInt64LE(BigInt(Number.MAX_SAFE_INTEGER) + 1n, offset + 48);
+  await expect(openReferenceArchive(input)).rejects.toMatchObject({
+    reason: 'archive_structure',
+  });
+});
+it('bounds declared aggregates and actual member bytes, and detects a declared size lie', async () => {
+  const oversized = Buffer.from(
+    zipSync(
+      { 'large.txt': Buffer.alloc(20 * 1024 * 1024 + 1, 97) },
+      { level: 0 },
+    ),
+  );
+  const archive = await openReferenceArchive(oversized);
+  try {
+    await expect(archive.readMember(0)).rejects.toMatchObject({
+      reason: 'member_bytes',
+    });
+  } finally {
+    archive.close();
+  }
+  const lie = Buffer.from(
+    zipSync({ 'lie.txt': Buffer.from('actual source') }, { level: 0 }),
+  );
+  const central = lie.indexOf(Buffer.from('504b0102', 'hex'));
+  lie.writeUInt32LE(1, 22);
+  lie.writeUInt32LE(1, central + 24);
+  const wrong = await openReferenceArchive(lie);
+  try {
+    await expect(wrong.readMember(0)).rejects.toMatchObject({
+      reason: 'member_size_mismatch',
+    });
+  } finally {
+    wrong.close();
+  }
+  const declared = Buffer.from(
+    zipSync(
+      Object.fromEntries(
+        Array.from({ length: 100 }, (_, i) => [`${i}`, Buffer.alloc(40000)]),
+      ),
+      { level: 0 },
+    ),
+  );
+  let cursor = declared.readUInt32LE(declared.length - 6);
+  for (let i = 0; i < 100; i++) {
+    const local = declared.readUInt32LE(cursor + 42);
+    declared.writeUInt32LE(3000000, cursor + 24);
+    declared.writeUInt32LE(3000000, local + 22);
+    cursor +=
+      46 +
+      declared.readUInt16LE(cursor + 28) +
+      declared.readUInt16LE(cursor + 30) +
+      declared.readUInt16LE(cursor + 32);
+  }
+  await expect(openReferenceArchive(declared)).rejects.toMatchObject({
+    reason: 'archive_declared_bytes',
+  });
+});

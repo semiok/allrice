@@ -55,9 +55,11 @@ export const executeReferenceTool: RiceToolHandler = async ({
         name === 'workspace.reference.search'
           ? `已检索企业资料 · ${result.itemCount} 项`
           : name === 'workspace.reference.archive_list'
-            ? ReferenceArchiveListInputSchema
+            ? `已读取企业资料目录 · ${result.itemCount} 项`
             : name === 'workspace.reference.archive_read'
-              ? ReferenceArchiveReadInputSchema
+              ? result.itemCount === 0
+                ? '已到成员正文末尾'
+                : '已读取企业资料 ZIP 成员'
               : name === 'workspace.reference.read_image'
                 ? '已读取企业资料图片'
                 : result.itemCount === 0

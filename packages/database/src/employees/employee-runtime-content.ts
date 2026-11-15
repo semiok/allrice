@@ -1653,7 +1653,7 @@ async function recordReferenceReads(
             runtimePolicyDigest(result.citation.locator) &&
           r.contentChecksum === checksum,
       );
-      if (!receipt && locator) {
+      if (!receipt) {
         if (reads.length >= 64) return unavailable();
         const id = randomUUID();
         receipt = ReferenceTextReadSchema.parse({

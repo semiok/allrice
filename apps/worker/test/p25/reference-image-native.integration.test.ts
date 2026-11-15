@@ -218,7 +218,10 @@ suite('R4a real native image result, provider input and cold history', () => {
         },
       ]);
       const imageReceipt = reads[0]!;
-      if (imageReceipt.citation.type !== 'reference')
+      if (
+        imageReceipt.citation.type !== 'reference' ||
+        imageReceipt.citation.locator.kind !== 'image'
+      )
         throw Error('image receipt required');
       const attachment = imageReceipt.citation.locator.image;
       const results = notices

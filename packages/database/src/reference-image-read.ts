@@ -234,11 +234,16 @@ export async function prepareReferenceImageBytes(
   if (facts.width * facts.height > referenceImagePolicy.maximumPixels)
     referenceImageLimit('image_pixels', '图片超过 6400 万像素，无法读取。');
   checkReferenceImageSignal(signal);
+  // Public DSH attachment names are display basenames (max 255 UTF-16 units).
+  // The complete ZIP path stays in the member locator, never in this label.
+  let displayName = name.split('/').at(-1)!.slice(0, 255);
+  const last = displayName.charCodeAt(displayName.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) displayName = displayName.slice(0, -1);
   const saved = ReferenceImageSaveResultSchema.parse(
     await native.save({
       data,
       mediaType: facts.mediaType,
-      name,
+      name: displayName,
     }),
   );
   if ('error' in saved) throw new ReferenceImageReadError(saved.error);
