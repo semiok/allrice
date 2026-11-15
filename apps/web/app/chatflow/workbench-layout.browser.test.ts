@@ -4695,7 +4695,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '关闭工作台', exact: true })
           .click();
         await panel.waitFor({ state: 'hidden' });
-        await f.page.goto(f.page.url().replace(A, B));
+        const [history] = await Promise.all([
+          f.page.waitForResponse(
+            (response) =>
+              new URL(response.url()).pathname === `/api/v1/sessions/${B}`,
+          ),
+          f.page.goto(f.page.url().replace(A, B)),
+        ]);
+        await history.finished();
+        await f.page
+          .getByRole('textbox', { name: /^给 .+ 的消息$/ })
+          .waitFor();
         expect(
           await f.page
             .getByRole('button', { name: '[R1] 产品图/主图.png', exact: true })
