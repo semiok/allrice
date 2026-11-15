@@ -461,7 +461,7 @@ function Browser({
             ))}
           </SelectField>
         </label>
-        <div className={css.searchGroup}>
+        <div className={styles.searchGroup}>
           <span>查找当前列表</span>
           <SearchField
             aria-label="查找范本"
