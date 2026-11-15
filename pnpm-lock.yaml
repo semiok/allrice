@@ -670,6 +670,9 @@ importers:
       '@types/ws':
         specifier: 8.18.1
         version: 8.18.1
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
 
   packages/browser-control:
     dependencies:
