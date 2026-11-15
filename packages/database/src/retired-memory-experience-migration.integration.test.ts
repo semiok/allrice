@@ -263,7 +263,7 @@ async function migrateWithNotices(db: Sql) {
     max: 1,
     onnotice: (notice) => {
       const prefix = 'met223_legacy_runs_retained ';
-      if (notice.message.startsWith(prefix))
+      if (notice.message?.startsWith(prefix))
         notices.push(JSON.parse(notice.message.slice(prefix.length)));
     },
   });
