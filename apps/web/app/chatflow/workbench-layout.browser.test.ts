@@ -12200,7 +12200,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const processBody = process.locator('..');
       const read = processBody
         .locator('[data-step-id="tool:read"]')
-        .getByRole('button', { name: '读取文件 · 核对客户名单', exact: true });
+        .getByRole('button', { name: /^读取文件\s*运行中$/ });
       const detail = processBody
         .locator('[data-step-id="tool:read"]')
         .getByText('核对客户名单', { exact: true });
