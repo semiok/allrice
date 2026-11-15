@@ -208,6 +208,12 @@
 }
 .pdfWithFooter [data-pdf-preview] {
   padding: 6px;
+  padding-top: 12px;
+}
+@media (max-width: 600px) {
+  .pdfWithFooter [data-pdf-preview] {
+    padding-top: 8px;
+  }
 }
 .pdfRenderer {
   height: 100%;

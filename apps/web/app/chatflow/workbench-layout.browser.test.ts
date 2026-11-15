@@ -14262,6 +14262,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 tools = [...actions.querySelectorAll('button')];
               const list = node.parentElement!,
                 listStyle = getComputedStyle(list);
+              const line = getComputedStyle(node, '::after');
+              const rows = list.querySelectorAll(
+                ':scope > [data-native-file-row]',
+              );
+              const lastLine = getComputedStyle(
+                rows[rows.length - 1]!,
+                '::after',
+              );
+              const probe = document.createElement('span');
+              probe.style.color = 'var(--dsw-alias-border-l3)';
+              list.append(probe);
+              const separatorColor = getComputedStyle(probe).color;
+              probe.remove();
               return {
                 height: box.height,
                 padding: [
@@ -14272,6 +14285,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 ],
                 gap: style.gap,
                 border: style.borderBottomWidth,
+                separator: {
+                  content: line.content,
+                  position: line.position,
+                  height: line.height,
+                  bottom: line.bottom,
+                  left: line.left,
+                  right: line.right,
+                  color: line.backgroundColor,
+                  pointerEvents: line.pointerEvents,
+                  expectedColor: separatorColor,
+                  lastContent: lastLine.content,
+                },
                 font: [text.fontSize, text.fontWeight, text.lineHeight],
                 ellipsis: text.textOverflow,
                 icon: [icon.width, icon.height],
@@ -14310,6 +14335,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             expect(seen.padding).toEqual(['5px', '10px', '5px', '10px']);
             expect(seen.gap).toBe('6px');
             expect(seen.border).toBe('0px');
+            expect(seen.separator).toEqual({
+              content: '\"\"',
+              position: 'absolute',
+              height: '0.5px',
+              bottom: '0px',
+              left: '10px',
+              right: '10px',
+              color: seen.separator.expectedColor,
+              pointerEvents: 'none',
+              expectedColor: seen.separator.expectedColor,
+              lastContent: 'none',
+            });
             expect(seen.font).toEqual(['13px', '400', '19.5px']);
             expect(seen.ellipsis).toBe('ellipsis');
             expect(seen.icon).toEqual([28, 28]);
@@ -16883,7 +16920,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     (n) => getComputedStyle(n).backgroundColor,
                   ),
                 ).toBe('rgb(255, 255, 255)');
-              const inset = pdfKind ? 6 : width === 390 ? 8 : 12;
+              const topInset = width === 390 ? 8 : 12;
+              const inset = pdfKind ? 6 : topInset;
               const geometry = await paper.evaluate((node, image) => {
                 const host = image
                   ? node.closest('[data-image-preview]')!
@@ -16929,7 +16967,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               expect(geometry.padding).toEqual(
                 kind === 'image'
                   ? [inset, 8, inset, 8]
-                  : [inset, inset, inset, inset],
+                  : [topInset, inset, inset, inset],
               );
               expect(Math.abs(geometry.sideError)).toBeLessThanOrEqual(0.5);
               expect(Math.abs(geometry.rightError)).toBeLessThanOrEqual(0.5);
@@ -19430,6 +19468,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(await preview.locator('summary').count()).toBe(0);
         const scroll = preview.locator('[data-document-zoom-scrollport]');
         const paper = preview.locator('[data-document-zoom-surface]').first();
+        const topInset = await paper.evaluate((el) => {
+          const canvas = el.parentElement!;
+          return (
+            el.getBoundingClientRect().top - canvas.getBoundingClientRect().top
+          );
+        });
+        expect(
+          Math.abs(topInset - (width === 390 ? 8 : 12)),
+        ).toBeLessThanOrEqual(0.5);
         await expect
           .poll(() =>
             scroll.evaluate((el) => el.scrollHeight > el.clientHeight),

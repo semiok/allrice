@@ -329,6 +329,7 @@
   flex-direction: column;
   gap: 24px;
   padding: 24px;
+  padding-top: 12px;
 }
 .previewMarkdown.previewMarkdown,
 .previewSpreadsheet > div {
@@ -382,6 +383,9 @@
   border-radius: 0;
 }
 @media (max-width: 600px) {
+  .documentCanvas {
+    padding-top: 8px;
+  }
   .previewMarkdown.previewMarkdown,
   .previewSpreadsheet > div {
     padding: 8px;
