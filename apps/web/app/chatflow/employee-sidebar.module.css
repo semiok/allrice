@@ -227,7 +227,10 @@
   outline: 2px solid var(--dsw-alias-label-primary);
   outline-offset: -2px;
 }
-.header [role='treeitem']:focus-within > span:last-child {
+/* Shared sessions have no action buttons. Keep their time/pin readable
+   when the existing native keyboard/touch adaptation exposes actions. */
+.header [role='treeitem']:focus-within > span:last-child,
+.sessions [role='treeitem']:not(:has(button)):focus-within > span:last-child {
   opacity: 1;
   display: flex;
   pointer-events: auto;
@@ -237,7 +240,8 @@
     min-width: 44px;
     min-height: 44px;
   }
-  .header [role='treeitem'] > span:last-child {
+  .header [role='treeitem'] > span:last-child,
+  .sessions [role='treeitem']:not(:has(button)) > span:last-child {
     display: flex;
     opacity: 1;
     pointer-events: auto;

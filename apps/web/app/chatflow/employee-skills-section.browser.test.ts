@@ -508,6 +508,20 @@ suite('U1 S1 standalone employee Skill display candidate', () => {
             );
             expect(pluginEmptyPaint.height).toBe(74);
             expect(await pluginEmpty.locator('p').count()).toBe(0);
+            for (const empty of [pluginEmpty, sceneEmpty]) {
+              expect(
+                await empty.getByRole('heading').evaluate((node) => ({
+                  fontSize: getComputedStyle(node).fontSize,
+                  lineHeight: getComputedStyle(node).lineHeight,
+                })),
+              ).toEqual({ fontSize: '12px', lineHeight: '20px' });
+              expect(
+                await empty.locator('svg').evaluate((node) => {
+                  const box = node.getBoundingClientRect();
+                  return { width: box.width, height: box.height };
+                }),
+              ).toEqual({ width: 24, height: 24 });
+            }
             if (width !== 320)
               await f.page.screenshot({
                 path: resolve(

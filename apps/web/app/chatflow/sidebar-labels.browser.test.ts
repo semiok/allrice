@@ -149,12 +149,15 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
     name: string,
     width: number,
     check: (page: Page) => Promise<void>,
+    touch = false,
   ) => {
     measured.length = 0;
     // Reduced motion drops the 140ms hover fade, so hover reads settled.
     const page = await browser.newPage({
       viewport: { width, height: 900 },
       reducedMotion: 'reduce',
+      hasTouch: touch,
+      isMobile: touch,
     });
     try {
       await check(page);
@@ -172,6 +175,7 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
   // so a focused row keeps its last cell (time or pin) on hover too.
   const hoverFocused = async (row: Locator) => {
     await row.focus();
+    expect(await row.locator(':scope > span').last().isVisible()).toBe(true);
     await row.hover();
   };
 
@@ -214,16 +218,45 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
           const marker = (row: Locator) => row.locator(':scope > [role="img"]');
           await readable('pin', marker(pinned), 3);
           await hoverFocused(selected);
-          expect(await time(selected).isVisible()).toBe(false);
+          await readable('selected time on hover', time(selected));
           await hoverFocused(other);
-          expect(await time(other).isVisible()).toBe(false);
+          await readable('unselected time on hover', time(other));
           // The pinned session selected: its marker sits on the selected fill.
           await page.goto(`${origin}/?theme=${theme}&active=weekly`);
           const pin = marker(row(page, '整理本周销售周报'));
           await readable('selected pin', pin, 3);
           await hoverFocused(row(page, '整理本周销售周报'));
-          expect(await pin.isVisible()).toBe(false);
+          await readable('selected pin on hover', pin, 3);
         }));
+
+      it(`keeps shared-session tail cells readable on touch at ${at}`, () =>
+        measure(
+          `${at} touch rows`,
+          width,
+          async (page) => {
+            await page.goto(`${origin}/?theme=${theme}&active=budget`);
+            expect(
+              await page.evaluate(() => matchMedia('(hover: none)').matches),
+            ).toBe(true);
+            const selected = row(page, '核对十月预算');
+            const pinned = row(page, '整理本周销售周报');
+            await readable('touch selected time', time(selected));
+            await readable(
+              'touch pin',
+              pinned.locator(':scope > [role="img"]'),
+              3,
+            );
+            await selected.tap();
+            await readable('touch selected time after tap', time(selected));
+            await pinned.tap();
+            await readable(
+              'touch pin after tap',
+              pinned.locator(':scope > [role="img"]'),
+              3,
+            );
+          },
+          true,
+        ));
 
       it(`clips long titles and reveals them on native hover at ${at}`, () =>
         measure(`${at} long titles`, width, async (page) => {
