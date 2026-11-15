@@ -5,6 +5,7 @@ import {
   DshNativeSkillSnapshotSchema,
   EmployeeRuntimePackageSchema,
   allRiceToolManifest,
+  retiredMemoryToolNames,
   localCommandToolchainImageV1,
   type SkillBundle,
   type DshNativeSkillSnapshot,
@@ -33,6 +34,22 @@ export function validateSkillBundle(
   input: unknown,
   content?: string,
 ): SkillBundle {
+  return validateSkillBundleDependencies(input, content, false);
+}
+
+/** Historical original bundle metadata, never a current import/publication validator. */
+export function validateHistoricalSkillBundle(
+  input: unknown,
+  content?: string,
+): SkillBundle {
+  return validateSkillBundleDependencies(input, content, true);
+}
+
+function validateSkillBundleDependencies(
+  input: unknown,
+  content: string | undefined,
+  historical: boolean,
+): SkillBundle {
   const bundle = SkillBundleSchema.parse(input);
   const { checksum, ...payload } = bundle;
   if (
@@ -45,7 +62,14 @@ export function validateSkillBundle(
     allRiceToolManifest.map((t) => t.canonicalName as string),
   );
   for (const dependency of bundle.dependencies) {
-    if (dependency.kind === 'tool' && !tools.has(dependency.name))
+    if (
+      dependency.kind === 'tool' &&
+      !tools.has(dependency.name) &&
+      !(
+        historical &&
+        retiredMemoryToolNames.some((name) => name === dependency.name)
+      )
+    )
       throw Error('skill_bundle_unknown_tool');
     if (
       dependency.kind === 'runtime' &&
@@ -66,11 +90,25 @@ export function validateSkillBundle(
 }
 
 export function validateFrozenSkill(input: unknown): DshNativeSkillSnapshot {
+  return validateSkillSnapshot(input, false);
+}
+
+/** Read original metadata only. Retired dependencies never confer tool grants. */
+export function validateHistoricalFrozenSkill(
+  input: unknown,
+): DshNativeSkillSnapshot {
+  return validateSkillSnapshot(input, true);
+}
+
+function validateSkillSnapshot(
+  input: unknown,
+  historical: boolean,
+): DshNativeSkillSnapshot {
   const skill = DshNativeSkillSnapshotSchema.parse(input);
   if (skillBytesChecksum(skill.content) !== skill.checksum)
     throw Error('skill_content_checksum_mismatch');
   if (skill.bundle) {
-    validateSkillBundle(skill.bundle, skill.content);
+    validateSkillBundleDependencies(skill.bundle, skill.content, historical);
     if (
       skill.bundle.dependencies.some(
         (d) => d.kind === 'tool' && !skill.requiredToolRefs.includes(d.name),
@@ -107,7 +145,7 @@ export function frozenPackageSkills(input: unknown): DshNativeSkillSnapshot[] {
   if (pkg.schemaVersion === 1 && pkg.skills.some((s) => s.bundle))
     throw Error('legacy_package_contains_bundle');
   for (const skill of pkg.skills) {
-    validateFrozenSkill(skill);
+    validateHistoricalFrozenSkill(skill);
     const governance = pkg.runtimeManifest.skillGovernance.find(
       (g) => g.id === skill.id,
     );
@@ -133,7 +171,7 @@ export function readFrozenSkillResource(
 ) {
   const skill = skills.find((candidate) => candidate.name === name);
   if (!skill) throw Error('skill_not_in_frozen_run');
-  validateFrozenSkill(skill);
+  validateHistoricalFrozenSkill(skill);
   const asset = skill.bundle?.resources.find(
     (resource) => resource.path === path,
   );

@@ -35,7 +35,11 @@ import {
 } from '../content-maintenance.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { getToolBrokerFile } from '../execution/tool-broker.ts';
-import { skillBytesChecksum, validateFrozenSkill } from '../skill-bundles.ts';
+import {
+  skillBytesChecksum,
+  validateFrozenSkill,
+  validateHistoricalFrozenSkill,
+} from '../skill-bundles.ts';
 import { employeeAccessTransaction } from './employee-access-cancellation.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
 import { enterEmployeeContentChat } from './employee-content-chat.ts';
@@ -1089,7 +1093,9 @@ export async function resolvePersonalSkillResource(input: {
       !execution.capabilitySnapshot.grantedCapabilities.includes('storage:read')
     )
       return unavailable();
-    const skills = (run.native_skills as unknown[]).map(validateFrozenSkill);
+    const skills = (run.native_skills as unknown[]).map(
+      validateHistoricalFrozenSkill,
+    );
     assertFrozenPersonalSkills(
       execution.personalSkills,
       skills,

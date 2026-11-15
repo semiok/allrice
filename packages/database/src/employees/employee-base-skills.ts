@@ -7,7 +7,10 @@ import {
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
-import { validateFrozenSkill } from '../skill-bundles.ts';
+import {
+  validateFrozenSkill,
+  validateHistoricalFrozenSkill,
+} from '../skill-bundles.ts';
 import { readExistingPlatformSkills } from '../platform-content/sync.ts';
 import { assertCurrentPlatformSkillSources } from '../platform-content/retired-skills.ts';
 
@@ -116,7 +119,7 @@ export async function freezeEmployeeBaseSkills(
     // Non-catalog employee-specific Skills keep their immutable publication.
     const extras = original.filter((s) => !seenIds.has(s.id));
     for (const skill of extras) {
-      validateFrozenSkill(skill);
+      validateHistoricalFrozenSkill(skill);
       if (seenNames.has(skill.name))
         throw Error('base_skill_catalog_identity_conflict');
     }

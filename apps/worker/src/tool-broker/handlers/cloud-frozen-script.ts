@@ -6,7 +6,7 @@ import {
 import {
   getDatabase,
   readFrozenSkillResource,
-  validateFrozenSkill,
+  validateHistoricalFrozenSkill,
 } from '@allrice/database';
 import { CloudToolInputSchema } from '../../cloud-runner/tool-input.js';
 import { readPrivateSkillResource } from '../../personal-skill-storage.js';
@@ -50,7 +50,7 @@ export async function resolveCloudToolArguments(
     )
   )
     throw Error('frozen_script_tool_not_authorized');
-  const skills = run.native_skills.map(validateFrozenSkill);
+  const skills = run.native_skills.map(validateHistoricalFrozenSkill);
   const selected = skills.find(
     (skill) => skill.name === args.frozenScript.skill,
   );
