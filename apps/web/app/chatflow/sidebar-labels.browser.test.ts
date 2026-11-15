@@ -149,12 +149,15 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
     name: string,
     width: number,
     check: (page: Page) => Promise<void>,
+    touch = false,
   ) => {
     measured.length = 0;
     // Reduced motion drops the 140ms hover fade, so hover reads settled.
     const page = await browser.newPage({
       viewport: { width, height: 900 },
       reducedMotion: 'reduce',
+      hasTouch: touch,
+      isMobile: touch,
     });
     try {
       await check(page);
@@ -172,6 +175,7 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
   // so a focused row keeps its last cell (time or pin) on hover too.
   const hoverFocused = async (row: Locator) => {
     await row.focus();
+    expect(await row.locator(':scope > span').last().isVisible()).toBe(true);
     await row.hover();
   };
 
@@ -214,15 +218,93 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
           const marker = (row: Locator) => row.locator(':scope > [role="img"]');
           await readable('pin', marker(pinned), 3);
           await hoverFocused(selected);
-          await readable('selected time, hovered and focused', time(selected));
+          await readable('selected time on hover', time(selected));
           await hoverFocused(other);
-          await readable('unselected time, hovered and focused', time(other));
+          await readable('unselected time on hover', time(other));
           // The pinned session selected: its marker sits on the selected fill.
           await page.goto(`${origin}/?theme=${theme}&active=weekly`);
           const pin = marker(row(page, '整理本周销售周报'));
           await readable('selected pin', pin, 3);
           await hoverFocused(row(page, '整理本周销售周报'));
-          await readable('selected pin, hovered and focused', pin, 3);
+          await readable('selected pin on hover', pin, 3);
+        }));
+
+      it(`keeps shared-session tail cells readable on touch at ${at}`, () =>
+        measure(
+          `${at} touch rows`,
+          width,
+          async (page) => {
+            await page.goto(`${origin}/?theme=${theme}&active=budget`);
+            expect(
+              await page.evaluate(() => matchMedia('(hover: none)').matches),
+            ).toBe(true);
+            const selected = row(page, '核对十月预算');
+            const pinned = row(page, '整理本周销售周报');
+            await readable('touch selected time', time(selected));
+            await readable(
+              'touch pin',
+              pinned.locator(':scope > [role="img"]'),
+              3,
+            );
+            await selected.tap();
+            await readable('touch selected time after tap', time(selected));
+            await pinned.tap();
+            await readable(
+              'touch pin after tap',
+              pinned.locator(':scope > [role="img"]'),
+              3,
+            );
+          },
+          true,
+        ));
+
+      it(`clips long titles and reveals them on native hover at ${at}`, () =>
+        measure(`${at} long titles`, width, async (page) => {
+          await page.emulateMedia({ reducedMotion: 'no-preference' });
+          await page.goto(`${origin}/?theme=${theme}&long-title=1`);
+          const title = tree(page).getByText(/^整理本周销售周报与重点客户/);
+          const avatar = tree(page).getByText('R', { exact: true });
+          const titleBox = await title.boundingBox();
+          const avatarBox = await avatar.boundingBox();
+          expect(Math.abs(titleBox!.x - avatarBox!.x)).toBeLessThanOrEqual(0.5);
+          expect(
+            await tree(page).evaluate(
+              (node) => node.scrollWidth - node.clientWidth,
+            ),
+          ).toBe(0);
+          const titleState = () =>
+            title.evaluate((node) => ({
+              left: node.scrollLeft,
+              range: node.scrollWidth - node.clientWidth,
+              overflow: getComputedStyle(node).textOverflow,
+            }));
+          expect(await titleState()).toMatchObject({
+            left: 0,
+            overflow: 'ellipsis',
+          });
+          expect((await titleState()).range).toBeGreaterThan(8);
+          const unbroken = tree(page).getByText(/^QuarterlyRevenueAndCustomer/);
+          expect(
+            await unbroken.evaluate(
+              (node) =>
+                node.scrollWidth > node.clientWidth &&
+                getComputedStyle(node).textOverflow === 'ellipsis',
+            ),
+          ).toBe(true);
+          await title.hover();
+          await expect
+            .poll(async () => (await titleState()).left)
+            .toBeGreaterThan(8);
+          const moving = await titleState();
+          expect(moving.left).toBeLessThan(moving.range);
+          expect(moving.overflow).toBe('clip');
+          await expect
+            .poll(async () => (await titleState()).left)
+            .toBeGreaterThan(moving.left + 8);
+          await page.mouse.move(width - 1, 899);
+          await expect
+            .poll(titleState)
+            .toMatchObject({ left: 0, overflow: 'ellipsis' });
         }));
 
       it(`reads the create-employee dialog at ${at}`, () =>
@@ -232,14 +314,14 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
           await readable(
             'dialog title',
             dialog.getByRole('heading', {
-              name: '创建一位 AI 员工',
+              name: '创建一位 AI 员工（员工由人设、技能、工作场景、插件、记忆五部分组成）',
               exact: true,
             }),
           );
           await readable(
             'creation guidance',
             dialog.getByText(
-              '一个员工由人设、技能、工作场景、插件、记忆五部分组成。现在先定人设，其他四项创建后在“详情”里随时添加。',
+              '（员工由人设、技能、工作场景、插件、记忆五部分组成）',
               { exact: true },
             ),
           );
