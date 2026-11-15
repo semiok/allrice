@@ -1,3 +1,4 @@
+import { isBoundedReferenceToolName } from '@allrice/contracts';
 /// <reference types="./dsh-web-cancellation-types.d.ts" />
 
 import { createWebCallScope } from '../../dsh/allrice-web-cancellation.mjs';
@@ -435,7 +436,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
         (method === 'allrice/tool-call' &&
           (params.name === 'web.search' ||
             params.name === 'web.fetch' ||
-            params.name === 'workspace.reference.read_image'))
+            isBoundedReferenceToolName(params.name)))
       ) {
         if (
           (!runScope && params.nativeSessionId !== threadId) ||
@@ -445,7 +446,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
           params.toolCallId.length > 240 ||
           (params.name !== 'web.search' &&
             params.name !== 'web.fetch' &&
-            params.name !== 'workspace.reference.read_image')
+            !isBoundedReferenceToolName(params.name))
         )
           throw Error('WEB_CALL_SCOPE_INVALID');
         const key = JSON.stringify([

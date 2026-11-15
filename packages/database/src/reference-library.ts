@@ -1,5 +1,6 @@
 import {
   inspectReferenceImage,
+  inspectReferenceArchive,
   referenceReadCapabilities,
 } from './reference-image.ts';
 import { createHash, randomUUID } from 'node:crypto';
@@ -582,6 +583,7 @@ async function reserveReferenceFile(
     originObjectId: string | null;
     description: string;
     imageFacts?: ReturnType<typeof inspectReferenceImage>;
+    archiveFacts?: Awaited<ReturnType<typeof inspectReferenceArchive>>;
   },
 ) {
   const description = publication?.description ?? (v.purpose || '企业资料');
@@ -660,6 +662,9 @@ async function reserveReferenceFile(
     updatePolicy: 'manual',
     citationRequired: true,
     allowedScopes: [v.scope === 'personal' ? 'user' : 'organization'],
+    ...(publication?.archiveFacts
+      ? { referenceArchiveFacts: publication.archiveFacts }
+      : {}),
     ...(publication?.imageFacts
       ? { referenceImageFacts: publication.imageFacts }
       : {}),
@@ -1066,6 +1071,7 @@ export async function publishReference(
       throw new ReferenceLibraryError('invalid_content');
   }
   let imageFacts = bytes ? inspectReferenceImage(bytes) : null;
+  let archiveFacts = bytes ? await inspectReferenceArchive(bytes) : null;
   let requestInput: postgres.JSONValue;
   if (v.origin === 'upload') {
     const { contentBase64, ...metadata } = v;
@@ -1218,6 +1224,7 @@ export async function publishReference(
         {
           kind: v.origin,
           imageFacts,
+          archiveFacts,
           originObjectId: v.origin === 'file' ? v.objectId : null,
           description,
         },
@@ -1277,6 +1284,7 @@ export async function publishReference(
         50 * 1024 * 1024,
       );
       imageFacts = inspectReferenceImage(bytes);
+      archiveFacts = await inspectReferenceArchive(bytes);
       prepared = await reserve(original);
     }
     if (!prepared.reservation)

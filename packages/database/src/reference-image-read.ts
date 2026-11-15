@@ -9,7 +9,8 @@ import {
   type ReferenceImageAttachment,
   type ReferenceImageError,
 } from '@allrice/contracts';
-import type { StoragePort } from '@allrice/contracts';
+import type { ReferenceFullText } from './reference-fulltext.ts';
+import type { StoragePort, StorageObject } from '@allrice/contracts';
 import type { ContentIdentity } from './content-maintenance.ts';
 import { getDatabase } from './core/client.ts';
 import {
@@ -33,10 +34,18 @@ export interface ReferenceImagePort {
 }
 export interface ReferenceImageExecution {
   storage: StoragePort;
+  parseText?: (
+    data: Buffer,
+    path: string,
+    signal: AbortSignal,
+  ) => Promise<{ fullText: ReferenceFullText; mediaType: string }>;
   native: ReferenceImagePort;
   call: {
     id: string;
-    name: 'workspace.reference.read_image';
+    name:
+      | 'workspace.reference.read_image'
+      | 'workspace.reference.archive_list'
+      | 'workspace.reference.archive_read';
     nativeSessionId: string;
   };
 }
@@ -81,6 +90,7 @@ export async function requireReferenceImagePin(
   input: unknown,
   sql: Parameters<typeof readReferenceSelection>[2],
   lock: boolean,
+  readKind: 'image' | 'archive' = 'image',
 ) {
   const pin = ReferenceReadImageInputSchema.parse(input);
   const current = await readReferenceSelection(
@@ -89,7 +99,7 @@ export async function requireReferenceImagePin(
     sql,
     lock,
     undefined,
-    'image',
+    readKind,
   );
   if (
     !isDeepStrictEqual(
@@ -126,9 +136,32 @@ export async function prepareReferenceImage(
   );
   if ('error' in route) throw new ReferenceImageReadError(route.error);
   checkReferenceImageSignal(signal);
-  if (current.object.sizeBytes > referenceImagePolicy.maximumBytes)
-    referenceImageLimit('image_bytes', '图片原件超过 20 MiB，无法读取。');
-  const stream = (await execution.storage.get(current.object)).getReader();
+  const data = await readReferenceBytes(
+    execution.storage,
+    current.object,
+    referenceImagePolicy.maximumBytes,
+    'image_bytes',
+    signal,
+  );
+  const image = await prepareReferenceImageBytes(
+    data,
+    current.selection.fileName,
+    execution.native,
+    signal,
+  );
+  return { selection: current.selection, image };
+}
+
+export async function readReferenceBytes(
+  storage: StoragePort,
+  object: StorageObject,
+  maximumBytes: number,
+  reason: ReferenceImageError['reason'],
+  signal: AbortSignal,
+) {
+  if (object.sizeBytes > maximumBytes)
+    referenceImageLimit(reason, '资料原件超过读取容量。');
+  const stream = (await storage.get(object)).getReader();
   let bytes = 0;
   const chunks: Uint8Array[] = [];
   const cancel = () => {
@@ -143,8 +176,8 @@ export async function prepareReferenceImage(
       checkReferenceImageSignal(signal);
       if (chunk.done) break;
       bytes += chunk.value.byteLength;
-      if (bytes > referenceImagePolicy.maximumBytes)
-        referenceImageLimit('image_bytes', '图片原件超过 20 MiB，无法读取。');
+      if (bytes > maximumBytes)
+        referenceImageLimit(reason, '资料原件超过读取容量。');
       chunks.push(chunk.value);
     }
   } finally {
@@ -154,11 +187,23 @@ export async function prepareReferenceImage(
   }
   const data = Buffer.concat(chunks, bytes);
   if (
-    bytes !== current.object.sizeBytes ||
+    bytes !== object.sizeBytes ||
     'sha256:' + createHash('sha256').update(data).digest('hex') !==
-      current.selection.checksum
+      object.checksum
   )
     throw new ReferenceRuntimeError();
+  return data;
+}
+
+/** Route is checked before bytes by each caller, including ZIP members. */
+export async function prepareReferenceImageBytes(
+  data: Buffer,
+  name: string,
+  native: ReferenceImagePort,
+  signal: AbortSignal,
+) {
+  if (data.length > referenceImagePolicy.maximumBytes)
+    referenceImageLimit('image_bytes', '图片原件超过 20 MiB，无法读取。');
   const png = data
     .subarray(0, 8)
     .equals(Buffer.from('89504e470d0a1a0a', 'hex'));
@@ -190,13 +235,13 @@ export async function prepareReferenceImage(
     referenceImageLimit('image_pixels', '图片超过 6400 万像素，无法读取。');
   checkReferenceImageSignal(signal);
   const saved = ReferenceImageSaveResultSchema.parse(
-    await execution.native.save({
+    await native.save({
       data,
       mediaType: facts.mediaType,
-      name: current.selection.fileName,
+      name,
     }),
   );
   if ('error' in saved) throw new ReferenceImageReadError(saved.error);
   checkReferenceImageSignal(signal);
-  return { selection: current.selection, image: saved.image };
+  return saved.image;
 }

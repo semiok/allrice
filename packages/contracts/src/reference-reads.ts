@@ -1,3 +1,8 @@
+import {
+  ReferenceArchiveCallSchema,
+  ReferenceArchiveDirectoryCitationSchema,
+  ReferenceArchiveTextCitationSchema,
+} from './reference-archive.ts';
 import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
@@ -56,7 +61,10 @@ export const ReferenceImageReadSchema = ReferenceTextReadSchema.omit({
     origin: z
       .object({
         kind: z.literal('tool'),
-        toolName: z.literal('workspace.reference.read_image'),
+        toolName: z.enum([
+          'workspace.reference.read_image',
+          'workspace.reference.archive_read',
+        ]),
       })
       .strict(),
     call: ReferenceImageCallSchema,
@@ -66,16 +74,71 @@ export const ReferenceImageReadSchema = ReferenceTextReadSchema.omit({
   .superRefine((read, ctx) => {
     if (
       read.contentChecksum !== read.citation.locator.image.attachmentId ||
-      read.citation.locator.sourceChecksum !== read.citation.reference.checksum
+      read.citation.locator.sourceChecksum !==
+        (read.citation.locator.member?.checksum ??
+          read.citation.reference.checksum) ||
+      read.origin.toolName !== read.call.name ||
+      (read.call.name === 'workspace.reference.read_image'
+        ? read.citation.locator.member !== null
+        : read.citation.locator.member === null)
     )
       ctx.addIssue({
         code: 'custom',
         message: 'Image receipt must retain original and normalized identities',
       });
   });
+const archiveReadBase = ReferenceTextReadSchema.omit({
+  origin: true,
+  citation: true,
+})
+  .extend({
+    schemaVersion: z.literal(2),
+    call: ReferenceArchiveCallSchema,
+    origin: z
+      .object({
+        kind: z.literal('tool'),
+        toolName: z.enum([
+          'workspace.reference.archive_list',
+          'workspace.reference.archive_read',
+        ]),
+      })
+      .strict(),
+  })
+  .strict();
+export const ReferenceArchiveReadSchema = z
+  .union([
+    archiveReadBase
+      .extend({
+        readKind: z.literal('archive_directory'),
+        citation: ReferenceArchiveDirectoryCitationSchema,
+      })
+      .strict(),
+    archiveReadBase
+      .extend({
+        readKind: z.literal('archive_member_text'),
+        citation: ReferenceArchiveTextCitationSchema,
+      })
+      .strict(),
+  ])
+  .superRefine((read, ctx) => {
+    if (
+      read.origin.toolName !== read.call.name ||
+      read.call.name !==
+        (read.readKind === 'archive_directory'
+          ? 'workspace.reference.archive_list'
+          : 'workspace.reference.archive_read') ||
+      (read.readKind === 'archive_directory' &&
+        read.contentChecksum !== read.citation.locator.pageChecksum)
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Archive receipt must retain exact read identity',
+      });
+  });
 export const ReferenceReadSchema = z.union([
   ReferenceTextReadSchema,
   ReferenceImageReadSchema,
+  ReferenceArchiveReadSchema,
 ]);
 export type ReferenceRead = z.infer<typeof ReferenceReadSchema>;
 export const ReferenceReadsSchema = z

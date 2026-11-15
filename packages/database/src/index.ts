@@ -394,3 +394,7 @@ export {
   type ReferenceImagePort,
   type ReferenceImageExecution,
 } from './reference-image-read.ts';
+
+export { ReferenceArchiveInputError } from './reference-archive-read.ts';
+
+export { checkReferenceImageSignal } from './reference-image-read.ts';

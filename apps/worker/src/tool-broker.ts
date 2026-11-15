@@ -115,8 +115,11 @@ export async function executeRiceTool(
       metadata: {
         ...auditMetadata(input, requiredCapability),
         nativeCallId: input.call.id,
-        ...(result.referenceImage
-          ? { referenceReceiptId: result.referenceImage.receiptId }
+        ...((result.referenceReceiptId ?? result.referenceImage?.receiptId)
+          ? {
+              referenceReceiptId:
+                result.referenceReceiptId ?? result.referenceImage!.receiptId,
+            }
           : {}),
       },
     });

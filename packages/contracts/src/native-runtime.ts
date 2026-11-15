@@ -97,3 +97,11 @@ export {
   referenceImagePolicy,
   ReferenceImageCallSchema,
 } from './reference-image.ts';
+
+export * from './reference-archive.ts';
+export * from './reference-member.ts';
+
+export {
+  ReferenceContentCallSchema,
+  isBoundedReferenceToolName,
+} from './reference-image.ts';

@@ -1,5 +1,5 @@
 import {
-  ReferenceImageCallSchema,
+  ReferenceContentCallSchema,
   ReferenceImageRouteResultSchema,
   ReferenceImageSaveResultSchema,
   ReferenceImageFailureSchema,
@@ -606,7 +606,7 @@ export class DshProtocolClient {
     deadlineAt?: number;
   }): ReferenceImagePort {
     const { deadlineAt, ...identity } = callInput;
-    const call = ReferenceImageCallSchema.parse(identity);
+    const call = ReferenceContentCallSchema.parse(identity);
     const runId = this.runId;
     if (
       !Number.isSafeInteger(deadlineAt) ||

@@ -1,5 +1,6 @@
 import {
   ReferenceRuntimeError,
+  ReferenceArchiveInputError,
   ReferenceImageReadError,
   EmployeeRuntimeContentError,
   ReferenceToolResultLimitError,
@@ -10,6 +11,8 @@ import {
   ReferenceSearchInputSchema,
   ReferenceReadInputSchema,
   ReferenceReadImageInputSchema,
+  ReferenceArchiveReadInputSchema,
+  ReferenceArchiveListInputSchema,
 } from '@allrice/contracts';
 import { HandlerError } from '../../errors.js';
 import type { RiceToolHandler } from '../types.js';
@@ -23,7 +26,9 @@ export const executeReferenceTool: RiceToolHandler = async ({
     !input.executeReferenceTool ||
     (name !== 'workspace.reference.search' &&
       name !== 'workspace.reference.read' &&
-      name !== 'workspace.reference.read_image')
+      name !== 'workspace.reference.read_image' &&
+      name !== 'workspace.reference.archive_list' &&
+      name !== 'workspace.reference.archive_read')
   )
     throw new HandlerError(
       'REFERENCE_UNAVAILABLE',
@@ -33,9 +38,13 @@ export const executeReferenceTool: RiceToolHandler = async ({
   const parsed = (
     name === 'workspace.reference.search'
       ? ReferenceSearchInputSchema
-      : name === 'workspace.reference.read_image'
-        ? ReferenceReadImageInputSchema
-        : ReferenceReadInputSchema
+      : name === 'workspace.reference.archive_list'
+        ? ReferenceArchiveListInputSchema
+        : name === 'workspace.reference.archive_read'
+          ? ReferenceArchiveReadInputSchema
+          : name === 'workspace.reference.read_image'
+            ? ReferenceReadImageInputSchema
+            : ReferenceReadInputSchema
   ).parse(args);
   try {
     input.signal?.throwIfAborted();
@@ -45,11 +54,15 @@ export const executeReferenceTool: RiceToolHandler = async ({
       summary:
         name === 'workspace.reference.search'
           ? `已检索企业资料 · ${result.itemCount} 项`
-          : name === 'workspace.reference.read_image'
-            ? '已读取企业资料图片'
-            : result.itemCount === 0
-              ? '已到资料正文末尾'
-              : '已读取企业资料正文',
+          : name === 'workspace.reference.archive_list'
+            ? ReferenceArchiveListInputSchema
+            : name === 'workspace.reference.archive_read'
+              ? ReferenceArchiveReadInputSchema
+              : name === 'workspace.reference.read_image'
+                ? '已读取企业资料图片'
+                : result.itemCount === 0
+                  ? '已到资料正文末尾'
+                  : '已读取企业资料正文',
     };
   } catch (error) {
     if (error instanceof ReferenceImageReadError)
@@ -58,6 +71,7 @@ export const executeReferenceTool: RiceToolHandler = async ({
         reason: error.reason,
       });
     if (
+      error instanceof ReferenceArchiveInputError ||
       error instanceof ReferenceRuntimeError ||
       error instanceof EmployeeRuntimeContentError ||
       error instanceof ReferenceToolResultLimitError ||

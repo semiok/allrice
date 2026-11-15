@@ -201,3 +201,6 @@ export * from './employee-skill-catalog.ts';
 export * from './personal-skill-browser.ts';
 export * from './skill-package-source.ts';
 export * from './personal-scene-browser.ts';
+
+export * from './reference-archive.ts';
+export * from './reference-member.ts';

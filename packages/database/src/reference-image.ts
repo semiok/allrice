@@ -1,6 +1,12 @@
+import {
+  isFileArchiveContainer,
+  openReferenceArchive,
+  FileArchiveError,
+} from '@allrice/file-archives';
 import { createHash } from 'node:crypto';
 import {
   ReferenceImageFactsSchema,
+  ReferenceArchiveFactsSchema,
   referenceImagePolicy,
   type ReferenceImageFacts,
 } from '@allrice/contracts';
@@ -122,6 +128,7 @@ export function referenceReadCapabilities(input: {
 }) {
   const definition = input.definition as {
     referenceImageFacts?: unknown;
+    referenceArchiveFacts?: unknown;
   } | null;
   const fact = ReferenceImageFactsSchema.safeParse(
     definition?.referenceImageFacts,
@@ -136,5 +143,30 @@ export function referenceReadCapabilities(input: {
     fact.data.width <= referenceImagePolicy.maximumDimension &&
     fact.data.height <= referenceImagePolicy.maximumDimension &&
     fact.data.width * fact.data.height <= referenceImagePolicy.maximumPixels;
-  return { text: input.available && input.textReady, image, archive: false };
+  const archiveFact = ReferenceArchiveFactsSchema.safeParse(
+    definition?.referenceArchiveFacts,
+  );
+  const archive =
+    input.publication &&
+    input.available &&
+    archiveFact.success &&
+    archiveFact.data.checksum === input.checksum &&
+    archiveFact.data.sizeBytes === input.sizeBytes;
+  return { text: input.available && input.textReady, image, archive };
+}
+
+export async function inspectReferenceArchive(bytes: Buffer) {
+  if (!isFileArchiveContainer(bytes)) return null;
+  try {
+    const archive = await openReferenceArchive(bytes);
+    archive.close();
+    return ReferenceArchiveFactsSchema.parse({
+      checksum: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+      sizeBytes: bytes.length,
+      mediaType: 'application/zip',
+    });
+  } catch (error) {
+    if (error instanceof FileArchiveError) return null;
+    throw error;
+  }
 }

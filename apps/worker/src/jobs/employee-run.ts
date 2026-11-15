@@ -1,3 +1,5 @@
+import { parseReferenceArchiveText } from '../reference-archive.js';
+import { isBoundedReferenceToolName } from '@allrice/contracts';
 import { createRunDeliveryPort } from '../final-delivery/run-delivery.js';
 import { admitsRootNativeFileRead } from '../native-file-read-admission.js';
 import { createHash, randomUUID } from 'node:crypto';
@@ -1732,7 +1734,7 @@ export async function executeEmployeeRun({
                                   name,
                                   args,
                                   toolSignal,
-                                  name === 'workspace.reference.read_image' &&
+                                  isBoundedReferenceToolName(name) &&
                                     options?.referenceImage &&
                                     call.nativeSessionId
                                     ? {
@@ -1741,6 +1743,7 @@ export async function executeEmployeeRun({
                                             '.local/storage',
                                         ),
                                         native: options.referenceImage,
+                                        parseText: parseReferenceArchiveText,
                                         call: {
                                           id: call.id,
                                           name,

@@ -1,3 +1,4 @@
+import { isBoundedReferenceToolName } from '@allrice/contracts';
 import type { ReferenceImagePort } from '@allrice/database';
 import {
   allRiceToolManifest,
@@ -234,10 +235,7 @@ export function dshInboundToolHandler(
         'Native file reads require the admitted root.',
         false,
       );
-    if (
-      name === 'workspace.reference.read_image' &&
-      (!input.referenceImage || !signal)
-    )
+    if (isBoundedReferenceToolName(name) && (!input.referenceImage || !signal))
       throw new HandlerError(
         'TOOL_NOT_ALLOWED',
         'Image reading requires the admitted cancelable call.',
@@ -253,7 +251,7 @@ export function dshInboundToolHandler(
             ? { nativeSessionId: params.nativeSessionId }
             : {}),
         },
-        ...(name === 'workspace.reference.read_image' && input.referenceImage
+        ...(isBoundedReferenceToolName(name) && input.referenceImage
           ? [
               {
                 signal: signal!,
@@ -276,10 +274,7 @@ export function dshInboundToolHandler(
             : []),
       )
       .catch((error: unknown) => {
-        if (
-          name === 'workspace.reference.read_image' &&
-          error instanceof HandlerError
-        ) {
+        if (isBoundedReferenceToolName(name) && error instanceof HandlerError) {
           const denied = ReferenceImageFailureSchema.safeParse({
             code: error.code,
             ...(error.reason ? { reason: error.reason } : {}),
@@ -328,7 +323,8 @@ export function dshInboundToolHandler(
       return result;
     return {
       modelContent: result.modelContent,
-      ...(name === 'workspace.reference.read_image'
+      ...(name === 'workspace.reference.read_image' ||
+      (name === 'workspace.reference.archive_read' && args.as === 'image')
         ? {
             referenceImage: ReferenceReadImageResultSchema.parse(
               result.referenceImage,

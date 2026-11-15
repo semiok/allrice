@@ -56,7 +56,7 @@ export async function readReferenceSelection(
   sql: Sql,
   lock: boolean,
   sharedReader?: OrganizationSharedReader,
-  readKind?: 'image',
+  readKind?: 'image' | 'archive',
 ) {
   let publicationSource = false;
   try {
@@ -102,7 +102,7 @@ export async function readReferenceSelection(
     // Exact image reads can verify older publications without stored type facts.
     // Input selection still requires a known readable capability.
     if (
-      readKind === 'image'
+      readKind !== undefined
         ? !publication
         : !Object.values(readCapabilities).some(Boolean)
     )

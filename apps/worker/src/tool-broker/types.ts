@@ -36,6 +36,7 @@ export interface RiceToolCall {
 export interface RiceToolResult {
   modelContent: string;
   referenceImage?: ReferenceReadImageResult;
+  referenceReceiptId?: string;
   summary: string;
   itemCount?: number;
 }

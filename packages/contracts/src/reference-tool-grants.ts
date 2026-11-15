@@ -6,6 +6,8 @@ export const referenceToolNames = [
   'workspace.reference.search',
   'workspace.reference.read',
   'workspace.reference.read_image',
+  'workspace.reference.archive_list',
+  'workspace.reference.archive_read',
 ] as const;
 export type ReferenceToolName = (typeof referenceToolNames)[number];
 

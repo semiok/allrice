@@ -1,4 +1,8 @@
 import {
+  prepareReferenceArchive,
+  type PreparedReferenceContent,
+} from '../reference-archive-read.ts';
+import {
   prepareReferenceImage,
   requireReferenceImagePin,
   checkReferenceImageSignal,
@@ -47,6 +51,12 @@ import {
   ReferenceTextReadSchema,
   ReferenceImageReadSchema,
   ReferenceReadImageResultSchema,
+  ReferenceReadImageInputSchema,
+  ReferenceArchiveListResultSchema,
+  ReferenceArchiveTextResultSchema,
+  ReferenceArchiveReadSchema,
+  ReferenceContentCallSchema,
+  isBoundedReferenceToolName,
   referenceImagePolicy,
   ReferenceReadsSchema,
   ReferenceSelectionsSchema,
@@ -1643,7 +1653,7 @@ async function recordReferenceReads(
             runtimePolicyDigest(result.citation.locator) &&
           r.contentChecksum === checksum,
       );
-      if (!receipt) {
+      if (!receipt && locator) {
         if (reads.length >= 64) return unavailable();
         const id = randomUUID();
         receipt = ReferenceTextReadSchema.parse({
@@ -1809,13 +1819,13 @@ export async function executeEmployeeReferenceTool(
     )
       return unavailable();
     if (signal) {
-      if (toolName === 'workspace.reference.read_image')
+      if (isBoundedReferenceToolName(toolName))
         checkReferenceImageSignal(signal);
       else signal.throwIfAborted();
     }
     return run;
   }
-  if (toolName === 'workspace.reference.read_image') {
+  if (isBoundedReferenceToolName(toolName)) {
     if (
       !imageExecution ||
       !Number.isSafeInteger(imageExecution.native.deadlineAt) ||
@@ -1828,20 +1838,70 @@ export async function executeEmployeeReferenceTool(
     );
     signal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     await authority(getDatabase(), false);
-    let prepared: Awaited<ReturnType<typeof prepareReferenceImage>>;
+    ReferenceContentCallSchema.parse(imageExecution.call);
+    if (imageExecution.call.name !== toolName) return unavailable();
+    const pin = ReferenceReadImageInputSchema.parse(
+      Object.fromEntries(
+        ['sourceId', 'revisionId', 'digest', 'checksum'].map((key) => [
+          key,
+          (input as Record<string, unknown>)[key],
+        ]),
+      ),
+    );
+    const readKind =
+      toolName === 'workspace.reference.read_image' ? 'image' : 'archive';
+    let prepared: PreparedReferenceContent;
     try {
-      prepared = await prepareReferenceImage(
-        reader,
-        input,
-        imageExecution,
-        signal,
-      );
+      if (toolName === 'workspace.reference.read_image') {
+        const image = await prepareReferenceImage(
+          reader,
+          input,
+          imageExecution,
+          signal,
+        );
+        prepared = {
+          selection: image.selection,
+          readKind: 'image',
+          itemCount: 1,
+          contentChecksum: image.image.attachmentId,
+          locator: {
+            kind: 'image',
+            member: null,
+            sourceChecksum: image.selection.checksum,
+            image: image.image,
+          },
+          value: {
+            kind: 'image',
+            reference: image.selection,
+            image: image.image,
+            sourceChecksum: image.selection.checksum,
+            warnings: [],
+          },
+        };
+      } else
+        prepared = await prepareReferenceArchive(
+          reader,
+          toolName,
+          input,
+          imageExecution,
+          signal,
+          async () => {
+            await authority(getDatabase(), false);
+            await requireReferenceImagePin(
+              reader,
+              pin,
+              getDatabase(),
+              false,
+              'archive',
+            );
+          },
+        );
     } catch (error) {
       // Failed reads may also reveal new format/size facts. Revoke/lease/cancel
       // gates take precedence over those details, just as on the success path.
       await withContentLocks(scope, async (tx) => {
         await authority(tx, true);
-        await requireReferenceImagePin(reader, input, tx, true);
+        await requireReferenceImagePin(reader, pin, tx, true, readKind);
         checkReferenceImageSignal(signal!);
         throw error;
       });
@@ -1851,7 +1911,7 @@ export async function executeEmployeeReferenceTool(
     return withContentLocks(scope, async (tx) => {
       checkReferenceImageSignal(activeSignal);
       const run = await authority(tx, true);
-      await requireReferenceImagePin(reader, input, tx, true);
+      await requireReferenceImagePin(reader, pin, tx, true, readKind);
       const reads = ReferenceReadsSchema.parse(run.reference_reads ?? []);
       if (
         reads.some(
@@ -1859,31 +1919,30 @@ export async function executeEmployeeReferenceTool(
         )
       )
         return unavailable();
-      const locator = {
-        kind: 'image' as const,
-        member: null,
-        sourceChecksum: prepared.selection.checksum,
-        image: prepared.image,
-      };
+      const locator = prepared.locator;
       let receipt = reads.find(
-        (r): r is ReturnType<typeof ReferenceImageReadSchema.parse> =>
+        (r) =>
           r.citation.type === 'reference' &&
           runtimePolicyDigest(r.citation.reference) ===
             runtimePolicyDigest(prepared.selection) &&
           runtimePolicyDigest(r.citation.locator) ===
             runtimePolicyDigest(locator) &&
-          r.contentChecksum === prepared.image.attachmentId,
+          r.contentChecksum === prepared.contentChecksum,
       );
-      if (!receipt) {
+      if (!receipt && locator) {
         if (reads.length >= 64)
           referenceImageLimit(
             'receipt_budget',
             '本轮资料读取已达 64 条，请另起一轮读取。',
           );
         const id = randomUUID();
-        receipt = ReferenceImageReadSchema.parse({
+        receipt = (
+          prepared.readKind === 'image'
+            ? ReferenceImageReadSchema
+            : ReferenceArchiveReadSchema
+        ).parse({
           schemaVersion: 2,
-          readKind: 'image',
+          readKind: prepared.readKind,
           receiptId: id,
           origin: { kind: 'tool', toolName },
           call: imageExecution.call,
@@ -1895,7 +1954,7 @@ export async function executeEmployeeReferenceTool(
             referenceLabel: `R${reads.length + 1}`,
             locator,
           },
-          contentChecksum: prepared.image.attachmentId,
+          contentChecksum: prepared.contentChecksum,
           runId: scope.runId,
           generationId,
           jobId: worker.jobId,
@@ -1905,19 +1964,26 @@ export async function executeEmployeeReferenceTool(
         reads.push(receipt);
         await tx`update allrice_employee_runs set reference_reads=${tx.json(reads)} where run_id=${scope.runId}`;
       }
-      const referenceImage = ReferenceReadImageResultSchema.parse({
-        kind: 'image',
-        reference: prepared.selection,
-        image: prepared.image,
-        sourceChecksum: prepared.selection.checksum,
-        citation: receipt.citation,
-        receiptId: receipt.receiptId,
-        warnings: [],
-      });
-      const modelContent = boundedReferenceToolResult(referenceImage);
+      const value = {
+        ...prepared.value,
+        citation: receipt?.citation ?? null,
+        receiptId: receipt?.receiptId ?? null,
+      };
+      const result =
+        prepared.readKind === 'image'
+          ? ReferenceReadImageResultSchema.parse(value)
+          : prepared.readKind === 'archive_directory'
+            ? ReferenceArchiveListResultSchema.parse(value)
+            : ReferenceArchiveTextResultSchema.parse(value);
+      const modelContent = boundedReferenceToolResult(result);
       if (!(await validContentLease(scope, worker, tx))) return unavailable();
       checkReferenceImageSignal(activeSignal);
-      return { modelContent, referenceImage, itemCount: 1 };
+      return {
+        modelContent,
+        ...(receipt ? { referenceReceiptId: receipt.receiptId } : {}),
+        ...(result.kind === 'image' ? { referenceImage: result } : {}),
+        itemCount: prepared.itemCount,
+      };
     });
   }
   const args =

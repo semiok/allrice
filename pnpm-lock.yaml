@@ -691,6 +691,9 @@ importers:
       '@allrice/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@allrice/file-archives':
+        specifier: workspace:*
+        version: link:../file-archives
       '@allrice/storage':
         specifier: workspace:*
         version: link:../storage

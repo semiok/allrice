@@ -20,3 +20,15 @@ export const ReferenceReadCapabilitiesSchema = z
     archive: z.boolean(),
   })
   .strict();
+
+export const ReferenceArchiveFactsSchema = z
+  .object({
+    checksum: ChecksumSchema,
+    sizeBytes: z
+      .number()
+      .int()
+      .positive()
+      .max(50 * 1024 * 1024),
+    mediaType: z.literal('application/zip'),
+  })
+  .strict();

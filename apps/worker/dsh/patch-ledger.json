@@ -7,7 +7,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-reference-native-tools.mjs",
-      "reason": "Public defineTool adapters expose publication search, exact text reads and static PNG/JPEG image reads through the existing tenant Tool Broker. Public DSH attachment saveImages, route resolution and image ContentBlock rendering retain image normalization, persistence and native history. AllRice owns current publication ACL, immutable source/type facts, Worker lease, v1.8 read budgets and actual-read receipts. No core patch, arbitrary path, model-supplied authority or second image lifecycle."
+      "reason": "Public defineTool adapters expose publication search, exact text reads and static PNG/JPEG image reads, bounded ZIP directories and selected member reads through the existing tenant Tool Broker. Public DSH attachment saveImages, route resolution and image ContentBlock rendering retain image normalization, persistence and native history. AllRice owns current publication ACL, immutable source/type facts, Worker lease, v1.8 read budgets and actual-read receipts. ZIP members use the existing file-archives path checks and selective yauzl reads; document text reuses the full reference parser. No core patch, arbitrary path, model-supplied authority or second image lifecycle."
     },
     {
       "id": "allrice-brand-content-read-v1",

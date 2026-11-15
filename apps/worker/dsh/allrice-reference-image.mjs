@@ -168,3 +168,21 @@ export function referenceImageValue(response) {
     throw Error('REFERENCE_IMAGE_RESULT_INVALID');
   return { content: response.modelContent, image: value.image };
 }
+
+// Same public image renderer; text members keep an ordinary text-only result.
+export const referenceArchiveOutput = {
+  schema: {
+    ...referenceImageOutput.schema,
+    properties: {
+      ...referenceImageOutput.schema.properties,
+      image: {
+        ...referenceImageOutput.schema.properties.image,
+        required: false,
+      },
+    },
+  },
+  render: (args, value) =>
+    value.image
+      ? referenceImageOutput.render(args, value)
+      : [{ type: 'text', text: value.content }],
+};

@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
+import { ReferenceMemberIdentitySchema } from './reference-member.ts';
 import { ReferenceSelectionSchema } from './reference-library.ts';
 
 /** v1.8: these bounds govern new reference reads, not ordinary uploads/tools. */
@@ -62,8 +63,7 @@ export const ReferenceImageCitationSchema = z
     locator: z
       .object({
         kind: z.literal('image'),
-        // R4b will add its strict member identity when archive reading ships.
-        member: z.null(),
+        member: ReferenceMemberIdentitySchema.nullable(),
         sourceChecksum: ChecksumSchema,
         image: ReferenceImageAttachmentSchema,
       })
@@ -79,6 +79,7 @@ export const ReferenceReadImageResultSchema = z
     kind: z.literal('image'),
     reference: ReferenceSelectionSchema,
     image: ReferenceImageAttachmentSchema,
+    member: ReferenceMemberIdentitySchema.optional(),
     sourceChecksum: ChecksumSchema,
     citation: ReferenceImageCitationSchema,
     receiptId: UuidSchema,
@@ -88,7 +89,12 @@ export const ReferenceReadImageResultSchema = z
   .superRefine((value, ctx) => {
     if (
       value.receiptId !== value.citation.id ||
-      value.sourceChecksum !== value.reference.checksum ||
+      (value.member
+        ? value.sourceChecksum !== value.member.checksum ||
+          JSON.stringify(value.member) !==
+            JSON.stringify(value.citation.locator.member)
+        : value.sourceChecksum !== value.reference.checksum ||
+          value.citation.locator.member !== null) ||
       value.citation.locator.sourceChecksum !== value.sourceChecksum ||
       JSON.stringify(value.citation.reference) !==
         JSON.stringify(value.reference) ||
@@ -112,10 +118,31 @@ export const ReferenceImageBlocksSchema = z.tuple([
 ]);
 export type ReferenceImageBlocks = z.infer<typeof ReferenceImageBlocksSchema>;
 
+export const boundedReferenceToolNames = [
+  'workspace.reference.read_image',
+  'workspace.reference.archive_list',
+  'workspace.reference.archive_read',
+] as const;
+export function isBoundedReferenceToolName(
+  name: unknown,
+): name is (typeof boundedReferenceToolNames)[number] {
+  return boundedReferenceToolNames.some((value) => value === name);
+}
+export const ReferenceContentCallSchema = z
+  .object({
+    id: z.string().min(1).max(240),
+    name: z.enum(boundedReferenceToolNames),
+    nativeSessionId: z.string().min(1).max(240),
+  })
+  .strict();
+
 export const ReferenceImageCallSchema = z
   .object({
     id: z.string().min(1).max(240),
-    name: z.literal('workspace.reference.read_image'),
+    name: z.enum([
+      'workspace.reference.read_image',
+      'workspace.reference.archive_read',
+    ]),
     nativeSessionId: z.string().min(1).max(240),
   })
   .strict();
@@ -130,6 +157,21 @@ export const ReferenceImageErrorSchema = z
     ]),
     reason: z.enum([
       'media_type',
+      'nested_archive',
+      'directory_entry',
+      'archive_encrypted',
+      'archive_compression',
+      'archive_multivolume',
+      'text_unavailable',
+      'archive_structure',
+      'archive_crc',
+      'member_size_mismatch',
+      'archive_bytes',
+      'archive_entries',
+      'archive_declared_bytes',
+      'member_bytes',
+      'expansion_ratio',
+      'directory_result',
       'image_route',
       'image_decode',
       'image_type_mismatch',

@@ -1,4 +1,5 @@
 import { setImmediate as yieldTask } from 'node:timers/promises';
+import { createHash } from 'node:crypto';
 import type { Readable } from 'node:stream';
 import CRC32 from 'crc-32';
 import { Zip, ZipDeflate, type ZipInputFile } from 'fflate';
@@ -29,7 +30,10 @@ type ArchiveErrorCode =
   | 'FILE_ARCHIVE_AUTHORITY_LOST';
 
 export class FileArchiveError extends Error {
-  constructor(readonly code: ArchiveErrorCode) {
+  constructor(
+    readonly code: ArchiveErrorCode,
+    readonly reason?: ArchiveReadReason,
+  ) {
     super(code);
   }
 }
@@ -503,5 +507,495 @@ export async function createFileArchive(
     return Buffer.concat(parts, outputBytes);
   } finally {
     archive.terminate();
+  }
+}
+
+/** Publication reader policy is explicit and separate from the 32-file/9MB
+ * computer and Skill defaults above. No entry is inflated by opening a ZIP. */
+export const referenceArchivePolicy = {
+  maximumBytes: 50 * 1024 * 1024,
+  maximumEntries: 128,
+  maximumDeclaredBytes: 256 * 1024 * 1024,
+  maximumMemberBytes: 20 * 1024 * 1024,
+  maximumExpansionRatio: 100,
+} as const;
+export type ArchiveReadReason =
+  | 'archive_bytes'
+  | 'archive_entries'
+  | 'archive_declared_bytes'
+  | 'member_bytes'
+  | 'expansion_ratio'
+  | 'archive_structure'
+  | 'archive_encrypted'
+  | 'archive_compression'
+  | 'archive_multivolume'
+  | 'archive_crc'
+  | 'member_size_mismatch';
+export type ArchiveDirectoryEntry = {
+  index: number;
+  identity: string;
+  path: string;
+  kind: 'file' | 'directory';
+  compressedBytes: number;
+  declaredBytes: number;
+  compression: 'store' | 'deflate';
+};
+function archiveReadFail(reason: ArchiveReadReason): never {
+  const limits: ArchiveReadReason[] = [
+    'archive_bytes',
+    'archive_entries',
+    'archive_declared_bytes',
+    'member_bytes',
+    'expansion_ratio',
+  ];
+  const unsupported: ArchiveReadReason[] = [
+    'archive_encrypted',
+    'archive_compression',
+    'archive_multivolume',
+  ];
+  throw new FileArchiveError(
+    limits.includes(reason)
+      ? 'FILE_ARCHIVE_LIMIT'
+      : unsupported.includes(reason)
+        ? 'FILE_ARCHIVE_UNSUPPORTED'
+        : reason === 'archive_crc'
+          ? 'FILE_ARCHIVE_CRC_MISMATCH'
+          : 'FILE_ARCHIVE_INVALID',
+    reason,
+  );
+}
+const archiveDigest = (bytes: Uint8Array) =>
+  'sha256:' + createHash('sha256').update(bytes).digest('hex');
+function archiveInteger(value: number) {
+  if (!Number.isSafeInteger(value) || value < 0)
+    archiveReadFail('archive_structure');
+  return value;
+}
+function archiveRatio(expanded: number, compressed: number) {
+  if (expanded > compressed * referenceArchivePolicy.maximumExpansionRatio)
+    archiveReadFail('expansion_ratio');
+}
+
+/** Validate the bounded directory envelope before handing entries to yauzl.
+ * ZIP64 is accepted only when every resolved integer is safe and bounded. */
+function archiveDirectoryBounds(bytes: Buffer) {
+  let end = -1;
+  for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 65557); i--) {
+    if (
+      bytes.readUInt32LE(i) === 0x06054b50 &&
+      i + 22 + bytes.readUInt16LE(i + 20) === bytes.length
+    ) {
+      end = i;
+      break;
+    }
+  }
+  if (end < 0) archiveReadFail('archive_structure');
+  if (
+    bytes.readUInt16LE(end + 4) ||
+    bytes.readUInt16LE(end + 6) ||
+    bytes.readUInt16LE(end + 8) !== bytes.readUInt16LE(end + 10)
+  )
+    archiveReadFail('archive_multivolume');
+  let count = bytes.readUInt16LE(end + 10);
+  let size = bytes.readUInt32LE(end + 12);
+  let start = bytes.readUInt32LE(end + 16);
+  let boundary = end;
+  if (end >= 20 && bytes.readUInt32LE(end - 20) === 0x07064b50) {
+    if (bytes.readUInt32LE(end - 16) || bytes.readUInt32LE(end - 4) !== 1)
+      archiveReadFail('archive_multivolume');
+    const record = archiveInteger(Number(bytes.readBigUInt64LE(end - 12)));
+    if (record + 56 > end - 20 || bytes.readUInt32LE(record) !== 0x06064b50)
+      archiveReadFail('archive_structure');
+    const recordBytes = archiveInteger(
+      Number(bytes.readBigUInt64LE(record + 4)),
+    );
+    if (recordBytes < 44 || record + 12 + recordBytes !== end - 20)
+      archiveReadFail('archive_structure');
+    if (
+      bytes.readUInt32LE(record + 16) ||
+      bytes.readUInt32LE(record + 20) ||
+      bytes.readBigUInt64LE(record + 24) !== bytes.readBigUInt64LE(record + 32)
+    )
+      archiveReadFail('archive_multivolume');
+    count = archiveInteger(Number(bytes.readBigUInt64LE(record + 32)));
+    size = archiveInteger(Number(bytes.readBigUInt64LE(record + 40)));
+    start = archiveInteger(Number(bytes.readBigUInt64LE(record + 48)));
+    boundary = record;
+  }
+  if (count > referenceArchivePolicy.maximumEntries)
+    archiveReadFail('archive_entries');
+  if (start + size !== boundary) archiveReadFail('archive_structure');
+  const records: { identity: string; start: number; end: number }[] = [];
+  let cursor = start;
+  for (let i = 0; i < count; i++) {
+    if (cursor + 46 > boundary || bytes.readUInt32LE(cursor) !== 0x02014b50)
+      archiveReadFail('archive_structure');
+    if (bytes.readUInt16LE(cursor + 34)) archiveReadFail('archive_multivolume');
+    const next =
+      cursor +
+      46 +
+      bytes.readUInt16LE(cursor + 28) +
+      bytes.readUInt16LE(cursor + 30) +
+      bytes.readUInt16LE(cursor + 32);
+    if (next > boundary) archiveReadFail('archive_structure');
+    records.push({
+      identity: archiveDigest(bytes.subarray(cursor, next)),
+      start: cursor,
+      end: next,
+    });
+    cursor = next;
+  }
+  if (cursor !== boundary) archiveReadFail('archive_structure');
+  return {
+    start,
+    count,
+    records,
+    checksum: archiveDigest(bytes.subarray(start, boundary)),
+  };
+}
+
+export function isFileArchiveContainer(bytes: Uint8Array) {
+  // A complete bounded directory, not a filename/MIME guess. Office is
+  // excluded by its package identity, without decompressing any member.
+  try {
+    const input = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (input.length > referenceArchivePolicy.maximumBytes) return false;
+    const directory = archiveDirectoryBounds(input);
+    return !directory.records.some(({ start }) => {
+      const name = input
+        .subarray(start + 46, start + 46 + input.readUInt16LE(start + 28))
+        .toString('utf8');
+      return name === '[Content_Types].xml';
+    });
+  } catch {
+    return false;
+  }
+}
+
+/** Caller must close in finally. Public metadata contains no mutable yauzl
+ * entry or path-to-filesystem capability. readMember inflates only its index. */
+export async function openReferenceArchive(
+  bytes: Uint8Array,
+  controls: Pick<ArchiveControls, 'signal' | 'authorize'> = {},
+) {
+  if (!(bytes instanceof Uint8Array)) archiveReadFail('archive_structure');
+  if (bytes.byteLength > referenceArchivePolicy.maximumBytes)
+    archiveReadFail('archive_bytes');
+  const input = Buffer.from(bytes);
+  const bounds = archiveDirectoryBounds(input);
+  checkSignal(controls.signal);
+  if (controls.authorize && !(await controls.authorize()))
+    fail('FILE_ARCHIVE_AUTHORITY_LOST');
+  const zip = await new Promise<ZipFile>((resolve, reject) => {
+    fromBuffer(
+      input,
+      {
+        lazyEntries: true,
+        autoClose: false,
+        strictFileNames: true,
+        validateEntrySizes: false,
+      },
+      (error, value) => {
+        if (error || !value)
+          reject(
+            new FileArchiveError('FILE_ARCHIVE_INVALID', 'archive_structure'),
+          );
+        else resolve(value);
+      },
+    );
+  });
+  const entries: Entry[] = [];
+  const directory: ArchiveDirectoryEntry[] = [];
+  let stream: Readable | undefined;
+  let closed = false;
+  let failure: unknown;
+  const close = () => {
+    closed = true;
+    stream?.destroy();
+    zip.close();
+  };
+  const abort = () => {
+    failure = canceled();
+    close();
+  };
+  const current = async () => {
+    if (failure) throw failure;
+    if (closed) throw canceled();
+    try {
+      checkSignal(controls.signal);
+      if (controls.authorize && !(await controls.authorize()))
+        fail('FILE_ARCHIVE_AUTHORITY_LOST');
+      await yieldTask();
+      checkSignal(controls.signal);
+    } catch (error) {
+      failure = error;
+      throw error;
+    }
+    if (failure) throw failure;
+  };
+  controls.signal?.addEventListener('abort', abort, { once: true });
+  if (controls.signal?.aborted) abort();
+  zip.on('error', (error) => {
+    failure =
+      error instanceof FileArchiveError
+        ? error
+        : new FileArchiveError('FILE_ARCHIVE_INVALID', 'archive_structure');
+    stream?.destroy();
+  });
+  const finish = () => {
+    controls.signal?.removeEventListener('abort', abort);
+    close();
+  };
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const paths = new ArchivePaths();
+      let declared = 0;
+      let compressed = 0;
+      const rejectAbort = () => reject(canceled());
+      const rejectError = () => reject(failure);
+      const cleanup = () => {
+        controls.signal?.removeEventListener('abort', rejectAbort);
+        zip.removeListener('error', rejectError);
+      };
+      controls.signal?.addEventListener('abort', rejectAbort, { once: true });
+      zip.on('error', rejectError);
+      zip.once('end', () => {
+        cleanup();
+        resolve();
+      });
+      zip.on('entry', (entry: Entry) => {
+        void (async () => {
+          await current();
+          if (entries.length >= bounds.count)
+            archiveReadFail('archive_structure');
+          if (entry.isEncrypted() || entry.generalPurposeBitFlag & 0x2041)
+            archiveReadFail('archive_encrypted');
+          if (![0, 8].includes(entry.compressionMethod))
+            archiveReadFail('archive_compression');
+          const isDirectory = entry.fileName.endsWith('/');
+          const type = (entry.externalFileAttributes >>> 16) & 0xf000;
+          if (
+            (type !== 0 && type !== (isDirectory ? 0x4000 : 0x8000)) ||
+            (!isDirectory && entry.externalFileAttributes & 0x10) ||
+            (isDirectory && entry.uncompressedSize !== 0)
+          )
+            archiveReadFail('archive_structure');
+          validateRawPath((entry as RawEntry).fileNameRaw, isDirectory);
+          paths.add(entry.fileName, isDirectory);
+          archiveInteger(entry.uncompressedSize);
+          archiveInteger(entry.compressedSize);
+          if (entry.compressedSize > input.length)
+            archiveReadFail('archive_structure');
+          archiveRatio(entry.uncompressedSize, entry.compressedSize);
+          declared += entry.uncompressedSize;
+          compressed += entry.compressedSize;
+          if (declared > referenceArchivePolicy.maximumDeclaredBytes)
+            archiveReadFail('archive_declared_bytes');
+          archiveRatio(declared, compressed);
+          const index = entries.length;
+          entries.push(entry);
+          directory.push({
+            index,
+            identity: bounds.records[index]!.identity,
+            path: entry.fileName,
+            kind: isDirectory ? 'directory' : 'file',
+            compressedBytes: entry.compressedSize,
+            declaredBytes: entry.uncompressedSize,
+            compression: entry.compressionMethod === 0 ? 'store' : 'deflate',
+          });
+          zip.readEntry();
+        })().catch((error) => {
+          cleanup();
+          reject(error);
+        });
+      });
+      if (controls.signal?.aborted) {
+        cleanup();
+        reject(canceled());
+      } else zip.readEntry();
+    });
+    await current();
+    if (entries.length !== bounds.count) archiveReadFail('archive_structure');
+    // Header/range verification is bounded metadata I/O, never decompression.
+    const ranges: { start: number; end: number }[] = [];
+    for (const entry of entries) {
+      await current();
+      const header = await new Promise<
+        LocalHeader & {
+          fileDataStart: number;
+          crc32: number;
+          compressedSize: number;
+          uncompressedSize: number;
+          extraField: Buffer;
+        }
+      >((resolve, reject) => {
+        (zip as HeaderZipFile).readLocalFileHeader(entry, (error, value) => {
+          if (error || !value)
+            reject(
+              new FileArchiveError('FILE_ARCHIVE_INVALID', 'archive_structure'),
+            );
+          else
+            resolve(
+              value as LocalHeader & {
+                fileDataStart: number;
+                crc32: number;
+                compressedSize: number;
+                uncompressedSize: number;
+                extraField: Buffer;
+              },
+            );
+        });
+      });
+      if (
+        header.generalPurposeBitFlag !== entry.generalPurposeBitFlag ||
+        header.compressionMethod !== entry.compressionMethod ||
+        !header.fileName.equals((entry as RawEntry).fileNameRaw)
+      )
+        archiveReadFail('archive_structure');
+      let localCompressed = header.compressedSize,
+        localExpanded = header.uncompressedSize;
+      if (localCompressed === 0xffffffff || localExpanded === 0xffffffff) {
+        let found = false;
+        for (let offset = 0; offset + 4 <= header.extraField.length;) {
+          const id = header.extraField.readUInt16LE(offset),
+            length = header.extraField.readUInt16LE(offset + 2);
+          const stop = offset + 4 + length;
+          offset += 4;
+          if (stop > header.extraField.length)
+            archiveReadFail('archive_structure');
+          if (id === 1) {
+            const readSize = () => {
+              if (offset + 8 > stop) archiveReadFail('archive_structure');
+              const size = archiveInteger(
+                Number(header.extraField.readBigUInt64LE(offset)),
+              );
+              offset += 8;
+              return size;
+            };
+            if (localExpanded === 0xffffffff) localExpanded = readSize();
+            if (localCompressed === 0xffffffff) localCompressed = readSize();
+            found = true;
+            break;
+          }
+          offset = stop;
+        }
+        if (!found) archiveReadFail('archive_structure');
+      }
+      if (
+        !(entry.generalPurposeBitFlag & 8) &&
+        (header.crc32 !== entry.crc32 ||
+          localCompressed !== entry.compressedSize ||
+          localExpanded !== entry.uncompressedSize)
+      )
+        archiveReadFail('archive_structure');
+      const start = archiveInteger(entry.relativeOffsetOfLocalHeader);
+      let end = header.fileDataStart + entry.compressedSize;
+      if (end > bounds.start) archiveReadFail('archive_structure');
+      if (entry.generalPurposeBitFlag & 8) {
+        let cursor = end;
+        if (cursor + 4 > bounds.start) archiveReadFail('archive_structure');
+        if (input.readUInt32LE(cursor) === 0x08074b50) cursor += 4;
+        const wide =
+          header.compressedSize === 0xffffffff ||
+          header.uncompressedSize === 0xffffffff;
+        if (cursor + (wide ? 20 : 12) > bounds.start)
+          archiveReadFail('archive_structure');
+        const crc = input.readUInt32LE(cursor);
+        cursor += 4;
+        const readSize = () => {
+          const value = wide
+            ? archiveInteger(Number(input.readBigUInt64LE(cursor)))
+            : input.readUInt32LE(cursor);
+          cursor += wide ? 8 : 4;
+          return value;
+        };
+        if (
+          crc !== entry.crc32 ||
+          readSize() !== entry.compressedSize ||
+          readSize() !== entry.uncompressedSize
+        )
+          archiveReadFail('archive_structure');
+        end = cursor;
+      }
+      if (ranges.some((range) => start < range.end && end > range.start))
+        archiveReadFail('archive_structure');
+      ranges.push({ start, end });
+    }
+    return {
+      directoryChecksum: bounds.checksum,
+      entries: directory,
+      close: finish,
+      async readMember(index: number) {
+        await current();
+        if (!Number.isInteger(index) || !entries[index] || stream)
+          archiveReadFail('archive_structure');
+        const entry = entries[index]!;
+        if (entry.uncompressedSize > referenceArchivePolicy.maximumMemberBytes)
+          archiveReadFail('member_bytes');
+        const readable = await new Promise<Readable>((resolve, reject) => {
+          zip.openReadStream(entry, (error, value) => {
+            if (error || !value)
+              reject(
+                new FileArchiveError(
+                  'FILE_ARCHIVE_INVALID',
+                  'archive_structure',
+                ),
+              );
+            else if (closed) {
+              value.destroy();
+              reject(failure ?? canceled());
+            } else {
+              stream = value;
+              resolve(value);
+            }
+          });
+        });
+        const chunks: Buffer[] = [];
+        let size = 0,
+          crc = 0;
+        try {
+          for await (const chunk of readable) {
+            const available = chunk as Uint8Array;
+            for (
+              let offset = 0;
+              offset < available.length;
+              offset += chunkBytes
+            ) {
+              await current();
+              const value = Buffer.from(
+                available.subarray(offset, offset + chunkBytes),
+              );
+              size += value.length;
+              if (size > referenceArchivePolicy.maximumMemberBytes)
+                archiveReadFail('member_bytes');
+              archiveRatio(size, entry.compressedSize);
+              if (size > entry.uncompressedSize)
+                archiveReadFail('member_size_mismatch');
+              crc = CRC32.buf(value, crc);
+              chunks.push(value);
+            }
+          }
+          await current();
+          if (size !== entry.uncompressedSize)
+            archiveReadFail('member_size_mismatch');
+          if (crc >>> 0 !== entry.crc32) archiveReadFail('archive_crc');
+          return Buffer.concat(chunks, size);
+        } catch (error) {
+          if (controls.signal?.aborted) throw canceled();
+          if (failure) throw failure;
+          if (error instanceof FileArchiveError) throw error;
+          throw new FileArchiveError(
+            'FILE_ARCHIVE_INVALID',
+            'archive_structure',
+          );
+        } finally {
+          readable.destroy();
+          stream = undefined;
+        }
+      },
+    };
+  } catch (error) {
+    finish();
+    throw error;
   }
 }

@@ -47,6 +47,7 @@ export interface HarnessToolDefinition {
 export interface HarnessToolResult {
   modelContent: string;
   referenceImage?: ReferenceReadImageResult;
+  referenceReceiptId?: string;
   summary: string;
   itemCount?: number;
 }
