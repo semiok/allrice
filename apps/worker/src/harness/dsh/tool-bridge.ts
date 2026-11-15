@@ -234,6 +234,15 @@ export function dshInboundToolHandler(
         'Native file reads require the admitted root.',
         false,
       );
+    if (
+      name === 'workspace.reference.read_image' &&
+      (!input.referenceImage || !signal)
+    )
+      throw new HandlerError(
+        'TOOL_NOT_ALLOWED',
+        'Image reading requires the admitted cancelable call.',
+        false,
+      );
     const result = await input
       .onToolCall(
         {
@@ -247,7 +256,7 @@ export function dshInboundToolHandler(
         ...(name === 'workspace.reference.read_image' && input.referenceImage
           ? [
               {
-                ...(signal ? { signal } : {}),
+                signal: signal!,
                 referenceImage: input.referenceImage({
                   id,
                   name,

@@ -214,7 +214,7 @@ export interface HarnessExecutionInput {
   tools: readonly HarnessToolDefinition[];
   onToolCall?: (
     call: HarnessToolCall,
-    options?: { signal?: AbortSignal; referenceImage?: ReferenceImagePort },
+    options?: { signal: AbortSignal; referenceImage?: ReferenceImagePort },
   ) => Promise<HarnessToolResult>;
   onEvent: (event: HarnessEvent) => Promise<void>;
   onThreadBound?: (input: {

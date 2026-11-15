@@ -168,7 +168,7 @@ suite('R4a real native image result, provider input and cold history', () => {
           );
           return { authorized: true };
         }
-        return broker(method, params);
+        return broker(method, params, new AbortController().signal);
       });
       await client.initialize({
         cwd: model.root,
