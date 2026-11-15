@@ -166,11 +166,16 @@ export function WorkProcess({
     materialReveal &&
     items.some((item) =>
       item.operations?.some(
-        (ref) => workProcessReferenceKey(ref) === materialReveal,
+        (ref) =>
+          ref.requiresAttention ||
+          workProcessReferenceKey(ref) === materialReveal,
       ),
     )
       ? materialReveal
       : undefined;
+  const requiringAttention = items.some((item) =>
+    item.operations?.some((ref) => ref.requiresAttention),
+  );
   const policy = presentationPolicyFor(transcriptView, collapseTiming);
   const currentPresentation =
     presentation ?? workProcessPresentation([], parts, undefined, false);
@@ -297,6 +302,8 @@ export function WorkProcess({
           : canceled
             ? '已停止'
             : '工作过程';
+  // r1-exempt(own-text): This title is produced immediately above; it selects only the approved employee color.
+  const executingTitle = title === '执行中…';
   const expandable = Boolean(
     (process.steps.length && !onlyLiveThinking(process.steps, running)) ||
     Children.toArray(children).length ||
@@ -348,7 +355,7 @@ export function WorkProcess({
     canceled,
     hasHistory: parts ? Boolean(history?.length || expandable) : expandable,
     disclosure:
-      (revealingQuestion || revealingMaterial
+      (revealingQuestion || revealingMaterial || requiringAttention
         ? { presentation: currentPresentation, open: true }
         : disclosure) ??
       (readingQuestion
@@ -457,6 +464,7 @@ export function WorkProcess({
         aria-owns={ownedIds || undefined}
         data-transcript-view={policy.mode}
         data-process-open={display.open}
+        data-executing={executingTitle || undefined}
       >
         <DisclosureRow
           icon={<IconThinkOutline14 />}
@@ -474,7 +482,7 @@ export function WorkProcess({
           expandOnRowClick
           keepContentWhenOpen
           onToggle={toggle}
-          rowClassName={styles.processHeader}
+          rowClassName={`${styles.processHeader} ${executingTitle ? styles.processExecuting : ''}`}
           titleClassName={styles.processTitle}
           collapsedContent={
             <>
@@ -546,6 +554,7 @@ export function WorkProcess({
       aria-label={label}
       data-transcript-view={policy.mode}
       data-process-open={display.open}
+      data-executing={executingTitle || undefined}
     >
       <DisclosureRow
         icon={<IconThinkOutline14 />}
@@ -562,7 +571,7 @@ export function WorkProcess({
         expandable={display.canFold}
         expandOnRowClick
         keepContentWhenOpen
-        rowClassName={`${reasoning.row} ${styles.processHeader}`}
+        rowClassName={`${reasoning.row} ${styles.processHeader} ${executingTitle ? styles.processExecuting : ''}`}
         leadingClassName={reasoning.leading}
         titleClassName={`${reasoning.title} ${styles.processTitle} ${microStatus ? styles.processStatus : ''}`}
         chevronClassName={reasoning.chevron}
@@ -587,7 +596,7 @@ export function WorkProcess({
         }
       />
       <div hidden={!display.open || !expandable}>
-        <div className={styles.processDetails}>
+        <div className={styles.processReceipts}>
           <NativeStepsGroup
             key={currentPresentation.answerGeneration}
             items={processItems(items)}
@@ -706,7 +715,12 @@ function NativeStepsGroup({
     questionKeys.filter((key) => revealingQuestions.includes(key)),
   );
   const open =
-    revealingMaterial || revealingQuestion || (manual ?? readingQuestion);
+    items.some((item) =>
+      item.operations?.some((ref) => ref.requiresAttention),
+    ) ||
+    revealingMaterial ||
+    revealingQuestion ||
+    (manual ?? readingQuestion);
   useLayoutEffect(() => {
     if ((revealingMaterial || revealingQuestion) && manual !== true)
       setOpen(true);
@@ -838,21 +852,23 @@ function WorkProcessSteps({
         const pending = active && step.category !== 'plan';
         const status =
           unassigned?.status ??
-          (step.status === 'failed'
-            ? '未成功'
-            : stepRunning && question?.pending && !question.answer
-              ? '等待回答'
-              : question?.answered
-                ? '已回答'
-                : step.status === 'info'
-                  ? '结果未确认'
-                  : step.status === 'completed'
-                    ? '已完成'
-                    : active && !stepRunning
-                      ? '结果未确认'
-                      : active
-                        ? '运行中'
-                        : '结果未确认');
+          (item?.stopped
+            ? '已停止'
+            : step.status === 'failed'
+              ? '未成功'
+              : stepRunning && question?.pending && !question.answer
+                ? '等待回答'
+                : question?.answered
+                  ? '已回答'
+                  : step.status === 'info'
+                    ? '结果未确认'
+                    : step.status === 'completed'
+                      ? '已完成'
+                      : active && !stepRunning
+                        ? '结果未确认'
+                        : active
+                          ? '运行中'
+                          : '结果未确认');
         return (
           <li
             key={step.id}
@@ -861,6 +877,7 @@ function WorkProcessSteps({
           >
             {question?.answer ? (
               <UserQuestionReceipt
+                elapsedMs={step.elapsedMs}
                 messageId={question.answer.id}
                 answer={question.answer.answer}
                 text={question.answer.text}
@@ -875,7 +892,9 @@ function WorkProcessSteps({
                   (ref) => `operation:${workProcessReferenceKey(ref)}`,
                 )}
                 reveal={operations.some(
-                  (ref) => workProcessReferenceKey(ref) === materialReveal,
+                  (ref) =>
+                    ref.requiresAttention ||
+                    workProcessReferenceKey(ref) === materialReveal,
                 )}
                 icon={
                   <span
@@ -888,18 +907,23 @@ function WorkProcessSteps({
                   </span>
                 }
                 title={
-                  question
-                    ? `提问 · ${question.request.questions[0]?.question ?? step.title}`
-                    : subagentCallKind === 'create'
-                      ? `创建子智能体${step.input ? ` · ${step.input}` : ''}`
-                      : subagentCallKind === 'directory'
-                        ? '查看子智能体'
-                        : (unassigned?.title ?? step.title)
+                  item?.stopped
+                    ? `${step.title.split(' · ')[0]} · 已停止`
+                    : step.error
+                      ? `${step.title.split(' · ')[0]} · ${step.error}`
+                      : question
+                        ? `提问 · ${question.request.questions[0]?.question ?? step.title}`
+                        : subagentCallKind === 'create'
+                          ? `创建子智能体${step.input ? ` · ${step.input}` : ''}`
+                          : subagentCallKind === 'directory'
+                            ? '查看子智能体'
+                            : (unassigned?.title ?? step.title)
                 }
                 status={status}
                 elapsedMs={unassigned ? unassigned.elapsedMs : step.elapsedMs}
                 running={pending && stepRunning}
-                failed={step.status === 'failed'}
+                failed={step.status === 'failed' && !item?.stopped}
+                stopped={item?.stopped}
                 initialOpen={
                   policy.mode === 'verbose' || step.status === 'failed'
                 }

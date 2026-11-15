@@ -93,7 +93,7 @@ export function toolActivityDetail(
     String(args.name ?? args.skill ?? args.skillName).toLowerCase() === 'office'
   )
     return '加载文档处理能力';
-  if (/process.execute|bash|run_code/.test(name)) {
+  if (/process.execute|bash|run_code|^python[._]execute$/.test(name)) {
     const description = shortText(args.description, 120, clipped);
     if (
       description &&

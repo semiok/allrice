@@ -15,6 +15,7 @@ export function WorkProcessStepView({
   elapsedMs,
   running,
   failed,
+  stopped,
   initialOpen = false,
   sharedQuestion = false,
   disclosureIds = [],
@@ -29,6 +30,7 @@ export function WorkProcessStepView({
   elapsedMs?: number;
   running?: boolean;
   failed?: boolean;
+  stopped?: boolean;
   initialOpen?: boolean;
   sharedQuestion?: boolean;
   disclosureIds?: readonly string[];
@@ -49,6 +51,15 @@ export function WorkProcessStepView({
   useLayoutEffect(() => {
     if (reveal && !manualOpen) setOpen(true);
   });
+  // Native ToolRow has no success tail; running uses TextShimmer plus an
+  // accessible state. Keep reliable elapsed time and unresolved SaaS states.
+  // r1-exempt(display): Hide only duplicate display labels; execution status and authorized facts remain unchanged.
+  const displayedStatus =
+    failed ||
+    stopped ||
+    ['已完成', '已回答', '运行中', '进行中', '准备中'].includes(status ?? '')
+      ? undefined
+      : status;
   const tenths = elapsedMs !== undefined ? Math.round(elapsedMs / 100) : 0;
   const elapsed =
     elapsedMs !== undefined && Number.isFinite(elapsedMs) && elapsedMs >= 0
@@ -61,10 +72,12 @@ export function WorkProcessStepView({
       data-status={status}
       data-failed={failed || undefined}
       data-running={running || undefined}
+      data-stopped={stopped || undefined}
     >
       <DisclosureRow
         icon={icon}
         title={title}
+        running={!!running}
         open={open}
         expandable={expandable}
         expandOnRowClick
@@ -75,14 +88,19 @@ export function WorkProcessStepView({
         contentClassName={styles.processStepContent}
         contentLayoutClassName={styles.processStepText}
         headerAccessory={
-          status || elapsed ? (
+          displayedStatus || elapsed ? (
             <span className={styles.processStepStatus}>
-              {[status, elapsed].filter(Boolean).join(' · ')}
+              {[displayedStatus, elapsed].filter(Boolean).join(' · ')}
             </span>
           ) : undefined
         }
         collapsedContent={
           <>
+            {(failed || stopped || running) && (
+              <span className={styles.processAccessibleStatus}>
+                {status ?? (stopped ? '已停止' : failed ? '失败' : '运行中')}
+              </span>
+            )}
             {keys.map((key) => (
               <span key={key} aria-hidden data-process-control={key} />
             ))}

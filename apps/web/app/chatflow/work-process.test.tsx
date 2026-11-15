@@ -167,7 +167,8 @@ describe('native process display surface', () => {
       expect(html).toContain('授权读取被拒绝');
       expect(html).toContain('读取服务暂不可用');
       expect(html).toContain('结果未确认');
-      expect(html).toContain('send_message');
+      expect(html).toContain('执行工具操作');
+      expect(html).not.toContain('send_message');
       expect(html).not.toContain('data-step-id="tool:list-completed"');
       expect(html).toContain('2 个智能体');
       expect(html).not.toContain('childId');
@@ -425,7 +426,8 @@ describe('native process display surface', () => {
         ],
       });
       expect(html).toContain('检查入口文件');
-      expect(html).toContain(`已完成 · ${duration}`);
+      expect(html).toContain(duration);
+      expect(html).not.toContain(`已完成 · ${duration}`);
       expect(html).toContain('data-step-id="tool:read"');
       expect(html).not.toContain('过程加载失败');
       const unknownTime = render({
