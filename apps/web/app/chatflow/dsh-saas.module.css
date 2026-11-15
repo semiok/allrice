@@ -1899,10 +1899,16 @@ div.composerAttachmentMenu,
   min-width: 0;
   border-radius: var(--ar-radius-md);
   background: var(--ar-surface-subtle);
+  color: var(--ar-text);
+  font: var(--ar-font-body);
+}
+/* Inline authorized operation panels also use this surface. Only process rows
+   inherit the approved compact gray typography. */
+.processStep .processStepDetails {
   color: var(--dsw-alias-label-tertiary);
   font: 400 12px/22px var(--ar-font-family-ui);
 }
-.processStepDetails :is(dt, dd, p, pre, code, strong, span) {
+.processStep .processStepDetails :is(dt, dd, p, pre, code, strong, span) {
   font: inherit;
   color: inherit;
 }

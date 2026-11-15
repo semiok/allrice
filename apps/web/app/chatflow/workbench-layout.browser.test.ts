@@ -5017,7 +5017,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             };
           });
         const before = await measure();
-        expect(before).toMatchObject({ height: 42, secondHeight: 42, gap: 8 });
+        expect(before).toMatchObject({ height: 24, secondHeight: 24, gap: 8 });
         expect(
           await first
             .locator('[data-disclosure-row]')
@@ -5526,10 +5526,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           output: 'Done',
           trusted: false,
         };
-        await history
-          .locator('[data-disclosure-header]')
-          .getByText('已完成', { exact: true })
-          .waitFor();
+        await expect
+          .poll(() => history.getAttribute('data-status'))
+          .toBe('已完成');
+        expect(
+          await history
+            .locator('[data-disclosure-header]')
+            .getByText('已完成', { exact: true })
+            .count(),
+        ).toBe(0);
         expect(await history.getAttribute('data-status')).toBe('已完成');
         expect(await stopping.count()).toBe(0);
         expect(await card.count()).toBe(0);
@@ -5544,10 +5549,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           output: 'network request failed',
           trusted: false,
         };
-        await history
-          .locator('[data-disclosure-header]')
-          .getByText('未完成', { exact: true })
-          .waitFor();
+        await expect
+          .poll(() => history.getAttribute('data-status'))
+          .toBe('未完成');
+        expect(await history.getAttribute('data-failed')).not.toBeNull();
         expect(await history.getAttribute('data-status')).toBe('未完成');
         expect(await card.count()).toBe(0);
         expect(
@@ -10867,7 +10872,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await groups.evaluate(
             (el) => getComputedStyle(el.parentElement!).maxHeight,
           ),
-        ).toBe('360px');
+        ).toBe('260px');
         expect(
           await f.page.getByLabel('子智能体任务', { exact: true }).count(),
         ).toBe(0);
@@ -12195,7 +12200,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const processBody = process.locator('..');
       const read = processBody
         .locator('[data-step-id="tool:read"]')
-        .getByRole('button', { name: '读取文件', exact: true });
+        .getByRole('button', { name: '读取文件 · 核对客户名单', exact: true });
       const detail = processBody
         .locator('[data-step-id="tool:read"]')
         .getByText('核对客户名单', { exact: true });
@@ -12427,7 +12432,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               title.getBoundingClientRect().right
           : -1;
       });
-      expect(gap).toBeGreaterThanOrEqual(12);
+      expect(gap).toBe(8);
       // Same partial reply followed by native compaction: one status, never a
       // second turn header inside the streamed body or a stale "replying".
       f.state.events.push(
