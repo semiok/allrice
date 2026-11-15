@@ -53,6 +53,8 @@ suite('R4b exact parent ZIP permissions and typed read ledger', () => {
     await f?.close();
   }, 30000);
   afterEach(async () => {
+    const get = runtimeFixtureStorage(f.db).get;
+    if (vi.isMockFunction(get)) get.mockRestore();
     const rows =
       await f.db`select organization_id,workspace_id,session_id,active_run_id,worker_id from allrice_conversation_runtimes where state='running'`;
     for (const row of rows)
