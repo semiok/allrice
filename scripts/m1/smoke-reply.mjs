@@ -277,6 +277,25 @@ export function findSmokeCsvDelivery({
   throw Error('csv_current_png_delivery_missing');
 }
 
+// Runs through Page.evaluate so Chromium sends its existing same-origin login
+// cookies, including Secure cookies on HTTP loopback, without copying tokens.
+export async function fetchSmokeCsvPng(href) {
+  const url = new globalThis.URL(href, globalThis.location.href);
+  if (url.origin !== globalThis.location.origin)
+    throw Error('csv_png_download_origin_mismatch');
+  const response = await globalThis.fetch(url.href, {
+    credentials: 'same-origin',
+    // Preserve APIRequestContext's default deadline through the body read.
+    signal: globalThis.AbortSignal.timeout(30_000),
+  });
+  return {
+    ok: response.ok,
+    status: response.status,
+    mediaType: response.headers.get('content-type') ?? '',
+    bytes: [...new globalThis.Uint8Array(await response.arrayBuffer())],
+  };
+}
+
 export function validateSmokeCsvPng(bytes, object, mediaType) {
   if (
     object.mediaType !== 'image/png' ||
