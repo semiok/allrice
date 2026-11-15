@@ -5116,13 +5116,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 parseFloat(style.marginBottom)
               );
             });
-          await diagnostics.mark(`${input}-after-expand`, {
-            before,
-            after,
-            detailHeight,
-            headerDelta: after.top - before.top,
-            outerScrollDelta: after.scroll - before.scroll,
-          });
           measurements.push({
             phase: 'expansion-measurement',
             input,
@@ -5135,6 +5128,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             before,
             after,
             detailHeight,
+          });
+          await diagnostics.mark(`${input}-after-expand`, {
+            before,
+            after,
+            detailHeight,
+            headerDelta: after.top - before.top,
+            outerScrollDelta: after.scroll - before.scroll,
           });
           expect(after.height - before.height).toBe(detailHeight);
           expect(detailHeight).toBeGreaterThan(100);
