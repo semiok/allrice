@@ -1,3 +1,4 @@
+import { referenceReadCapabilities } from './reference-image.ts';
 import { isDeepStrictEqual } from 'node:util';
 import type postgres from 'postgres';
 import type { OrganizationSharedReader } from './organization-shared-reader.ts';
@@ -17,7 +18,10 @@ import {
   type ContentIdentity,
   readContentPrincipal,
 } from './content-maintenance.ts';
-import { referenceSourceAccess } from './reference-library.ts';
+import {
+  referenceSourceAccess,
+  referenceStorageObject,
+} from './reference-library.ts';
 import { assertLegacyReferenceRevision } from './reference-company-templates.ts';
 import { workbenchFileAccess } from './workbench-file-access.ts';
 import { embedKnowledgeText } from './memory/knowledge-retrieval.ts';
@@ -52,6 +56,7 @@ export async function readReferenceSelection(
   sql: Sql,
   lock: boolean,
   sharedReader?: OrganizationSharedReader,
+  readKind?: 'image',
 ) {
   let publicationSource = false;
   try {
@@ -82,10 +87,26 @@ export async function readReferenceSelection(
     const [p] = await sql`select revision_id from allrice_knowledge_processing
       where revision_id=${revisionId} and state='ready' ${lock ? sql`for share` : sql``}`;
     const [o] =
-      await sql`select id,checksum from allrice_storage_objects where id=${r.file_object_id}
+      await sql`select * from allrice_storage_objects where id=${r.file_object_id}
       and state='ready' and immutable and deleted_at is null
       and (retention_until is null or retention_until>clock_timestamp()) ${lock ? sql`for share` : sql``}`;
-    if (!p || !o) throw new ReferenceRuntimeError();
+    if (!o) throw new ReferenceRuntimeError();
+    const readCapabilities = referenceReadCapabilities({
+      publication: !!publication,
+      available: true,
+      textReady: !!p,
+      definition: r.definition,
+      checksum: o.checksum,
+      sizeBytes: Number(o.size_bytes),
+    });
+    // Exact image reads can verify older publications without stored type facts.
+    // Input selection still requires a known readable capability.
+    if (
+      readKind === 'image'
+        ? !publication
+        : !Object.values(readCapabilities).some(Boolean)
+    )
+      throw new ReferenceRuntimeError();
     return {
       selection: ReferenceSelectionSchema.parse({
         sourceId: source.id,
@@ -98,6 +119,10 @@ export async function readReferenceSelection(
         ownership,
       }),
       objectId: o.id as string,
+      object: referenceStorageObject(
+        o as Parameters<typeof referenceStorageObject>[0],
+      ),
+      readCapabilities,
       organizationId: r.organization_id as string,
       workspaceId: r.workspace_id as string,
       publication,
@@ -341,7 +366,14 @@ export async function readReferenceInputSelection(
       [revisionId],
       tx,
     );
-    return { viewerId: context.actor.id, workspaceId, selection: selection! };
+    const current = await readReferenceSelection(context, revisionId, tx, true);
+    return {
+      viewerId: context.actor.id,
+      workspaceId,
+      selection: selection!,
+      canReference: true,
+      readCapabilities: current.readCapabilities,
+    };
   });
 }
 
@@ -418,7 +450,7 @@ export function referenceQueryTerms(query: string) {
 }
 
 /** Citation labels are bounded display text; the exact complete name stays in the pin. */
-function referenceCitationLabel(selection: ReferenceSelection) {
+export function referenceCitationLabel(selection: ReferenceSelection) {
   const suffix = ` · v${selection.revision}`;
   const maximum = KnowledgeCitationSchema.shape.label.maxLength!;
   if (selection.fileName.length + suffix.length <= maximum)
@@ -459,6 +491,8 @@ export async function retrieveReferenceKnowledgeInTransaction(
     );
     if (!isDeepStrictEqual(current.selection, selection))
       throw new ReferenceRuntimeError();
+    // Non-text selections are metadata pins, not automatic reads or receipts.
+    if (!current.readCapabilities.text) continue;
     const rows =
       await tx`select c.id,c.content,c.locator,d.id as document_id,d.source_updated_at,
       greatest(-1,least(1,1-(c.embedding<=>${vector}::vector))) as score,

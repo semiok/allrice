@@ -1,3 +1,7 @@
+import {
+  inspectReferenceImage,
+  referenceReadCapabilities,
+} from './reference-image.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import type postgres from 'postgres';
@@ -90,7 +94,7 @@ interface FileRow {
   deleted_at: Date | null;
   immutable: boolean;
 }
-function object(row: FileRow): StorageObject {
+export function referenceStorageObject(row: FileRow): StorageObject {
   return {
     id: row.id,
     organizationId: row.organization_id,
@@ -310,9 +314,11 @@ export async function listReferenceRevisions(
         continue;
     }
     const rows =
-      await sql`select r.id,r.revision,r.file_name,r.description,r.created_at,r.artifact_snapshot,r.checksum as manifest_digest,o.checksum,o.size_bytes,o.media_type,
+      await sql`select r.id,r.revision,r.file_name,r.description,r.created_at,r.artifact_snapshot,r.definition,r.checksum as manifest_digest,o.checksum,o.size_bytes,o.media_type,
       r.legacy_company_revision_id,cr.digest as company_digest,
       p.state,p.failure,o.state as file_state,
+      (o.state='ready' and o.immutable and o.deleted_at is null and
+        (o.retention_until is null or o.retention_until>clock_timestamp())) as file_available,
       (${s.status === 'active'} and p.state='ready' and o.state='ready' and o.immutable and o.deleted_at is null
         and (o.retention_until is null or o.retention_until>clock_timestamp()) and exists(
           select 1 from allrice_knowledge_documents d where d.knowledge_revision_id=r.id and d.active
@@ -329,7 +335,15 @@ export async function listReferenceRevisions(
       and (r.legacy_company_revision_id is null or (a.state='published' and cp.revision_id is not null
         and (${!!sourceId} or cp.revision_id=a.published_revision_id)))
       order by r.revision desc ${sourceId ? sql`` : sql`limit 1`}`;
-    for (const r of rows)
+    for (const r of rows) {
+      const readCapabilities = referenceReadCapabilities({
+        publication: !!publication,
+        available: s.status === 'active' && r.file_available,
+        textReady: r.state === 'ready',
+        definition: r.definition,
+        checksum: r.checksum,
+        sizeBytes: Number(r.size_bytes),
+      });
       result.push(
         ReferenceRevisionSchema.parse({
           sourceId: s.id,
@@ -346,6 +360,8 @@ export async function listReferenceRevisions(
           processing: r.file_state === 'pending' ? 'uploading' : r.state,
           failure: r.failure,
           fullTextReady: r.full_text_ready,
+          readCapabilities,
+          canReference: Object.values(readCapabilities).some(Boolean),
           canMaintain:
             !s.legacy_company_asset_id && !boundAccess && access.canMaintain,
           canRetryProcessing:
@@ -386,6 +402,7 @@ export async function listReferenceRevisions(
               : null,
         }),
       );
+    }
   }
   return result;
 }
@@ -418,7 +435,11 @@ export async function getReferenceFile(
     FileRow[]
   >`select * from allrice_storage_objects where id=${r.file_object_id} and state='ready' and deleted_at is null`;
   if (!o) throw new DataAccessError('not_found');
-  return { object: object(o), fileName: r.file_name, sourceId: source.id };
+  return {
+    object: referenceStorageObject(o),
+    fileName: r.file_name,
+    sourceId: source.id,
+  };
 }
 
 export async function prepareReferenceUpload(
@@ -560,6 +581,7 @@ async function reserveReferenceFile(
     kind: 'file' | 'upload';
     originObjectId: string | null;
     description: string;
+    imageFacts?: ReturnType<typeof inspectReferenceImage>;
   },
 ) {
   const description = publication?.description ?? (v.purpose || '企业资料');
@@ -638,6 +660,9 @@ async function reserveReferenceFile(
     updatePolicy: 'manual',
     citationRequired: true,
     allowedScopes: [v.scope === 'personal' ? 'user' : 'organization'],
+    ...(publication?.imageFacts
+      ? { referenceImageFacts: publication.imageFacts }
+      : {}),
   };
   const digest = `sha256:${createHash('sha256')
     .update(
@@ -743,7 +768,7 @@ async function readReferenceReservation(
   return {
     revisionId,
     sourceId: source.id,
-    object: object(file),
+    object: referenceStorageObject(file),
     alreadyReady: file.state === 'ready',
   };
 }
@@ -1040,6 +1065,7 @@ export async function publishReference(
     if (!bytes.length || bytes.length > 50 * 1024 * 1024)
       throw new ReferenceLibraryError('invalid_content');
   }
+  let imageFacts = bytes ? inspectReferenceImage(bytes) : null;
   let requestInput: postgres.JSONValue;
   if (v.origin === 'upload') {
     const { contentBase64, ...metadata } = v;
@@ -1191,6 +1217,7 @@ export async function publishReference(
         undefined,
         {
           kind: v.origin,
+          imageFacts,
           originObjectId: v.origin === 'file' ? v.objectId : null,
           description,
         },
@@ -1249,6 +1276,7 @@ export async function publishReference(
         original.object,
         50 * 1024 * 1024,
       );
+      imageFacts = inspectReferenceImage(bytes);
       prepared = await reserve(original);
     }
     if (!prepared.reservation)

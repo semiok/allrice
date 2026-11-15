@@ -1,3 +1,9 @@
+import {
+  referenceImageOperation,
+  referenceImageOutput,
+  referenceImageValue,
+} from './allrice-reference-image.mjs';
+import { ReferenceImageErrorSchema } from '@allrice/contracts/native-runtime';
 import { searchCodexWeb } from './allrice-codex-web-search.mjs';
 import { installNativeWeb } from './allrice-native-web.mjs';
 import {
@@ -1456,16 +1462,21 @@ export async function createAllRiceRuntime(
           name: tool.wireName,
           description: tool.description,
           parameters: tool.parameters,
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                content: { type: 'string', required: true },
-              },
-            },
-            render: (_args, value) => [{ type: 'text', text: value.content }],
-          },
+          output:
+            tool.canonicalName === 'workspace.reference.read_image'
+              ? referenceImageOutput
+              : {
+                  schema: {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      content: { type: 'string', required: true },
+                    },
+                  },
+                  render: (_args, value) => [
+                    { type: 'text', text: value.content },
+                  ],
+                },
           // Tool declarations are the single source for DSH's native enforcer.
           timeoutMs: tool.timeoutMs ?? 65_000,
           isConcurrencySafe: () =>
@@ -1540,6 +1551,20 @@ export async function createAllRiceRuntime(
               typeof response.modelContent !== 'string'
             ) {
               throw new Error('AllRice Tool Broker returned an invalid result');
+            }
+            if (tool.canonicalName === 'workspace.reference.read_image') {
+              exec.signal.throwIfAborted();
+              if (response.referenceImageDenied) {
+                const denied = response.referenceImageDenied;
+                if (
+                  denied.callId !== exec.callId ||
+                  denied.nativeSessionId !== exec.agent.id
+                )
+                  throw Error('REFERENCE_IMAGE_FAILURE_INVALID');
+                const error = ReferenceImageErrorSchema.parse(denied.error);
+                throw new HarnessError(JSON.stringify(error), error.code);
+              }
+              return referenceImageValue(response);
             }
             return this.waitForApplicationConnection(
               tool.canonicalName,
@@ -1836,6 +1861,13 @@ export async function createAllRiceRuntime(
         );
       }
       switch (method) {
+        case 'allrice/reference-image/route':
+        case 'allrice/reference-image/save':
+          return referenceImageOperation(
+            this,
+            method.split('/').at(-1),
+            params,
+          );
         case 'session/park-question':
           return {
             checkpoint: await checkpointNativeQuestion(
@@ -2021,11 +2053,15 @@ export async function createAllRiceRuntime(
   server.toolBrokerRequest = (params, signal) => {
     signal?.throwIfAborted();
     const scope = attributed(params);
-    return params.name === 'web.search' || params.name === 'web.fetch'
+    return params.name === 'web.search' ||
+      params.name === 'web.fetch' ||
+      params.name === 'workspace.reference.read_image'
       ? requestCancellableWeb(
           (method, value) => transport.request(method, value),
           'allrice/tool-call',
-          'allrice/web-cancel',
+          params.name === 'workspace.reference.read_image'
+            ? 'allrice/reference-image-cancel'
+            : 'allrice/web-cancel',
           scope,
           signal,
         )

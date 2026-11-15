@@ -326,6 +326,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const webCalls = createWebCallScope();
     const ordinaryHandler = dshInboundToolHandler({
       ...input,
+      referenceImage: (call) => runtime.client.referenceImagePort(call),
       ...(input.nativeFileRead &&
       runtime.nativeTools.includes('workspace.file.read') &&
       runId
@@ -430,8 +431,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (runScope) params = runScope.check(params);
       if (
         method === 'allrice/web-cancel' ||
+        method === 'allrice/reference-image-cancel' ||
         (method === 'allrice/tool-call' &&
-          (params.name === 'web.search' || params.name === 'web.fetch'))
+          (params.name === 'web.search' ||
+            params.name === 'web.fetch' ||
+            params.name === 'workspace.reference.read_image'))
       ) {
         if (
           (!runScope && params.nativeSessionId !== threadId) ||
@@ -439,7 +443,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
           typeof params.toolCallId !== 'string' ||
           !params.toolCallId ||
           params.toolCallId.length > 240 ||
-          (params.name !== 'web.search' && params.name !== 'web.fetch')
+          (params.name !== 'web.search' &&
+            params.name !== 'web.fetch' &&
+            params.name !== 'workspace.reference.read_image')
         )
           throw Error('WEB_CALL_SCOPE_INVALID');
         const key = JSON.stringify([
@@ -447,7 +453,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
           params.name,
           params.toolCallId,
         ]);
-        if (method === 'allrice/web-cancel') return webCalls.cancel(key);
+        if (
+          method === 'allrice/web-cancel' ||
+          method === 'allrice/reference-image-cancel'
+        )
+          return webCalls.cancel(key);
         // Register before the first await so cancellation during content
         // authorization reaches this exact call. Run admission was checked above.
         return webCalls.run(key, async (callSignal) => {

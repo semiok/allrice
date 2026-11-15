@@ -1,11 +1,13 @@
 export class HandlerError extends Error {
+  public readonly reason?: string;
   constructor(
     public readonly code: string,
     message: string,
     public readonly retryable: boolean,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { reason?: string },
   ) {
     super(message, options);
+    this.reason = options?.reason;
   }
 }
 

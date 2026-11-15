@@ -3,10 +3,14 @@ import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { KnowledgeCitationSchema } from './knowledge.ts';
 import { ReferenceSelectionSchema } from './reference-library.ts';
+import {
+  ReferenceImageCitationSchema,
+  ReferenceImageCallSchema,
+} from './reference-image.ts';
 
 /** Evidence of bounded excerpts returned to an authorized execution, not an
  * assertion that the whole file was read or that the model used every excerpt. */
-export const ReferenceReadSchema = z
+export const ReferenceTextReadSchema = z
   .object({
     receiptId: UuidSchema,
     origin: z.discriminatedUnion('kind', [
@@ -41,6 +45,38 @@ export const ReferenceReadSchema = z
     readAt: TimestampSchema,
   })
   .strict();
+export type ReferenceTextRead = z.infer<typeof ReferenceTextReadSchema>;
+export const ReferenceImageReadSchema = ReferenceTextReadSchema.omit({
+  origin: true,
+  citation: true,
+})
+  .extend({
+    schemaVersion: z.literal(2),
+    readKind: z.literal('image'),
+    origin: z
+      .object({
+        kind: z.literal('tool'),
+        toolName: z.literal('workspace.reference.read_image'),
+      })
+      .strict(),
+    call: ReferenceImageCallSchema,
+    citation: ReferenceImageCitationSchema,
+  })
+  .strict()
+  .superRefine((read, ctx) => {
+    if (
+      read.contentChecksum !== read.citation.locator.image.attachmentId ||
+      read.citation.locator.sourceChecksum !== read.citation.reference.checksum
+    )
+      ctx.addIssue({
+        code: 'custom',
+        message: 'Image receipt must retain original and normalized identities',
+      });
+  });
+export const ReferenceReadSchema = z.union([
+  ReferenceTextReadSchema,
+  ReferenceImageReadSchema,
+]);
 export type ReferenceRead = z.infer<typeof ReferenceReadSchema>;
 export const ReferenceReadsSchema = z
   .array(ReferenceReadSchema)
@@ -52,7 +88,9 @@ export const ReferenceReadsSchema = z
         (r, i) =>
           r.citation.id !== r.receiptId ||
           r.citation.referenceLabel !== `R${i + 1}` ||
-          r.citation.knowledgeRevisionId !== r.citation.reference.revisionId ||
+          (r.citation.type === 'knowledge' &&
+            r.citation.knowledgeRevisionId !==
+              r.citation.reference.revisionId) ||
           r.runId !== reads[0]?.runId ||
           r.generationId !== reads[0]?.generationId,
       )

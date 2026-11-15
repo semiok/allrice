@@ -388,3 +388,9 @@ export {
 } from './native-questions.ts';
 
 export { removePersonalSceneSkill } from './employees/personal-scene-remove.ts';
+
+export {
+  ReferenceImageReadError,
+  type ReferenceImagePort,
+  type ReferenceImageExecution,
+} from './reference-image-read.ts';

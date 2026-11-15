@@ -84,6 +84,8 @@ export * from './routing.ts';
 export * from './saas.ts';
 export * from './knowledge.ts';
 export * from './reference-reads.ts';
+export * from './reference-image.ts';
+export * from './reference-image-facts.ts';
 export * from './models.ts';
 export * from './operations.ts';
 export * from './office.ts';

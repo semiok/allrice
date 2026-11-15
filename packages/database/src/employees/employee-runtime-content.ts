@@ -1,4 +1,11 @@
 import {
+  prepareReferenceImage,
+  requireReferenceImagePin,
+  checkReferenceImageSignal,
+  referenceImageLimit,
+  type ReferenceImageExecution,
+} from '../reference-image-read.ts';
+import {
   BrandContentWorkflowInvocationSchema,
   BrandFeedbackInputSchema,
   BrandContextContentSchema,
@@ -16,6 +23,7 @@ import {
 import { randomUUID, createHash } from 'node:crypto';
 import {
   assertReferenceSelections,
+  referenceCitationLabel,
   retrieveReferenceKnowledgeInTransaction,
   ReferenceRuntimeError,
   ReferencePublicationRuntimeError,
@@ -35,13 +43,16 @@ import {
   EmployeeRuntimeContentSchema,
   EmployeeSceneReadSchema,
   EmployeeSceneStateSchema,
-  ReferenceReadSchema,
+  ReferenceTextReadSchema,
+  ReferenceImageReadSchema,
+  ReferenceReadImageResultSchema,
+  referenceImagePolicy,
   ReferenceReadsSchema,
   ReferenceSelectionsSchema,
   ReferenceSearchInputSchema,
   ReferenceReadInputSchema,
   type ReferenceToolName,
-  type ReferenceRead,
+  type ReferenceTextRead,
   type KnowledgeRetrievalResult,
   type EmployeeRuntimeContent,
   type EmployeeResolvedContent,
@@ -1601,7 +1612,7 @@ async function recordReferenceReads(
   generationId: string,
   worker: ContentWorker,
   groups: {
-    origin: ReferenceRead['origin'];
+    origin: ReferenceTextRead['origin'];
     results: KnowledgeRetrievalResult[];
   }[],
 ) {
@@ -1620,7 +1631,8 @@ async function recordReferenceReads(
       const checksum =
         'sha256:' + createHash('sha256').update(result.content).digest('hex');
       let receipt = reads.find(
-        (r) =>
+        (r): r is ReferenceTextRead =>
+          r.citation.type === 'knowledge' &&
           r.citation.reference.digest === result.citation.reference!.digest &&
           r.citation.reference.revisionId ===
             result.citation.reference!.revisionId &&
@@ -1633,7 +1645,7 @@ async function recordReferenceReads(
       if (!receipt) {
         if (reads.length >= 64) return unavailable();
         const id = randomUUID();
-        receipt = ReferenceReadSchema.parse({
+        receipt = ReferenceTextReadSchema.parse({
           receiptId: id,
           origin: group.origin,
           citation: {
@@ -1748,11 +1760,8 @@ export async function executeEmployeeReferenceTool(
   toolName: ReferenceToolName,
   input: unknown,
   signal?: AbortSignal,
+  imageExecution?: ReferenceImageExecution,
 ) {
-  const args =
-    toolName === 'workspace.reference.search'
-      ? ReferenceSearchInputSchema.parse(input)
-      : ReferenceReadInputSchema.parse(input);
   const reader = identity(scope);
   async function authority(tx: ContentSql, locked: boolean) {
     const run = await ownedRun(scope, tx);
@@ -1774,9 +1783,103 @@ export async function executeEmployeeReferenceTool(
       ))
     )
       return unavailable();
-    signal?.throwIfAborted();
+    if (signal) {
+      if (toolName === 'workspace.reference.read_image')
+        checkReferenceImageSignal(signal);
+      else signal.throwIfAborted();
+    }
     return run;
   }
+  if (toolName === 'workspace.reference.read_image') {
+    const deadline = AbortSignal.timeout(
+      referenceImagePolicy.operationMilliseconds,
+    );
+    signal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    await authority(getDatabase(), false);
+    if (!imageExecution) return unavailable();
+    const prepared = await prepareReferenceImage(
+      reader,
+      input,
+      imageExecution,
+      signal,
+    );
+    const activeSignal = signal;
+    return withContentLocks(scope, async (tx) => {
+      checkReferenceImageSignal(activeSignal);
+      const run = await authority(tx, true);
+      await requireReferenceImagePin(reader, input, tx, true);
+      const reads = ReferenceReadsSchema.parse(run.reference_reads ?? []);
+      if (
+        reads.some(
+          (r) => r.runId !== scope.runId || r.generationId !== generationId,
+        )
+      )
+        return unavailable();
+      const locator = {
+        kind: 'image' as const,
+        member: null,
+        sourceChecksum: prepared.selection.checksum,
+        image: prepared.image,
+      };
+      let receipt = reads.find(
+        (r): r is ReturnType<typeof ReferenceImageReadSchema.parse> =>
+          r.citation.type === 'reference' &&
+          runtimePolicyDigest(r.citation.reference) ===
+            runtimePolicyDigest(prepared.selection) &&
+          runtimePolicyDigest(r.citation.locator) ===
+            runtimePolicyDigest(locator) &&
+          r.contentChecksum === prepared.image.attachmentId,
+      );
+      if (!receipt) {
+        if (reads.length >= 64)
+          referenceImageLimit(
+            'receipt_budget',
+            '本轮资料读取已达 64 条，请另起一轮读取。',
+          );
+        const id = randomUUID();
+        receipt = ReferenceImageReadSchema.parse({
+          schemaVersion: 2,
+          readKind: 'image',
+          receiptId: id,
+          origin: { kind: 'tool', toolName },
+          call: imageExecution.call,
+          citation: {
+            type: 'reference',
+            id,
+            label: referenceCitationLabel(prepared.selection),
+            reference: prepared.selection,
+            referenceLabel: `R${reads.length + 1}`,
+            locator,
+          },
+          contentChecksum: prepared.image.attachmentId,
+          runId: scope.runId,
+          generationId,
+          jobId: worker.jobId,
+          workerId: worker.workerId,
+          readAt: new Date().toISOString(),
+        });
+        reads.push(receipt);
+        await tx`update allrice_employee_runs set reference_reads=${tx.json(reads)} where run_id=${scope.runId}`;
+      }
+      const referenceImage = ReferenceReadImageResultSchema.parse({
+        kind: 'image',
+        reference: prepared.selection,
+        image: prepared.image,
+        sourceChecksum: prepared.selection.checksum,
+        citation: receipt.citation,
+        receiptId: receipt.receiptId,
+        warnings: [],
+      });
+      const modelContent = boundedReferenceToolResult(referenceImage);
+      if (!(await validContentLease(scope, worker, tx))) return unavailable();
+      checkReferenceImageSignal(activeSignal);
+      return { modelContent, referenceImage, itemCount: 1 };
+    });
+  }
+  const args =
+    toolName === 'workspace.reference.search'
+      ? ReferenceSearchInputSchema.parse(input)
+      : ReferenceReadInputSchema.parse(input);
   await authority(getDatabase(), false);
   // Full scans, extraction decoding, offsets and response formatting are outside
   // content/admission locks. Only exact authority and the receipt append commit.
@@ -1842,6 +1945,8 @@ export async function executeEmployeeReferenceTool(
               purpose: reference.purpose,
               processing: reference.processing,
               fullTextReady: reference.fullTextReady,
+              canReference: reference.canReference,
+              readCapabilities: reference.readCapabilities,
               ...(entry ? { excerpt: excerpt(entry) } : {}),
             };
           }),

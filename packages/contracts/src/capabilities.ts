@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ReferenceImageFactsSchema } from './reference-image-facts.ts';
 
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
@@ -186,6 +187,7 @@ export const KnowledgeDefinitionSchema = z
     updatePolicy: z.enum(['manual', 'scheduled', 'event']).default('manual'),
     citationRequired: z.boolean().default(true),
     allowedScopes: z.array(CapabilityDataScopeSchema).min(1).max(4),
+    referenceImageFacts: ReferenceImageFactsSchema.optional(),
   })
   .strict()
   .superRefine((definition, context) => {
@@ -264,7 +266,10 @@ export const CreateKnowledgeSourceInputSchema = z
     slug: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
     name: z.string().trim().min(1).max(120),
     description: z.string().trim().min(1).max(1_000),
-    definition: KnowledgeDefinitionSchema,
+    definition: KnowledgeDefinitionSchema.refine(
+      (value) => value.referenceImageFacts === undefined,
+      'Image facts are recorded by the publication server only',
+    ),
     acl: z.array(KnowledgeAclEntrySchema).min(1).max(256),
   })
   .strict();
@@ -274,7 +279,10 @@ export const PublishKnowledgeRevisionInputSchema = z
     workspaceId: UuidSchema,
     name: z.string().trim().min(1).max(120).optional(),
     description: z.string().trim().min(1).max(1_000).optional(),
-    definition: KnowledgeDefinitionSchema,
+    definition: KnowledgeDefinitionSchema.refine(
+      (value) => value.referenceImageFacts === undefined,
+      'Image facts are recorded by the publication server only',
+    ),
     acl: z.array(KnowledgeAclEntrySchema).min(1).max(256),
   })
   .strict();

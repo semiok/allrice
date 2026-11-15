@@ -75,6 +75,10 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
 export const riceToolHandlerRegistry = Object.freeze({
   'workspace.reference.search': registration('workspace', executeReferenceTool),
   'workspace.reference.read': registration('workspace', executeReferenceTool),
+  'workspace.reference.read_image': registration(
+    'workspace',
+    executeReferenceTool,
+  ),
   'workspace.brand_content.read': registration('workspace', readBrandContent),
   'workspace.personal_skill.version': registration(
     'workspace',

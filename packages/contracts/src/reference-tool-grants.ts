@@ -5,6 +5,7 @@ import type { SkillCapability } from './skills.ts';
 export const referenceToolNames = [
   'workspace.reference.search',
   'workspace.reference.read',
+  'workspace.reference.read_image',
 ] as const;
 export type ReferenceToolName = (typeof referenceToolNames)[number];
 

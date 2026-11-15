@@ -1,4 +1,9 @@
-import { allRiceToolManifest } from '@allrice/contracts';
+import type { ReferenceImagePort } from '@allrice/database';
+import {
+  allRiceToolManifest,
+  ReferenceReadImageResultSchema,
+  ReferenceImageErrorSchema,
+} from '@allrice/contracts';
 
 import { HandlerError, isConfirmedToolFailure } from '../../errors.js';
 import type { HarnessExecutionInput, HarnessToolCall } from '../adapter.js';
@@ -163,6 +168,11 @@ export function parseDshToolCall(text: string): HarnessToolCall | null {
 
 export function dshInboundToolHandler(
   input: Pick<HarnessExecutionInput, 'tools' | 'onToolCall'> & {
+    referenceImage?: (call: {
+      id: string;
+      name: string;
+      nativeSessionId?: string;
+    }) => ReferenceImagePort;
     fileReadRoot?: {
       nativeSessionId: string;
       runId: string;
@@ -233,9 +243,48 @@ export function dshInboundToolHandler(
             ? { nativeSessionId: params.nativeSessionId }
             : {}),
         },
-        ...(signal ? ([{ signal }] as const) : []),
+        ...(name === 'workspace.reference.read_image' && input.referenceImage
+          ? [
+              {
+                ...(signal ? { signal } : {}),
+                referenceImage: input.referenceImage({
+                  id,
+                  name,
+                  nativeSessionId:
+                    typeof params.nativeSessionId === 'string'
+                      ? params.nativeSessionId
+                      : undefined,
+                }),
+              },
+            ]
+          : signal
+            ? [{ signal }]
+            : []),
       )
       .catch((error: unknown) => {
+        if (
+          name === 'workspace.reference.read_image' &&
+          error instanceof HandlerError &&
+          error.reason
+        ) {
+          const denied = ReferenceImageErrorSchema.safeParse({
+            code: error.code,
+            reason: error.reason,
+            message: error.message,
+            retryable: error.retryable,
+          });
+          if (denied.success)
+            return {
+              modelContent: '',
+              summary: error.message,
+              itemCount: 0,
+              referenceImageDenied: {
+                callId: id,
+                nativeSessionId: params.nativeSessionId,
+                error: denied.data,
+              },
+            };
+        }
         if (name !== 'workspace.file.read' || !input.fileReadRoot) throw error;
         input.fileReadRoot.signal.throwIfAborted();
         if (
@@ -262,9 +311,17 @@ export function dshInboundToolHandler(
       });
     if (name === 'workspace.file.read')
       input.fileReadRoot!.signal.throwIfAborted();
-    if ('fileReadDenied' in result) return result;
+    if ('fileReadDenied' in result || 'referenceImageDenied' in result)
+      return result;
     return {
       modelContent: result.modelContent,
+      ...(name === 'workspace.reference.read_image'
+        ? {
+            referenceImage: ReferenceReadImageResultSchema.parse(
+              result.referenceImage,
+            ),
+          }
+        : {}),
       summary: result.summary,
       ...(result.itemCount === undefined
         ? {}

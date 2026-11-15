@@ -359,9 +359,9 @@ export const baseline: readonly BaselineEntry[] = [
     id: 'allrice-reference-read-v1',
     category: '业务工具',
     basis:
-      'MET-247 R3 v1.6：通过 DSH 公开 defineTool/register 接缝提供企业资料检索与精确 revision 读取；DSH 不持有 AllRice publication 当前租户权限、PG 派生全文或实际读取账本，复用现 Broker、权限门卫、Worker 租约和 reference_reads，不新增 Agent 生命周期或检索框架。',
+      'MET-247 R3/R4a v1.8：通过 DSH 公开 defineTool/register 接缝提供企业资料检索、精确文字和静态图片读取；图片复用当前路由、公开附件存储及 image block。DSH 不持有 AllRice publication 当前租户权限、固定副本事实或实际读取账本，复用现 Broker、权限门卫、Worker 租约和 reference_reads，不新增 Agent 生命周期或图片状态机。',
     approvedBy:
-      '2026-11-13 用户经规划线派活：“R3 现在就可以开始”“计划回报给规划线后直接开工”；依据 MET-247 v1.6 接口合同 bbe38533534d 的 R3 部分，限定原生工具、当前权限、精确 revision、fullTextReady 与已读来源账本。',
+      '2026-11-15 用户明确授权叠 R0 #860 e38d3159 开发 R4a；MET-247 v1.8 已审定文档 eb4f27e192fa、规划回复 e5758419（f77a2d53 下回复）批准 A–D；原 R3 授权与 v1.7 历史边界沿用。',
   },
   {
     kind: 'patch',

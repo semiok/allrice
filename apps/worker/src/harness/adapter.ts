@@ -1,3 +1,5 @@
+import type { ReferenceImagePort } from '@allrice/database';
+import type { ReferenceReadImageResult } from '@allrice/contracts';
 import type { createRunDeliveryPort } from '../final-delivery/run-delivery.js';
 import type { NativeSubagentFollowInput } from './native-subagent-follow.js';
 import type { PersonalScenePromptSource } from './personal-scene-prompt.js';
@@ -44,6 +46,7 @@ export interface HarnessToolDefinition {
 
 export interface HarnessToolResult {
   modelContent: string;
+  referenceImage?: ReferenceReadImageResult;
   summary: string;
   itemCount?: number;
 }
@@ -211,7 +214,7 @@ export interface HarnessExecutionInput {
   tools: readonly HarnessToolDefinition[];
   onToolCall?: (
     call: HarnessToolCall,
-    options?: { signal: AbortSignal },
+    options?: { signal?: AbortSignal; referenceImage?: ReferenceImagePort },
   ) => Promise<HarnessToolResult>;
   onEvent: (event: HarnessEvent) => Promise<void>;
   onThreadBound?: (input: {

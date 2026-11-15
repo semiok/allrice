@@ -1,5 +1,12 @@
 /** Native adapters use this explicit runtime boundary. Keep the existing
  * definitions and shared module instances; never re-export the root index. */
+export {
+  ReferenceReadImageInputSchema,
+  ReferenceReadImageResultSchema,
+  ReferenceImageAttachmentSchema,
+  ReferenceImageBlocksSchema,
+  ReferenceImageErrorSchema,
+} from './reference-image.ts';
 export { ModelTransportFailureCodeSchema } from './model-diagnostics.ts';
 export { allRiceToolManifest } from './tool-manifest.ts';
 export {
@@ -82,3 +89,10 @@ export {
 
 export * from './employee-documents.ts';
 export { RememberPersonalMemoryInputSchema } from './personal-employee-memory.ts';
+
+export {
+  ReferenceImageRouteResultSchema,
+  ReferenceImageSaveResultSchema,
+  referenceImagePolicy,
+  ReferenceImageCallSchema,
+} from './reference-image.ts';

@@ -1,3 +1,10 @@
+import {
+  ReferenceImageCallSchema,
+  ReferenceImageRouteResultSchema,
+  ReferenceImageSaveResultSchema,
+  referenceImagePolicy,
+} from '@allrice/contracts';
+import type { ReferenceImagePort } from '@allrice/database';
 /// <reference types="./dsh-web-cancellation-types.d.ts" />
 
 import { randomUUID } from 'node:crypto';
@@ -589,6 +596,55 @@ export class DshProtocolClient {
     source?: { mediaType: string; data: string };
   }) {
     return this.request('provider/image-generation', input, 310_000);
+  }
+
+  referenceImagePort(callInput: {
+    id: string;
+    name: string;
+    nativeSessionId?: string;
+  }): ReferenceImagePort {
+    const call = ReferenceImageCallSchema.parse(callInput);
+    const runId = this.runId;
+    const deadlineAt = Date.now() + referenceImagePolicy.operationMilliseconds;
+    const request = async (
+      operation: string,
+      payload: Record<string, unknown> = {},
+    ) => {
+      try {
+        return await this.request(
+          `allrice/reference-image/${operation}`,
+          { call, runId, deadlineAt, ...payload },
+          Math.max(1, deadlineAt - Date.now()),
+        );
+      } catch (error) {
+        if (
+          !(error instanceof HandlerError) ||
+          error.code !== 'DSH_REQUEST_TIMEOUT'
+        )
+          throw error;
+        return {
+          error: {
+            code: 'REFERENCE_READ_TIMEOUT',
+            reason: 'operation_budget',
+            retryable: true,
+            message:
+              'Image reading exceeded its time budget; no automatic retry.',
+          },
+        };
+      }
+    };
+    return {
+      route: async () =>
+        ReferenceImageRouteResultSchema.parse(await request('route')),
+      save: async ({ data, mediaType, name }) =>
+        ReferenceImageSaveResultSchema.parse(
+          await request('save', {
+            data: data.toString('base64'),
+            mediaType,
+            name,
+          }),
+        ),
+    };
   }
 
   async searchCodexWeb(query: string, maxResults = 5, signal?: AbortSignal) {
