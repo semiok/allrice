@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import {
   getTenantFeedback,
   listMessageFeedback,
@@ -29,7 +29,7 @@ suite(
       vi.unstubAllEnvs();
       if (fixture) await fixture.close();
     });
-    const setup = () => createExperienceFixture(fixture.db);
+    const setup = () => createCompletedRunFixture(fixture.db);
     it('serializes cold ratings, rejects stale changes, retracts and rotates opaque versions', async () => {
       const f = await setup();
       const input = {

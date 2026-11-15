@@ -101,7 +101,7 @@ describe('foundational DSH-native Skills', () => {
     {
       name: 'governed-memory',
       requiredTools: [
-        'workspace.memory.search',
+        'workspace.memory.read',
         'workspace.memory.remember',
         'workspace.session.search',
       ],

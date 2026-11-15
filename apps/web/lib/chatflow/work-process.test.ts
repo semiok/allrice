@@ -264,7 +264,7 @@ it('uses native action titles for live, settled, failed and mixed work', () => {
 it.each([
   ['todo_write', '更新了计划'],
   ['read_image', '已读取图片'],
-  ['workspace.memory.search', '已调用工具'],
+  ['workspace.memory.read', '已调用工具'],
   ['workspace.memory.read', '已调用工具'],
   ['cloud_mcp_call', '已调用工具'],
   ['web_search', '已搜索网页'],

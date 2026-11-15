@@ -14,7 +14,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const {
   completeManagedBrowserTask,
   createToolBrokerExportObject,
-  createTraceableMemory,
   createRememberedMemoryCandidate,
   assertEmployeeChatHumanSource,
   createDefaultManagedBrowserTask,
@@ -34,7 +33,6 @@ const {
 } = vi.hoisted(() => ({
   completeManagedBrowserTask: vi.fn(),
   createToolBrokerExportObject: vi.fn(),
-  createTraceableMemory: vi.fn(),
   createRememberedMemoryCandidate: vi.fn(),
   assertEmployeeChatHumanSource: vi.fn(),
   createDefaultManagedBrowserTask: vi.fn(),
@@ -68,7 +66,6 @@ vi.mock('@allrice/database', async (original) => ({
     .ArtifactPublicationParentError,
   completeManagedBrowserTask,
   createToolBrokerExportObject,
-  createTraceableMemory,
   createRememberedMemoryCandidate,
   assertEmployeeChatHumanSource,
   createDefaultManagedBrowserTask,
@@ -84,10 +81,7 @@ vi.mock('@allrice/database', async (original) => ({
   publishWorkbenchChangesetProposal,
   workbenchEnabled,
   registerManagedBrowserEvidenceArtifact,
-  readToolBrokerMemoryContext: vi.fn(),
-  readRunExperienceSource: vi.fn(),
   MemoryContextError: (await original<typeof Database>()).MemoryContextError,
-  ExperienceError: (await original<typeof Database>()).ExperienceError,
   searchToolBrokerSessions: vi.fn(),
   startManagedBrowserTask,
 }));
@@ -148,7 +142,6 @@ describe('Codex hosted search Tool Broker integration', () => {
     recordToolBrokerAudit.mockClear();
     completeManagedBrowserTask.mockReset();
     createToolBrokerExportObject.mockReset();
-    createTraceableMemory.mockReset();
     createRememberedMemoryCandidate.mockReset();
     assertEmployeeChatHumanSource.mockReset().mockResolvedValue(undefined);
     createDefaultManagedBrowserTask.mockReset();
@@ -242,7 +235,9 @@ describe('Codex hosted search Tool Broker integration', () => {
     };
     createRememberedMemoryCandidate.mockResolvedValue({
       id: randomUUID(),
-      content: pair.summary,
+      summary: pair.summary,
+      details: pair.details,
+      memoryClass: 'work_note',
       lifecycleState: 'candidate',
       trust: 'derived',
     });
@@ -260,7 +255,6 @@ describe('Codex hosted search Tool Broker integration', () => {
       ['workspace.memory.remember'],
       [],
       undefined,
-      documents,
     );
     expect(definitions).toHaveLength(1);
     expect(definitions[0]!.inputSchema.properties).toHaveProperty('summary');
@@ -306,208 +300,91 @@ describe('Codex hosted search Tool Broker integration', () => {
       }),
     ).rejects.toMatchObject({ code: 'MEMORY_OPERATION_ID_REQUIRED' });
     expect(createRememberedMemoryCandidate).toHaveBeenCalledTimes(1);
-    expect(createTraceableMemory).not.toHaveBeenCalled();
-  });
-
-  it('keeps the former explicit durable request as a candidate with Worker-bound source', async () => {
-    const context = executionContext();
-    const employeeId = randomUUID();
-    const userMessageId = randomUUID();
-    createTraceableMemory.mockResolvedValue({
-      id: randomUUID(),
-      content: '看数据时先看表格再看文字说明',
-      memoryClass: 'user_preference',
-      lifecycleState: 'candidate',
-      provenance: { sourceType: 'message', sourceId: userMessageId },
-    });
-
-    const result = await executeRiceTool({
-      context,
-      capabilities: ['storage:write'],
-      storageRoot: '.local/storage',
-      employeeId,
-      userMessageId,
-      userRequest: '请记住：看数据时先看表格再看文字说明',
-      call: {
-        id: randomUUID(),
-        name: 'workspace.memory.remember',
-        arguments: {
-          content: '看数据时先看表格再看文字说明',
-          memoryClass: 'user_preference',
-          lifecycleState: 'durable',
-          sourceId: randomUUID(),
-          sourceType: 'tool',
-          employeeId: randomUUID(),
-          workspaceId: randomUUID(),
-        },
-      },
-    });
-
-    expect(createTraceableMemory).toHaveBeenCalledWith(
-      expect.objectContaining({
-        requestId: context.executionId,
-        actor: context.delegatedBy,
-        organizationId: context.organizationId,
-        workspaceId: context.workspaceId,
-      }),
-      expect.objectContaining({
-        workspaceId: context.workspaceId,
-        employeeId,
-        sourceType: 'message',
-        sourceId: userMessageId,
-        sourceLabel: '模型提取候选',
-        lifecycleState: 'candidate',
-        memoryClass: 'user_preference',
-        confidence: 0.8,
-      }),
-      context,
-    );
-    expect(result.summary).toBe('已记为候选，确认后才生效');
-  });
-
-  it('keeps model-structured stable user facts as candidates without a phrase gate', async () => {
-    const context = executionContext();
-    const employeeId = randomUUID();
-    const userMessageId = randomUUID();
-    createTraceableMemory.mockResolvedValue({
-      id: randomUUID(),
-      content: '看数据时先看表格再看文字说明',
-      memoryClass: 'user_preference',
-      lifecycleState: 'candidate',
-      provenance: { sourceType: 'message', sourceId: userMessageId },
-    });
-    const common = {
-      context,
-      capabilities: ['storage:write'] as const,
-      storageRoot: '.local/storage',
-      employeeId,
-      userMessageId,
-    };
-
-    const candidate = await executeRiceTool({
-      ...common,
-      capabilities: [...common.capabilities],
-      userRequest: '数据先放表格，再配文字说明，这样看起来更顺手。',
-      call: {
-        id: randomUUID(),
-        name: 'workspace.memory.remember',
-        arguments: {
-          content: '看数据时先看表格再看文字说明',
-          memoryClass: 'user_preference',
-          lifecycleState: 'candidate',
-        },
-      },
-    });
-    expect(candidate.summary).toBe('已记为候选，确认后才生效');
-    expect(createTraceableMemory).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        requestId: context.executionId,
-        actor: context.delegatedBy,
-      }),
-      expect.objectContaining({
-        lifecycleState: 'candidate',
-        confidence: 0.8,
-      }),
-      context,
-    );
   });
 
   it.each([
-    ['SB01', '帮我记一下，我看数据的时候习惯先看表格再看文字说明', 'durable'],
-    ['ordinary request', '帮我查一下今天的新闻', 'durable'],
-    ['explicit candidate', '请记住：我偏好中文周报', 'candidate'],
-    ['missing raw request', undefined, 'durable'],
-  ] as const)(
-    'stores %s as candidate with an accurate receipt',
-    async (_label, userRequest, lifecycleState) => {
-      createTraceableMemory.mockResolvedValue({
+    ['explicit request', '请记住：看数据时先看表格再看文字说明'],
+    ['stable fact', '数据先放表格，再配文字说明，这样看起来更顺手。'],
+    ['ordinary request', '帮我查一下今天的新闻'],
+    ['declined proposal', '不要记住这件事'],
+    ['missing raw request', undefined],
+  ])(
+    'keeps %s as a V2 candidate with Worker-bound source and confirmation receipt',
+    async (_label, userRequest) => {
+      const context = executionContext();
+      const employeeId = randomUUID();
+      const userMessageId = randomUUID();
+      const pair = {
+        summary: '先表格再文字',
+        details: '保留原始编号与核对依据。',
+        memoryClass: 'user_preference',
+      };
+      const call = {
         id: randomUUID(),
-        content: '先表格再文字',
+        nativeSessionId: 'synthetic-native-root',
+        name: 'workspace.memory.remember',
+        arguments: pair,
+      };
+      createRememberedMemoryCandidate.mockResolvedValue({
+        id: randomUUID(),
+        ...pair,
         lifecycleState: 'candidate',
+        sourceType: 'message',
+        sourceId: userMessageId,
+        sourceLabel: '模型提取候选',
         trust: 'derived',
         confidence: 0.8,
       });
-      const context = executionContext();
       const result = await executeRiceTool({
         context,
         capabilities: ['storage:write'],
         storageRoot: '.local/storage',
-        employeeId: randomUUID(),
-        userMessageId: randomUUID(),
+        employeeId,
+        userMessageId,
         userRequest,
-        call: {
-          id: randomUUID(),
-          name: 'workspace.memory.remember',
-          arguments: {
-            content: '先表格再文字',
-            lifecycleState,
-            userRequest: '请记住',
-          },
-        },
+        call,
       });
-      expect(createTraceableMemory).toHaveBeenCalledWith(
-        expect.anything(),
+      expect(createRememberedMemoryCandidate).toHaveBeenCalledWith(
         expect.objectContaining({
-          lifecycleState: 'candidate',
-          sourceLabel: '模型提取候选',
-          confidence: 0.8,
+          requestId: context.executionId,
+          actor: context.delegatedBy,
+          organizationId: context.organizationId,
+          workspaceId: context.workspaceId,
         }),
+        {
+          ...pair,
+          workspaceId: context.workspaceId,
+          employeeId,
+          sourceId: userMessageId,
+        },
         context,
+        { nativeSessionId: call.nativeSessionId, callId: call.id },
       );
       expect(JSON.parse(result.modelContent)).toMatchObject({
+        summary: pair.summary,
         lifecycleState: 'candidate',
-        provenance: { trust: 'derived' },
+        requiresConfirmation: true,
+        notice: '已记为候选，确认后才生效',
+        provenance: {
+          sourceType: 'message',
+          sourceId: userMessageId,
+          trust: 'derived',
+          confidence: 0.8,
+        },
       });
       expect(result.summary).toBe('已记为候选，确认后才生效');
     },
   );
 
-  it.each(['durable', 'candidate'])(
-    'stores a forced declined %s proposal only as an unconfirmed candidate',
-    async (lifecycleState) => {
-      createTraceableMemory.mockResolvedValue({
-        id: randomUUID(),
-        content: '先表格再文字',
-        lifecycleState: 'candidate',
-        trust: 'derived',
-        confidence: 0.8,
-      });
-      const context = executionContext();
-      const result = await executeRiceTool({
-        context,
-        capabilities: ['storage:write'],
-        storageRoot: '.local/storage',
-        employeeId: randomUUID(),
-        userMessageId: randomUUID(),
-        userRequest: '不要记住这件事',
-        call: {
-          id: randomUUID(),
-          name: 'workspace.memory.remember',
-          arguments: { content: '先表格再文字', lifecycleState },
-        },
-      });
-      expect(createTraceableMemory).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          lifecycleState: 'candidate',
-          confidence: 0.8,
-        }),
-        context,
-      );
-      expect(JSON.parse(result.modelContent)).toMatchObject({
-        lifecycleState: 'candidate',
-        requiresConfirmation: true,
-        notice: '已记为候选，确认后才生效',
-      });
-    },
-  );
-
   it.each([
-    ['missing lifecycle', { lifecycleState: undefined }],
-    ['unsupported lifecycle', { lifecycleState: 'archived' }],
+    ['legacy content', { content: '旧全文' }],
+    ['legacy durable', { lifecycleState: 'durable' }],
+    ['legacy candidate', { lifecycleState: 'candidate' }],
+    ['legacy expiry', { expiresAt: null }],
     ['unsupported class', { memoryClass: 'inference' }],
-    ['empty content', { content: ' ' }],
-    ['oversized content', { content: 'x'.repeat(10_001) }],
+    ['empty summary', { summary: ' ' }],
+    ['oversized summary', { summary: '🧑'.repeat(41) }],
+    ['oversized details', { details: 'x'.repeat(2001) }],
   ])('rejects %s before memory storage', async (_label, invalid) => {
     await expect(
       executeRiceTool({
@@ -516,19 +393,16 @@ describe('Codex hosted search Tool Broker integration', () => {
         storageRoot: '.local/storage',
         employeeId: randomUUID(),
         userMessageId: randomUUID(),
-        userRequest: '帮我记一下，我看数据的时候习惯先看表格再看文字说明',
         call: {
           id: randomUUID(),
+          nativeSessionId: 'synthetic-native-root',
           name: 'workspace.memory.remember',
-          arguments: {
-            content: '看数据时先看表格再看文字说明',
-            lifecycleState: 'durable',
-            ...invalid,
-          },
+          arguments: { summary: '看数据先看表格', details: null, ...invalid },
         },
       }),
     ).rejects.toMatchObject({ code: 'TOOL_INPUT_INVALID' });
-    expect(createTraceableMemory).not.toHaveBeenCalled();
+    expect(createRememberedMemoryCandidate).not.toHaveBeenCalled();
+    expect(assertEmployeeChatHumanSource).not.toHaveBeenCalled();
   });
 
   it('confirms an internal-source refusal but leaves source database failures unconfirmed', async () => {
@@ -536,7 +410,8 @@ describe('Codex hosted search Tool Broker integration', () => {
     const call = {
       id: randomUUID(),
       name: 'workspace.memory.remember',
-      arguments: { content: '先表格再文字', lifecycleState: 'durable' },
+      nativeSessionId: 'synthetic-native-root',
+      arguments: { summary: '先表格再文字', details: null },
     };
     const input = {
       context,
@@ -562,11 +437,12 @@ describe('Codex hosted search Tool Broker integration', () => {
       context,
       userMessageId: input.userMessageId,
     });
+    expect(createRememberedMemoryCandidate).not.toHaveBeenCalled();
     const unavailable = new Error('source database connection lost');
     assertEmployeeChatHumanSource.mockRejectedValueOnce(unavailable);
     await expect(executeRiceTool(input)).rejects.toBe(unavailable);
     expect(isConfirmedToolFailure(unavailable, identity)).toBe(false);
-    expect(createTraceableMemory).not.toHaveBeenCalled();
+    expect(createRememberedMemoryCandidate).not.toHaveBeenCalled();
   });
 
   it('requires memory write capability and the complete authoritative scope', async () => {
@@ -580,7 +456,8 @@ describe('Codex hosted search Tool Broker integration', () => {
       call: {
         id: randomUUID(),
         name: 'workspace.memory.remember',
-        arguments: { content: '先表格再文字', lifecycleState: 'durable' },
+        nativeSessionId: 'synthetic-native-root',
+        arguments: { summary: '先表格再文字', details: null },
       },
     };
     await expect(
@@ -595,7 +472,7 @@ describe('Codex hosted search Tool Broker integration', () => {
         context: { ...context, workspaceId: null },
       }),
     ).rejects.toMatchObject({ code: 'MEMORY_SOURCE_MESSAGE_REQUIRED' });
-    expect(createTraceableMemory).not.toHaveBeenCalled();
+    expect(createRememberedMemoryCandidate).not.toHaveBeenCalled();
   });
 
   it('confirms only pre-write memory refusals for the exact invocation', async () => {
@@ -603,7 +480,8 @@ describe('Codex hosted search Tool Broker integration', () => {
     const call = {
       id: randomUUID(),
       name: 'workspace.memory.remember',
-      arguments: { content: '观察名单 NVDA、COIN', lifecycleState: 'durable' },
+      nativeSessionId: 'synthetic-native-root',
+      arguments: { summary: '观察名单 NVDA、COIN', details: null },
     };
     const common = {
       context,
@@ -626,17 +504,18 @@ describe('Codex hosted search Tool Broker integration', () => {
     expect(denied).toMatchObject({
       code: 'MEMORY_SOURCE_MESSAGE_REQUIRED',
     });
-    expect(createTraceableMemory).not.toHaveBeenCalled();
     expect(isConfirmedToolFailure(denied, identity)).toBe(true);
     expect(
       isConfirmedToolFailure(denied, { ...identity, callId: randomUUID() }),
     ).toBe(false);
+    expect(createRememberedMemoryCandidate).not.toHaveBeenCalled();
     const uncertain = new Error('commit acknowledgement lost');
-    createTraceableMemory.mockRejectedValueOnce(uncertain);
+    createRememberedMemoryCandidate.mockRejectedValueOnce(uncertain);
     await expect(
       executeRiceTool({ ...common, userRequest: '请记住我的观察名单。' }),
     ).rejects.toBe(uncertain);
     expect(isConfirmedToolFailure(uncertain, identity)).toBe(false);
+    expect(createRememberedMemoryCandidate).toHaveBeenCalledOnce();
   });
 
   it('dispatches only structured Bridge commands with governed risks', async () => {

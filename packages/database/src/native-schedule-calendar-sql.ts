@@ -212,7 +212,7 @@ export type NativeCalendarArmRead =
     };
 
 /** Dormant SQL protocol only. It never calls public create, constructs a Host,
- * plans a calendar, switches clock_owner or dispatches an experience Run. */
+ * plans a calendar, switches clock_owner or dispatches a business Run. */
 export function createNativeCalendarSqlStore(
   options: NativeCalendarSqlOptions,
 ) {
@@ -838,121 +838,6 @@ export function createNativeCalendarSqlStore(
       throw e;
     }
   }
-  /** Composable reservation, never a native create authorization. The caller
-   * owns COMMIT and must keep policy/advisory183 -> business -> native order.
-   * These exact implementations also back the bounded convenience methods. */
-  async function initializeControlInTransaction(
-    tx: TransactionSql,
-    input: {
-      control: NativeCalendarControl;
-      revision: NativeCalendarRevision;
-    },
-  ) {
-    requireEnabled();
-    const c = NativeCalendarControlSchema.parse(structuredClone(input.control));
-    const v = NativeCalendarRevisionSchema.parse(
-      structuredClone(input.revision),
-    );
-    // This initializer retains the original experience handoff contract.
-    // Ordinary product enrollment reserves its own parent/version/P intent in
-    // the authenticated Web transaction, without a native writer token.
-    requireCalendar(
-      c.dispatch.consumer === 'experience-consolidation-v1' &&
-        v.consumer === 'experience-consolidation-v1',
-      'initializer_consumer_invalid',
-    );
-    requireCalendar(
-      c.sessionState === 'reserved' &&
-        c.revision === v.revision &&
-        isDeepStrictEqual(c.reference, reference),
-      'reservation_invalid',
-    );
-    const admissions = await options.lockAdmission(tx, [c], 'initialize');
-    const a = admissions.get(c.controlId);
-    requireCalendar(
-      a?.allowed &&
-        a.status === 'enabled' &&
-        a.currentRevision === v.revision &&
-        calendarRevisionAdmissionMatches(v, a),
-      'authority_changed',
-    );
-    const [business] = await tx<
-      {
-        organization_id: string;
-        workspace_id: string;
-        owner_id: string;
-        employee_assignment_id: string;
-        revision: number;
-        schedule: unknown;
-        clock_owner: string;
-        status: string;
-        deleted_at: unknown;
-        experience_binding: {
-          schemaVersion: number;
-          instanceId: string;
-          policyDigest: string;
-        } | null;
-      }[]
-    >`select * from allrice_automations where id=${c.automationId} for update`;
-    requireCalendar(
-      business &&
-        business.organization_id === c.organizationId &&
-        business.workspace_id === c.workspaceId &&
-        business.owner_id === c.ownerId &&
-        business.employee_assignment_id === c.dispatch.employeeAssignmentId &&
-        Number(business.revision) === v.revision &&
-        isDeepStrictEqual(business.schedule, v.schedule) &&
-        business.status === 'enabled' &&
-        business.deleted_at === null &&
-        business.clock_owner === 'legacy' &&
-        isDeepStrictEqual(business.experience_binding, {
-          schemaVersion: 1,
-          instanceId: c.dispatch.employeeInstanceId,
-          policyDigest: v.policyDigest,
-        }),
-      'business_binding_invalid',
-    );
-    const [instance] = await tx`select id from allrice_employee_instances
-          where id=${c.dispatch.employeeInstanceId} and assignment_id=${c.dispatch.employeeAssignmentId}
-          and organization_id=${c.organizationId} and workspace_id=${c.workspaceId} and owner_id=${c.ownerId}
-          and archived_at is null for share`;
-    requireCalendar(instance, 'business_binding_invalid');
-    const p = await base.partition(tx, 'update');
-    requireCalendar(
-      p && isDeepStrictEqual(p.reference, reference),
-      'reference_changed',
-    );
-    const [old] = await tx<
-      ControlRow[]
-    >`select control_id,immutable_identity,snapshot,snapshot_version
-          from allrice_native_recurring_controls where automation_id=${c.automationId} for update`;
-    if (old) {
-      requireCalendar(
-        isDeepStrictEqual(
-          calendarControlIdentity(control(old)),
-          calendarControlIdentity(c),
-        ),
-        'reservation_conflict',
-      );
-      requireCalendar(
-        isDeepStrictEqual(await revision(tx, c, v.revision), v),
-        'reservation_conflict',
-      );
-      return structuredClone(old.snapshot);
-    }
-    const [count] = await tx<{ total: number | string }[]>`select count(*) total
-          from allrice_native_recurring_controls where partition_id=${partitionId}`;
-    requireCalendar(count && Number(count.total) < 10_000, 'control_limit');
-    await tx`insert into allrice_native_recurring_versions(automation_id,revision,configuration)
-          values(${c.automationId},${v.revision},${json(tx, v)})`;
-    const snapshot: NativeCalendarSnapshot = { control: c, task: null };
-    await tx`insert into allrice_native_recurring_controls
-          (partition_id,control_id,automation_id,control_session_id,native_task_id,immutable_identity,snapshot)
-          values(${partitionId},${c.controlId},${c.automationId},${c.controlSessionId},null,
-            ${json(tx, calendarControlIdentity(c))},${json(tx, snapshot)})`;
-    return snapshot;
-  }
-
   /** Worker materializer only: retains the actual live writer prerequisite.
    * This does not mint a writer for Web policy updates or implement successor N. */
   async function prepareCalendarPeriodInTransaction(
@@ -1219,16 +1104,9 @@ export function createNativeCalendarSqlStore(
         return 'unknown' as const;
       }
     },
-    initializeControlInTransaction,
     prepareCalendarPeriodInTransaction,
     prepareCalendarArmInTransaction,
 
-    async initializeControl(
-      input: Parameters<typeof initializeControlInTransaction>[1],
-    ) {
-      requireEnabled();
-      return base.bounded((tx) => initializeControlInTransaction(tx, input));
-    },
     async acquireWriter() {
       return enabled() ? base.acquireWriter() : null;
     },

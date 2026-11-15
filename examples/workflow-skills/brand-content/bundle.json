@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "version": "1.0.0",
-  "sourceRef": "https://github.com/semiok/allrice/blob/5b2256a3e183a0c8b8887a7f3294404c2fcd8182/packages/contracts/src/brand-content-templates.ts",
+  "version": "1.0.1",
+  "sourceRef": "https://github.com/semiok/allrice/tree/main/examples/workflow-skills/brand-content?content-sha256=12b87a51715e7e550b733f772b56b8e4acbb76e6e8e089055792094eb73178f2",
   "license": "Apache-2.0",
   "reviewedBy": "Sol max author check; separate Astra content-review receipt accompanies delivery",
   "resources": [
@@ -30,6 +30,10 @@
     {
       "kind": "tool",
       "name": "workspace.skill.read"
+    },
+    {
+      "kind": "tool",
+      "name": "workspace.memory.remember"
     }
   ]
 }

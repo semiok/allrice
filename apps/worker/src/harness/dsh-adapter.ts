@@ -613,11 +613,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
             }).parse(selectionParams);
             if (!input.contentGuard?.loadScene)
               throw Error('employee_scene_unbound');
-            return await input.contentGuard.loadScene(
-              selection,
-              !!input.kernel.employeeDocuments &&
-                params.nativeSessionId === threadId,
-            );
+            return await input.contentGuard.loadScene(selection);
           }
           const evidence = EmployeeSceneStateSchema.shape.adopted
             .unwrap()
@@ -727,9 +723,6 @@ export class DshHarnessAdapter implements HarnessAdapter {
         turnId,
         sessionId: input.kernel.sessionId,
         messageId: input.kernel.assistantMessageId,
-        ...('internalTask' in input.kernel
-          ? { internalTask: input.kernel.internalTask }
-          : {}),
         sourceEventId: `dsh:${input.attempt}:${order}`,
         sourceEventType,
         sourceOccurredAt: new Date().toISOString(),

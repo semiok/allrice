@@ -44,9 +44,7 @@ import {
   recordConversationNativeContext,
   releaseConversationRuntime,
   resolveEmployeeExecution,
-  filterEmployeeMethodMemories,
   prepareEmployeeContentContext,
-  prepareRunExperiences,
   prepareRunMemoryContext,
   assertRunMemoryContextCurrent,
   assertEmployeeContentContext,
@@ -360,11 +358,9 @@ export async function executeEmployeeRun({
     resolved.executionSnapshot?.schemaVersion === 2
       ? resolved.executionSnapshot.persona?.source.task
       : undefined;
-  // Preserve every pre-existing document-memory branch (including deterministic
-  // changesets and identity-only repair/review). A task PERSONA carrier never
-  // opts into that ledger mode or proves human authority.
   const documentMemory =
-    !personaTask && !!resolved.promptSnapshot.employeeDocuments;
+    !personaTask &&
+    isMemoryIndexDocuments(resolved.promptSnapshot.employeeDocuments);
   const documentSource =
     !repairTask && !repositoryReviewTask && !changesetRun
       ? await admitEmployeeDocuments({
@@ -376,37 +372,9 @@ export async function executeEmployeeRun({
       : undefined;
   let contentRuntime: Awaited<ReturnType<typeof prepareEmployeeContentContext>>;
   try {
-    const experience =
-      documentMemory || personaTask
-        ? { memories: [], receipt: null }
-        : await prepareRunExperiences(contentScope, {
-            ...workflowLease,
-            attempt: execution.job.attempt,
-          });
     resolved = {
       ...resolved,
-      promptSnapshot: {
-        ...resolved.promptSnapshot,
-        memories:
-          personaTask ||
-          isMemoryIndexDocuments(resolved.promptSnapshot.employeeDocuments)
-            ? []
-            : [
-                ...resolved.promptSnapshot.memories.slice(
-                  0,
-                  20 - experience.memories.length,
-                ),
-                ...experience.memories,
-              ],
-        systemPrompt:
-          resolved.promptSnapshot.systemPrompt +
-          (experience.receipt
-            ? `\n私人经验操作的服务器回执：${JSON.stringify(experience.receipt)}。据此如实告知结果，不得将未匹配或歧义说成已删除。`
-            : '') +
-          (experience.memories.length
-            ? '\n自动整理的私人经验仅作为当前任务的辅助方法，受其适用范围限制；当前用户要求、明确个人设置和已发布执行要求优先。不可扩大为其他任务或权限。'
-            : ''),
-      },
+      promptSnapshot: { ...resolved.promptSnapshot, memories: [] },
     };
     contentRuntime = await prepareEmployeeContentContext(contentScope);
   } catch (error) {
@@ -474,13 +442,10 @@ export async function executeEmployeeRun({
               },
             }
           : {}),
-        loadScene: async (
-          selection: {
-            sceneId: string;
-            sceneDigest: string;
-          },
-          employeeDocuments = false,
-        ) => {
+        loadScene: async (selection: {
+          sceneId: string;
+          sceneDigest: string;
+        }) => {
           const loaded = await loadEmployeeRuntimeScene(
             contentScope,
             contentRuntime!.generationId,
@@ -493,19 +458,12 @@ export async function executeEmployeeRun({
               `工作场景：${loaded.scene.name}。适用：${loaded.scene.appliesWhen}`,
               '本次任务采用以下已发布要求，与共同要求一同执行。引用不授予新工具或资料权限；Knowledge/Workflow 描述不代表已经读取或执行。其他场景和往次任务的场景要求不自动适用于本次任务。',
               JSON.stringify(
-                loaded.sources
-                  .filter(
-                    (source) =>
-                      !employeeDocuments ||
-                      !!personaTask ||
-                      source.reference.sourceKind !== 'experience',
-                  )
-                  .map(({ reference, ownership, title, body }) => ({
-                    reference,
-                    scope: ownership?.scope,
-                    title,
-                    body,
-                  })),
+                loaded.sources.map(({ reference, ownership, title, body }) => ({
+                  reference,
+                  scope: ownership?.scope,
+                  title,
+                  body,
+                })),
               ),
               formatKnowledgeExcerpts(loaded.knowledge),
             ].join('\n'),
@@ -666,41 +624,15 @@ export async function executeEmployeeRun({
       userId: execution.job.ownerId,
     }),
   );
-  const eligibleMemories = personaTask
-    ? []
-    : await filterEmployeeMethodMemories(
-        contentScope,
-        resolved.promptSnapshot.memories,
-      );
-  if (
-    documentMemory &&
-    eligibleMemories.length !== resolved.promptSnapshot.memories.length
-  )
-    throw new HandlerError(
-      'MEMORY_CONTEXT_UNAVAILABLE',
-      '本次记忆已撤回、过期或权限已变化，请新建任务以读取当前有效记忆。',
-      false,
+  resolved.promptSnapshot.memories = [];
+  if (documentMemory && resolved.promptSnapshot.employeeDocuments)
+    await prepareRunMemoryContext(
+      {
+        scope: contentScope,
+        worker: { ...workflowLease, attempt: execution.job.attempt },
+      },
+      resolved.promptSnapshot.employeeDocuments.memory,
     );
-  resolved = {
-    ...resolved,
-    promptSnapshot: { ...resolved.promptSnapshot, memories: eligibleMemories },
-  };
-  resolved.promptSnapshot.memories = personaTask
-    ? []
-    : await prepareRunMemoryContext(
-        {
-          scope: contentScope,
-          worker: { ...workflowLease, attempt: execution.job.attempt },
-        },
-        resolved.promptSnapshot.memories,
-        documentMemory
-          ? resolved.promptSnapshot.employeeDocuments?.memory
-          : undefined,
-        documentMemory &&
-          isMemoryIndexDocuments(resolved.promptSnapshot.employeeDocuments)
-          ? 2
-          : 1,
-      );
   if (personaTask && resolved.promptSnapshot.employeeDocuments)
     resolved.promptSnapshot.employeeDocuments = {
       ...resolved.promptSnapshot.employeeDocuments,
@@ -951,7 +883,6 @@ export async function executeEmployeeRun({
             executionSnapshot.schemaVersion === 2
               ? executionSnapshot.localMcp
               : undefined,
-            kernel.employeeDocuments,
           );
     const routePlan = decideCapabilityRoute({
       request: {
@@ -1336,7 +1267,6 @@ export async function executeEmployeeRun({
             executionSnapshot.schemaVersion === 2
               ? executionSnapshot.localMcp
               : undefined,
-            kernel.employeeDocuments,
           );
     const turnToolCapabilities = tools.flatMap((tool) => {
       const capability = riceToolCapability(tool.name);

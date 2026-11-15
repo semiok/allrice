@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import { approveSyntheticCurrentEmployeeExecution } from './current-execution.fixture.ts';
 import { createLocalCommandFixture } from './local-command.fixture.ts';
 import * as client from './core/client.ts';
@@ -46,7 +46,7 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
     await fixture?.close();
   });
   it('repairs publication timestamps from actual messages while preserving user edits and empty sessions', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     const empty = await createChatSession(f.owner, {
       workspaceId: f.workspace,
       title: 'Empty conversation',
@@ -98,7 +98,7 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
     );
   });
   it('persists owner pins, pages older pins before recent work, and restores recency on unpin', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     await fixture.db`update allrice_chat_sessions set updated_at='2026-08-01T00:00:00Z' where id=${f.session.id}`;
     for (let i = 0; i < 35; i++)
       await fixture.db`insert into allrice_chat_sessions(organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,title,updated_at)
@@ -114,7 +114,7 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
         pinned: true,
       }),
     ).rejects.toBeDefined();
-    const foreign = await createExperienceFixture(fixture.db);
+    const foreign = await createCompletedRunFixture(fixture.db);
     await expect(
       updateChatSession(foreign.owner, f.workspace, f.session.id, {
         pinned: true,
@@ -176,7 +176,7 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
     ).rejects.toBeDefined();
   });
   it('archives without deleting history, reads artifacts, rejects sends, restores with owner boundaries', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     const before = await getChatSessionHistory(
       f.owner,
       f.workspace,
@@ -240,7 +240,7 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
     ).toEqual(before.messages);
   });
   it('paginates old archives independently from current work', async () => {
-    const f = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
     // Keep every row within the same millisecond to catch lost PostgreSQL
     // microseconds in a cursor roundtrip through JavaScript Date.
     for (let i = 0; i < 35; i++)
@@ -264,8 +264,8 @@ suite('session archive: actual isolated PostgreSQL, no model', () => {
     ).toEqual([f.session.id]);
   });
   it('counts readable work beyond page one and paginates each employee without skipping microseconds', async () => {
-    const f = await createExperienceFixture(fixture.db);
-    const foreign = await createExperienceFixture(fixture.db);
+    const f = await createCompletedRunFixture(fixture.db);
+    const foreign = await createCompletedRunFixture(fixture.db);
     await ensureDefaultEmployee(f.neighbor, f.workspace);
     const privateOther = await createChatSession(f.neighbor, {
       workspaceId: f.workspace,

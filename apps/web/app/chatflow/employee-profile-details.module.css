@@ -277,7 +277,7 @@
 }
 .tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   min-width: 0;
   border-bottom: 1px solid var(--ed-line);
 }
@@ -523,7 +523,7 @@
 }
 .skeletonTabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 24px;
   padding: 14px 0 17px;
   border-bottom: 1px solid var(--ed-line);

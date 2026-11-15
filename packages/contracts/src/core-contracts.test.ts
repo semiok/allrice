@@ -4,13 +4,12 @@ import {
   assertJobTransition,
   AssistantTextEventPayloadSchema,
   authorize,
+  CreateCheckpointPersonalMemoryCandidateInputSchema,
   authorizeResource,
   authorizeExecution,
   CancelRunInputSchema,
   CreateRunInputSchema,
-  CreateCheckpointMemoryCandidateInputSchema,
   CreateSessionAttachmentInputSchema,
-  CreateWorkspaceMemoryInputSchema,
   formatSseCursor,
   makeObjectKey,
   ObjectKeySchema,
@@ -200,25 +199,15 @@ describe('authorization contracts', () => {
 });
 
 describe('memory 2.0 contracts', () => {
-  it('defaults explicit memories to durable work notes', () => {
-    const memory = CreateWorkspaceMemoryInputSchema.parse({
-      workspaceId: ids.workspaceA,
-      employeeId: null,
-      content: '用户确认的项目事实',
-      sourceType: 'user',
-      sourceId: null,
-    });
-    expect(memory.lifecycleState).toBe('durable');
-    expect(memory.memoryClass).toBe('work_note');
-  });
-
   it('accepts checkpoint-derived candidate input without promoting it', () => {
-    const candidate = CreateCheckpointMemoryCandidateInputSchema.parse({
+    const candidate = CreateCheckpointPersonalMemoryCandidateInputSchema.parse({
       workspaceId: ids.workspaceA,
       employeeId: ids.resource,
       sessionId: ids.session,
       checkpointId: ids.eventA,
-      content: '待用户确认的工作进展',
+      summary: '待用户确认的工作进展',
+      details: null,
+      idempotencyKey: ids.eventB,
       sourceLabel: 'Conversation checkpoint',
     });
     expect(candidate.checkpointId).toBe(ids.eventA);
@@ -397,24 +386,6 @@ describe('storage contracts', () => {
       CreateSessionAttachmentInputSchema.parse({
         ...base,
         mediaType: 'application/x-sh',
-      }),
-    ).toThrow();
-  });
-
-  it('requires explicit, traceable workspace memory sources', () => {
-    expect(
-      CreateWorkspaceMemoryInputSchema.parse({
-        workspaceId: ids.workspaceA,
-        content: 'Remember this source',
-        visibility: 'private',
-        sourceType: 'message',
-        sourceId: ids.resource,
-      }).sourceType,
-    ).toBe('message');
-    expect(() =>
-      CreateWorkspaceMemoryInputSchema.parse({
-        workspaceId: ids.workspaceA,
-        content: 'Missing source type',
       }),
     ).toThrow();
   });

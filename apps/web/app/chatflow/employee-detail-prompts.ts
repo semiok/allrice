@@ -29,17 +29,12 @@ export function adjustEmployeeContentPrompt({
       ? '执行要求'
       : kind === 'procedure' || kind === 'workflow'
         ? '执行流程'
-        : kind === 'knowledge'
-          ? '参考资料'
-          : '经验积累';
-  const header =
-    dimension === '经验积累'
-      ? '请调整我的个人经验：'
-      : sceneName
-        ? '请调整我的工作场景：'
-        : dimension === '执行要求' || dimension === '执行流程'
-          ? `请调整我的通用${dimension}：`
-          : '请调整我的工作方法：';
+        : '参考资料';
+  const header = sceneName
+    ? '请调整我的工作场景：'
+    : dimension === '执行要求' || dimension === '执行流程'
+      ? `请调整我的通用${dimension}：`
+      : '请调整我的工作方法：';
   return [
     header,
     `AI 员工：${JSON.stringify(employeeName)}`,
@@ -51,9 +46,6 @@ export function adjustEmployeeContentPrompt({
         ]
       : []),
     '仅调整我的个人内容，保留未提及的内容及公司、部门和平台要求。',
-    ...(dimension === '经验积累'
-      ? ['沿用当前经验的整理、验证和采用规则，不将草稿视为已采用经验。']
-      : []),
     '我的调整要求：',
   ].join('\n');
 }

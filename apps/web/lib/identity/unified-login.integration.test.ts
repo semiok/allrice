@@ -16,7 +16,7 @@ import {
   login,
   revokeSession,
 } from '@allrice/database';
-import { createExperienceFixture } from '../../../../packages/database/src/experience.fixture.ts';
+import { createCompletedRunFixture } from '../../../../packages/database/src/completed-run.fixture.ts';
 import { POST as signIn } from '../../app/api/v1/auth/login/route';
 import {
   GET as technicalFacts,
@@ -215,7 +215,7 @@ integration('shared portal HTTP identity with real PostgreSQL', () => {
     expect((await facts.json()).diagnostics).toMatchObject({
       schemaVersion: 1,
     });
-    const source = await createExperienceFixture(fixture.db);
+    const source = await createCompletedRunFixture(fixture.db);
     const capture = () =>
       captureTechnicalIssue(
         request(

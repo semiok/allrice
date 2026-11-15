@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import { ensureBootstrapPortalPrincipal } from './identity.ts';
 import {
   createPlatformTechnicalTask,
@@ -48,14 +48,14 @@ suite(
   'private platform technical task: real PG queue, receipts and pinned native tools / no paid model',
   () => {
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
-    let customer: Awaited<ReturnType<typeof createExperienceFixture>>;
+    let customer: Awaited<ReturnType<typeof createCompletedRunFixture>>;
     let admin: RequestContext;
     let adminEmail: string;
     beforeAll(async () => {
       fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
       vi.spyOn(client, 'getDiagnosticsDatabase').mockReturnValue(fixture.db);
-      customer = await createExperienceFixture(fixture.db);
+      customer = await createCompletedRunFixture(fixture.db);
       const account = await ensureBootstrapPortalPrincipal({
         organizationSlug: 'allrice-platform',
         organizationName: 'Internal',

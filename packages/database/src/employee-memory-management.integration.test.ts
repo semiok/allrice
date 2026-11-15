@@ -2,10 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ApiErrorSchema,
+  PolicySnapshotSchema,
   EmployeeMemoryListSchema,
   EmployeeMemoryDetailResponseSchema,
   EmployeeMemoryWriteResponseSchema,
-  MemoryRevisionSchema,
   makeObjectKey,
   type EmployeeMemoryRecord,
   type RequestContext,
@@ -22,15 +22,12 @@ import {
   ensureGeneralEmployeeInstance,
   createEmployeeInstance,
 } from './employees/employee-instances.ts';
-import {
-  createTraceableMemory,
-  listWorkspaceMemoryRevisions,
-} from './workspace/service.ts';
+import { createRememberedMemoryCandidate } from './workspace/service.ts';
+import { seedPersonalMemoryPair } from './workspace/employee-memory-pair.fixture.ts';
 import {
   memoryContentDigest,
   memoryPairDigest,
 } from './workspace/employee-memory.ts';
-import { freezeEmployeeDocuments } from './employees/employee-documents.ts';
 
 import { contextCheckpointChecksum } from './conversation/conversation-checkpoint.ts';
 
@@ -51,13 +48,11 @@ suite(
       route: { params: Promise<T> },
     ) => Promise<Response>;
     type MemoryHandler = TargetHandler<{ id: string }>;
-    let manage: ReadHandler, create: ReadHandler, rawList: ReadHandler;
+    let manage: ReadHandler, create: ReadHandler;
     let detail: MemoryHandler,
       edit: MemoryHandler,
       remove: MemoryHandler,
-      promote: MemoryHandler,
-      pin: MemoryHandler,
-      revisions: MemoryHandler;
+      promote: MemoryHandler;
     let adminList: TargetHandler<{ organizationId: string }>;
     let adminDetail: TargetHandler<{ organizationId: string; id: string }>;
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
@@ -73,15 +68,12 @@ suite(
       const recordPath = '../../../apps/web/app/api/v1/memories/[id]/route.ts';
       const promotePath =
         '../../../apps/web/app/api/v1/memories/[id]/promote/route.ts';
-      const pinPath = '../../../apps/web/app/api/v1/memories/[id]/pin/route.ts';
-      const revisionsPath =
-        '../../../apps/web/app/api/v1/memories/[id]/revisions/route.ts';
       const adminListPath =
         '../../../apps/web/app/api/v1/admin/organizations/[organizationId]/employee-memories/route.ts';
       const adminDetailPath =
         '../../../apps/web/app/api/v1/admin/organizations/[organizationId]/employee-memories/[id]/route.ts';
       ({ GET: manage } = (await import(managePath)) as { GET: ReadHandler });
-      ({ POST: create, GET: rawList } = (await import(createPath)) as {
+      ({ POST: create } = (await import(createPath)) as {
         POST: ReadHandler;
         GET: ReadHandler;
       });
@@ -96,10 +88,6 @@ suite(
       });
       ({ POST: promote } = (await import(promotePath)) as {
         POST: MemoryHandler;
-      });
-      ({ POST: pin } = (await import(pinPath)) as { POST: MemoryHandler });
-      ({ GET: revisions } = (await import(revisionsPath)) as {
-        GET: MemoryHandler;
       });
       ({ GET: adminList } = (await import(adminListPath)) as {
         GET: typeof adminList;
@@ -206,8 +194,7 @@ suite(
       'memory',(select to_jsonb(m) from allrice_memories m where id=${id}),
       'revisions',(select jsonb_agg(to_jsonb(r) order by revision) from allrice_memory_revisions r where memory_id=${id}),
       'receipts',(select jsonb_agg(to_jsonb(o) order by operation_key) from allrice_employee_memory_operations o where memory_id=${id}),
-      'audit',(select jsonb_agg(to_jsonb(a) order by id) from allrice_audit_events a where resource_id=${id}),
-      'chunks',(select jsonb_agg(to_jsonb(c) order by id) from allrice_rag_chunks c where memory_id=${id})) value`;
+      'audit',(select jsonb_agg(to_jsonb(a) order by id) from allrice_audit_events a where resource_id=${id})) value`;
       return row!.value;
     }
     async function conflict(response: Response, reason: string) {
@@ -254,14 +241,13 @@ suite(
         | 'file' = 'user',
       sourceId: string | null = null,
     ) {
-      const row = await createTraceableMemory(f.context, {
+      const row = await seedPersonalMemoryPair(fixture.db, f.context, {
         workspaceId: f.workspace,
         instanceId: f.assignment,
+        summary: Array.from(content).slice(0, 40).join(''),
+        details: Array.from(content).length > 40 ? content : null,
         sourceType,
         sourceId,
-        idempotencyKey: randomUUID(),
-        lifecycleState: 'candidate',
-        content,
       });
       return read(f, row.id);
     }
@@ -305,7 +291,6 @@ suite(
       expect(before.revisions).toHaveLength(1);
       expect(before.receipts).toHaveLength(1);
       expect(before.audit).toHaveLength(1);
-      expect(before.chunks).toHaveLength(1);
       await fixture.db`update allrice_memories set captured_at='2024-02-03T00:00:00Z'::timestamptz,created_at='2025-04-05T00:00:00Z'::timestamptz where id=${result.memory.id}`;
       const current = await read(f, result.memory.id);
       expect(current.capturedAt).toBe('2024-02-03T00:00:00.000Z');
@@ -523,10 +508,10 @@ suite(
         }),
         params(original.id),
       );
-      expect(await conflict(legacy, 'contract_changed')).toEqual({
-        domain: 'employee_memory',
-        reason: 'contract_changed',
-        requiredSchemaVersion: 2,
+      expect(legacy.status).toBe(400);
+      expect(ApiErrorSchema.parse(await legacy.json()).error).toMatchObject({
+        code: 'VALIDATION_FAILED',
+        retryable: false,
       });
       expect((await snapshot(original.id)).memory).toMatchObject({
         revision: 3,
@@ -684,18 +669,20 @@ suite(
         'memory_limit_reached',
       );
       const legacyKey = randomUUID();
-      await conflict(
-        await create(
-          request(f, 'POST', undefined, {
-            workspaceId: f.workspace,
-            instanceId: f.assignment,
-            sourceType: 'user',
-            content: '旧创建不能绕过名额',
-            idempotencyKey: legacyKey,
-          }),
-        ),
-        'memory_limit_reached',
+      const legacy = await create(
+        request(f, 'POST', undefined, {
+          workspaceId: f.workspace,
+          instanceId: f.assignment,
+          sourceType: 'user',
+          content: '旧创建不能绕过名额',
+          idempotencyKey: legacyKey,
+        }),
       );
+      expect(legacy.status).toBe(400);
+      expect(ApiErrorSchema.parse(await legacy.json()).error).toMatchObject({
+        code: 'VALIDATION_FAILED',
+        retryable: false,
+      });
       expect(
         await fixture.db`select operation_key from allrice_employee_memory_operations where operation_key=${legacyKey}`,
       ).toHaveLength(0);
@@ -776,21 +763,6 @@ suite(
         })
       ).memory;
       expect(await read(f, row.id)).toEqual(row);
-      const history = await revisions(
-        request(f, 'GET', `/api/v1/memories/${row.id}/revisions`),
-        params(row.id),
-      );
-      expect(history.status).toBe(200);
-      expect(history.headers.get('cache-control')).toBe('private, no-store');
-      expect(
-        MemoryRevisionSchema.array().parse((await history.json()).revisions),
-      ).toMatchObject([
-        {
-          memoryId: row.id,
-          revision: 1,
-          content: `${row.summary}\n${row.details}`,
-        },
-      ]);
       const before = await snapshot(row.id);
       const deleted = await remove(
         request(f, 'DELETE', `/api/v1/memories/${row.id}`, cas(f, row)),
@@ -821,7 +793,6 @@ suite(
       ).toHaveLength(1);
       for (const [handler, path] of [
         [detail, `/api/v1/memories/${row.id}`],
-        [revisions, `/api/v1/memories/${row.id}/revisions`],
       ] as const) {
         const response = await handler(request(f, 'GET', path), params(row.id));
         expect(response.status).toBe(404);
@@ -907,6 +878,19 @@ suite(
       const replay = await create(request(f, 'POST', undefined, input));
       expect(await replay.json()).toEqual(result);
       expect(await snapshot(result.memory.id)).toEqual(before);
+      const [origin] =
+        await fixture.db`select user_message_id from allrice_employee_runs where run_id=${f.rootRunId}`;
+      const [policy] =
+        await fixture.db`select * from allrice_policy_snapshots where id=${f.policy}`;
+      const policySnapshot = PolicySnapshotSchema.parse({
+        id: policy!.id,
+        organizationId: f.org,
+        subjectId: f.user,
+        version: policy!.version,
+        issuedAt: policy!.issued_at.toISOString(),
+        expiresAt: policy!.expires_at.toISOString(),
+        ...policy!.payload,
+      });
       let release!: () => void, acquired!: () => void;
       const held = new Promise<void>((resolve) => {
         release = resolve;
@@ -919,17 +903,33 @@ suite(
         acquired();
         await held;
       });
-      await ready;
-      const candidateWrite = createTraceableMemory(f.context, {
-        workspaceId: f.workspace,
-        instanceId: f.assignment,
-        sourceType: 'user',
-        content: '后台仅产候选',
-        lifecycleState: 'candidate',
-        idempotencyKey: randomUUID(),
-      });
       let timeout: ReturnType<typeof setTimeout> | undefined;
+      let candidateWrite:
+        ReturnType<typeof createRememberedMemoryCandidate> | undefined;
       try {
+        await ready;
+        candidateWrite = createRememberedMemoryCandidate(
+          f.context,
+          {
+            workspaceId: f.workspace,
+            employeeId: f.employee,
+            sourceId: origin!.user_message_id,
+            summary: '后台仅产候选',
+            details: null,
+          },
+          {
+            executionId: randomUUID(),
+            runId: f.rootRunId,
+            jobId: f.worker.jobId,
+            worker: { type: 'worker', id: f.worker.workerId },
+            delegatedBy: { type: 'user', id: f.user },
+            organizationId: f.org,
+            workspaceId: f.workspace,
+            policySnapshot,
+            startedAt: new Date().toISOString(),
+          },
+          { nativeSessionId: f.session, callId: randomUUID() },
+        );
         const candidate = await Promise.race([
           candidateWrite,
           new Promise<never>((_resolve, reject) => {
@@ -949,7 +949,7 @@ suite(
         clearTimeout(timeout);
         release();
         await blocker;
-        await candidateWrite.catch(() => undefined);
+        await candidateWrite?.catch(() => undefined);
       }
       expect((await page(f)).counts).toEqual({
         active: 100,
@@ -1304,48 +1304,6 @@ suite(
       ).toBe(401);
     });
 
-    it('retires management pin without changing historic metadata or the frozen v1 projection, and keeps raw source paths distinct', async () => {
-      const f = await setup(),
-        row = (await add(f)).memory;
-      await fixture.db`update allrice_memories set metadata=jsonb_build_object('memoryPinOrder',1) where id=${row.id}`;
-      const before = await snapshot(row.id);
-      const scope = {
-        organizationId: f.org,
-        workspaceId: f.workspace,
-        ownerId: f.user,
-        instanceId: f.assignment,
-      };
-      const frozen = await freezeEmployeeDocuments(fixture.db, scope, {}, true);
-      const response = await pin(
-        request(f, 'POST', undefined, {
-          instanceId: f.assignment,
-          expectedRevision: row.revision,
-          contentDigest: memoryContentDigest(before.memory.content),
-          idempotencyKey: randomUUID(),
-          pinned: false,
-        }),
-        params(row.id),
-      );
-      await conflict(response, 'contract_changed');
-      expect(await snapshot(row.id)).toEqual(before);
-      expect(
-        await freezeEmployeeDocuments(fixture.db, scope, {}, true),
-      ).toEqual(frozen);
-      const source = await rawList(
-        request(f, 'GET', undefined, undefined, { runId: f.rootRunId }),
-      );
-      expect(source.status).toBe(200);
-      expect(await source.json()).toEqual({ memories: [] });
-      expect(
-        await listWorkspaceMemoryRevisions(
-          f.context,
-          f.workspace,
-          row.id,
-          f.assignment,
-        ),
-      ).toHaveLength(1);
-    });
-
     it('admin list and UUID detail retain the real actor, minimal projection and one body-free audit per successful read', async () => {
       const f = await setup(),
         row = (
@@ -1525,7 +1483,7 @@ suite(
       expect((await snapshot(row.id)).memory.revision).toBe(1);
     });
 
-    it('rolls back pair/state/count admission, revision, chunks, audit and success receipt when the first audit fails', async () => {
+    it('rolls back pair/state/count admission, revision, audit and success receipt when the first audit fails', async () => {
       const f = await setup(),
         row = await pending(f);
       const before = await snapshot(row.id);

@@ -1,9 +1,5 @@
 import { z } from 'zod';
-import {
-  BrandFeedbackSchema,
-  BrandExperiencePinSchema,
-  BrandExperienceUsesSchema,
-} from './brand-content-feedback.ts';
+import { BrandFeedbackSchema } from './brand-content-feedback.ts';
 import { UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import {
@@ -82,7 +78,6 @@ export const BrandContentStageInputSchema = z
     contextDigest: ChecksumSchema,
     context: BrandContextContentSchema,
     feedback: z.array(BrandFeedbackSchema).max(20).optional(),
-    experiences: z.array(BrandExperiencePinSchema).max(20).optional(),
     platform: z.string().trim().min(1).max(80),
     count: z.number().int().positive().max(40).optional(),
     topic: z
@@ -134,13 +129,11 @@ export type BrandContentWorkflowInvocation = z.infer<
 export const BrandContentTopicsOutputSchema = z
   .object({
     candidates: z.array(BrandContentCandidateSchema).min(1).max(40),
-    experienceUses: BrandExperienceUsesSchema.optional(),
   })
   .strict();
 
 export const BrandContentDraftOutputSchema = z
   .object({
-    experienceUses: BrandExperienceUsesSchema.optional(),
     title: z.string().trim().min(1).max(240),
     markdown: z.string().trim().min(1).max(180_000),
     factIds: z.array(z.string().min(1)),

@@ -6,9 +6,6 @@ import {
 import { createHash, randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
-  SessionModelSnapshotSchema,
-  ExperienceModelSnapshotSchema,
-  RouteDecisionSchema,
   PlatformEmployeeDefinitionSchema,
   PlatformEmployeeRuntimeProfileSchema,
   DshNativeSkillSnapshotSchema,
@@ -19,8 +16,6 @@ import {
   buildEmployeeRuntimePackage,
   claimNextPlatformEmployeeTestRun,
   completePlatformEmployeeTestRun,
-  experienceValidationStillCurrent,
-  freezeRouteSubscriptionSnapshot,
   employeePersonaPlatformSystemPrompt,
 } from '@allrice/database';
 import { DshHarnessAdapter } from './harness/dsh-adapter.js';
@@ -32,8 +27,6 @@ vi.mock('@allrice/database', async (importOriginal) => {
     buildEmployeeRuntimePackage: policy.buildEmployeeRuntimePackage,
     claimNextPlatformEmployeeTestRun: vi.fn(),
     completePlatformEmployeeTestRun: vi.fn(),
-    experienceValidationStillCurrent: vi.fn(),
-    freezeRouteSubscriptionSnapshot: vi.fn(),
     employeePersonaPlatformSystemPrompt:
       policy.employeePersonaPlatformSystemPrompt,
     runtimePackageChecksum: policy.runtimePackageChecksum,
@@ -175,7 +168,6 @@ function claimed(
     },
     runtimeProfile: original.runtimeProfile,
     nativeSkills: original.nativeSkills,
-    experienceCandidate: null,
     previewContext: {
       organizationId,
       workspaceId,
@@ -203,66 +195,6 @@ function claimed(
     },
   };
 }
-function validationSource(test: ReturnType<typeof claimed>) {
-  const { organizationId, workspaceId, ownerId } = test.previewContext;
-  const runId = test.previewExecution.runId;
-  const modelSnapshot = SessionModelSnapshotSchema.parse({
-    schemaVersion: 1,
-    sessionId: randomUUID(),
-    employeeId: randomUUID(),
-    policyRevision: 1,
-    connectionId: randomUUID(),
-    modelCatalogEntryId: randomUUID(),
-    harness: 'dsh',
-    provider: 'openai-codex',
-    authMode: 'chatgpt_subscription',
-    model: 'synthetic-frozen-model',
-    reasoningEffort: 'high',
-    credentialReference: 'deployment:synthetic-only',
-    baseUrl: null,
-    fallbackPolicy: 'disabled',
-    fallbackTargets: [],
-    resolvedFallbacks: [],
-    frozenAt: new Date().toISOString(),
-  });
-  const decision = RouteDecisionSchema.parse({
-    schemaVersion: 1,
-    id: randomUUID(),
-    runId,
-    organizationId,
-    workspaceId,
-    actorId: ownerId,
-    inputChecksum: `sha256:${'1'.repeat(64)}`,
-    candidates: [
-      {
-        id: 'cny-total-v1',
-        kind: 'direct',
-        name: 'Synthetic amount case',
-        bindingId: null,
-        requiredCapabilities: ['model:invoke'],
-        risk: 'low',
-        requiresApproval: false,
-        authorized: true,
-        exclusionReason: null,
-        score: 100,
-      },
-    ],
-    selectedKind: 'direct',
-    selectedCandidateId: 'cny-total-v1',
-    harness: 'dsh',
-    provider: 'openai-codex',
-    model: modelSnapshot.model,
-    employeeId: modelSnapshot.employeeId,
-    modelConnectionId: modelSnapshot.connectionId,
-    modelCatalogEntryId: modelSnapshot.modelCatalogEntryId,
-    modelPolicyRevision: 1,
-    generation: 0,
-    attempt: 1,
-    reasonCodes: ['matched_explicit_intent', 'minimum_necessary_capability'],
-    createdAt: new Date().toISOString(),
-  });
-  return { modelSnapshot, decision };
-}
 const run = () =>
   executeNextPlatformEmployeeTest({
     workerId: randomUUID(),
@@ -279,10 +211,6 @@ const receipt = {
 };
 beforeEach(() => {
   vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(claimed());
-  vi.mocked(freezeRouteSubscriptionSnapshot).mockResolvedValue({
-    frozen: true,
-    snapshotDigest: 'synthetic',
-  });
   vi.spyOn(DshHarnessAdapter.prototype, 'close').mockResolvedValue();
 });
 afterEach(() => {
@@ -318,7 +246,6 @@ it.each([
       nativeSkills: DshNativeSkillSnapshotSchema.array().parse(
         original.nativeSkills,
       ),
-      experienceCandidate: null,
     };
     vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(value);
     const execute = vi
@@ -366,7 +293,6 @@ it.each([
     expect(input.authorizedToolNames).toEqual(value.runtimeProfile.toolNames);
     expect(input.kernel.bootstrapConversation).toBe('');
     expect(input.kernel.authorizedMemoryContext).toBe('');
-    expect(freezeRouteSubscriptionSnapshot).not.toHaveBeenCalled();
     expect(completePlatformEmployeeTestRun).toHaveBeenCalledWith(
       value.id,
       expect.objectContaining({ error: null }),
@@ -379,202 +305,6 @@ it('does not dispatch or synthesize PERSONA after the existing claim rejects an 
   expect(await run()).toBe(false);
   expect(execute).not.toHaveBeenCalled();
   expect(completePlatformEmployeeTestRun).not.toHaveBeenCalled();
-});
-
-it('uses the original experience draft with true non-chat identity, no unrelated policy/tools and frozen occurrence billing', async () => {
-  const test = claimed(),
-    original = validationSource(test);
-  test.experienceCandidate = {
-    caseId: 'attendance-roster-v1',
-    occurrenceId: test.id,
-    assignmentId: randomUUID(),
-    employeeVersionId: randomUUID(),
-    modelSnapshot: ExperienceModelSnapshotSchema.parse({
-      ...original.modelSnapshot,
-      schemaVersion: 2,
-      sessionId: null,
-      occurrenceId: test.id,
-    }),
-    timeoutMs: 300000,
-    instructions: 'Original immutable attendance draft',
-    decision: original.decision,
-  };
-  vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(test);
-  vi.mocked(experienceValidationStillCurrent).mockResolvedValue(true);
-  const execute = vi
-    .spyOn(DshHarnessAdapter.prototype, 'execute')
-    .mockResolvedValue(receipt);
-  await run();
-  const input = execute.mock.calls[0]![0];
-  expect(input.kernel).toMatchObject({
-    sessionId: null,
-    userMessageId: null,
-    assistantMessageId: null,
-    internalTask: { kind: 'experience_validation', occurrenceId: test.id },
-    systemInstructions: 'Original immutable attendance draft',
-    authorizedMemoryContext: '',
-    bootstrapConversation: '',
-  });
-  expect(input.kernel.systemInstructions).not.toContain('Published base');
-  expect(input.kernel.systemInstructions).not.toContain(
-    test.definition.systemPrompt,
-  );
-  expect(input.kernel.employeeDocuments).toBeUndefined();
-  expect(input.kernel.rootSystemInstructions).toBeUndefined();
-  expect(input.nativeSubagents).toBeUndefined();
-  expect(input.nativeSkills).toEqual([]);
-  expect(input.tools).toEqual([]);
-  expect(input.onToolCall).toBeUndefined();
-  expect(freezeRouteSubscriptionSnapshot).toHaveBeenCalledWith(
-    expect.objectContaining({
-      snapshot: expect.objectContaining({
-        version: 2,
-        occurrenceId: test.id,
-        sessionId: null,
-      }),
-    }),
-  );
-  expect(completePlatformEmployeeTestRun).toHaveBeenCalledWith(
-    test.id,
-    expect.objectContaining({
-      error: null,
-      modelExecution: expect.objectContaining({
-        dispatched: true,
-        usageComplete: true,
-        costCents: null,
-      }),
-    }),
-  );
-});
-
-it('rechecks cancellation after subscription freeze and never dispatches the invalidated experience', async () => {
-  const test = claimed(),
-    original = validationSource(test);
-  test.experienceCandidate = {
-    caseId: 'attendance-roster-v1',
-    occurrenceId: test.id,
-    assignmentId: randomUUID(),
-    employeeVersionId: randomUUID(),
-    modelSnapshot: ExperienceModelSnapshotSchema.parse({
-      ...original.modelSnapshot,
-      schemaVersion: 2,
-      sessionId: null,
-      occurrenceId: test.id,
-    }),
-    timeoutMs: 300000,
-    instructions: 'Original immutable attendance draft',
-    decision: original.decision,
-  };
-  vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(test);
-  vi.mocked(experienceValidationStillCurrent).mockResolvedValue(true);
-  vi.mocked(freezeRouteSubscriptionSnapshot).mockImplementationOnce(
-    async () => {
-      vi.mocked(experienceValidationStillCurrent).mockResolvedValue(false);
-      return { frozen: true, snapshotDigest: 'synthetic' };
-    },
-  );
-  const execute = vi.spyOn(DshHarnessAdapter.prototype, 'execute');
-  await run();
-  expect(execute).not.toHaveBeenCalled();
-  expect(completePlatformEmployeeTestRun).toHaveBeenCalledWith(
-    test.id,
-    expect.objectContaining({
-      modelExecution: expect.objectContaining({
-        dispatched: false,
-        subscriptionSnapshotCreated: true,
-      }),
-    }),
-  );
-});
-
-it('binds the personal Skill overlay to the actual test lease and fails closed without giving it chat or write tools', async () => {
-  const test = claimed(),
-    original = validationSource(test),
-    skill = (() => {
-      const pin = {
-        organizationId: randomUUID(),
-        ownerId: randomUUID(),
-        instanceId: randomUUID(),
-        installationId: randomUUID(),
-        versionId: randomUUID(),
-        bindingId: randomUUID(),
-        bindingEpoch: 1,
-        definitionChecksum: `sha256:${'a'.repeat(64)}`,
-      };
-      return {
-        pin,
-        personalSkills: {
-          schemaVersion: 1 as const,
-          instanceId: pin.instanceId,
-          skills: [pin],
-          checksum: `sha256:${'b'.repeat(64)}`,
-        },
-        nativeSkill: {
-          id: pin.versionId,
-          name: 'attendance-counting',
-          description: 'Synthetic',
-          content: '# Synthetic',
-          checksum: `sha256:${'c'.repeat(64)}`,
-          invocation: { modelInvocable: true, userInvocable: true },
-          personal: pin,
-          requiredToolRefs: [],
-        },
-      };
-    })();
-  test.experienceCandidate = {
-    caseId: 'attendance-roster-v1',
-    occurrenceId: test.id,
-    assignmentId: randomUUID(),
-    employeeVersionId: randomUUID(),
-    modelSnapshot: ExperienceModelSnapshotSchema.parse({
-      ...original.modelSnapshot,
-      schemaVersion: 2,
-      sessionId: null,
-      occurrenceId: test.id,
-    }),
-    timeoutMs: 300000,
-    instructions: 'Fixed draft and Skill',
-    decision: original.decision,
-    personalSkills: skill.personalSkills,
-    nativeSkills: [skill.nativeSkill],
-  };
-  vi.mocked(claimNextPlatformEmployeeTestRun).mockResolvedValue(test);
-  vi.mocked(experienceValidationStillCurrent).mockResolvedValue(true);
-  vi.spyOn(DshHarnessAdapter.prototype, 'execute').mockImplementation(
-    async (input) => {
-      expect(input.kernel).toMatchObject({
-        sessionId: null,
-        internalTask: { kind: 'experience_validation', occurrenceId: test.id },
-        skillVersionIds: [skill.pin.versionId],
-      });
-      expect(input.nativeSkills).toEqual([skill.nativeSkill]);
-      expect(input.tools).toEqual([]);
-      expect(input.onToolCall).toBeUndefined();
-      expect(input.contentGuard?.generationId).toBe(test.id);
-      await input.contentGuard!.check();
-      expect(experienceValidationStillCurrent).toHaveBeenLastCalledWith(
-        test.id,
-        expect.objectContaining({
-          runId: test.previewExecution.runId,
-          jobId: test.previewExecution.jobId,
-          leaseToken: test.previewExecution.leaseToken,
-        }),
-      );
-      vi.mocked(experienceValidationStillCurrent).mockResolvedValue(false);
-      await expect(input.contentGuard!.check()).rejects.toThrow(
-        '联合验证已停止',
-      );
-      vi.mocked(experienceValidationStillCurrent).mockRejectedValue(
-        new Error('synthetic authority read failed'),
-      );
-      await expect(input.contentGuard!.check()).rejects.toThrow(
-        'authority read failed',
-      );
-      vi.mocked(experienceValidationStillCurrent).mockResolvedValue(true);
-      return receipt;
-    },
-  );
-  await run();
 });
 
 it.each(['call', 'root'] as const)(

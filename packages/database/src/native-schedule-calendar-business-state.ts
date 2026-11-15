@@ -23,13 +23,9 @@ export const NativeCalendarPlanSchema = z
     revisionDigest: Digest,
     createdAt: Instant,
     cause: z.discriminatedUnion('kind', [
-      z.object({ kind: z.literal('handoff') }).strict(),
       z.object({ kind: z.literal('request'), requestId: UuidSchema }).strict(),
       z
         .object({ kind: z.literal('operation'), operationId: UuidSchema })
-        .strict(),
-      z
-        .object({ kind: z.literal('policy'), policyRevision: Revision })
         .strict(),
       z
         .object({
@@ -55,25 +51,15 @@ const Lease = z
     tokenDigest: Digest,
   })
   .strict();
-const Budget = z
-  .object({
-    globalCount: z.number().int().nonnegative().safe(),
-    organizationCount: z.number().int().nonnegative().safe(),
-    instanceCount: z.number().int().nonnegative().safe(),
-  })
-  .strict();
-
 /** Native phase/version are deliberately absent. Business progress must not
  * invalidate a retained Task journal or change its exact acknowledgement. */
 export const NativeCalendarDecisionSchema = z
   .object({
     decisionId: UuidSchema,
     periodId: UuidSchema,
-    kind: z.enum(['receipt', 'policy', 'authority', 'operation']),
+    kind: z.enum(['receipt', 'authority', 'operation']),
     outcome: z.enum([
       'queued',
-      'empty',
-      'budget',
       'already_claimed',
       'coalesced',
       'canceled',
@@ -85,29 +71,23 @@ export const NativeCalendarDecisionSchema = z
     automationRunId: UuidSchema.nullable(),
     successorPeriodId: UuidSchema.nullable(),
     lease: Lease.nullable(),
-    budget: Budget.nullable(),
+    budget: z.null(),
     operationId: UuidSchema.optional(),
   })
   .strict()
   .superRefine((v, ctx) => {
     const receipt = v.kind === 'receipt';
-    const advances = [
-      'queued',
-      'empty',
-      'budget',
-      'already_claimed',
-      'coalesced',
-    ].includes(v.outcome);
-    const hasRun = ['queued', 'empty', 'already_claimed'].includes(v.outcome);
+    const advances = ['queued', 'already_claimed', 'coalesced'].includes(
+      v.outcome,
+    );
+    const hasRun = ['queued', 'already_claimed'].includes(v.outcome);
     if (
       receipt !== (v.receiptOccurrenceId !== null) ||
       receipt !== (v.lease !== null) ||
       advances !== (v.successorPeriodId !== null) ||
       hasRun !== (v.automationRunId !== null) ||
-      (v.outcome === 'budget') !== (v.budget !== null) ||
       (advances && !receipt) ||
       (receipt && v.outcome === 'canceled') ||
-      (v.kind === 'policy' && v.outcome !== 'canceled') ||
       (v.kind === 'operation' && v.outcome !== 'canceled') ||
       (v.kind === 'operation') !== (v.operationId !== undefined) ||
       (v.kind === 'authority' && v.outcome !== 'authority_blocked') ||

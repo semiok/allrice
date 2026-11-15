@@ -279,7 +279,7 @@ for (const [sourceType, sourceId] of [
   ['message', userMessage.id],
   ['file', fileId],
 ]) {
-  await jsonRequest(
+  const refused = await jsonRequest(
     '/api/v1/memories',
     {
       method: 'POST',
@@ -291,13 +291,17 @@ for (const [sourceType, sourceId] of [
         workspaceId,
         instanceId: memoryInstanceId,
         idempotencyKey: randomUUID(),
-        content: 'forged source',
+        summary: 'forged source',
+        details: null,
         sourceType,
         sourceId,
       }),
     },
-    403,
+    400,
   );
+  if ((await refused.json()).error?.code !== 'VALIDATION_FAILED') {
+    throw new Error('browser source forgery did not fail the V2 contract');
+  }
 }
 const messageMemoryResponse = await jsonRequest(
   '/api/v1/memories',
@@ -311,9 +315,8 @@ const messageMemoryResponse = await jsonRequest(
       workspaceId,
       instanceId: memoryInstanceId,
       idempotencyKey: randomUUID(),
-      content: 'invitee private message memory',
-      visibility: 'private',
-      sourceType: 'user',
+      summary: 'invitee private message memory',
+      details: 'Owner-created V2 memory persisted across restart.',
     }),
   },
   201,
@@ -331,9 +334,8 @@ const fileMemoryResponse = await jsonRequest(
       workspaceId,
       instanceId: memoryInstanceId,
       idempotencyKey: randomUUID(),
-      content: 'restart proof attachment memory',
-      visibility: 'private',
-      sourceType: 'user',
+      summary: 'restart proof attachment memory',
+      details: 'Retained file-source fixture for delete propagation.',
     }),
   },
   201,
@@ -356,38 +358,69 @@ const adminSessionResponse = await jsonRequest(
   201,
 );
 const adminSession = (await adminSessionResponse.json()).session;
-const adminRecallResponse = await jsonRequest('/api/v1/memories/recall', {
-  method: 'POST',
-  headers: {
-    ...tenantHeaders(loginCookie),
-    'content-type': 'application/json',
+// The retired vector endpoint has no POST handler, including through [id].
+await jsonRequest(
+  '/api/v1/memories/recall',
+  {
+    method: 'POST',
+    headers: {
+      ...tenantHeaders(loginCookie),
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      workspaceId,
+      instanceId: adminSession.employeeInstanceId,
+      query: 'private memory',
+      limit: 10,
+    }),
   },
-  body: JSON.stringify({
-    workspaceId,
-    instanceId: adminSession.employeeInstanceId,
-    query: 'private memory',
-    limit: 10,
-  }),
-});
-if ((await adminRecallResponse.json()).results.length !== 0) {
-  throw new Error('admin recall exposed another user private memory');
+  405,
+);
+const adminMemoryResponse = await jsonRequest(
+  `/api/v1/memories/manage?workspaceId=${workspaceId}&instanceId=${adminSession.employeeInstanceId}`,
+  { headers: tenantHeaders(loginCookie) },
+);
+const adminMemories = await adminMemoryResponse.json();
+if (
+  adminMemories.schemaVersion !== 2 ||
+  adminMemories.active.length !== 0 ||
+  adminMemories.pending.length !== 0
+) {
+  throw new Error('admin memory list exposed another user private memory');
 }
-const inviteeRecallResponse = await jsonRequest('/api/v1/memories/recall', {
-  method: 'POST',
-  headers: {
-    ...tenantHeaders(inviteeCookie),
-    'content-type': 'application/json',
+await jsonRequest(
+  '/api/v1/memories/recall',
+  {
+    method: 'POST',
+    headers: {
+      ...tenantHeaders(inviteeCookie),
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      workspaceId,
+      instanceId: memoryInstanceId,
+      query: 'private memory',
+      limit: 10,
+    }),
   },
-  body: JSON.stringify({
-    workspaceId,
-    instanceId: memoryInstanceId,
-    query: 'private memory',
-    limit: 10,
-  }),
-});
-const inviteeRecall = await inviteeRecallResponse.json();
-if (!inviteeRecall.results.some((result) => result.id === messageMemory.id)) {
-  throw new Error('owner recall did not return private memory');
+  405,
+);
+const inviteeMemoryResponse = await jsonRequest(
+  `/api/v1/memories/manage?workspaceId=${workspaceId}&instanceId=${memoryInstanceId}`,
+  { headers: tenantHeaders(inviteeCookie) },
+);
+const inviteeMemories = await inviteeMemoryResponse.json();
+if (
+  inviteeMemories.schemaVersion !== 2 ||
+  inviteeMemories.active.length !== 2 ||
+  inviteeMemories.pending.length !== 0 ||
+  ![messageMemory.id, fileMemory.id].every((id) =>
+    inviteeMemories.active.some((item) => item.id === id),
+  )
+) {
+  throw new Error(
+    'owner memory list did not contain exactly the two V2 memories',
+  );
 }
 
 console.info('AllRice identity and employee workspace HTTP smoke passed');

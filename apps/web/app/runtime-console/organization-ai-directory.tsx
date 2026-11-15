@@ -300,7 +300,7 @@ function PersonInstances({
           {instance.sharedSummary && (
             <p>
               共享场景 {instance.sharedSummary.sceneCount} · 资料引用{' '}
-              {instance.sharedSummary.referenceCount} · 经验整理按生效策略执行
+              {instance.sharedSummary.referenceCount}
             </p>
           )}
           <AdminButton

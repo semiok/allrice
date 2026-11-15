@@ -1,4 +1,4 @@
-import { employeeMemoryReadPredicate } from '../workspace/employee-memory-read.ts';
+import { personalMemoryIndexReadPredicate } from '../workspace/employee-memory-read.ts';
 import {
   EmployeeContentTextSchema,
   KnowledgeDefinitionSchema,
@@ -394,11 +394,12 @@ export async function resolveEmployeeContentSource(
   >`select m.owner_id,m.visibility,r.content,r.revision,r.trust_level,r.lifecycle_state,m.expires_at
     from allrice_memories m join allrice_memory_revisions r on r.memory_id=m.id and r.revision=m.revision
     where m.id=${ref.contentId} and r.id=${ref.revisionId} and m.employee_id=${input.employeeId}
-      and ${employeeMemoryReadPredicate(sql, {
+      and m.summary is not null and ${personalMemoryIndexReadPredicate(sql, {
         organizationId: context.organizationId,
         workspaceId: context.workspaceId,
         ownerId: context.actor.id,
         instanceId: input.instanceId,
+        employeeId: input.employeeId,
       })}
     ${lock ? sql`for share of m,r` : sql``}`;
   if (!memory) return unavailable(ref);

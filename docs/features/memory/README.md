@@ -1,98 +1,32 @@
-# Memory 2.0
+# Personal Memory V2
 
-> Status: **MET-98 P1-1 implemented on the development branch**
->
-> Linear: **MET-42, MET-50, MET-98**
+Current personal memory uses confirmed summaries, complete details by number, and owner-confirmed candidates. MET-223 A2 removes the old experience lifecycle, automatic personal hash/vector recall, search/source tools and full-content API/editor paths. Implementation, gate, merge, deployment and acceptance status are recorded separately in the delivery evidence.
 
-## User outcome
+## Current behavior
 
-Rice can recover relevant preferences, project facts and decisions across Sessions without treating every sentence as permanent truth. Users remain in control: they can confirm a candidate, correct a long-term memory or delete it.
+- Ordinary human roots and their current Workflow/Skill share the same authorized memory index, read/remember tools, accounting and confirmation interface. A loaded package grants no permission.
+- The initial index lists every eligible confirmed summary for the current owner/workspace/employee instance, up to 100 active records. Entries with details must be read completely through `workspace.memory.read({number})` before the model applies them.
+- A numbered read uses the Run's frozen revision/pairDigest, rechecks current identity and source authority, and returns a complete entry. One read is at most 10000 bytes; the existing Run ledger allows 24000 bytes including the initial index and 12 reads. Repeated reads consume budget again; bytes are not tokens.
+- `workspace.memory.remember` accepts summary (1–40 Unicode code points), optional details (up to 2000) and one of four existing memory classes. It always creates a pending candidate; it cannot choose durable status or an expiry.
+- Only actual human messages and adopted human steering supply current candidate facts. Assistant inferences, brand creative work, retrospective output, documents and tool/connector results are not personal facts or consent.
+- Owner confirmation or an owner-saved edit makes the pair active. The exact revision/pairDigest and current owner/workspace/instance/source gates remain in force. Approving an article or Workflow does not confirm memory, and administrators cannot confirm on the owner's behalf.
+- Scheduled, manual automation, folder-event and system tasks have empty MEMORY and no personal memory tools. Child agents receive no new personal-memory authority.
 
-## Architecture
+## Storage and controls
 
-AllRice borrows the useful separation from OpenClaw between working context and durable memory, but PostgreSQL remains the only source of truth for the multi-tenant SaaS platform. Markdown files are not a parallel memory database.
+PostgreSQL remains the authority in `allrice_memories`, `allrice_memory_revisions` and the existing operation ledger. Summary/details, revisions, CAS and idempotency remain atomic. Shared content columns are retained for current company-material consumers; they are not exposed as a second personal-memory contract. Enterprise knowledge retrieval is separate and retained.
 
-The lifecycle has three layers:
+The current memory entry opens `employee-memory-manager`; administrators use the independently audited read-only `EmployeeMemoryView`. Chat candidate receipts come from current API reads and remain limited to the Run's original human message and adopted steering, rather than all pending records for the employee. Completion events only trigger reads. Cards with details show the complete current pair before enabling confirmation; a stale revision or digest cannot approve unseen content.
 
-1. **Session context** is the current conversation and its compacted checkpoint.
-2. **Candidate memory** is a reviewable, user-authored preference, decision, project fact or work note. It is never automatically injected.
-3. **Durable memory** is explicitly confirmed by the user and may be recalled in later Sessions when relevant.
+Owners can confirm, edit, discard or delete through the V2 interface. Deletion archives that identity and invalidates its old receipt; a separate lawful new proposal remains pending and needs its own confirmation. No text matcher, deletion cutoff or implicit migration recreates deleted data.
 
-Knowledge and Workflow remain separate governed capabilities. They are not relabelled as Memory.
+A1 source collection uses its separate storage and default-off organization policy. Captured material is not an ordinary pending memory, a user fact or company-material authority. The retired experience-consolidation Skill, review/validation/adoption pipeline and brand-experience branch have no current execution entrypoint; brand articles, publication, feedback and retrospectives remain.
 
-## Capture rules
+## Current references and checks
 
-- `workspace.memory.remember` writes candidates with the existing Worker-bound human message source. The model decides which stable facts to propose.
-- Model memory writes always create candidates, even when the model requests durable. User wording is not an authorization gate. Every successful result reports “已记为候选，确认后才生效”.
-- Only the owner’s explicit confirmation button promotes an existing candidate. The chat receipt and the workbench’s “个人记忆” tab use the same live memory card. Confirmation does not call or resume a model.
-- The model interprets requests not to save. A forced valid tool call still persists a candidate; this is not a zero-storage guarantee. Candidates remain excluded from automatic recall.
-- DSH owns context compaction; the retired checkpoint phrase extractor does not run.
-- Assistant output, hidden reasoning, web pages, connector content and tool results cannot promote themselves into durable memory.
-- Promotion and correction create revisions and audit events; deletion archives the source and removes it from future recall.
+[Candidate/source contract](../../runbooks/employee-memory-candidates-v2.md),
+[owner and administrator management](../../runbooks/employee-memory-management-v2.md),
+[index and numbered reads](../../architecture/allrice-2.0/met246-memory-index-v2.md),
+and [forward recovery](../../runbooks/employee-memory-pairs-recovery.md) describe the current boundaries.
 
-## Recall policy
-
-Automatic recall considers only durable, non-expired, tenant-authorized records. It combines vector similarity, lexical similarity, trust, confidence and freshness, then applies a relevance threshold, content deduplication, a maximum of three records and a 1,500-token budget. Unrelated memories are not injected merely because a fixed Top-K slot is available.
-
-Explicit memory search may also return candidates so the user can inspect and confirm them. Recall updates `last_recalled_at` and `recall_count` for observability.
-
-## Tenant and trust boundary
-
-`allrice_memories`, revisions and RAG chunks carry organization, workspace, employee, owner and visibility scope. Authorization is applied in SQL before rows are returned. Explicit user-confirmed memory has the highest trust; derived candidates remain supporting context; external evidence is untrusted and never becomes a user preference by implication.
-
-## User controls
-
-The existing experience workbench has a “个人记忆” tab separating “待你确认” from “长期记忆”, with class, source and revision. The default chat reply also displays the real candidate and its confirmation button. Owners can confirm or discard candidates and delete their durable records. Experience review records keep their separate review path. A candidate becomes eligible for future automatic recall only after confirmation.
-
-## Acceptance
-
-- an explicit “remember” creates a candidate; after the human confirms, it is eligible in a different Session;
-- a paraphrased but relevant request can recall the durable memory;
-- an unrelated request does not receive it;
-- the owner can inspect, confirm, discard and delete a memory;
-- private memory never crosses user, workspace or organization boundaries;
-- recall and lifecycle changes remain attributable and auditable.
-
-## MET183 automatic private experience — staged delivery
-
-Completed-task feedback is retained as immutable, private evidence associated with
-its employee instance. Scheduled `experience-consolidation` is an AllRice-owned
-DSH Skill inspired by Dreaming's separation of evidence and reusable drafts; it
-does not install or copy an OpenClaw plugin, add a second memory database, or
-change DSH compaction. Lossless integration remains deferred.
-
-The existing automation producer creates bounded consolidation Runs. The original
-feedback, sources, source/version digests, native Skill-load receipt and draft
-output remain separate. An automatically generated draft is not a confirmed
-preference and is excluded from recall.
-
-PR3a adds optional **specialized validation**, reusing the existing isolated
-platform-test lifecycle, Worker, model admission and route usage ledger. Existing
-v1/v2 policies keep this off; a platform administrator must explicitly enable
-`supported_cases` in the company experience settings. Disabling consolidation or
-validation prevents new dispatch and stops in-flight validation at its next
-current-authority check. Previous results remain private, read-only evidence.
-
-The first supported case is `attendance-roster-v1`: two complete synthetic lists,
-one list with an unknown attendance status, and one missing list. The original
-immutable draft is supplied to native DSH in a fresh non-chat context without
-business tools, source files, recalled history or external Skills. DSH's native
-planning/clarification tools remain available. A server-owned assertion compares
-both member identities and counts and rejects guessing missing information.
-Draft routing selects a possible test, not authority to activate the draft.
-
-One reservation is allowed per original draft. Validation is capped at five
-minutes, eight per company and 64 globally per rolling day; it shares one
-background execution slot with consolidation and yields to foreground jobs.
-The frozen occurrence identity, model, policy, source and case digests bind the
-result and subscription ledger. Cancellation, lease/timeout, current owner,
-instance, model connection and content authority are checked before dispatch,
-during execution and before finalization. Failed/unknown evidence is retained;
-there is no implicit repeated model call.
-
-The employee view states the exact synthetic coverage and **not enabled**.
-Passing this sample does not prove the original task's roster, general business
-correctness or arbitrary external Skill behavior. Unsupported drafts remain
-pending. Private adoption, instance-scoped recall and chat forgetting belong to
-PR3b; PR3a does not create effective memory or expose private content to company
-maintainers.
+Current regressions cover owner/tenant/instance isolation, complete detail visibility before confirmation, exact pair CAS, uncertain receipts, Run source filtering, administrator read-only access, ordinary task isolation, frozen historical revisions and budget accounting. Retired experience/V1-only tests are removed; their necessary safety assertions remain at the current endpoints. A source statement does not mean those gates have run or passed for this revision.

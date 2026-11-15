@@ -1,4 +1,4 @@
-import { memoryContextPolicy, memoryIndexPolicy } from '@allrice/contracts';
+import { memoryIndexPolicy } from '@allrice/contracts';
 import { HandlerError } from '../errors.js';
 import { createHash } from 'node:crypto';
 import {
@@ -19,7 +19,6 @@ const boundedTools = new Set([
   'market.history',
   'workspace.document.read',
   'workspace.file.list',
-  'workspace.memory.search',
   'workspace.session.search',
 ]);
 
@@ -79,18 +78,10 @@ export async function boundToolResult(
   // Never persist private memory/source contents as a static export. Such an
   // object would outlive the source authorization. Unexpected overflow is a
   // bounded failure, not excerpts and not a second file-reading route.
-  if (
-    [
-      'workspace.memory.search',
-      'workspace.experience.read',
-      'workspace.memory.read',
-    ].includes(input.call.name)
-  ) {
+  if (input.call.name === 'workspace.memory.read') {
     if (
       Buffer.byteLength(result.modelContent, 'utf8') >
-      (input.call.name === 'workspace.memory.read'
-        ? memoryIndexPolicy.maximumResponseBytes
-        : memoryContextPolicy.maximumResponseBytes)
+      memoryIndexPolicy.maximumResponseBytes
     )
       throw new HandlerError(
         'MEMORY_CONTEXT_BUDGET_EXHAUSTED',

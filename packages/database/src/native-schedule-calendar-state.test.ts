@@ -12,7 +12,7 @@ import {
   type NativeCalendarArm,
   type NativeCalendarControl,
   type NativeCalendarPeriod,
-  type NativeExperienceCalendarRevision,
+  type NativeMonthlyCalendarRevision,
   type NativeCalendarWrite,
 } from './native-schedule-calendar-state.ts';
 import { NativeRecurringControlSchema } from './native-schedule-recurring-state.ts';
@@ -60,25 +60,24 @@ const c: NativeCalendarControl = {
   sessionState: 'ready',
   nativeTaskId: null,
   dispatch: {
-    consumer: 'experience-consolidation-v1',
+    consumer: 'ordinary-monthly-v1',
     employeeAssignmentId: id(6),
     employeeInstanceId: id(7),
+    businessSessionId: id(10),
   },
 };
-const v: NativeExperienceCalendarRevision = {
+const v: NativeMonthlyCalendarRevision = {
   kind: 'calendar',
   binding: 'rotating-at-v1',
-  consumer: 'experience-consolidation-v1',
+  consumer: 'ordinary-monthly-v1',
   revision: 1,
-  schedule: {
-    frequency: 'monthly',
+  rule: {
+    kind: 'monthly',
     monthDay: 31,
-    time: '10:00',
+    time: '10:00:00',
     timezone: 'Asia/Shanghai',
   },
-  ruleRevision: 1,
-  policyRevision: 3,
-  policyDigest: nativeOnceDigest('policy'),
+  contentDigest: nativeOnceDigest('content'),
   reservationDigest: nativeOnceDigest('reservation'),
   acceptedAt: '2027-01-01T00:00:00.000Z',
 };
@@ -176,8 +175,8 @@ function prepare(patch: Partial<Input> = {}) {
     admission: {
       allowed: true,
       currentRevision: 1,
-      policyRevision: v.policyRevision,
-      policyDigest: v.policyDigest,
+      consumer: 'ordinary-monthly-v1',
+      revisionDigest: nativeOnceDigest(v),
       status: 'enabled',
       resumeAfter: null,
     },
@@ -321,7 +320,9 @@ describe('independent calendar identity and rotating at binding', () => {
       },
     });
     expect(stale.occurrences[0]!.reason).toBe('configuration_changed');
-    expect(() => prepare({ revision: version })).toThrow('revision_missing');
+    expect(() => prepare({ revision: { ...version, revision: 2 } })).toThrow(
+      'revision_missing',
+    );
   });
   it('keeps monthly out of the fixed control and fixes the calendar parent to null Task', () => {
     expect(NativeCalendarControlSchema.parse(c)).toEqual(c);
@@ -337,13 +338,11 @@ describe('independent calendar identity and rotating at binding', () => {
         .success,
     ).toBe(false);
     const parsed = NativeCalendarRevisionSchema.parse(v);
-    if (parsed.consumer !== 'experience-consolidation-v1')
-      throw Error('expected experience calendar revision');
-    expect(parsed.schedule).toEqual(v.schedule);
+    expect(parsed.rule).toEqual(v.rule);
     expect(
       NativeCalendarRevisionSchema.safeParse({
         ...v,
-        schedule: { frequency: 'once', runAt: A },
+        rule: { kind: 'once', runAt: A },
       }).success,
     ).toBe(false);
   });
@@ -496,24 +495,24 @@ describe('calendar receipts preserve P, A and one immutable native Task', () => 
       admission: {
         allowed: true,
         currentRevision: 1,
-        policyRevision: v.policyRevision,
-        policyDigest: v.policyDigest,
+        consumer: 'ordinary-monthly-v1',
+        revisionDigest: nativeOnceDigest(v),
         status: 'enabled',
         resumeAfter: '2027-02-01T00:00:00.000Z',
       },
     });
-    expect(result.occurrences[0]).toMatchObject({
-      state: 'blocked',
+    expect(result.occurrences).toEqual([]);
+    expect(result.journal.unprojectedReceipt).toMatchObject({
       reason: 'before_resume_watermark',
     });
+    expect(result.arm.taskSnapshot).toEqual(delivered());
   });
   it.each([
     [undefined, 'current_authority_changed'],
     [{ allowed: false }, 'current_authority_changed'],
     [{ status: 'paused' }, 'paused_or_deleted'],
     [{ currentRevision: 2 }, 'configuration_changed'],
-    [{ policyRevision: 4 }, 'configuration_changed'],
-    [{ policyDigest: nativeOnceDigest('changed') }, 'configuration_changed'],
+    [{ revisionDigest: nativeOnceDigest('changed') }, 'configuration_changed'],
   ] as const)(
     'retains receipts when current admission blocks %j',
     (change, reason) => {
@@ -523,16 +522,23 @@ describe('calendar receipts preserve P, A and one immutable native Task', () => 
           : {
               allowed: true,
               currentRevision: 1,
-              policyRevision: v.policyRevision,
-              policyDigest: v.policyDigest,
+              consumer: 'ordinary-monthly-v1' as const,
+              revisionDigest: nativeOnceDigest(v),
               status: 'enabled' as const,
               resumeAfter: null,
               ...change,
             };
-      expect(receive({ admission }).occurrences[0]).toMatchObject({
-        state: 'blocked',
-        reason,
-      });
+      const result = receive({ admission });
+      if (reason === 'paused_or_deleted') {
+        expect(result.occurrences).toEqual([]);
+        expect(result.journal.unprojectedReceipt).toMatchObject({ reason });
+      } else {
+        expect(result.occurrences[0]).toMatchObject({
+          state: 'blocked',
+          reason,
+        });
+      }
+      expect(result.arm.taskSnapshot).toEqual(delivered());
     },
   );
   it('never replaces a bound Task or rewrites its native A', () => {

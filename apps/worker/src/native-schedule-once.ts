@@ -443,9 +443,7 @@ function controlsMap(rows: readonly NativeScheduleAnyControl[]) {
         !c.controlSessionId ||
         !Number.isSafeInteger(c.revision) ||
         c.revision < 1 ||
-        !['experience-consolidation-v1', 'ordinary-monthly-v1'].includes(
-          c.dispatch.consumer,
-        ) ||
+        c.dispatch.consumer !== 'ordinary-monthly-v1' ||
         (c.dispatch.consumer === 'ordinary-monthly-v1' &&
           !c.dispatch.businessSessionId) ||
         !c.dispatch.employeeAssignmentId ||

@@ -221,13 +221,11 @@ export function ChatFlowClient({
   workbenchEnabled = false,
   localCommandsEnabled = false,
   localMcpEnabled = false,
-  experienceEnabled = false,
   taskSuggestionsEnabled = false,
 }: {
   workbenchEnabled?: boolean;
   localCommandsEnabled?: boolean;
   localMcpEnabled?: boolean;
-  experienceEnabled?: boolean;
   taskSuggestionsEnabled?: boolean;
 }) {
   const memoryWrites = useRef<MemoryWriteStore>(new Map());
@@ -2644,7 +2642,6 @@ export function ChatFlowClient({
         nativeReads={activeNativeReads}
         nativeReadyKey={nativeReadyKey}
         scheduledSessions={scheduledSessions}
-        experienceEnabled={experienceEnabled}
         automationsActive={automationsOpen}
         onOpenAutomations={() => {
           setAutomationNavigation({ scope: settingsScope, view: 'catalog' });
@@ -3431,7 +3428,6 @@ export function ChatFlowClient({
                   }}
                   scopeId={settingsScope}
                   workspaceId={workspace.workspaceId}
-                  instanceId={activeEmployee?.instanceId}
                   employees={employeeChoices(workspace).flatMap((employee) =>
                     employee.instanceId
                       ? [
@@ -3448,24 +3444,6 @@ export function ChatFlowClient({
                   )}
                   headers={tenantHeaders}
                   active={active}
-                  automatic={experienceEnabled}
-                  onCorrect={(instanceId, text) => {
-                    if (
-                      conversationReadOnly ||
-                      activeEmployee?.instanceId !== instanceId
-                    ) {
-                      if (!confirmSessionNavigation()) return;
-                      startEmployeeSession(instanceId);
-                      setDraft(text);
-                    } else
-                      setDraft(
-                        [draftStore.getSnapshot(), text]
-                          .filter(Boolean)
-                          .join('\n'),
-                      );
-                    layout.close();
-                    requestAnimationFrame(() => composerInput.current?.focus());
-                  }}
                 />
               ) : kind === 'workflow' && activeEmployee?.instanceId ? (
                 <EmployeeCapabilitiesPanel

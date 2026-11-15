@@ -1,8 +1,6 @@
 import type { TransactionSql } from 'postgres';
 import {
-  selectEmployeeDocumentMemories,
   selectEmployeeUserFacts,
-  renderEmployeeMemoryDocument,
   renderEmployeeUserDocument,
   renderEmployeePersonaDocument,
   EmployeePersonaPinSchema,
@@ -18,7 +16,6 @@ import {
   memoryIndexPolicy,
   renderMemoryIndexV2,
   type EmployeeUserFacts,
-  type MemoryContextItem,
   type EmployeePersonaTask,
 } from '@allrice/contracts';
 import type { getDatabase } from '../core/client.ts';
@@ -26,10 +23,7 @@ import {
   RuntimePolicyError,
   runtimePolicyDigest,
 } from '../runtime-policy-digest.ts';
-import {
-  employeeMemoryReadPredicate,
-  personalMemoryIndexReadPredicate,
-} from '../workspace/employee-memory-read.ts';
+import { personalMemoryIndexReadPredicate } from '../workspace/employee-memory-read.ts';
 import { memoryPairDigest } from '../workspace/employee-memory-primitives.ts';
 import {
   getEmployeeInstance,
@@ -185,7 +179,7 @@ export async function freezeEmployeePersonaDocuments(
         user.omitted,
         runtimePolicyDigest(user),
       ),
-      memory: '',
+      memory: '' as const,
     },
   };
 }
@@ -376,94 +370,6 @@ export async function assertFrozenEmployeePersona(
     prompt.systemPrompt !== expected.systemPrompt
   )
     throw Error('employee_persona_snapshot_invalid');
-}
-
-/** Stable locator, not a capability. Every read must find an issued pin in the
- * current Run and recheck current organization/owner/instance/confirmation. */
-export function confirmedMemoryHandle(item: MemoryContextItem) {
-  return `experience:${runtimePolicyDigest({
-    id: item.id,
-    revision: item.revision,
-    content: item.content,
-  })}`;
-}
-
-export function employeeMemoryDocument(
-  items: readonly MemoryContextItem[],
-  total: number,
-) {
-  return renderEmployeeMemoryDocument(
-    items,
-    total,
-    runtimePolicyDigest({ items, eligibleCount: total }),
-  );
-}
-
-/** Called only after the ordinary chat admission's current principal/instance
- * gate, in its existing binding transaction. No query or vector ranking. */
-export async function freezeEmployeeDocuments(
-  sql: ReturnType<typeof getDatabase> | TransactionSql,
-  scope: {
-    organizationId: string;
-    workspaceId: string;
-    ownerId: string;
-    instanceId: string;
-  },
-  facts: EmployeeUserFacts,
-  sourceTool: boolean,
-  personaInput?: { instance: EmployeeInstanceSnapshot; employeeId: string },
-) {
-  const persona = personaInput
-    ? await freezeRunPersona(
-        sql,
-        personaInput.instance,
-        personaInput.employeeId,
-      )
-    : undefined;
-  const rows = await sql<{ id: string; revision: number; content: string }[]>`
-    select m.id,m.revision,m.content from allrice_memories m
-    where ${employeeMemoryReadPredicate(sql, scope)}
-    order by case when jsonb_typeof(m.metadata->'memoryPinOrder')='number'
-      then (m.metadata->>'memoryPinOrder')::numeric end asc nulls last,
-      m.updated_at desc,m.id`;
-  const selected = selectEmployeeDocumentMemories(
-    rows.map((row) => ({
-      id: row.id,
-      revision: row.revision,
-      content: row.content,
-      sourceHandle: confirmedMemoryHandle(row),
-    })),
-    rows.length,
-  );
-  // Selection reserves locator bytes even without the tool, so the owner's
-  // default preview selects exactly the same IDs. Never advertise an unusable
-  // handle; the ledger charges the actual smaller document when stripped.
-  const memories: MemoryContextItem[] = selected.map((item) =>
-    sourceTool
-      ? item
-      : {
-          id: item.id,
-          revision: item.revision,
-          content: item.content,
-        },
-  );
-  const user = selectEmployeeUserFacts(facts);
-  return {
-    eligibleCount: rows.length,
-    memories,
-    ...(persona
-      ? { persona: persona.pin, systemPrompt: persona.systemPrompt }
-      : {}),
-    employeeDocuments: {
-      ...(persona ? { persona: persona.persona } : {}),
-      user: renderEmployeeUserDocument(
-        user.facts,
-        user.omitted,
-        runtimePolicyDigest(user),
-      ),
-      memory: employeeMemoryDocument(memories, rows.length),
-    },
-  };
 }
 
 /** New ordinary Run projection. Details stay in memories/revisions, never in

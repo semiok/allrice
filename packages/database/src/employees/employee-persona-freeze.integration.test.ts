@@ -47,7 +47,6 @@ import {
   sendChatMessage,
   createPersonalEmployeeMemory,
 } from '../workspace/service.ts';
-import { freezeEmployeeDocuments } from './employee-documents.ts';
 import {
   createEmployeeInstance,
   getEmployeeInstance,
@@ -853,7 +852,7 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
     expect(stored!.native_execution_binding).toBeNull();
   });
 
-  it.each(['absent_documents', 'user_memory_only'] as const)(
+  it.each(['absent_documents', 'identity_only_documents'] as const)(
     'keeps a terminal %s Run readable and freezes current PERSONA for a new message in its old native Session',
     async (shape) => {
       const f = await setup(true),
@@ -867,7 +866,7 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
       });
       const actual = hub.prepareEmployeeRunBinding;
       // Explicit historical first-INSERT fixture after the real source freezer.
-      // Both old shapes predate PERSONA, including deployed USER/MEMORY-only Runs.
+      // Both old shapes predate PERSONA; retained identity-only documents have empty MEMORY.
       // Never update an issued snapshot, disable a trigger or fabricate a mapping.
       const spy = vi
         .spyOn(hub, 'prepareEmployeeRunBinding')
@@ -882,22 +881,13 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
           );
           const documents = promptSnapshot.employeeDocuments;
           if (!documents?.persona) throw Error('expected real documents');
-          const legacyProjection = await freezeEmployeeDocuments(
-            transaction ?? fixture.db,
-            {
-              organizationId: f.organizationId,
-              workspaceId: f.workspaceId,
-              ownerId: f.ownerId,
-              instanceId: instance.id,
-            },
-            promptSnapshot.organizationContext ?? {},
-            false,
-          );
           delete promptSnapshot.employeeDocuments;
-          promptSnapshot.memories = legacyProjection.memories;
-          if (shape === 'user_memory_only')
-            promptSnapshot.employeeDocuments =
-              legacyProjection.employeeDocuments;
+          promptSnapshot.memories = [];
+          if (shape === 'identity_only_documents')
+            promptSnapshot.employeeDocuments = {
+              user: documents.user,
+              memory: '',
+            };
           promptSnapshot.systemPrompt +=
             '\n\n# IDENTITY.md\nHISTORICAL_UNMIGRATED_SYSTEM {{literal}}';
           const { memoryContextStateV2, ...historicalBinding } = binding;
@@ -911,10 +901,10 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         spy.mockRestore();
       }
       expect(first.resolved.executionSnapshot).not.toHaveProperty('persona');
-      if (shape === 'user_memory_only') {
+      if (shape === 'identity_only_documents') {
         expect(first.resolved.promptSnapshot.employeeDocuments).toEqual({
           user: expect.any(String),
-          memory: expect.stringContaining('HISTORICAL_CONFIRMED_LITERAL'),
+          memory: '',
         });
         expect(first.resolved.promptSnapshot.employeeDocuments!.user).not.toBe(
           '',

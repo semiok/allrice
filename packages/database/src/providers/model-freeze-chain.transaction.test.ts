@@ -3,10 +3,7 @@ import type { TransactionSql } from 'postgres';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import * as client from '../core/client.ts';
-import {
-  freezeExperienceModelSnapshot,
-  freezeSessionModelSnapshot,
-} from './model-pool.ts';
+import { freezeSessionModelSnapshot } from './model-pool.ts';
 
 type Stage =
   | 'session'
@@ -59,13 +56,6 @@ function fixture() {
   };
   return {
     scope: { organizationId, workspaceId, sessionId, employeeVersionId },
-    experience: {
-      organizationId,
-      workspaceId,
-      employeeId,
-      ownerId,
-      occurrenceId: randomUUID(),
-    },
     employeeId,
     catalogId,
     settings,
@@ -164,16 +154,16 @@ function forbidPool() {
   });
 }
 
-function defaultReaders(f: ReturnType<typeof fixture>, experience = false) {
+function defaultReaders(f: ReturnType<typeof fixture>) {
   const trace: string[] = [];
   const phases: [string, Stage[]][] = [
+    ['session', ['session', 'cache']],
     ['target', ['catalog']],
     ['settings', ['settings']],
     ['policy', ['policy']],
     ['selection', ['selection']],
     ['subscription', ['subscription']],
   ];
-  if (!experience) phases.unshift(['session', ['session', 'cache']]);
   const readers = phases.map(([name, allowed]) => ({
     name,
     reader: reader(f, { allowed }, trace),
@@ -253,51 +243,6 @@ describe('model freeze chain caller transaction forwarding', () => {
       'get:subscription',
       'query:subscription',
       'query:cache',
-    ]);
-  });
-
-  it('shares a supplied tag through Experience while retaining original caps', async () => {
-    const pool = forbidPool();
-    const f = fixture();
-    const tx = reader(f);
-    const snapshot = await freezeExperienceModelSnapshot(f.experience, tx.sql);
-    expect(pool).not.toHaveBeenCalled();
-    expect(tx.calls.map((call) => call.stage)).toEqual([
-      'settings',
-      'policy',
-      'catalog',
-      'selection',
-      'subscription',
-    ]);
-    expect(snapshot).toMatchObject({
-      schemaVersion: 2,
-      sessionId: null,
-      occurrenceId: f.experience.occurrenceId,
-      runLimits: {
-        timeoutMs: 300_000,
-        maxInputTokens: 24_000,
-        maxOutputTokens: 4_000,
-        maxTotalTokens: 28_000,
-      },
-    });
-  });
-
-  it('preserves the five default Experience acquisition phases', async () => {
-    const f = fixture();
-    const defaults = defaultReaders(f, true);
-    await freezeExperienceModelSnapshot(f.experience);
-    expect(defaults.pool).toHaveBeenCalledTimes(5);
-    expect(defaults.trace).toEqual([
-      'get:target',
-      'get:settings',
-      'query:settings',
-      'get:policy',
-      'query:policy',
-      'query:catalog',
-      'get:selection',
-      'query:selection',
-      'get:subscription',
-      'query:subscription',
     ]);
   });
 

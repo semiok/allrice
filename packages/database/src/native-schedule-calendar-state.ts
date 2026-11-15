@@ -1,11 +1,7 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
-import {
-  AutomationScheduleSchema,
-  MonthlyScheduleRuleSchema,
-  UuidSchema,
-} from '@allrice/contracts';
+import { MonthlyScheduleRuleSchema, UuidSchema } from '@allrice/contracts';
 import {
   nativeOnceDigest,
   nativeOnceReady,
@@ -62,43 +58,17 @@ export const NativeCalendarControlSchema = z
       .strict(),
     sessionState: z.enum(['reserved', 'initializing', 'ready']),
     nativeTaskId: z.null(),
-    dispatch: z.discriminatedUnion('consumer', [
-      z
-        .object({
-          consumer: z.literal('experience-consolidation-v1'),
-          employeeAssignmentId: UuidSchema,
-          employeeInstanceId: UuidSchema,
-        })
-        .strict(),
-      z
-        .object({
-          consumer: z.literal('ordinary-monthly-v1'),
-          employeeAssignmentId: UuidSchema,
-          employeeInstanceId: UuidSchema,
-          businessSessionId: UuidSchema,
-        })
-        .strict(),
-    ]),
+    dispatch: z
+      .object({
+        consumer: z.literal('ordinary-monthly-v1'),
+        employeeAssignmentId: UuidSchema,
+        employeeInstanceId: UuidSchema,
+        businessSessionId: UuidSchema,
+      })
+      .strict(),
   })
   .strict();
 export type NativeCalendarControl = z.infer<typeof NativeCalendarControlSchema>;
-export const NativeExperienceCalendarRevisionSchema = z
-  .object({
-    kind: z.literal('calendar'),
-    binding: z.literal('rotating-at-v1'),
-    consumer: z.literal('experience-consolidation-v1'),
-    revision: Revision,
-    schedule: AutomationScheduleSchema.refine((s) => s.frequency !== 'once'),
-    ruleRevision: Revision,
-    policyRevision: Revision,
-    policyDigest: Digest,
-    reservationDigest: Digest,
-    acceptedAt: Instant,
-  })
-  .strict();
-export type NativeExperienceCalendarRevision = z.infer<
-  typeof NativeExperienceCalendarRevisionSchema
->;
 export const NativeMonthlyCalendarRevisionSchema = z
   .object({
     kind: z.literal('calendar'),
@@ -114,10 +84,7 @@ export const NativeMonthlyCalendarRevisionSchema = z
 export type NativeMonthlyCalendarRevision = z.infer<
   typeof NativeMonthlyCalendarRevisionSchema
 >;
-export const NativeCalendarRevisionSchema = z.discriminatedUnion('consumer', [
-  NativeExperienceCalendarRevisionSchema,
-  NativeMonthlyCalendarRevisionSchema,
-]);
+export const NativeCalendarRevisionSchema = NativeMonthlyCalendarRevisionSchema;
 export type NativeCalendarRevision = z.infer<
   typeof NativeCalendarRevisionSchema
 >;
@@ -194,15 +161,10 @@ type CalendarAdmissionBase = {
   status: 'enabled' | 'paused' | 'deleted';
   resumeAfter: string | null;
 };
-export type NativeCalendarAdmission = CalendarAdmissionBase &
-  (
-    | {
-        consumer?: 'experience-consolidation-v1';
-        policyRevision: number;
-        policyDigest: string;
-      }
-    | { consumer: 'ordinary-monthly-v1'; revisionDigest: string }
-  );
+export type NativeCalendarAdmission = CalendarAdmissionBase & {
+  consumer: 'ordinary-monthly-v1';
+  revisionDigest: string;
+};
 const SessionMutation = z
   .object({
     kind: z.literal('calendar'),
@@ -468,12 +430,10 @@ export function calendarRevisionAdmissionMatches(
   v: NativeCalendarRevision,
   admission: NativeCalendarAdmission,
 ) {
-  return v.consumer === 'experience-consolidation-v1'
-    ? admission.consumer !== 'ordinary-monthly-v1' &&
-        admission.policyRevision === v.policyRevision &&
-        admission.policyDigest === v.policyDigest
-    : admission.consumer === 'ordinary-monthly-v1' &&
-        admission.revisionDigest === nativeOnceDigest(v);
+  return (
+    admission.consumer === 'ordinary-monthly-v1' &&
+    admission.revisionDigest === nativeOnceDigest(v)
+  );
 }
 export function prepareNativeCalendarTaskPut(input: {
   readiness: NativeOnceReadiness;
@@ -562,15 +522,14 @@ export function prepareNativeCalendarTaskPut(input: {
       : null;
   const aNow = input.admission;
   const nativeReceipt = task.deliveryHistory?.records[0] ?? task.lastDelivery;
-  const unprojectedReason =
-    c.dispatch.consumer === 'ordinary-monthly-v1' && aNow
-      ? aNow.status !== 'enabled'
-        ? ('paused_or_deleted' as const)
-        : aNow.resumeAfter &&
-            Date.parse(p.businessScheduledFor) <= Date.parse(aNow.resumeAfter)
-          ? ('before_resume_watermark' as const)
-          : null
-      : null;
+  const unprojectedReason = aNow
+    ? aNow.status !== 'enabled'
+      ? ('paused_or_deleted' as const)
+      : aNow.resumeAfter &&
+          Date.parse(p.businessScheduledFor) <= Date.parse(aNow.resumeAfter)
+        ? ('before_resume_watermark' as const)
+        : null
+    : null;
   const occurrences =
     receipt && !unprojectedReason
       ? (() => {

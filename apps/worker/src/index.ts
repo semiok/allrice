@@ -575,7 +575,7 @@ async function runQueueTick() {
           concurrency,
           active: () => activeExecutions.size,
           stopping: () => stopping,
-          claim: (options) => claimNextJob(workerId, leaseMs, options),
+          claim: () => claimNextJob(workerId, leaseMs),
           start(job, leaseToken) {
             const execution = scope
               .child(async () => runClaimed(job.id, leaseToken))

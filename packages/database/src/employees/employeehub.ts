@@ -34,7 +34,6 @@ import {
   allRiceToolManifest,
   withEmployeeCustomizationTools,
   freezeReferenceToolNames,
-  freezeMemorySourceToolNames,
   freezeMemoryIndexToolNames,
   withoutTaskMemoryTools,
   CreateEmployeeInputSchema,
@@ -468,7 +467,7 @@ export async function listEmployeeHub(
         join allrice_employee_assignments a on a.id=i.assignment_id
         where i.organization_id=${context.organizationId} and i.workspace_id=${workspaceId}
           and i.owner_id=${userId(context)} and i.archived_at is null and a.active)
-      and not exists(select 1 from allrice_experience_reviews er where er.memory_id=allrice_memories.id)
+      and summary is not null
       and archived_at is null
     group by employee_id
   `;
@@ -1572,11 +1571,9 @@ export async function prepareEmployeeRunBinding(
   );
   const boundToolNames = await freezeConnectedLocalToolNames(
     freezeReferenceToolNames(
-      input.taskPersona
+      input.taskPersona || !memoryIndex
         ? withoutTaskMemoryTools(customizedTools)
-        : (memoryIndex
-            ? freezeMemoryIndexToolNames
-            : freezeMemorySourceToolNames)(
+        : freezeMemoryIndexToolNames(
             customizedTools,
             grantedCapabilities,
             modelSnapshot,

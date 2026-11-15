@@ -4,8 +4,6 @@ import {
   BrandFeedbackSchema,
   BrandRetrospectiveOutputSchema,
   BrandRetrospectiveSchema,
-  BrandExperienceSchema,
-  BrandExperienceUsesSchema,
 } from './brand-content-feedback.ts';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
@@ -149,22 +147,8 @@ export const BrandContentOperationSchema = z.enum([
   'receipt.record',
   'feedback.record',
   'retrospective.save',
-  'experience.propose',
-  'experience.review',
 ]);
 export const BrandContentActionSchema = z.discriminatedUnion('operation', [
-  z
-    .object({
-      ...base,
-      operation: z.literal('experience.review'),
-      brandId: UuidSchema,
-      memoryId: UuidSchema,
-      decision: z.enum(['approve', 'reject']),
-      expectedRevision: revision,
-      expectedDigest: ChecksumSchema,
-      reason: text(500),
-    })
-    .strict(),
   BrandFeedbackInputSchema.safeExtend({
     ...base,
     operation: z.literal('feedback.record'),
@@ -185,14 +169,6 @@ export const BrandContentActionSchema = z.discriminatedUnion('operation', [
   z
     .object({
       ...base,
-      operation: z.literal('experience.propose'),
-      brandId: UuidSchema,
-      retrospectiveId: UuidSchema,
-    })
-    .strict(),
-  z
-    .object({
-      ...base,
       operation: z.literal('context.save'),
       brandId: UuidSchema.optional(),
       expectedRevision: revision,
@@ -208,7 +184,6 @@ export const BrandContentActionSchema = z.discriminatedUnion('operation', [
       contextRevisionId: UuidSchema,
       platform: text(80),
       candidates: z.array(BrandContentCandidateSchema).min(1).max(40),
-      experienceUses: BrandExperienceUsesSchema.optional(),
     })
     .strict(),
   z
@@ -255,7 +230,6 @@ export const BrandContentActionSchema = z.discriminatedUnion('operation', [
       parentVersionId: UuidSchema.optional(),
       reviewId: UuidSchema.optional(),
       changeSummary: text(2000),
-      experienceUses: BrandExperienceUsesSchema.optional(),
       images: images.default([]),
     })
     .strict(),
@@ -604,22 +578,7 @@ export const BrandContentBoardSchema = z
     ),
     feedback: z.array(BrandFeedbackSchema).optional(),
     retrospectives: z.array(BrandRetrospectiveSchema).optional(),
-    experiences: z.array(BrandExperienceSchema).optional(),
     unavailableFeedbackSources: z.boolean().optional(),
-    experienceUses: z
-      .array(
-        z
-          .object({
-            entityId: UuidSchema,
-            memoryId: UuidSchema,
-            revision: z.number().int().positive(),
-            digest: ChecksumSchema,
-            reason: text(600),
-            createdAt: TimestampSchema,
-          })
-          .strict(),
-      )
-      .optional(),
     truncated: z.boolean(),
   })
   .strict();

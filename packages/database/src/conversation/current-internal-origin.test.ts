@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { ZodError } from 'zod';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import {
   assertNativeRootOrigin,
@@ -9,7 +10,7 @@ import {
 
 const current = 'sha256:' + 'a'.repeat(64);
 const other = 'sha256:' + 'b'.repeat(64);
-const kinds = ['platform_technical', 'experience_consolidation'] as const;
+const kinds = ['platform_technical'] as const;
 beforeEach(() => {
   for (const key of Object.keys(process.env))
     if (key.startsWith('ALLRICE_DSH_ORIGIN_READER_'))
@@ -65,9 +66,9 @@ it.each(kinds)('freezes the exact recipe and original %s profile', (kind) => {
     schemaVersion: 1,
     contextKind: kind,
     contextId: id,
-    rootSeed: kind === 'experience_consolidation' ? `experience-${id}` : id,
+    rootSeed: id,
     distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
-    profileId: kind === 'platform_technical' ? 'technical' : 'restricted',
+    profileId: 'technical',
     artifactId: current,
     frozenIdentity: {
       kind: 'internal_recipe',
@@ -104,9 +105,9 @@ it.each(kinds)(
       schemaVersion: 1,
       contextKind: kind,
       contextId: id,
-      rootSeed: kind === 'experience_consolidation' ? `experience-${id}` : id,
+      rootSeed: id,
       distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
-      profileId: kind === 'platform_technical' ? 'technical' : 'restricted',
+      profileId: 'technical',
       artifactId: other,
       frozenIdentity: identity,
     });
@@ -133,3 +134,37 @@ it.each(kinds)(
     }
   },
 );
+
+it.each(['experience_consolidation', 'unknown_internal'])(
+  'rejects retired or unknown raw internal kind %s',
+  (rawKind) => {
+    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', current);
+    expect(() =>
+      newCurrentInternalNativeRootOrigin(
+        rawKind as Parameters<typeof newCurrentInternalNativeRootOrigin>[0],
+        randomUUID(),
+        { v: 1 },
+      ),
+    ).toThrow(ZodError);
+  },
+);
+it('does not accept an old experience recipe as current platform work', () => {
+  const id = randomUUID();
+  const identity = {
+    kind: 'internal_recipe' as const,
+    checksum: nativeRootDigest({ v: 1 }),
+  };
+  const historical = NativeRootOriginV1Schema.parse({
+    schemaVersion: 1,
+    contextKind: 'experience_consolidation',
+    contextId: id,
+    rootSeed: `experience-${id}`,
+    distributionGeneration: 'dsh-0.2.1-rc.2-687f282',
+    profileId: 'restricted',
+    artifactId: other,
+    frozenIdentity: identity,
+  });
+  expect(() =>
+    assertNativeRootOrigin(historical, 'platform_technical', id, identity),
+  ).toThrow('NATIVE_ROOT_ORIGIN_INVALID');
+});
