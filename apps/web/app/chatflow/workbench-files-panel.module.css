@@ -321,6 +321,33 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.publicationNotice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: light-dark(#284fa8, #9ab9f5);
+  background: light-dark(#edf3ff, #263247);
+  font-size: 12px;
+}
+.publicationNotice > svg {
+  flex: none;
+}
+.publicationNotice > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.publicationNotice button {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
 .file .fileMenu {
   flex: none;
   display: grid;

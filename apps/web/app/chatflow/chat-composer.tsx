@@ -65,6 +65,7 @@ interface ChatComposerProps {
   onOpenSessionReferences?: () => void;
   onOpenReferenceLibrary?: () => void;
   referenceSelections?: ReferenceDraft[];
+  unavailableReferenceRevisionIds?: readonly string[];
   onRemoveReference?: (id: string) => void;
   onRemoveSessionReference?: (id: string) => void;
   employeeName: string;
@@ -272,6 +273,7 @@ export function ChatComposer({
   onTaskPreparation,
   companyReferences = [],
   referenceSelections = [],
+  unavailableReferenceRevisionIds = [],
   onRemoveReference,
   onRemoveCompanyReference,
   sessionReferences = [],
@@ -321,7 +323,14 @@ export function ChatComposer({
   );
   return (
     <div className={`${inputUi.root} ${hero ? inputUi.hero : ''}`}>
-      {error ? <div className={inputUi.notice}>{error}</div> : null}
+      {error ? (
+        <div
+          className={`${inputUi.notice} ${unavailableReferenceRevisionIds.length ? composerUi.referenceError : ''}`}
+          role="alert"
+        >
+          {error}
+        </div>
+      ) : null}
       {bridgeUploadStatus ? (
         <div className={inputUi.notice} role="status">
           {bridgeUploadStatus}{' '}
@@ -347,6 +356,7 @@ export function ChatComposer({
         />
         <ReferenceChips
           references={referenceSelections}
+          unavailableRevisionIds={unavailableReferenceRevisionIds}
           disabled={busy}
           onRemove={onRemoveReference}
         />
