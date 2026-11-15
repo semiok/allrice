@@ -25,7 +25,10 @@ import { isModelFailureCode, modelFailure } from '@allrice/contracts';
 import { requireNativeQuestionAdmission } from '../native-questions.ts';
 import { archivePrivateExperience } from '../experience-runtime.ts';
 import { nativeContextExecutionRetired } from '../conversation/native-context-retirement.ts';
-import type { ResourcePrincipal } from '../resource-principal.ts';
+import {
+  resourcePrincipal,
+  type ResourcePrincipal,
+} from '../resource-principal.ts';
 import type { enqueueManualAutomationRunInTransaction } from '../execution/queue.ts';
 import { readSessionMcpFailures } from './mcp-failures.ts';
 import {
@@ -1846,11 +1849,11 @@ async function persistChatMessageInTransaction(
 async function loadChatRunContext(
   input: Pick<
     ChatRunPreparationInput,
-    'context' | 'workspaceId' | 'session' | 'message' | 'result'
+    'context' | 'workspaceId' | 'session' | 'message' | 'result' | 'options'
   >,
   sql: WorkspaceSql,
 ) {
-  const { context, workspaceId, session, message, result } = input;
+  const { context, workspaceId, session, message, result, options } = input;
   const historyRows = await sql<MessageRow[]>`
     select m.* from allrice_messages m
     where organization_id = ${context.organizationId}
@@ -1880,7 +1883,13 @@ async function loadChatRunContext(
   );
   const attachedFiles = await Promise.all(
     message.attachmentIds.map((objectId) =>
-      getStoredFile(RequestContextSchema.parse(context), objectId, sql),
+      getStoredFile(
+        options.folderEventId
+          ? resourcePrincipal(context)
+          : RequestContextSchema.parse(context),
+        objectId,
+        sql,
+      ),
     ),
   );
   const imageMediaTypes = new Set<ImageMediaType>([
@@ -2316,7 +2325,7 @@ export async function sendChatMessage(
     if (retries[0]) result.assistantMessage = retries[0];
   }
   const runContext = await loadChatRunContext(
-    { context, workspaceId, session, message, result },
+    { context, workspaceId, session, message, result, options },
     sql,
   );
   try {

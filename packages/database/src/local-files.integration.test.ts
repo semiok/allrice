@@ -161,6 +161,9 @@ suite(
           ],
         },
       });
+      // User command entrypoints keep their own Web login, not the device ID.
+      await database.db`insert into allrice_sessions(id,user_id,token_hash,expires_at)
+        values(${f.context.sessionId!},${f.user},${createHash('sha256').update(randomUUID()).digest('hex')},clock_timestamp()+interval '1 hour')`;
       const deviceId = randomUUID(),
         token = `synthetic-files-${randomUUID()}`,
         folder = join(root, deviceId, '目录 空格');

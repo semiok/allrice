@@ -6,7 +6,6 @@ import type { OrganizationSharedReader } from './organization-shared-reader.ts';
 import {
   ContentOwnershipSchema,
   ReferenceActionSchema,
-  ReferenceArtifactSaveInputSchema,
   ReferenceRevisionSchema,
   ReferenceUploadInputSchema,
   UuidSchema,
@@ -179,15 +178,14 @@ export async function referenceSourceAccess(
   // existing company asset API, never a second set of Knowledge mutations.
   if (legacy && maintain && !allowLegacyProcessing)
     throw new DataAccessError('not_found');
-  const boundAccess =
-    !sharedReader && !legacy
-      ? await workbenchReferenceAccess(
-          context,
-          sourceId,
-          sql,
-          maintain || lockRead,
-        )
-      : null;
+  const boundAccess = !legacy
+    ? await workbenchReferenceAccess(
+        context,
+        sourceId,
+        sql,
+        maintain || lockRead,
+      )
+    : null;
   const [s] = await sql<
     SourceRow[]
   >`select id,organization_id,workspace_id,ownership,status,legacy_company_asset_id,
@@ -432,6 +430,8 @@ export async function prepareReferenceUpload(
     context = scoped(contextInput, v.workspaceId);
   if (context.actor.type !== 'user')
     throw new DataAccessError('authentication_required');
+  if (v.scope !== 'platform' && (v.scope !== 'personal' || v.sourceId))
+    throw new DataAccessError('authorization_denied');
   const { contentBase64, ...metadata } = v;
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(contentBase64) || contentBase64.length % 4)
     throw new ReferenceLibraryError('invalid_content');
@@ -837,152 +837,6 @@ async function requireReferenceArtifact(
   return readArtifact(tx, context, candidate.session_id, versionId);
 }
 
-export async function saveArtifactReference(
-  contextInput: RequestContext,
-  input: unknown,
-  storage: StoragePort,
-) {
-  const v = ReferenceArtifactSaveInputSchema.parse(input),
-    context = scoped(contextInput, v.workspaceId),
-    ownership = referenceOwnership(context, v),
-    targetKey =
-      v.scope === 'personal'
-        ? 'personal:' + context.actor.id
-        : v.scope === 'department'
-          ? 'department:' + v.departmentId
-          : 'company:' + context.organizationId;
-
-  // Run both before and after reading bytes. Locks do not span storage I/O.
-  async function findOrReserve(
-    bytes?: Buffer,
-    original?: Awaited<ReturnType<typeof requireReferenceArtifact>>,
-  ) {
-    return getDatabase().begin(async (tx) => {
-      await lockWorkspaceStorageQuota(
-        tx,
-        context.organizationId,
-        v.workspaceId,
-      );
-      if (!(await referenceAccess(context, ownership, tx, true)).canMaintain)
-        throw new DataAccessError('authorization_denied');
-      await lockReferenceRequest(tx, context, v.requestId);
-      const request = await findReferenceRequest(
-        tx,
-        context,
-        v.requestId,
-        'artifact',
-        v,
-      );
-      await tx`select pg_advisory_xact_lock(hashtextextended(${context.organizationId + ':artifact-reference:' + v.artifactVersionId + ':' + targetKey},0))`;
-      const [canonical] = await tx`select id from allrice_knowledge_revisions
-        where organization_id=${context.organizationId} and source_artifact_version_id=${v.artifactVersionId} and source_target_key=${targetKey}`;
-      const priorId = request ?? canonical?.id;
-      if (priorId) {
-        const reservation = await readReferenceReservation(
-          tx,
-          context,
-          priorId,
-        );
-        if (!request)
-          await recordReferenceRequest(
-            tx,
-            context,
-            v.requestId,
-            'artifact',
-            v,
-            priorId,
-          );
-        if (reservation.alreadyReady) return { reservation, artifact: null };
-        const artifact = await requireReferenceArtifact(
-          tx,
-          context,
-          v.artifactVersionId,
-        );
-        if (artifact.object.checksum !== reservation.object.checksum)
-          throw new ReferenceLibraryError('source_unavailable');
-        return { reservation, artifact };
-      }
-      const artifact = await requireReferenceArtifact(
-        tx,
-        context,
-        v.artifactVersionId,
-      );
-      if (!bytes || !original) return { reservation: null, artifact };
-      if (
-        artifact.object.id !== original.object.id ||
-        artifact.object.checksum !== original.object.checksum ||
-        artifact.object.sizeBytes !== bytes.length
-      )
-        throw new ReferenceLibraryError('source_unavailable');
-      const reservation = await reserveReferenceFile(
-        tx,
-        context,
-        {
-          ...v,
-          fileName: artifact.version.fileName,
-          mediaType: artifact.object.mediaType,
-        },
-        ownership,
-        artifact.object.checksum,
-        bytes.length,
-        v,
-        {
-          versionId: artifact.id,
-          targetKey,
-          snapshot: {
-            fileName: artifact.version.fileName,
-            version: artifact.version.version,
-            checksum: artifact.object.checksum,
-            sessionId: artifact.version.sessionId!,
-            ...(artifact.provenance.runId
-              ? { runId: artifact.provenance.runId }
-              : {}),
-          },
-        },
-      );
-      await recordReferenceRequest(
-        tx,
-        context,
-        v.requestId,
-        'artifact',
-        v,
-        reservation.revisionId,
-      );
-      return { reservation, artifact };
-    });
-  }
-  let current = await findOrReserve();
-  if (!current.reservation?.alreadyReady) {
-    if (!current.artifact)
-      throw new ReferenceLibraryError('source_unavailable');
-    const bytes = await readArtifactBytes(
-      storage,
-      current.artifact.object,
-      50 * 1024 * 1024,
-    );
-    current = await findOrReserve(bytes, current.artifact);
-    if (!current.reservation) throw new Error('Reference reservation missing');
-    if (!current.reservation.alreadyReady) {
-      await storage.put(
-        current.reservation.object,
-        new Blob([new Uint8Array(bytes)]).stream(),
-      );
-      // Do not remove an immutable blob on an unknown commit response. A retry
-      // reads this same request/version and can complete the pending reservation.
-      await completeReferenceUpload(
-        context,
-        v.workspaceId,
-        current.reservation.revisionId,
-      );
-    }
-  }
-  if (!current.reservation) throw new Error('Reference reservation missing');
-  return {
-    sourceId: current.reservation.sourceId,
-    revisionId: current.reservation.revisionId,
-  };
-}
-
 export async function changeReference(
   contextInput: RequestContext,
   sourceId: string,
@@ -1000,6 +854,8 @@ export async function changeReference(
       v.action === 'retry',
     );
     if (source.publication_kind && v.action !== 'retry')
+      throw new ReferenceLibraryError('source_unavailable');
+    if (source.ownership.scope !== 'platform' && v.action === 'restore')
       throw new ReferenceLibraryError('source_unavailable');
     const [prior] =
       await tx`select input from allrice_knowledge_reference_actions where source_id=${source.id} and actor_id=${context.actor.id} and request_id=${v.requestId}`;
@@ -1097,7 +953,19 @@ async function requirePublicationFile(
   knownFile?: PublicationFileFacts,
 ) {
   const { readWorkbenchFile } = await import('./workbench-files.ts');
-  const file = knownFile ?? (await readWorkbenchFile(context, objectId, tx));
+  let file = knownFile;
+  if (!file) {
+    try {
+      file = await readWorkbenchFile(context, objectId, tx);
+    } catch (error) {
+      if (
+        error instanceof DataAccessError &&
+        (error.code === 'not_found' || error.code === 'authorization_denied')
+      )
+        throw new ReferenceLibraryError('source_unavailable');
+      throw error;
+    }
+  }
   if (
     file.object.ownerId !== context.actor.id ||
     file.object.organizationId !== context.organizationId ||

@@ -2,7 +2,6 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   ContentOwnershipSchema,
   WorkbenchFileSchema,
-  WorkbenchFileUpdateSchema,
   WorkbenchFileUploadSchema,
   WorkbenchDeliverablesFilterSchema,
   WorkbenchDeliverablesCatalogSchema,
@@ -13,7 +12,6 @@ import {
   type StorageObject,
   type StoragePort,
   type WorkbenchFile,
-  type WorkbenchFileSharing,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
@@ -41,9 +39,9 @@ import { assertWorkbenchSession } from './artifact-review.ts';
 import { readOwnedReferencePublications } from './reference-publication-projections.ts';
 import { personalInstanceNameSql } from './employees/employee-instance-policy.ts';
 import {
-  canSetWorkbenchFileSharing,
   readWorkbenchFilePolicy,
   workbenchFileAccess,
+  workbenchOriginFileAccess,
   type FilePolicyDatabase,
 } from './workbench-file-access.ts';
 
@@ -138,6 +136,11 @@ export async function readWorkbenchFile(
   const principal = await readContentPrincipal(context, sql);
   if (!principal) throw new DataAccessError('authorization_denied');
   const row = await facts(objectId, sql);
+  if (
+    !row.source_id &&
+    !(await workbenchOriginFileAccess(context, objectId, sql)).canRead
+  )
+    throw new DataAccessError('not_found');
   if (row.source_id) {
     const [binding] = await sql<{ origin_object_id: string }[]>`
       select origin_object_id from allrice_workbench_reference_bindings
@@ -174,26 +177,6 @@ export async function readWorkbenchFile(
     departments: policy?.departments ?? [],
     canMaintain,
   };
-}
-
-async function validateTarget(
-  context: RequestContext,
-  ownerId: string,
-  sharing: WorkbenchFileSharing,
-  sql: FilePolicyDatabase,
-) {
-  const principal = await readContentPrincipal(context, sql, true);
-  if (!principal || !canSetWorkbenchFileSharing(principal, ownerId, sharing))
-    throw new DataAccessError('authorization_denied');
-  if (sharing.departmentIds.length) {
-    const departments = await sql<
-      { id: string }[]
-    >`select id from allrice_departments
-      where organization_id=${context.organizationId} and id in ${sql(sharing.departmentIds)}
-        and archived_at is null order by id for share`;
-    if (departments.length !== sharing.departmentIds.length)
-      throw new DataAccessError('authorization_denied');
-  }
 }
 
 async function auditFile(
@@ -236,7 +219,8 @@ export async function uploadWorkbenchFile(
       context.organizationId,
       value.workspaceId,
     );
-    await validateTarget(context, context.actor.id, value.sharing, tx);
+    if (!(await readContentPrincipal(context, tx, true))?.writable)
+      throw new DataAccessError('authorization_denied');
     await tx`select pg_advisory_xact_lock(hashtextextended(${context.organizationId + '/' + context.actor.id + '/' + value.requestId},0))`;
     const [existing] = await tx<
       { object_id: string; upload_digest: string; state: string }[]
@@ -273,7 +257,7 @@ export async function uploadWorkbenchFile(
     );
     await tx`insert into allrice_workbench_file_policies
       (object_id,organization_id,workspace_id,owner_id,file_name,scope,department_ids,upload_request_id,upload_digest)
-      values (${id},${context.organizationId},${value.workspaceId},${context.actor.id},${value.fileName},${value.sharing.scope},${value.sharing.departmentIds},${value.requestId},${requestDigest})`;
+      values (${id},${context.organizationId},${value.workspaceId},${context.actor.id},${value.fileName},'personal','{}',${value.requestId},${requestDigest})`;
     await auditFile(
       context,
       id,
@@ -396,149 +380,6 @@ async function snapshotFile(
     );
   }
   return prepared;
-}
-
-function legacySharing(
-  file: Awaited<ReturnType<typeof readWorkbenchFile>>,
-): WorkbenchFileSharing {
-  const ownership = file.row.source_ownership
-    ? ContentOwnershipSchema.parse(file.row.source_ownership)
-    : null;
-  if (ownership?.scope === 'company')
-    return { scope: 'company', departmentIds: [] };
-  if (ownership?.scope === 'department')
-    return { scope: 'departments', departmentIds: [ownership.departmentId] };
-  // Preserve the exact workspace read boundary until a new range is chosen.
-  return { scope: 'personal', departmentIds: [] };
-}
-
-export async function updateWorkbenchFile(
-  contextInput: RequestContext,
-  objectId: string,
-  input: unknown,
-  storage: StoragePort,
-) {
-  const value = WorkbenchFileUpdateSchema.parse(input),
-    context = scoped(contextInput, value.workspaceId),
-    db = getDatabase();
-  const inputDigest = digest(JSON.stringify({ objectId, ...value }));
-  const initial = await readWorkbenchFile(context, objectId);
-  if (initial.row.source_id) {
-    const [publication] = await db`select id from allrice_knowledge_sources
-      where id=${initial.row.source_id} and publication_kind is not null`;
-    if (publication)
-      throw new WorkbenchFileError(
-        'invalid_file',
-        '请通过企业资料操作修改范围或撤销资料。',
-      );
-  }
-  if (!initial.canMaintain) throw new DataAccessError('authorization_denied');
-  const [completed] = await db<
-    { object_id: string; input_digest: string; result_revision: number }[]
-  >`
-    select object_id,input_digest,result_revision from allrice_workbench_file_mutations
-    where organization_id=${context.organizationId} and actor_id=${context.actor.id} and request_id=${value.requestId}`;
-  if (completed) {
-    if (
-      completed.object_id !== objectId ||
-      completed.input_digest !== inputDigest
-    )
-      throw new WorkbenchFileError(
-        'request_conflict',
-        '请求内容已变化，请重新读取后操作。',
-      );
-    return { objectId, revision: completed.result_revision };
-  }
-  if ((initial.policy?.revision ?? 0) !== value.expectedRevision)
-    throw new WorkbenchFileError(
-      'version_conflict',
-      '文件设置已变化，请刷新后再保存。',
-    );
-  const referenceCopy =
-    value.isReference === true
-      ? await snapshotFile(context, initial, value.requestId, storage)
-      : null;
-  return db.begin(async (tx) => {
-    await readContentPrincipal(context, tx, true);
-    // Every version of a deliverable uses the same lock key.
-    await tx`select pg_advisory_xact_lock(hashtextextended(${context.organizationId + '/file/' + (initial.row.series_id ?? objectId)},0))`;
-    const file = await readWorkbenchFile(context, objectId, tx);
-    if (!file.canMaintain) throw new DataAccessError('authorization_denied');
-    const prior = await readWorkbenchFilePolicy(objectId, tx, 'update');
-    const [receipt] = await tx<
-      { object_id: string; input_digest: string; result_revision: number }[]
-    >`
-      select * from allrice_workbench_file_mutations
-      where organization_id=${context.organizationId} and actor_id=${context.actor.id} and request_id=${value.requestId}`;
-    if (receipt) {
-      if (
-        receipt.object_id !== objectId ||
-        receipt.input_digest !== inputDigest
-      )
-        throw new WorkbenchFileError(
-          'request_conflict',
-          '请求内容已变化，请重新读取后操作。',
-        );
-      return { objectId, revision: receipt.result_revision };
-    }
-    if ((prior?.revision ?? 0) !== value.expectedRevision)
-      throw new WorkbenchFileError(
-        'version_conflict',
-        '文件设置已变化，请刷新后再保存。',
-      );
-    if (
-      !prior &&
-      !value.sharing &&
-      !file.row.source_id &&
-      file.row.visibility !== 'private'
-    )
-      throw new WorkbenchFileError(
-        'invalid_file',
-        '请先明确这个共享文件的可见范围，再设置长期参考。',
-      );
-    const sharing =
-      value.sharing ??
-      (prior
-        ? { scope: prior.scope, departmentIds: prior.department_ids }
-        : legacySharing(file));
-    await validateTarget(context, file.row.owner_id, sharing, tx);
-    const canonicalId = prior?.object_id ?? objectId;
-    const referenceSourceId =
-      referenceCopy?.sourceId ??
-      prior?.reference_source_id ??
-      file.row.source_id ??
-      null;
-    if (!prior) {
-      await tx`insert into allrice_workbench_file_policies
-        (object_id,organization_id,workspace_id,owner_id,series_id,file_name,scope,department_ids,reference_source_id,reference_enabled)
-        values (${canonicalId},${file.row.organization_id},${file.row.workspace_id},${file.row.owner_id},${file.row.series_id},${file.row.file_name},${sharing.scope},${sharing.departmentIds},${referenceSourceId},false)`;
-    }
-    if (referenceSourceId)
-      await tx`insert into allrice_workbench_reference_bindings(source_id,origin_object_id,organization_id)
-        values (${referenceSourceId},${objectId},${context.organizationId}) on conflict (source_id) do nothing`;
-    const revision = (prior?.revision ?? 0) + 1;
-    await tx`update allrice_workbench_file_policies set scope=${sharing.scope},department_ids=${sharing.departmentIds},
-      reference_source_id=${referenceSourceId},reference_enabled=${value.isReference ?? prior?.reference_enabled ?? !!file.row.source_id},
-      revision=${revision},updated_at=clock_timestamp() where object_id=${canonicalId}`;
-    // Old APIs and previously issued URLs must not preserve broader access.
-    await tx`update allrice_storage_objects set visibility='private',updated_at=clock_timestamp()
-      where id=${objectId} or (${file.row.series_id}::uuid is not null and id in
-        (select object_id from allrice_deliverable_versions where series_id=${file.row.series_id} and organization_id=${context.organizationId}))`;
-    await tx`update allrice_storage_access_grants set revoked_at=clock_timestamp()
-      where revoked_at is null and (object_id=${objectId} or (${file.row.series_id}::uuid is not null and object_id in
-        (select object_id from allrice_deliverable_versions where series_id=${file.row.series_id} and organization_id=${context.organizationId})))`;
-    await tx`insert into allrice_workbench_file_mutations(organization_id,actor_id,request_id,object_id,input_digest,result_revision)
-      values (${context.organizationId},${context.actor.id},${value.requestId},${objectId},${inputDigest},${revision})`;
-    await auditFile(
-      context,
-      objectId,
-      file.row.workspace_id,
-      'workbench.file.update',
-      revision,
-      tx,
-    );
-    return { objectId, revision };
-  });
 }
 
 /** Prepare an exact, permission-bound reference. Processing status remains
@@ -755,9 +596,7 @@ export async function readWorkbenchFileCatalog(
     left join allrice_workbench_file_policies p on p.object_id=o.id or (d.series_id is not null and p.series_id=d.series_id)
     left join lateral (select file_name from allrice_file_references where object_id=o.id order by created_at desc limit 1) f on true
     where o.organization_id=${context.organizationId} and o.state='ready' and o.deleted_at is null and (o.category in ('uploads','exports') or (o.category='artifacts' and d.series_id is not null))
-      and (o.workspace_id=${input.workspaceId} or p.scope in ('departments','company'))
-      and (o.owner_id=${context.actor.id} or o.visibility<>'private' or p.scope='company'
-        or (p.scope='departments' and (${principal.maintenanceLevel === 'company'} or ${principal.departmentId}::uuid=any(p.department_ids))))
+      and o.workspace_id=${input.workspaceId} and o.owner_id=${context.actor.id}
       and (${input.scope !== 'my'} or o.owner_id=${context.actor.id})
       and (${input.scope !== 'current'} or exists(select 1 from allrice_file_references f where f.object_id=o.id and f.session_id=${input.sessionId ?? null})
         or exists(select 1 from allrice_deliverable_versions v where v.object_id=o.id and v.session_id=${input.sessionId ?? null}))

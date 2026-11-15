@@ -6805,7 +6805,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   );
 
   it.each([390, 1440])(
-    'saves the selected artifact through the full workbench and survives parent refresh at %ipx',
+    'keeps retired sharing and reference controls absent through parent refresh at %ipx',
     async (width) => {
       const f = await fixture({
         technicalArtifacts: true,
@@ -6815,74 +6815,29 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       try {
         const saved: unknown[] = [];
         await f.page.route('**/api/v1/references/artifacts*', async (route) => {
-          const posting = route.request().method() === 'POST';
-          if (posting) saved.push(route.request().postDataJSON());
-          await route.fulfill({
-            contentType: 'application/json',
-            status: posting ? 201 : 200,
-            body: JSON.stringify(
-              posting
-                ? { sourceId: id(800), revisionId: id(801) }
-                : {
-                    workspaceId: workspace,
-                    platformMaintainer: false,
-                    maintenanceLevel: 'personal',
-                    writable: true,
-                    departmentId: null,
-                    departments: [],
-                  },
-            ),
-          });
+          saved.push(route.request().method());
+          await route.fulfill({ status: 404 });
         });
         await f.openWorkbench();
         await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
-        const save = f.panel.getByRole('button', {
-          name: '设为参考资料',
-          exact: true,
-        });
-        expect(
-          await f.panel
-            .getByRole('button', { name: /共享为公司范本|登记采用与投入/ })
-            .count(),
-        ).toBe(0);
-        await save.click();
-        const dialog = f.page.getByRole('dialog', {
-          name: '保存为参考资料',
-          exact: true,
-        });
-        await expect
-          .poll(() =>
-            dialog
-              .getByRole('button', { name: '保存', exact: true })
-              .isEnabled(),
-          )
-          .toBe(true);
-        expect(
-          await dialog
-            .getByLabel('保存范围')
-            .locator('option')
-            .allTextContents(),
-        ).toEqual(['仅自己']);
+        for (const name of ['可见范围', '设为参考资料', '保存为参考资料'])
+          expect(
+            await f.panel.getByRole('button', { name, exact: true }).count(),
+          ).toBe(0);
         await Promise.all([
           f.page.waitForResponse('**/api/v1/workspace/monthly-quota?*'),
           f.page.evaluate(() => window.dispatchEvent(new Event('focus'))),
         ]);
-        expect(await dialog.count()).toBe(1);
-        await dialog.getByRole('button', { name: '保存', exact: true }).click();
-        await dialog.getByRole('status').waitFor();
-        expect(saved).toEqual([
-          expect.objectContaining({
-            workspaceId: workspace,
-            artifactVersionId: f.state.items[0]!.id,
-            scope: 'personal',
-            purpose: '',
-          }),
-        ]);
-        await dialog.getByRole('button', { name: '完成', exact: true }).click();
-        await expect.poll(() => dialog.count()).toBe(0);
-        await save.click();
-        await dialog.getByRole('button', { name: '关闭', exact: true }).click();
-        await expect.poll(() => dialog.count()).toBe(0);
+        expect(
+          await f.page
+            .getByRole('dialog', { name: '保存为参考资料', exact: true })
+            .count(),
+        ).toBe(0);
+        for (const name of ['可见范围', '设为参考资料', '保存为参考资料'])
+          expect(
+            await f.panel.getByRole('button', { name, exact: true }).count(),
+          ).toBe(0);
+        expect(saved).toEqual([]);
         expect(f.errors).toEqual([]);
       } finally {
         await f.close();
@@ -6896,47 +6851,30 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     'history-denied',
     'history-unavailable',
   ] as const)(
-    'keeps an open reference draft editable during lifecycle refresh until archive or access denial is confirmed: %s',
+    'does not revive retired reference writes through lifecycle refresh: %s',
     async (outcome) => {
       const f = await fixture({ technicalArtifacts: true, artifacts: true });
       let release = () => {};
       try {
         const saved: unknown[] = [];
         await f.page.route('**/api/v1/references/artifacts*', async (route) => {
-          const method = route.request().method();
-          expect(['GET', 'POST']).toContain(method);
-          if (method === 'POST') saved.push(route.request().postDataJSON());
-          await route.fulfill({
-            contentType: 'application/json',
-            status: method === 'POST' ? 201 : 200,
-            body: JSON.stringify(
-              method === 'POST'
-                ? { sourceId: id(800), revisionId: id(801) }
-                : {
-                    workspaceId: workspace,
-                    platformMaintainer: false,
-                    maintenanceLevel: 'personal',
-                    writable: true,
-                    departmentId: null,
-                    departments: [],
-                  },
-            ),
-          });
+          saved.push(route.request().method());
+          await route.fulfill({ status: 404 });
         });
         await f.openWorkbench();
         await f.panel.getByRole('heading', { name: /COIN/ }).waitFor();
-        await f.panel
-          .getByRole('button', { name: '设为参考资料', exact: true })
-          .click();
-        const dialog = f.page.getByRole('dialog', {
-          name: '保存为参考资料',
-          exact: true,
-        });
-        const save = dialog.getByRole('button', { name: '保存', exact: true });
-        const purpose = dialog.getByLabel('参考资料用途', { exact: true });
-        await expect.poll(() => save.isEnabled()).toBe(true);
-        const draft = '父刷新期间保留的参考用途';
-        await purpose.fill(draft);
+        const absent = async () => {
+          for (const name of ['可见范围', '设为参考资料', '保存为参考资料'])
+            expect(
+              await f.page.getByRole('button', { name, exact: true }).count(),
+            ).toBe(0);
+          expect(
+            await f.page
+              .getByRole('dialog', { name: '保存为参考资料', exact: true })
+              .count(),
+          ).toBe(0);
+        };
+        await absent();
         f.state.employeeInstanceDelay = new Promise<void>((done) => {
           release = done;
         });
@@ -6952,15 +6890,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         );
         await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
         await began;
-        expect(await dialog.count()).toBe(1);
-        expect(await purpose.inputValue()).toBe(draft);
-        expect(await purpose.isEditable()).toBe(true);
-        expect(await save.isEnabled()).toBe(true);
-        const editedDraft = `${draft}，继续编辑`;
-        await purpose.fill(editedDraft);
-        expect(await purpose.inputValue()).toBe(editedDraft);
-        expect(saved).toEqual([]);
-
+        await absent();
         f.state.employeeInstanceArchived = outcome === 'archived';
         f.state.employeeInstanceStatus =
           outcome === 'denied' ? 403 : outcome === 'history-denied' ? 503 : 200;
@@ -6986,18 +6916,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await completed;
         if (listCompleted) await listCompleted;
         f.state.employeeHistoryDelay = null;
-        if (outcome === 'active' || outcome === 'history-unavailable') {
-          await expect.poll(() => save.isEnabled()).toBe(true);
-          expect(await purpose.inputValue()).toBe(editedDraft);
-          await save.click();
-          await dialog.getByRole('status').waitFor();
-          expect(saved).toEqual([
-            expect.objectContaining({
-              artifactVersionId: f.state.items[0]!.id,
-              purpose: editedDraft,
-            }),
-          ]);
-        } else {
+        if (outcome !== 'active' && outcome !== 'history-unavailable')
           await f.page
             .getByText(
               outcome === 'archived'
@@ -7008,31 +6927,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               { exact: true },
             )
             .waitFor();
-          expect(await dialog.count()).toBe(1);
-          expect(await purpose.inputValue()).toBe(editedDraft);
-          expect(await purpose.isDisabled()).toBe(true);
-          expect(await save.isDisabled()).toBe(true);
-          await save.dispatchEvent('click');
-          expect(saved).toEqual([]);
-          if (outcome === 'history-denied') {
-            f.state.employeeInstanceStatus = 200;
-            f.state.employeeHistoryStatus = 200;
-            await f.page.evaluate(() =>
-              window.dispatchEvent(new Event('focus')),
-            );
-            await expect.poll(() => save.isEnabled()).toBe(true);
-            expect(await purpose.isEditable()).toBe(true);
-            expect(await purpose.inputValue()).toBe(editedDraft);
-            await save.click();
-            await dialog.getByRole('status').waitFor();
-            expect(saved).toEqual([
-              expect.objectContaining({
-                artifactVersionId: f.state.items[0]!.id,
-                purpose: editedDraft,
-              }),
-            ]);
-          }
+        await absent();
+        if (outcome === 'history-denied') {
+          f.state.employeeInstanceStatus = 200;
+          f.state.employeeHistoryStatus = 200;
+          const recovered = f.page.waitForResponse(
+            (response) =>
+              response.request().method() === 'GET' &&
+              isSelected(response.url()),
+          );
+          await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+          await recovered;
+          await absent();
         }
+        expect(saved).toEqual([]);
         expect(f.errors).toEqual([]);
       } finally {
         release();

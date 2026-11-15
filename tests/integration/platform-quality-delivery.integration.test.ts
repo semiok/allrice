@@ -156,6 +156,9 @@ suite('MET167 joined delivery facts (isolated ordinary employee)', () => {
           role: 'member',
         })),
       };
+      // Ordinary download GETs retain the owner's existing Web login identity.
+      await f.db`insert into allrice_sessions(id,user_id,token_hash,expires_at)
+        values(${owner.sessionId!},${owner.actor.id},${createHash('sha256').update(randomUUID()).digest('hex')},clock_timestamp()+interval '1 hour')`;
       const principal = await ensureBootstrapPortalPrincipal(
         {
           organizationSlug: 'allrice-platform',
