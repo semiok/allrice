@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import type { Sql } from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
+import {
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from './runtime.fixture.ts';
 import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import { runtimePolicyDigest } from './runtime-policy-digest.ts';
@@ -251,6 +254,26 @@ async function migrate(db: Sql) {
     await tx.unsafe(await sqlFor(retirement));
   });
 }
+async function migrateWithNotices(db: Sql) {
+  const [scope] = await db`select current_schema() name`;
+  const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
+  url.searchParams.set('options', `-csearch_path=${scope!.name}`);
+  const notices: unknown[] = [];
+  const observed = postgres(url.toString(), {
+    max: 1,
+    onnotice: (notice) => {
+      const prefix = 'met223_legacy_runs_retained ';
+      if (notice.message.startsWith(prefix))
+        notices.push(JSON.parse(notice.message.slice(prefix.length)));
+    },
+  });
+  try {
+    await migrate(observed);
+  } finally {
+    await observed.end({ timeout: 5 });
+  }
+  return notices;
+}
 suite(
   '0244 legacy memory/experience deletion with current V2 and A1 preservation',
   () => {
@@ -395,6 +418,131 @@ suite(
       expect(
         await db`select value from allrice_settings where scope_id=${c.org} and key='employee_memory_source_policy'`,
       ).toEqual([{ value: { schemaVersion: 2, enabled: false } }]);
+    }, 120000);
+    it('keeps delivered bytes, immutable versions and the legacy Run while deleting unreferenced legacy Runs and memory', async () => {
+      f = await historical();
+      const db = f.db;
+      const delivered = await createCompletedRunFixture(db);
+      const disposable = await createCompletedRunFixture(db);
+      const oldMemory = await memory(f, 'v1');
+      const body = '用户已收到的交付成果，清理旧记忆后仍可下载。';
+      const objectId = randomUUID(),
+        versionId = randomUUID();
+      const object = {
+        id: objectId,
+        organizationId: delivered.org,
+        workspaceId: delivered.workspace,
+        ownerId: delivered.user,
+        key: `organizations/${delivered.org}/workspaces/${delivered.workspace}/owners/${delivered.user}/artifacts/${objectId}`,
+        checksum: contentDigest(body),
+        sizeBytes: Buffer.byteLength(body),
+        mediaType: 'text/plain',
+        retentionUntil: null,
+        deletedAt: null,
+        immutable: true,
+      };
+      const storage = runtimeFixtureStorage(db);
+      await storage.put(object, new Blob([body]).stream());
+      await db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,immutable)
+        values(${objectId},${delivered.org},${delivered.workspace},${delivered.user},${object.key},'artifacts',
+          ${object.mediaType},${object.sizeBytes},${object.checksum},'ready',true)`;
+      await db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
+        values(${versionId},${delivered.org},${delivered.workspace},${delivered.user},${objectId},${randomUUID()},1,${delivered.session.id},'delivery.txt','text')`;
+      await db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest)
+        values(${versionId},${delivered.org},${delivered.workspace},${delivered.user},${delivered.run},'document',
+          ${db.json({ kind: 'tool_result', runId: delivered.run, operationId: null, stepId: null })},${randomUUID()},${object.checksum})`;
+      await db`insert into allrice_file_references(organization_id,workspace_id,owner_id,session_id,object_id,file_name)
+        values(${delivered.org},${delivered.workspace},${delivered.user},${delivered.session.id},${objectId},'delivery.txt')`;
+      const tables = [
+        'allrice_storage_objects',
+        'allrice_deliverable_versions',
+        'allrice_workbench_artifacts',
+        'allrice_file_references',
+      ];
+      const before = await Promise.all(tables.map((t) => snapshot(db, t)));
+      const run =
+        await db`select to_jsonb(r) value from allrice_runs r where id=${delivered.run}`;
+      const employeeRun =
+        await db`select to_jsonb(r) value from allrice_employee_runs r where run_id=${delivered.run}`;
+      const notices = await migrateWithNotices(db);
+      expect(notices).toEqual([
+        { count: 1, reason: 'retained_business_foreign_key' },
+      ]);
+      expect(await Promise.all(tables.map((t) => snapshot(db, t)))).toEqual(
+        before,
+      );
+      expect(await new Response(await storage.get(object)).text()).toBe(body);
+      expect(
+        await db`select to_jsonb(r) value from allrice_runs r where id=${delivered.run}`,
+      ).toEqual(run);
+      expect(
+        await db`select to_jsonb(r) value from allrice_employee_runs r where run_id=${delivered.run}`,
+      ).toEqual(employeeRun);
+      expect(
+        await db`select id from allrice_runs where id=${disposable.run}`,
+      ).toEqual([]);
+      expect(
+        await db`select run_id from allrice_employee_runs where run_id=${disposable.run}`,
+      ).toEqual([]);
+      expect(
+        await db`select id from allrice_memories where id=${oldMemory}`,
+      ).toEqual([]);
+      await expect(
+        db`delete from allrice_runs where id=${delivered.run}`,
+      ).rejects.toMatchObject({ code: '23503' });
+      await expect(
+        db`delete from allrice_workbench_artifacts where version_id=${versionId}`,
+      ).rejects.toThrow('artifact version metadata is immutable');
+    }, 120000);
+    it('retains unknown publication/read references and propagates retention across Run evidence without detaching foreign keys', async () => {
+      f = await historical();
+      const db = f.db;
+      const published = await createCompletedRunFixture(db);
+      const referenced = await createCompletedRunFixture(db);
+      const read = await createCompletedRunFixture(db);
+      const disposable = await createCompletedRunFixture(db);
+      // Unknown business tables and a cross-Run evidence FK exercise the same
+      // catalog contract as production publications, references and receipts.
+      await db`create table retained_publication(run_id uuid references allrice_runs(id), body text not null)`;
+      await db`create table retained_read_receipt(step_id uuid references allrice_employee_run_steps(id), body text not null)`;
+      await db`alter table allrice_run_events add column referenced_run_id uuid references allrice_runs(id)`;
+      await db`insert into retained_publication values(${published.run},'published result')`;
+      await db`insert into allrice_run_events(organization_id,workspace_id,run_id,sequence,event_type,referenced_run_id)
+        values(${published.org},${published.workspace},${published.run},1,'run.succeeded',${referenced.run})`;
+      const step = randomUUID();
+      await db`insert into allrice_employee_run_steps(id,organization_id,workspace_id,run_id,sequence,event_type)
+        values(${step},${read.org},${read.workspace},${read.run},1,'read.receipt')`;
+      await db`insert into retained_read_receipt values(${step},'read result')`;
+      const retained = [published.run, referenced.run, read.run];
+      const tables = [
+        'retained_publication',
+        'retained_read_receipt',
+        'allrice_run_events',
+        'allrice_employee_run_steps',
+      ];
+      const before = await Promise.all(tables.map((t) => snapshot(db, t)));
+      const runs =
+        await db`select to_jsonb(r) value from allrice_runs r where id in ${db(retained)} order by id`;
+      const employeeRuns =
+        await db`select to_jsonb(r) value from allrice_employee_runs r where run_id in ${db(retained)} order by run_id`;
+      expect(await migrateWithNotices(db)).toEqual([
+        { count: 3, reason: 'retained_business_foreign_key' },
+      ]);
+      expect(await Promise.all(tables.map((t) => snapshot(db, t)))).toEqual(
+        before,
+      );
+      expect(
+        await db`select to_jsonb(r) value from allrice_runs r where id in ${db(retained)} order by id`,
+      ).toEqual(runs);
+      expect(
+        await db`select to_jsonb(r) value from allrice_employee_runs r where run_id in ${db(retained)} order by run_id`,
+      ).toEqual(employeeRuns);
+      expect(
+        await db`select id from allrice_runs where id=${disposable.run}`,
+      ).toEqual([]);
+      await expect(
+        db`delete from allrice_runs where id=${referenced.run}`,
+      ).rejects.toMatchObject({ code: '23503' });
     }, 120000);
     it('rolls back all table drops and restores history guards when a shared FK still uses a retired memory', async () => {
       f = await historical();

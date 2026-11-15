@@ -218,6 +218,73 @@ delete from allrice_native_recurring_operations where automation_id in (select i
 delete from allrice_automations where id in (select id from met223_legacy_automations);
 delete from allrice_settings where key='employee_experience_policy' and scope_type in ('system','organization');
 
+-- A legacy memory projection does not make a user's delivery disposable.
+-- Inventory exactly the shared rows the cleanup below would delete, after
+-- dedicated experience rows have gone. Physical identities stay stable under
+-- these write locks; all real foreign keys remain enabled, including late refs.
+create temporary table met223_run_cleanup_relations(relation_id regclass primary key,run_expression text) on commit drop;
+insert into met223_run_cleanup_relations values
+ ('allrice_runs','r.id'),
+ ('allrice_conversation_commands','r.followup_run_id'),
+ ('allrice_conversation_followups','r.run_id'),
+ ('allrice_native_questions','r.source_run_id'),
+ ('allrice_run_feedback','r.run_id'),
+ ('allrice_employee_run_steps','r.run_id'),
+ ('allrice_employee_runs','r.run_id'),
+ ('allrice_subscription_usage_budget_reviews','(select d.run_id from allrice_route_decisions d where d.id=r.route_decision_id)'),
+ ('allrice_route_subscription_snapshots','(select d.run_id from allrice_route_decisions d where d.id=r.route_decision_id)'),
+ ('allrice_model_usage_ledger','(select d.run_id from allrice_route_decisions d where d.id=r.route_decision_id)'),
+ ('allrice_route_decisions','r.run_id'),
+ ('allrice_run_events','r.run_id'),
+ ('allrice_jobs','r.run_id');
+create temporary table met223_run_cleanup_rows(
+ relation_id oid,row_id tid,run_id uuid,primary key(relation_id,row_id)
+) on commit drop;
+create temporary table met223_retained_runs(id uuid primary key) on commit drop;
+do $$
+declare relation record; fk record; added bigint; changed bigint;
+begin
+  for relation in select * from met223_run_cleanup_relations order by relation_id::oid loop
+    execute format('lock table %s in share row exclusive mode',relation.relation_id);
+  end loop;
+  for relation in select * from met223_run_cleanup_relations loop
+    execute format('insert into met223_run_cleanup_rows
+      select r.tableoid,r.ctid,%s from %s r where %s in (select id from met223_legacy_runs)',
+      relation.run_expression,relation.relation_id,relation.run_expression);
+  end loop;
+  -- Keep the entire Run evidence if any surviving business row references it,
+  -- even through a Job/route/step or a composite FK. Repeat to propagate refs
+  -- from a newly retained Run to another candidate Run; no permanent ledger.
+  loop
+    changed := 0;
+    for fk in
+      select c.conrelid::regclass child_relation,c.confrelid::regclass parent_relation,
+        string_agg(format('child.%I=parent.%I',a.attname,b.attname),' and ' order by k.ordinality) predicate
+      from pg_constraint c
+      cross join lateral unnest(c.conkey,c.confkey) with ordinality k(child_key,parent_key,ordinality)
+      join pg_attribute a on a.attrelid=c.conrelid and a.attnum=k.child_key
+      join pg_attribute b on b.attrelid=c.confrelid and b.attnum=k.parent_key
+      where c.contype='f' and c.confrelid in (select relation_id from met223_run_cleanup_relations)
+      group by c.oid,c.conrelid,c.confrelid
+    loop
+      execute format('insert into met223_retained_runs
+        select distinct owned.run_id from %s parent
+        join met223_run_cleanup_rows owned on owned.relation_id=parent.tableoid and owned.row_id=parent.ctid
+        join %s child on %s
+        where not exists(select 1 from met223_run_cleanup_rows disposable
+          where disposable.relation_id=child.tableoid and disposable.row_id=child.ctid
+            and not exists(select 1 from met223_retained_runs kept where kept.id=disposable.run_id))
+        on conflict do nothing',fk.parent_relation,fk.child_relation,fk.predicate);
+      get diagnostics added = row_count;
+      changed := changed + added;
+    end loop;
+    exit when changed=0;
+  end loop;
+  delete from met223_legacy_runs l using met223_retained_runs kept where l.id=kept.id;
+  raise notice 'met223_legacy_runs_retained %',jsonb_build_object(
+    'count',(select count(*) from met223_retained_runs),'reason','retained_business_foreign_key');
+end $$;
+
 -- Core evidence owned solely by a retired Run. Other business/artifact FKs
 -- deliberately block cleanup rather than recursively deleting current content.
 delete from allrice_native_context_retirements where context_kind='experience_consolidation';
