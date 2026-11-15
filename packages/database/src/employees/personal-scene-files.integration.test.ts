@@ -648,6 +648,7 @@ suite(
         name: 'workspace.memory.search',
       });
       const { checksum: _checksum, ...payload } = bundle;
+      void _checksum;
       bundle.checksum = skillBundleChecksum(payload);
       const setId = randomUUID(),
         contentId = randomUUID(),

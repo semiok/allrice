@@ -15,6 +15,7 @@ describe('scene package content and controlled resources', () => {
       const input = sceneSkillFixture();
       input.skillPackage.bundle.dependencies.push({ kind: 'tool', name });
       const { checksum: _checksum, ...payload } = input.skillPackage.bundle;
+      void _checksum;
       input.skillPackage.bundle.checksum = skillBundleChecksum(payload);
       const original = structuredClone(input);
       expect(() =>
@@ -54,6 +55,7 @@ describe('scene package content and controlled resources', () => {
       });
       const { checksum: _unknown, ...unknownPayload } =
         input.skillPackage.bundle;
+      void _unknown;
       input.skillPackage.bundle.checksum = skillBundleChecksum(unknownPayload);
       expect(() =>
         validateHistoricalSceneSkillPackage(input.skillPackage, input.body, []),

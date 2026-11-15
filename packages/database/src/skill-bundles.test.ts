@@ -123,9 +123,11 @@ describe('P18 immutable reviewed Skill bundles', () => {
       skill.requiredToolRefs.push(name);
       skill.bundle.dependencies.push({ kind: 'tool', name });
       const { checksum: _bundleChecksum, ...bundlePayload } = skill.bundle;
+      void _bundleChecksum;
       skill.bundle.checksum = skillBundleChecksum(bundlePayload);
       pkg.runtimeManifest.toolNames.push(name);
       const { checksum: _packageChecksum, ...packagePayload } = pkg;
+      void _packageChecksum;
       pkg.checksum = personaRuntimePackageChecksum(packagePayload);
       const original = structuredClone(pkg);
       expect(frozenPackageSkills(pkg)).toEqual(pkg.skills);
@@ -149,6 +151,7 @@ describe('P18 immutable reviewed Skill bundles', () => {
         name: 'unknown.never_registered',
       });
       const { checksum: _unknownChecksum, ...unknownPayload } = unknown.bundle;
+      void _unknownChecksum;
       unknown.bundle.checksum = skillBundleChecksum(unknownPayload);
       expect(() => validateHistoricalFrozenSkill(unknown)).toThrow(
         'skill_bundle_unknown_tool',
@@ -162,6 +165,7 @@ describe('P18 immutable reviewed Skill bundles', () => {
       corrupt.bundle.resources[0]!.contentBase64 =
         Buffer.from('changed').toString('base64');
       const { checksum: _corruptChecksum, ...corruptPayload } = corrupt.bundle;
+      void _corruptChecksum;
       corrupt.bundle.checksum = skillBundleChecksum(corruptPayload);
       expect(() => validateHistoricalFrozenSkill(corrupt)).toThrow(
         'skill_resource_checksum_mismatch',

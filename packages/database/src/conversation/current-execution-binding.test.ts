@@ -334,6 +334,7 @@ describe('current employee source policy: immutable original identities', () => 
             ...retired.map((name) => ({ kind: 'tool' as const, name })),
           );
           const { checksum: _checksum, ...payload } = bundle;
+          void _checksum;
           bundle.checksum = skillBundleChecksum(payload);
         }
         fingerprint(pkg);
