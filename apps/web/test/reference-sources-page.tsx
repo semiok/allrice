@@ -28,7 +28,7 @@ const reference = {
   ownership: { scope: 'company', organizationId: id(3) },
 };
 const member = {
-  entryId: 'member-1',
+  entryId: `entry:${checksum}`,
   path: '文案/上新说明.md',
   checksum,
   sizeBytes: 86,

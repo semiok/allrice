@@ -4614,6 +4614,101 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
+  it.each([
+    { width: 1440, disabled: false },
+    { width: 390, disabled: false },
+    { width: 390, disabled: true },
+  ])(
+    'opens R4 source from the real conversation entry (%o)',
+    async ({ width, disabled }) => {
+      const checksum = `sha256:${'a'.repeat(64)}`;
+      const citation: NonNullable<Message['content']['citations']>[number] = {
+        type: 'reference',
+        id: id(9651),
+        label: '产品图/主图.png',
+        referenceLabel: 'R1',
+        reference: {
+          sourceId: id(9652),
+          revisionId: id(9653),
+          revision: 1,
+          fileName: '秋冬新品资料.zip',
+          purpose: '',
+          digest: checksum,
+          checksum,
+          ownership: { scope: 'company', organizationId: org },
+        },
+        locator: {
+          kind: 'image',
+          sourceChecksum: checksum,
+          image: {
+            attachmentId: checksum,
+            mediaType: 'image/png',
+            bytes: 100,
+            width: 20,
+            height: 20,
+          },
+          member: {
+            entryId: `entry:${checksum}`,
+            path: '产品图/主图.png',
+            checksum,
+            sizeBytes: 100,
+            mediaType: 'image/png',
+          },
+        },
+      };
+      const f = await fixture({
+        width,
+        disabled,
+        initialMessages: [
+          {
+            id: id(9654),
+            role: 'assistant',
+            runId: run,
+            status: 'completed',
+            createdAt: now,
+            content: {
+              text: '这张图的来源保留在这里。',
+              citations: [citation],
+            },
+          },
+        ],
+      });
+      const reads: string[] = [];
+      try {
+        f.page.on('request', (request) => {
+          if (/\/api\/v1\/(references|files)\//.test(request.url()))
+            reads.push(request.url());
+        });
+        await f.page
+          .getByRole('button', { name: '[R1] 产品图/主图.png', exact: true })
+          .click();
+        const panel = f.page.getByRole('region', {
+          name: '引用来源',
+          exact: true,
+        });
+        await panel.waitFor();
+        expect(await panel.textContent()).toContain('秋冬新品资料.zip');
+        expect(await panel.textContent()).toContain('产品图/主图.png');
+        expect(await panel.textContent()).toContain('ZIP 内文件 · 图片');
+        expect(reads).toEqual([]);
+        await f.page
+          .getByRole('button', { name: '关闭工作台', exact: true })
+          .click();
+        await panel.waitFor({ state: 'hidden' });
+        await f.page.goto(f.page.url().replace(A, B));
+        expect(
+          await f.page
+            .getByRole('button', { name: '[R1] 产品图/主图.png', exact: true })
+            .count(),
+        ).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30_000,
+  );
+
   it.each([1440, 390])(
     'expands native work process downward from the clicked header at %ipx',
     async (width) => {

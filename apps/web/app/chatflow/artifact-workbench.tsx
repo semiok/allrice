@@ -540,17 +540,20 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         inert={!props.open}
         role={fullscreen ? 'dialog' : 'complementary'}
         aria-label={
-          props.desktop
-            ? '工作台'
-            : activeTab?.kind === 'nativeSubagent'
-              ? '子智能体'
-              : activeTab?.kind === 'workflow'
-                ? '能力'
-                : personalMemoryView
-                  ? '记忆'
-                  : props.taskRequest
-                    ? '任务与交付成果'
-                    : '交付成果'
+          activeTab?.kind === 'reference' &&
+          activeTab.contentId.startsWith('citation:')
+            ? '引用来源工作台'
+            : props.desktop
+              ? '工作台'
+              : activeTab?.kind === 'nativeSubagent'
+                ? '子智能体'
+                : activeTab?.kind === 'workflow'
+                  ? '能力'
+                  : personalMemoryView
+                    ? '记忆'
+                    : props.taskRequest
+                      ? '任务与交付成果'
+                      : '交付成果'
         }
         aria-modal={fullscreen ? true : undefined}
         data-fullscreen={fullscreen || undefined}

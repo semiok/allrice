@@ -737,12 +737,16 @@ export function ChatFlowClient({
     currentModuleRequest?.kind === 'workflow'
       ? currentModuleRequest
       : undefined;
+  const currentReferenceSourceRequest =
+    currentModuleRequest?.kind === 'reference' &&
+    currentModuleRequest.id?.startsWith('citation:');
   const workbenchRequested =
     (workbenchEnabled ||
       !!currentAutomationRequest ||
       !!currentMemoryRequest ||
       !!currentSubagentRequest ||
-      !!currentCapabilityRequest) &&
+      !!currentCapabilityRequest ||
+      currentReferenceSourceRequest) &&
     layout.open;
   const openAutomationTask = (
     task: { id: string; name?: string },
@@ -3281,7 +3285,8 @@ export function ChatFlowClient({
         currentAutomationRequest ||
         currentMemoryRequest ||
         currentSubagentRequest ||
-        currentCapabilityRequest) &&
+        currentCapabilityRequest ||
+        currentReferenceSourceRequest) &&
       hasWorkbenchContent ? (
         <ArtifactWorkbench
           personalDeliverables
