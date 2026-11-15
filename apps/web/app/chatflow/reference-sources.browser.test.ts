@@ -112,7 +112,7 @@ suite('R4 conversation source attribution', () => {
             ['[R2] 文案/上新说明.md', 'ZIP 内文件 · 正文', '文案/上新说明.md'],
             ['[R3] 产品图/主图.png', 'ZIP 内文件 · 图片', '产品图/主图.png'],
             ['[R4] 秋冬新品主图.png', '图片资料', ''],
-          ]) {
+          ] as const) {
             await sources
               .getByRole('button', { name: label, exact: true })
               .click();
