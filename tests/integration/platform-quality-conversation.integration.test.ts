@@ -22,6 +22,7 @@ import {
   getChatSessionHistory,
 } from '../../packages/database/src/workspace/service.ts';
 import { claimNextJob } from '../../packages/database/src/execution/queue.ts';
+import { createSession } from '../../packages/database/src/identity.ts';
 import { listWorkbenchArtifacts } from '../../packages/database/src/artifact-review.ts';
 import { DshHarnessAdapter } from '../../apps/worker/src/harness/dsh-adapter.ts';
 import * as Router from '../../apps/worker/src/harness/router.ts';
@@ -90,6 +91,9 @@ suite(
             role: 'member',
           })),
         };
+        // Ordinary download GETs retain the owner's existing Web login identity.
+        await f.db`insert into allrice_sessions(id,user_id,token_hash,expires_at)
+          values(${ownerContext.sessionId!},${ownerContext.actor.id},${createHash('sha256').update(randomUUID()).digest('hex')},clock_timestamp()+interval '1 hour')`;
         const peers: RequestContext[] = [];
         for (const otherCompany of [false, true]) {
           const id = randomUUID();
@@ -104,8 +108,10 @@ suite(
           }
           await f.db`insert into allrice_memberships(id,organization_id,workspace_id,user_id,role)
           values(${membershipId},${organizationId},${workspaceId},${id},'member')`;
+          const peerSession = await createSession(id);
           peers.push({
             ...f.context,
+            sessionId: peerSession.id,
             actor: { type: 'user', id },
             organizationId,
             workspaceId,
