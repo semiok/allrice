@@ -27,7 +27,7 @@
       "source": "packages/client/ui-sidebar-files/src/client/FilesBody.tsx (Entry file branch); FilesBody.module.css (body/row/fileIcon/name/tool)",
       "target": "apps/web/app/chatflow/dsh-upstream/files/FileRow.tsx; apps/web/app/chatflow/file-row.module.css",
       "reuse": "Reuse the pinned rc.2 Entry file branch and the already-synced unmodified FilesBody stylesheet: native source icon is 16px, with native spacing, name ellipsis and 28px tools.",
-      "productChanges": "User approved 28px FileTypeIcon for the double-line host rows on 2026-11-15, without a private icon box. Shared deliverables/materials row has sibling open/action buttons and favorite, audience, subtitle and search-excerpt slots. Keep permissions, callbacks and purpose/publication contracts unchanged."
+      "productChanges": "User approved 28px FileTypeIcon for the double-line host rows on 2026-11-15, without a private icon box; the user later requested subtle separators between the two-line file rows, without changing their geometry. Shared deliverables/materials row has sibling open/action buttons and favorite, audience, subtitle and search-excerpt slots. Keep permissions, callbacks and purpose/publication contracts unchanged."
     },
     {
       "source": "packages/client/ui-settings-general/src/client/SettingsRoot.tsx",

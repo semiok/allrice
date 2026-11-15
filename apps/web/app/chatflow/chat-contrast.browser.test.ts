@@ -396,17 +396,17 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           expect
             .soft(await ownFocus(add))
             .toEqual({ visible: true, shown: true });
-          expect.soft((await ring(card)).style).toBe('none');
+          await matchesNativeCard(card);
           await add.click();
-          expect.soft((await ring(card)).style).toBe('none');
+          await matchesNativeCard(card);
           await input.click();
-          expect.soft((await ring(card)).style).toBe('solid');
+          await matchesNativeCard(card);
 
           // Dropping files over a focused box: the hint reads, the focus stays.
           await dragFiles(page);
           await readable(page.getByText('图片拖动到此处即可添加'));
           await readable(page.getByText('最多 20 张，每张 20 MB'));
-          expect.soft((await ring(card)).style).toBe('solid');
+          await matchesNativeCard(card);
         } finally {
           await page.close();
         }
@@ -422,12 +422,12 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           expect(await input.isEditable()).toBe(true);
           expect(await send.isEnabled()).toBe(true);
           await input.click();
-          expect.soft((await ring(card)).style).toBe('solid');
+          await matchesNativeCard(card);
           await send.click();
           expect(
             await input.evaluate((node) => node === document.activeElement),
           ).toBe(true);
-          expect.soft((await ring(card)).style).toBe('solid');
+          await matchesNativeCard(card);
           await page.keyboard.press('Tab');
           await page.keyboard.press('Tab');
           expect(
@@ -436,7 +436,7 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           expect
             .soft(await ownFocus(send))
             .toEqual({ visible: true, shown: true });
-          expect.soft((await ring(card)).style).toBe('none');
+          await matchesNativeCard(card);
         } finally {
           await page.close();
         }
@@ -474,7 +474,7 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           expect(
             await input.evaluate((node) => node === document.activeElement),
           ).toBe(true);
-          expect.soft((await ring(card)).style).toBe('solid');
+          await matchesNativeCard(card);
           expect(
             await page
               .getByRole('button', { name: '发送', exact: true })
@@ -487,7 +487,7 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           expect(
             await input.evaluate((node) => node === document.activeElement),
           ).toBe(false);
-          expect.soft((await ring(card)).style).toBe('none');
+          await matchesNativeCard(card);
           await dragFiles(page);
           await readable(page.getByText('当前无法添加图片'));
         } finally {
