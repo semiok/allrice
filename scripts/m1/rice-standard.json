@@ -33,7 +33,7 @@
     "toolNames": [
       "workspace.file.list",
       "workspace.file.read",
-      "workspace.memory.search",
+      "workspace.memory.read",
       "workspace.session.search",
       "web.search",
       "web.fetch",
@@ -90,7 +90,7 @@
     "explicitToolNames": [
       "workspace.file.list",
       "workspace.file.read",
-      "workspace.memory.search",
+      "workspace.memory.read",
       "workspace.session.search",
       "web.search",
       "web.fetch",

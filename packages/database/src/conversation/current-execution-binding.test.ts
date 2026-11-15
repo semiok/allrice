@@ -350,6 +350,20 @@ describe('current employee source policy: immutable original identities', () => 
         binding,
       );
       expect(source).toEqual(original);
+      const unknown = structuredClone(source);
+      manifestOf(unknown).capabilityBindings.toolNames.push(
+        'unknown.never_registered',
+      );
+      if (manifestOf(unknown).runtimePackage) {
+        const pkg = packageOf(unknown);
+        pkg.runtimeManifest.toolNames.push('unknown.never_registered');
+        fingerprint(pkg);
+        unknown.configChecksum = pkg.checksum;
+      } else
+        unknown.configChecksum = employeeManifestChecksum(manifestOf(unknown));
+      expect(() => validateEmployeeExecutionSource(unknown)).toThrow(
+        'CURRENT_EXECUTION_SOURCE_TOOL_INVALID',
+      );
       for (const name of [...retired, 'workspace.memory.read'])
         expect(snapshot.capabilitySnapshot.bindings.toolNames).not.toContain(
           name,

@@ -5,6 +5,7 @@ import {
   DSH_INSTALLED_DISTRIBUTION,
   EmployeeDefinitionSchema,
   EmployeeExecutionSnapshotSchema,
+  retiredMemoryToolNames,
   UuidSchema,
   type EmployeeDefinition,
   type EmployeeRuntimePackage,
@@ -156,10 +157,17 @@ const equal = (left: unknown, right: unknown) =>
 const knownTools = new Set(
   allRiceToolManifest.map((tool) => tool.canonicalName as string),
 );
-function assertTools(tools: readonly string[]) {
+/** Original signed declarations survive tool retirement. Verify their original
+ * bytes below; only these two known A2 names may be inert historical metadata.
+ * Unknown names still fail. Run authority is checked separately, never aliased. */
+function assertDeclaredTools(tools: readonly string[]) {
   need(
     new Set(tools).size === tools.length &&
-      tools.every((name) => knownTools.has(name)),
+      tools.every(
+        (name) =>
+          knownTools.has(name) ||
+          retiredMemoryToolNames.some((retired) => retired === name),
+      ),
     'CURRENT_EXECUTION_SOURCE_TOOL_INVALID',
   );
 }
@@ -197,7 +205,7 @@ export function validateCurrentDeclarativeRuntimePackage(input: {
   // runtime/image dependencies and exact immutable governance provenance.
   const skills = frozenPackageSkills(pkg);
   const published = pkg.runtimeManifest;
-  assertTools(published.toolNames);
+  assertDeclaredTools(published.toolNames);
   need(
     published.provider === input.declaration.provider &&
       published.model === input.declaration.model &&
@@ -217,7 +225,7 @@ export function validateCurrentDeclarativeRuntimePackage(input: {
     'CURRENT_EXECUTION_SOURCE_GOVERNANCE_INVALID',
   );
   for (const skill of skills) {
-    assertTools(skill.requiredToolRefs);
+    assertDeclaredTools(skill.requiredToolRefs);
     need(
       published.skillGovernance.find((item) => item.id === skill.id)?.name ===
         skill.name,
@@ -267,7 +275,7 @@ export function validateEmployeeExecutionSource(
       ['codex', 'dsh'].includes(manifest.provider.provider),
     'CURRENT_EXECUTION_SOURCE_HARNESS_INVALID',
   );
-  assertTools(manifest.capabilityBindings.toolNames);
+  assertDeclaredTools(manifest.capabilityBindings.toolNames);
   const pkg = manifest.runtimePackage;
   if (pkg !== null) {
     validateCurrentDeclarativeRuntimePackage({
@@ -504,6 +512,12 @@ export function freezeEmployeeRunExecutionBinding(
   need(
     snapshot.schemaVersion === 2 && snapshot.runtimePolicy.harness === 'dsh',
     'CURRENT_EMPLOYEE_EXECUTION_SNAPSHOT_UNSUPPORTED',
+  );
+  need(
+    !snapshot.capabilitySnapshot.bindings.toolNames.some((name) =>
+      retiredMemoryToolNames.some((retired) => retired === name),
+    ),
+    'CURRENT_EMPLOYEE_EXECUTION_RETIRED_TOOL',
   );
   need(
     snapshot.employee.versionId === source.employeeVersionId &&
