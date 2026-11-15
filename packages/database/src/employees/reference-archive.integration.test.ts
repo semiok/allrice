@@ -10,6 +10,7 @@ import {
 } from 'vitest';
 import { zipSync } from 'fflate';
 import { ReferenceReadsSchema } from '@allrice/contracts';
+import * as contracts from '@allrice/contracts';
 import * as database from '../core/client.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -173,7 +174,7 @@ suite('R4b exact parent ZIP permissions and typed read ledger', () => {
   const receipts = async (run: Run) => {
     const [row] =
       await f.db`select reference_reads from allrice_employee_runs where run_id=${run.scope.runId}`;
-    return ReferenceReadsSchema.parse(row!.reference_reads);
+    return ReferenceReadsSchema.parse(row!.reference_reads ?? []);
   };
   const revoke = (saved: { sourceId: string }) =>
     changeReferencePublication(x.publisher, saved.sourceId, {
@@ -442,10 +443,17 @@ suite('R4b exact parent ZIP permissions and typed read ledger', () => {
     expect(await receipts(run)).toHaveLength(1);
   });
   it('refuses frozen old grants without touching storage', async () => {
-    const saved = await publish(),
-      run = await x.run(),
-      port = execution('workspace.reference.archive_list');
-    await f.db`update allrice_employee_runs set execution_snapshot=jsonb_set(execution_snapshot,'{capabilitySnapshot,bindings,toolNames}','["workspace.reference.read"]'::jsonb) where run_id=${run.scope.runId}`;
+    const saved = await publish();
+    const freeze = vi
+      .spyOn(contracts, 'freezeReferenceToolNames')
+      .mockImplementation((names) => [...names]);
+    let run: Run;
+    try {
+      run = await x.run();
+    } finally {
+      freeze.mockRestore();
+    }
+    const port = execution('workspace.reference.archive_list');
     const get = vi.spyOn(port.storage, 'get');
     await expect(
       invoke(run, 'workspace.reference.archive_list', saved.pin, port),

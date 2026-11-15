@@ -170,15 +170,15 @@ export function referenceImageValue(response) {
 }
 
 // Same public image renderer; text members keep an ordinary text-only result.
+// DSH marks optional fields by omitting required, not by setting it to false.
+const archiveImageSchema = { ...referenceImageOutput.schema.properties.image };
+delete archiveImageSchema.required;
 export const referenceArchiveOutput = {
   schema: {
     ...referenceImageOutput.schema,
     properties: {
       ...referenceImageOutput.schema.properties,
-      image: {
-        ...referenceImageOutput.schema.properties.image,
-        required: false,
-      },
+      image: archiveImageSchema,
     },
   },
   render: (args, value) =>
