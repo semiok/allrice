@@ -442,6 +442,22 @@
     },
     {
       "id": "native-document",
+      "adaptations": [
+        {
+          "target": "apps/web/app/chatflow/dsh-upstream/document/image/ImageBody.tsx; native-image-preview.tsx; native-pdf-preview.tsx",
+          "reuse": "Native image/PDF ZoomViewport fit-width, actual-size cap, zoom controls, anchoring and scroll ownership.",
+          "productChanges": "User-approved deliverable canvas inset reduction: image host supplies optional horizontalInset 16 for native padding 8 per side, while other ImageBody callers retain the native default 24. Delivery PDF/converted Word/PPT supply horizontalInset 12 through the public ZoomViewport injection seat for padding 6 per side. Host CSS halves Markdown/Excel/image outer padding without changing paper content padding or TXT/JSON.",
+          "upgradeChecks": "Replay the existing ImageBody source adapter patch; verify default horizontalInset 24 and forwarding to native ZoomViewport. workbench-layout.browser.test.ts checks six delivery types in light/dark desktop/phone, actual paper geometry within 0.5px and image zoom percentage against displayed width.",
+          "removalCriteria": "Remove the ImageBody inset source adaptation when native ImageBody exposes an equivalent host sizing prop; keep user-approved host canvas spacing."
+        },
+        {
+          "target": "apps/web/app/chatflow/native-excel-scroll.ts; native-excel-preview.tsx",
+          "reuse": "Unmodified ExcelBody 0.2.1-rc.2, including Fortune Sheet 1.0.4 internal scrolling and existing zoom buttons; XLSX/XLS/CSV share this host.",
+          "productChanges": "MET-225 user-approved private DOM exception: capture ordinary wheel only within [data-excel-preview] .fortune-sheet-container, read its unique .luckysheet-scrollbar-x/y boundaries, and stop propagation without preventing the default at an edge or without overflow. The browser scrolls the outer reader. Ctrl/Meta wheel stays native; no zoom, layout or package patch.",
+          "upgradeChecks": "The pinned client.excel.js asset hash is verified by dsh-ui:verify. workbench-layout.browser.test.ts mounts real XLSX and CSV, asserts the private grid and both scrollbar selectors, verifies inner scrolling, bidirectional edge chaining, fit-content forwarding, footer buttons and native button zoom. Review this contract on every DSH upgrade.",
+          "removalCriteria": "Remove the private DOM adapter when ExcelBody exposes native scroll chaining or a public boundary configuration."
+        }
+      ],
       "version": "0.2.1-rc.2",
       "commit": "687f282e8625c6b8d11ff58211a90524be2e4317",
       "license": "MIT",
@@ -645,9 +661,9 @@
           "source": "packages/client/ui-sidebar-documentpreview/src/client/image/ImageBody.tsx",
           "target": "apps/web/app/chatflow/dsh-upstream/document/image/ImageBody.tsx",
           "upstreamSha256": "2d478bc45d304a1198cc275a587027da3096af87813b65cdab00dd02a00031f3",
-          "sha256": "a66ea228ffc007bcfa6de26c5089b0a2a20fde9f19b22921735a3de67399e2e5",
+          "sha256": "acfd78bbba9a78c2c56c0974baca92a1ea38c4482f40db26a1a425f63010e15c",
           "patch": "scripts/dsh-ui-patches/preview-image-ImageBody.tsx.patch",
-          "patchSha256": "839e46e8f2aea13fdf8101ce969c714c300310a887dc3a690704b1dc20b29e32"
+          "patchSha256": "3f054fd9e8db20d747220c99debd677979690fad1134669521c9c5586c559ad1"
         },
         {
           "source": "packages/client/ui-sidebar-documentpreview/src/client/html/pack.ts",

@@ -7708,7 +7708,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '创建员工', exact: true })
           .click();
         const picker = f.page.getByRole('dialog', {
-          name: '创建一位 AI 员工',
+          name: '创建 AI 员工',
           exact: true,
         });
         await picker.waitFor();
@@ -8091,7 +8091,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
         ).toBe(0);
         const picker = f.page.getByRole('dialog', {
-          name: '创建一位 AI 员工',
+          name: '创建 AI 员工',
         });
         await picker.getByRole('combobox', { name: '表达偏好' }).waitFor();
         expect(
@@ -8792,7 +8792,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
           await createTrigger.click();
           const dialog = f.page.getByRole('dialog', {
-            name: '创建一位 AI 员工',
+            name: '创建 AI 员工',
             exact: true,
           });
           const name = dialog.getByRole('textbox', {
@@ -10549,7 +10549,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page
         .getByRole('button', { name: '创建员工', exact: true })
         .click();
-      const create = f.page.getByRole('dialog', { name: '创建一位 AI 员工' });
+      const create = f.page.getByRole('dialog', { name: '创建 AI 员工' });
       await create.waitFor();
       const nameInput = create.getByRole('textbox', {
         name: '员工名字',
@@ -10668,13 +10668,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '创建员工', exact: true })
           .click();
         if (employeeCount)
-          await f.page
-            .getByRole('dialog', { name: '创建一位 AI 员工' })
-            .waitFor();
+          await f.page.getByRole('dialog', { name: '创建 AI 员工' }).waitFor();
         expect(
-          await f.page
-            .getByRole('dialog', { name: '创建一位 AI 员工' })
-            .count(),
+          await f.page.getByRole('dialog', { name: '创建 AI 员工' }).count(),
         ).toBe(employeeCount ? 1 : 0);
         if (!employeeCount)
           expect(
@@ -16447,12 +16443,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
 
   for (const theme of ['light', 'dark'] as const)
     for (const width of [1440, 390])
-      it.each(['md', 'docx', 'pdf', 'xlsx', 'image'] as const)(
+      it.each(['md', 'docx', 'pptx', 'pdf', 'xlsx', 'image'] as const)(
         `MET247 v7 full reading area and reachable ordinary footer for %s at ${width}px ${theme}`,
         async (kind) => {
           const f = await fixture({ width, appearance: theme });
           const capture = async (state: string) => {
-            const dir = process.env.ALLRICE_DELIVERABLES_REVIEW_DIR;
+            const batch = process.env.ALLRICE_CI_COLLECTION_BATCH;
+            const dir =
+              process.env.ALLRICE_DELIVERABLES_REVIEW_DIR ??
+              (state === 'page' && batch
+                ? join(
+                    dirname(resolve(batch)),
+                    'test-failure-evidence',
+                    'met247-canvas-review',
+                  )
+                : undefined);
             if (!dir) return;
             await mkdir(dir, { recursive: true });
             await f.page.screenshot({
@@ -16466,6 +16471,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               height: width === 1440 ? 1000 : 844,
             });
             const pdfPageCount = 8;
+            const pdfKind = ['pdf', 'docx', 'pptx'].includes(kind);
             const file = catalogFile(9590, {
               fileName: `阅读验收.${kind === 'image' ? 'png' : kind}`,
               category: 'artifact',
@@ -16483,7 +16489,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                       `## 第 ${n + 1} 节\n\n保留原生 Markdown 阅读、文件身份与对话引用；两行来源信息和普通操作在本显示页正文之后。\n\n`,
                   ).join(''),
               };
-            else if (kind === 'pdf' || kind === 'docx')
+            else if (pdfKind)
               f.state.filePreview = deliverablePdf(
                 kind === 'docx' ? ['Noto Sans CJK SC'] : [],
                 pdfPageCount,
@@ -16554,7 +16560,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               await detail
                 .getByRole('heading', { name: '交付成果阅读验收', exact: true })
                 .waitFor();
-            else if (kind === 'pdf' || kind === 'docx')
+            else if (pdfKind)
               await detail
                 .getByText('Delivery original preview', { exact: true })
                 .waitFor();
@@ -16577,13 +16583,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     ),
                 )
                 .toBe(480);
-            if (kind === 'md' || kind === 'image' || kind === 'xlsx') {
+            {
+              const canvas = pdfKind
+                ? preview.locator('[data-pdf-preview]')
+                : preview;
               expect(
-                await preview.evaluate(
+                await canvas.evaluate(
                   (n) => getComputedStyle(n).backgroundColor,
                 ),
               ).toBe(
-                theme === 'dark' ? 'rgb(15, 15, 15)' : 'rgb(245, 245, 245)',
+                pdfKind
+                  ? theme === 'dark'
+                    ? 'rgb(21, 21, 23)'
+                    : 'rgb(235, 238, 242)'
+                  : theme === 'dark'
+                    ? 'rgb(15, 15, 15)'
+                    : 'rgb(245, 245, 245)',
               );
               const paper =
                 kind === 'md'
@@ -16591,23 +16606,84 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                       name: '文件正文',
                       exact: true,
                     })
-                  : preview.locator(
-                      kind === 'image'
-                        ? '[data-document-zoom-surface]'
-                        : '[data-excel-preview]',
-                    );
-              expect(
-                await paper.evaluate(
-                  (n) => getComputedStyle(n).backgroundColor,
-                ),
-              ).toBe('rgb(255, 255, 255)');
+                  : preview
+                      .locator(
+                        kind === 'xlsx'
+                          ? '[data-excel-preview]'
+                          : '[data-document-zoom-surface]',
+                      )
+                      .first();
+              if (!pdfKind)
+                expect(
+                  await paper.evaluate(
+                    (n) => getComputedStyle(n).backgroundColor,
+                  ),
+                ).toBe('rgb(255, 255, 255)');
+              const inset = pdfKind ? 6 : width === 390 ? 8 : 12;
+              const geometry = await paper.evaluate((node, image) => {
+                const host = image
+                  ? node.closest('[data-image-preview]')!
+                  : (node.closest('[data-pdf-preview]') ?? node.parentElement!);
+                const style = getComputedStyle(host);
+                const box = host.getBoundingClientRect();
+                const paper = node.getBoundingClientRect();
+                const left = parseFloat(style.paddingLeft);
+                const right = parseFloat(style.paddingRight);
+                const top = parseFloat(style.paddingTop);
+                const bottom = parseFloat(style.paddingBottom);
+                return {
+                  padding: [top, right, bottom, left],
+                  sideError:
+                    paper.left -
+                    box.left -
+                    left -
+                    Math.max(
+                      0,
+                      (host.clientWidth - left - right - paper.width) / 2,
+                    ),
+                  rightError:
+                    box.left +
+                    host.clientWidth -
+                    paper.right -
+                    right -
+                    Math.max(
+                      0,
+                      (host.clientWidth - left - right - paper.width) / 2,
+                    ),
+                  topError:
+                    paper.top -
+                    box.top -
+                    top -
+                    (image
+                      ? Math.max(
+                          0,
+                          (host.clientHeight - top - bottom - paper.height) / 2,
+                        )
+                      : 0),
+                };
+              }, kind === 'image');
+              expect(geometry.padding).toEqual(
+                kind === 'image'
+                  ? [inset, 8, inset, 8]
+                  : [inset, inset, inset, inset],
+              );
+              expect(Math.abs(geometry.sideError)).toBeLessThanOrEqual(0.5);
+              expect(Math.abs(geometry.rightError)).toBeLessThanOrEqual(0.5);
+              expect(Math.abs(geometry.topError)).toBeLessThanOrEqual(0.5);
+              if (kind === 'image') {
+                const outerInset = await preview
+                  .locator(':scope > div')
+                  .evaluate((node) =>
+                    parseFloat(getComputedStyle(node).paddingLeft),
+                  );
+                expect(outerInset + geometry.padding[3]!).toBe(inset);
+              }
               if (kind === 'xlsx') {
                 const card = (await paper.boundingBox())!;
                 const canvas = (await preview.boundingBox())!;
-                const inset = width === 390 ? 16 : 24;
                 expect(
                   Math.abs(card.width - (canvas.width - inset * 2)),
-                ).toBeLessThan(1);
+                ).toBeLessThanOrEqual(0.5);
               }
               if (kind === 'image') {
                 const image = preview.locator('[data-image-preview] img');
@@ -16626,7 +16702,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               `[data-pdf-page="${pdfPageCount}"]`,
             );
             const lastPageText = `Delivery original preview page ${pdfPageCount}`;
-            if (kind === 'pdf' || kind === 'docx') {
+            if (pdfKind) {
               // A distant final page starts as the native lazy placeholder.
               await lastPage.waitFor({ state: 'attached' });
               expect(
@@ -16776,14 +16852,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             const originalFrame = (await nativeFrame.count())
               ? await nativeFrame.elementHandle()
               : null;
-            const scroll =
-              kind === 'pdf' || kind === 'docx'
-                ? nativeFrame.locator('[data-document-zoom-scrollport]')
-                : reading;
+            const scroll = pdfKind
+              ? nativeFrame.locator('[data-document-zoom-scrollport]')
+              : reading;
             await scroll.evaluate((node) => {
               node.scrollTop = node.scrollHeight;
             });
-            if (kind === 'pdf' || kind === 'docx') {
+            if (pdfKind) {
               await lastPage.getByText(lastPageText, { exact: true }).waitFor();
               // Native ready is committed after drawImage; CSS visibility alone
               // does not prove the initially hidden surface has finished painting.
@@ -16835,7 +16910,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             expect(parseFloat(buttonStyles[0]!.border)).toBeGreaterThan(0);
             await capture('footer');
             let nativeZoom: string | undefined;
-            if (kind === 'pdf' || kind === 'docx') {
+            if (pdfKind) {
               const quoteHeight = (await actions.first().boundingBox())!.height;
               const zoom = nativeFrame.getByRole('button', {
                 name: '选择缩放比例',
@@ -22172,6 +22247,186 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.close();
         }
       }, 30_000);
+  it.each([
+    ['xlsx', 'long', 1440],
+    ['csv', 'long', 1440],
+    ['xlsx', 'fit', 1440],
+    ['csv', 'fit', 1440],
+    ['xlsx', 'long', 390],
+    ['csv', 'long', 390],
+  ] as const)(
+    'MET247 ExcelBody private scroll contract chains %s %s at %ipx to delivery actions',
+    async (format, length, width) => {
+      const f = await fixture({ width });
+      const evidence = createFailureEvidence({
+        file: import.meta.url,
+        test: `MET247 ExcelBody private scroll contract chains ${format} ${length} at ${width}px to delivery actions`,
+      });
+      evidence.observePage(f.page);
+      try {
+        const rows = Array.from(
+          { length: length === 'long' ? 120 : 2 },
+          (_, row) =>
+            Array.from(
+              { length: length === 'long' ? 12 : 2 },
+              (_, col) => `R${row + 1}C${col + 1}`,
+            ),
+        );
+        let base64: string;
+        if (format === 'xlsx') {
+          const ExcelJS = createRequire(resolve('apps/worker/package.json'))(
+            'exceljs',
+          );
+          const book = new ExcelJS.Workbook();
+          book.addWorksheet('滚动验收').addRows(rows);
+          base64 = Buffer.from(await book.xlsx.writeBuffer()).toString(
+            'base64',
+          );
+        } else {
+          base64 = Buffer.from(
+            rows.map((row) => row.join(',')).join('\n'),
+          ).toString('base64');
+        }
+        const file = catalogFile(9691, { fileName: `滚动验收.${format}` });
+        f.state.workbenchFiles.push(file);
+        f.state.filePreview = { kind: 'spreadsheet', format, base64 };
+        await f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true })
+          .click();
+        await f.panel
+          .getByRole('region', { name: '交付成果', exact: true })
+          .getByRole('button', { name: file.fileName, exact: true })
+          .click();
+        const detail = f.panel.locator(
+          `[data-document-id="${file.objectId}"]:visible`,
+        );
+        const reading = detail.locator('[class*="deliveryReadingArea"]');
+        const footer = detail.locator('footer');
+        const preview = detail.locator('[data-excel-preview]');
+        const grid = preview.locator('.fortune-sheet-container');
+        const hit = grid.locator('.fortune-cell-area');
+        await hit.waitFor();
+        // Deliberately independent of the adapter's selector constants: DSH
+        // DOM drift must fail this mounted contract, never silently skip it.
+        expect(await preview.count()).toBe(1);
+        expect(await grid.count()).toBe(1);
+        const x = grid.locator('.luckysheet-scrollbar-x');
+        const y = grid.locator('.luckysheet-scrollbar-y');
+        expect(await x.count()).toBe(1);
+        expect(await y.count()).toBe(1);
+        const remaining = () =>
+          y.evaluate(
+            (node) => node.scrollHeight - node.clientHeight - node.scrollTop,
+          );
+        if (length === 'long')
+          await expect.poll(remaining).toBeGreaterThan(100);
+        else await expect.poll(remaining).toBe(0);
+        const pointAtTable = async () => {
+          const a = (await hit.boundingBox())!,
+            b = (await reading.boundingBox())!;
+          const top = Math.max(a.y, b.y),
+            bottom = Math.min(a.y + a.height, b.y + b.height);
+          expect(bottom - top).toBeGreaterThan(20);
+          await f.page.mouse.move(
+            a.x + Math.min(100, a.width / 2),
+            top + Math.min(80, (bottom - top) / 2),
+          );
+        };
+        const initialOuter = await reading.evaluate((node) => node.scrollTop);
+        await pointAtTable();
+        await f.page.mouse.wheel(0, 180);
+        if (length === 'long') {
+          await expect
+            .poll(() => y.evaluate((node) => node.scrollTop))
+            .toBeGreaterThan(0);
+          expect(await reading.evaluate((node) => node.scrollTop)).toBe(
+            initialOuter,
+          );
+          await f.page.mouse.wheel(0, 100_000);
+          await expect.poll(remaining).toBeLessThanOrEqual(0.5);
+          expect(await reading.evaluate((node) => node.scrollTop)).toBe(
+            initialOuter,
+          );
+        } else {
+          await expect
+            .poll(() => reading.evaluate((node) => node.scrollTop))
+            .toBeGreaterThan(initialOuter);
+          expect(await y.evaluate((node) => node.scrollTop)).toBe(0);
+        }
+        // The next real wheel stays over the table. No click/scrollIntoView or
+        // programmatic outer scrolling is allowed to make the footer visible.
+        await pointAtTable();
+        await f.page.mouse.wheel(0, 1000);
+        await expect
+          .poll(async () => {
+            const a = (await reading.boundingBox())!,
+              b = (await footer.boundingBox())!;
+            return b.y >= a.y - 0.5 && b.y + b.height <= a.y + a.height + 0.5;
+          })
+          .toBe(true);
+        for (const name of ['引用到对话', '下载']) {
+          expect(
+            await footer
+              .getByRole('button', { name, exact: true })
+              .evaluate((node) => {
+                const r = node.getBoundingClientRect();
+                return node.contains(
+                  document.elementFromPoint(
+                    r.x + r.width / 2,
+                    r.y + r.height / 2,
+                  ),
+                );
+              }),
+          ).toBe(true);
+        }
+        const bottomOuter = await reading.evaluate((node) => node.scrollTop);
+        expect(bottomOuter).toBeGreaterThan(initialOuter);
+        await pointAtTable();
+        if (length === 'long') {
+          await f.page.mouse.wheel(0, -100_000);
+          await expect.poll(() => y.evaluate((node) => node.scrollTop)).toBe(0);
+          expect(await reading.evaluate((node) => node.scrollTop)).toBe(
+            bottomOuter,
+          );
+        }
+        await f.page.mouse.wheel(0, -1000);
+        await expect
+          .poll(() => reading.evaluate((node) => node.scrollTop))
+          .toBe(0);
+        await pointAtTable();
+        // This exception must leave modified wheels at the original grid
+        // handler. Excel's existing buttons remain the zoom entry point.
+        const zoom = preview.locator('.fortune-zoom-ratio');
+        const scale = await zoom.innerText();
+        for (const modifier of ['Control', 'Meta']) {
+          await f.page.keyboard.down(modifier);
+          await f.page.mouse.wheel(0, -120);
+          await f.page.keyboard.up(modifier);
+          expect(await zoom.innerText()).toBe(scale);
+        }
+        expect(await f.page.evaluate(() => window.visualViewport!.scale)).toBe(
+          1,
+        );
+        await preview
+          .getByRole('button', { name: '放大', exact: true })
+          .click();
+        await expect.poll(() => zoom.innerText()).not.toBe(scale);
+        await preview
+          .getByRole('button', { name: '缩小', exact: true })
+          .click();
+        await expect.poll(() => zoom.innerText()).toBe(scale);
+        expect(f.errors).toEqual([]);
+      } catch (error) {
+        await evidence.capture(error);
+        throw error;
+      } finally {
+        evidence.dispose();
+        await f.close();
+      }
+    },
+    30_000,
+  );
   it.each([
     ['image-fit', 1440],
     ['image-tall', 1440],

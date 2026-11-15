@@ -46,7 +46,7 @@ function PdfFooterViewport(props: ZoomViewportProps) {
     return () => setViewportMounted?.(false);
   }, [setViewportMounted]);
   return (
-    <ZoomViewport {...props}>
+    <ZoomViewport {...props} horizontalInset={12}>
       <div className={reader.pdfPages}>{props.children}</div>
       <div className={reader.pdfFooter}>{integration?.footer}</div>
     </ZoomViewport>

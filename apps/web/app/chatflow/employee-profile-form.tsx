@@ -64,14 +64,19 @@ const creationParts = [
     '3',
     '工作场景 Workflow',
     '安装一个 Workflow，它就能按固定流程干活。',
-    '一开始没有，可添加',
+    '默认没有，可添加',
   ],
-  ['4', '插件 Plugins', '带有独立界面的工具，点击打开新页面。', '一开始没有'],
+  [
+    '4',
+    '插件 Plugins',
+    '带有独立界面的工具，点击打开新页面。',
+    '默认没有，可添加',
+  ],
   [
     '5',
     '记忆 Memory',
     '工作中它提出想记住的内容，你确认后生效。',
-    '一开始是空的，最多 100 条',
+    '最多 100 条',
   ],
 ] as const;
 
@@ -243,6 +248,22 @@ export function EmployeeProfileForm({
     setSubmitError('');
     setValues((before) => ({ ...before, [key]: value }));
   };
+  const expressionSelect = (
+    <select
+      id={`${id}-expression-style`}
+      value={values.expressionStyle}
+      onChange={(event) =>
+        update(
+          'expressionStyle',
+          event.target.value as EmployeeProfileFormValues['expressionStyle'],
+        )
+      }
+    >
+      <option value="concise">简洁，结论优先</option>
+      <option value="structured">结构清晰，分步说明</option>
+      <option value="exploratory">比较方案与取舍</option>
+    </select>
+  );
   return (
     <form
       className={`${css.form} ${mode === 'edit' ? css.editForm : `${css.createForm} ${createCss.createForm}`}`}
@@ -390,21 +411,11 @@ export function EmployeeProfileForm({
             </div>
             <div className={css.field}>
               <label htmlFor={`${id}-expression-style`}>表达偏好</label>
-              <select
-                id={`${id}-expression-style`}
-                value={values.expressionStyle}
-                onChange={(event) =>
-                  update(
-                    'expressionStyle',
-                    event.target
-                      .value as EmployeeProfileFormValues['expressionStyle'],
-                  )
-                }
-              >
-                <option value="concise">简洁，结论优先</option>
-                <option value="structured">结构清晰，分步说明</option>
-                <option value="exploratory">比较方案与取舍</option>
-              </select>
+              {mode === 'create' ? (
+                <div className={css.expressionSelect}>{expressionSelect}</div>
+              ) : (
+                expressionSelect
+              )}
             </div>
           </div>
         </div>

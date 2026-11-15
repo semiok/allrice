@@ -18,6 +18,7 @@ import {
 import { zh } from './dsh-upstream/document/excel/locales';
 import { LoadingIndicator } from './dsh-upstream/document/LoadingIndicator';
 import styles from './document-reader.module.css';
+import { handleNativeExcelWheelCapture } from './native-excel-scroll';
 const t = previewLocale(zh);
 type Props = {
   loading: ReactNode;
@@ -64,7 +65,10 @@ export function NativeExcelPreview({
     );
   if (!module) return <LoadingIndicator label={zh.loading} />;
   return (
-    <div className={styles.nativeContent}>
+    <div
+      className={styles.nativeContent}
+      onWheelCapture={handleNativeExcelWheelCapture}
+    >
       <module.ExcelBody
         loading={<LoadingIndicator label={zh.loading} />}
         content={{ kind: 'bytes', data }}

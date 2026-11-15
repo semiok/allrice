@@ -571,11 +571,37 @@
 }
 .createForm .field select {
   height: auto;
-  padding-right: 24px;
+}
+.createForm .expressionSelect {
+  box-sizing: border-box;
+  height: 44px;
+  padding-inline: 12px;
+  border: 1px solid var(--ar-border);
+  border-radius: var(--ar-radius-sm);
+  background: var(--ar-surface-subtle);
+}
+.createForm .field .expressionSelect select {
+  min-height: 0;
+  height: 100%;
+  padding-inline: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.createForm .expressionSelect:hover {
+  border-color: var(--ar-border-strong);
+}
+.createForm .expressionSelect:focus-within {
+  outline: 2px solid var(--ar-focus-ring);
+  outline-offset: 2px;
+  background: var(--dsw-specific-input-major);
+}
+.createForm .field .expressionSelect select:focus {
+  outline: none;
+  background: transparent;
 }
 @media (min-width: 701px) and (pointer: fine) {
-  .createForm .field select {
-    min-height: 40px;
+  .createForm .expressionSelect {
     height: 40px;
   }
 }

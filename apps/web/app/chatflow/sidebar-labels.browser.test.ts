@@ -310,18 +310,18 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
       it(`reads the create-employee dialog at ${at}`, () =>
         measure(`${at} create-employee`, width, async (page) => {
           await page.goto(`${origin}/?theme=${theme}&dialog=create`);
-          const dialog = page.getByRole('dialog', { name: '创建一位 AI 员工' });
+          const dialog = page.getByRole('dialog', { name: '创建 AI 员工' });
           await readable(
             'dialog title',
             dialog.getByRole('heading', {
-              name: '创建一位 AI 员工（员工由人设、技能、工作场景、插件、记忆五部分组成）',
+              name: '创建 AI 员工 员工由人设、技能、工作场景、插件、记忆五部分组成',
               exact: true,
             }),
           );
           await readable(
             'creation guidance',
             dialog.getByText(
-              '（员工由人设、技能、工作场景、插件、记忆五部分组成）',
+              '员工由人设、技能、工作场景、插件、记忆五部分组成',
               { exact: true },
             ),
           );
@@ -342,6 +342,63 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
               `${name} description heading`,
               dialog.getByRole('heading', { name, exact: true }),
             );
+          for (const [title, status] of [
+            ['技能 Skills', '自带基础技能，可再添加'],
+            ['工作场景 Workflow', '默认没有，可添加'],
+            ['插件 Plugins', '默认没有，可添加'],
+            ['记忆 Memory', '最多 100 条'],
+          ] as const)
+            await readable(
+              `${title} status`,
+              dialog
+                .getByRole('heading', { name: title, exact: true })
+                .locator('..')
+                .locator('..')
+                .getByText(status, { exact: true }),
+            );
+          const expression = dialog.getByRole('combobox', {
+            name: '表达偏好',
+            exact: true,
+          });
+          const geometry = await expression.evaluate((node) => {
+            const shell = node.parentElement!;
+            const input = node
+              .closest('form')!
+              .querySelector('[data-employee-name]')!;
+            const css = getComputedStyle(shell);
+            const inputCss = getComputedStyle(input);
+            const box = shell.getBoundingClientRect();
+            const nativeBox = node.getBoundingClientRect();
+            return {
+              appearance: getComputedStyle(node).appearance,
+              height: box.height,
+              left: nativeBox.left - box.left - parseFloat(css.borderLeftWidth),
+              right:
+                box.right - nativeBox.right - parseFloat(css.borderRightWidth),
+              inputLeft: parseFloat(inputCss.paddingLeft),
+              inputRight: parseFloat(inputCss.paddingRight),
+            };
+          });
+          expect(geometry.appearance).not.toBe('none');
+          expect(
+            Math.abs(geometry.height - (width > 700 ? 40 : 44)),
+          ).toBeLessThanOrEqual(0.5);
+          expect(Math.abs(geometry.left - 12)).toBeLessThanOrEqual(0.5);
+          expect(Math.abs(geometry.right - 12)).toBeLessThanOrEqual(0.5);
+          expect(
+            Math.abs(geometry.left - geometry.inputLeft),
+          ).toBeLessThanOrEqual(0.5);
+          expect(
+            Math.abs(geometry.right - geometry.inputRight),
+          ).toBeLessThanOrEqual(0.5);
+          await expression.selectOption('concise');
+          expect(await expression.inputValue()).toBe('concise');
+          await expression.focus();
+          await expression.press('ArrowDown');
+          await expression.press('Enter');
+          await expect.poll(() => expression.inputValue()).toBe('structured');
+          await expression.selectOption('exploratory');
+          expect(await expression.inputValue()).toBe('exploratory');
         }));
 
       for (const [kind, name, eyebrow] of [
