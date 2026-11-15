@@ -5712,76 +5712,87 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     30_000,
   );
 
-  it.each([1440, 390, 320])(
-    'keeps compact cloud cancellation run-scoped until acknowledged at %ipx',
-    async (width) => {
-      const f = await fixture({ width, running: true, touch: width < 760 });
-      const operation = {
-        snapshot: {
-          status: 'running',
-          binding: {
-            action: 'cloud.mcp.call',
-            task: operationTask(),
-            attempt: { operationId: id(8801) },
-          },
+  it.each(
+    [1440, 390, 320].flatMap((width) => [
+      { width, contract: 'layout and keyboard disclosure', layout: true },
+      {
+        width,
+        contract: 'cancellation run-scoped until acknowledged',
+        layout: false,
+      },
+    ]),
+  )('keeps compact cloud $contract at $width px', async ({ width, layout }) => {
+    const f = await fixture({ width, running: true, touch: width < 760 });
+    const operation = {
+      snapshot: {
+        status: 'running',
+        binding: {
+          action: 'cloud.mcp.call',
+          task: operationTask(),
+          attempt: { operationId: id(8801) },
         },
-        enabled: true,
-        mcpAuthorization: { available: true, reason: 'available' },
-        proposal: {
-          kind: 'mcp',
-          endpoint: 'https://example.test/mcp',
-          tool: 'mcp__app__list_pull_requests',
-          arguments: {},
-          risk: 'read',
-        },
-        approval: null,
-        result: null,
-      } as unknown as CloudOperationView;
-      const requests: unknown[] = [];
-      const selectedRun = run;
-      let release!: () => void;
-      const pending = new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      try {
-        await f.page.route(
-          '**/api/v1/runtime/cloud-operations?**',
-          async (route) => {
-            const request = route.request();
-            const runId = new URL(request.url()).searchParams.get('runId')!;
-            if (request.method() === 'POST') {
-              requests.push(request.postDataJSON());
-              if (requests.length === 1)
-                return route.fulfill({ status: 503, json: {} });
-              await pending;
-              return route.fulfill({ json: {} });
-            }
-            return route.fulfill({
-              json: { operations: runId === selectedRun ? [operation] : [] },
-            });
-          },
-        );
-        await f.page.reload();
-        if (width < 760) {
-          const collapse = f.page.getByRole('button', {
-            name: '收起侧边栏',
-            exact: true,
+      },
+      enabled: true,
+      mcpAuthorization: { available: true, reason: 'available' },
+      proposal: {
+        kind: 'mcp',
+        endpoint: 'https://example.test/mcp',
+        tool: 'mcp__app__list_pull_requests',
+        arguments: {},
+        risk: 'read',
+      },
+      approval: null,
+      result: null,
+    } as unknown as CloudOperationView;
+    const requests: unknown[] = [];
+    const selectedRun = run;
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    try {
+      await f.page.route(
+        '**/api/v1/runtime/cloud-operations?**',
+        async (route) => {
+          const request = route.request();
+          const runId = new URL(request.url()).searchParams.get('runId')!;
+          if (request.method() === 'POST') {
+            requests.push(request.postDataJSON());
+            if (requests.length === 1)
+              return route.fulfill({ status: 503, json: {} });
+            await pending;
+            return route.fulfill({ json: {} });
+          }
+          return route.fulfill({
+            json: { operations: runId === selectedRun ? [operation] : [] },
           });
-          if (await collapse.isVisible()) await collapse.click();
-        }
-        const card = f.page.locator(`#operation-${id(8801)}`);
-        const stop = card.getByRole('button', {
-          name: '请求停止本轮全部操作',
+        },
+      );
+      // Layout keeps native rAF/ResizeObserver ordering. Only the separate
+      // state contract drives the real 1.5s poll with a virtual clock.
+      if (!layout) await f.page.clock.install();
+      await f.page.reload();
+      if (width < 760) {
+        const collapse = f.page.getByRole('button', {
+          name: '收起侧边栏',
           exact: true,
         });
-        const history = f.page.locator(
-          `[data-step-id="operation:cloud:${id(8801)}"]`,
-        );
-        const toggle = history.locator('[data-disclosure-row]');
-        const material = history.locator(
-          `[data-process-material="cloud:${id(8801)}"]`,
-        );
-        await toggle.waitFor();
+        if (await collapse.isVisible()) await collapse.click();
+      }
+      const card = f.page.locator(`#operation-${id(8801)}`);
+      const stop = card.getByRole('button', {
+        name: '请求停止本轮全部操作',
+        exact: true,
+      });
+      const history = f.page.locator(
+        `[data-step-id="operation:cloud:${id(8801)}"]`,
+      );
+      const toggle = history.locator('[data-disclosure-row]');
+      const material = history.locator(
+        `[data-process-material="cloud:${id(8801)}"]`,
+      );
+      await toggle.waitFor();
+      if (layout) {
         const runningHeight = (await card.boundingBox())!.height;
         const label = card
           .locator('header')
@@ -5867,111 +5878,112 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(await toggle.getAttribute('aria-expanded')).toBe('false');
         expect(await material.count()).toBe(0);
         expect((await card.boundingBox())!.height).toBe(runningHeight);
-        await toggle.click();
-        await stop.click();
-        await expect.poll(() => requests.length).toBe(1);
-        await expect.poll(() => stop.isEnabled()).toBe(true);
-        await stop.click();
-        const stopping = card.getByRole('button', {
-          name: '正在停止本轮全部操作',
-          exact: true,
-        });
-        await stopping.waitFor();
-        expect(await stopping.isDisabled()).toBe(true);
-        release();
-        await expect.poll(() => requests.length).toBe(2);
-        expect(requests).toEqual([
-          { runId: selectedRun, action: 'cancel' },
-          { runId: selectedRun, action: 'cancel' },
-        ]);
-        // The write acknowledgment alone must not claim that a remote service stopped.
-        expect(await stopping.isDisabled()).toBe(true);
-        expect(
-          await card.locator('header').getByRole('status').innerText(),
-        ).toBe('进行中');
-        operation.snapshot.status = 'cancel_requested';
-        await card
-          .locator('header')
-          .getByRole('status', {
-            name: '正在停止',
-            exact: true,
-          })
-          .waitFor();
-        expect(await stopping.isDisabled()).toBe(true);
-        // Completion can race with a stop request; display the real result.
-        operation.snapshot.status = 'succeeded';
-        operation.result = {
-          code: 'completed',
-          output: 'Done',
-          trusted: false,
-        };
-        await expect
-          .poll(() => history.getAttribute('data-status'), { timeout: 5_000 })
-          .toBe('已完成');
-        expect(
-          await history
-            .locator('[data-disclosure-header]')
-            .getByText('已完成', { exact: true })
-            .count(),
-        ).toBe(0);
-        expect(await history.getAttribute('data-status')).toBe('已完成');
-        expect(await stopping.count()).toBe(0);
-        expect(await card.count()).toBe(0);
-        expect(
-          await material
-            .locator('[data-process-content="result"]')
-            .textContent(),
-        ).toBe('Done');
-        operation.snapshot.status = 'failed';
-        operation.result = {
-          code: 'MCP_REQUEST_FAILED',
-          output: 'network request failed',
-          trusted: false,
-        };
-        await expect
-          .poll(() => history.getAttribute('data-status'), { timeout: 5_000 })
-          .toBe('未完成');
-        expect(await history.getAttribute('data-failed')).not.toBeNull();
-        expect(await history.getAttribute('data-status')).toBe('未完成');
-        expect(await card.count()).toBe(0);
-        expect(
-          await material
-            .locator('[data-process-content="result"]')
-            .textContent(),
-        ).toBe('network request failed');
-        expect(
-          JSON.parse(
-            (await material
-              .locator('[data-process-content="input"]')
-              .textContent())!,
-          ).tool,
-        ).toBe('mcp__app__list_pull_requests');
-        await toggle.press('Space');
-        operation.snapshot.status = 'unknown';
-        await card
-          .locator('header')
-          .getByRole('status', {
-            name: '结果待确认',
-            exact: true,
-          })
-          .waitFor();
-        expect(
-          await card
-            .locator('header')
-            .getByRole('status', {
-              name: '未完成',
-              exact: true,
-            })
-            .count(),
-        ).toBe(0);
-        expect('nativeCallId' in operation).toBe(false);
-        expect(requests).toHaveLength(2);
-      } finally {
-        release();
-        await f.close();
+        return;
       }
-    },
-  );
+      await toggle.click();
+      await stop.click();
+      await expect.poll(() => requests.length).toBe(1);
+      await expect.poll(() => stop.isEnabled()).toBe(true);
+      await stop.click();
+      const stopping = card.getByRole('button', {
+        name: '正在停止本轮全部操作',
+        exact: true,
+      });
+      await stopping.waitFor();
+      expect(await stopping.isDisabled()).toBe(true);
+      release();
+      await expect.poll(() => requests.length).toBe(2);
+      expect(requests).toEqual([
+        { runId: selectedRun, action: 'cancel' },
+        { runId: selectedRun, action: 'cancel' },
+      ]);
+      // The write acknowledgment alone must not claim that a remote service stopped.
+      expect(await stopping.isDisabled()).toBe(true);
+      expect(await card.locator('header').getByRole('status').innerText()).toBe(
+        '进行中',
+      );
+      operation.snapshot.status = 'cancel_requested';
+      await f.page.clock.fastForward(1500);
+      await card
+        .locator('header')
+        .getByRole('status', {
+          name: '正在停止',
+          exact: true,
+        })
+        .waitFor();
+      expect(await stopping.isDisabled()).toBe(true);
+      // Completion can race with a stop request; display the real result.
+      operation.snapshot.status = 'succeeded';
+      operation.result = {
+        code: 'completed',
+        output: 'Done',
+        trusted: false,
+      };
+      await f.page.clock.fastForward(1500);
+      await expect
+        .poll(() => history.getAttribute('data-status'), { timeout: 5_000 })
+        .toBe('已完成');
+      expect(
+        await history
+          .locator('[data-disclosure-header]')
+          .getByText('已完成', { exact: true })
+          .count(),
+      ).toBe(0);
+      expect(await history.getAttribute('data-status')).toBe('已完成');
+      expect(await stopping.count()).toBe(0);
+      expect(await card.count()).toBe(0);
+      expect(
+        await material.locator('[data-process-content="result"]').textContent(),
+      ).toBe('Done');
+      operation.snapshot.status = 'failed';
+      operation.result = {
+        code: 'MCP_REQUEST_FAILED',
+        output: 'network request failed',
+        trusted: false,
+      };
+      await f.page.clock.fastForward(1500);
+      await expect
+        .poll(() => history.getAttribute('data-status'), { timeout: 5_000 })
+        .toBe('未完成');
+      expect(await history.getAttribute('data-failed')).not.toBeNull();
+      expect(await history.getAttribute('data-status')).toBe('未完成');
+      expect(await card.count()).toBe(0);
+      expect(
+        await material.locator('[data-process-content="result"]').textContent(),
+      ).toBe('network request failed');
+      expect(
+        JSON.parse(
+          (await material
+            .locator('[data-process-content="input"]')
+            .textContent())!,
+        ).tool,
+      ).toBe('mcp__app__list_pull_requests');
+      await toggle.press('Space');
+      operation.snapshot.status = 'unknown';
+      await f.page.clock.fastForward(1500);
+      await card
+        .locator('header')
+        .getByRole('status', {
+          name: '结果待确认',
+          exact: true,
+        })
+        .waitFor();
+      expect(
+        await card
+          .locator('header')
+          .getByRole('status', {
+            name: '未完成',
+            exact: true,
+          })
+          .count(),
+      ).toBe(0);
+      expect('nativeCallId' in operation).toBe(false);
+      expect(requests).toHaveLength(2);
+    } finally {
+      release();
+      await f.close();
+    }
+  });
 
   for (const width of [1440, 390]) {
     it(`returns OAuth to the settings modal, keeps the conversation without local MCP setup at ${width}px`, async () => {
@@ -20623,33 +20635,40 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
-  it('resizes the employee sidebar with native capture, preserves scoped width and leaves usable conversation space', async () => {
+  async function employeeSidebarFixture() {
     const f = await fixture({
       artifacts: true,
       employeeCount: 2,
       employeeHistory: true,
     });
+    const sidebar = f.page.locator('#chat-sidebar');
+    const splitter = f.page.getByRole('separator', {
+      name: '调整员工侧栏宽度',
+    });
+    const width = async () => Math.round((await sidebar.boundingBox())!.width);
+    async function dragTo(x: number) {
+      const box = (await splitter.boundingBox())!;
+      await f.page.mouse.move(box.x + box.width / 2, box.y + 150);
+      await f.page.mouse.down();
+      await f.page.mouse.move(x, box.y + 150, { steps: 8 });
+      expect(await f.page.locator('main').getAttribute('data-dragging')).toBe(
+        'true',
+      );
+      await f.page.mouse.up();
+    }
+    return { ...f, splitter, width, dragTo };
+  }
+
+  // Keep each independent contract within the default timeout, including mount
+  // and cleanup. All interactions and geometry assertions still use real time.
+  it('preserves employee sidebar width and draft across collapse and reload, scoped to the viewer', async () => {
+    const f = await employeeSidebarFixture();
+    const { splitter, width, dragTo } = f;
     try {
-      const sidebar = f.page.locator('#chat-sidebar');
-      const splitter = f.page.getByRole('separator', {
-        name: '调整员工侧栏宽度',
-      });
-      const width = async () =>
-        Math.round((await sidebar.boundingBox())!.width);
       await splitter.waitFor();
       await expect.poll(width).toBe(320);
       const composer = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
       await composer.fill('侧栏拖动不丢草稿');
-      async function dragTo(x: number) {
-        const box = (await splitter.boundingBox())!;
-        await f.page.mouse.move(box.x + box.width / 2, box.y + 150);
-        await f.page.mouse.down();
-        await f.page.mouse.move(x, box.y + 150, { steps: 8 });
-        expect(await f.page.locator('main').getAttribute('data-dragging')).toBe(
-          'true',
-        );
-        await f.page.mouse.up();
-      }
       await dragTo(360);
       await expect.poll(width).toBe(360);
       await f.page
@@ -20664,6 +20683,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.reload();
       await splitter.waitFor();
       await expect.poll(width).toBe(360);
+      f.state.viewer = id(50);
+      await f.page.reload();
+      await splitter.waitFor();
+      await expect.poll(width).toBe(320);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('resizes the employee sidebar with native capture and keyboard while reserving conversation space', async () => {
+    const f = await employeeSidebarFixture();
+    const { splitter, width, dragTo } = f;
+    try {
+      await splitter.waitFor();
+      await expect.poll(width).toBe(320);
       await dragTo(900);
       await expect.poll(width).toBe(420);
       const right = f.page.getByRole('separator', { name: '调整交付成果宽度' });
@@ -20693,6 +20727,27 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect.poll(width).toBe(340);
       await splitter.dblclick({ position: { x: 4, y: 150 } });
       await expect.poll(width).toBe(320);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('preserves the resized employee sidebar across mobile and desktop without horizontal overflow', async () => {
+    const f = await employeeSidebarFixture();
+    const { splitter, width } = f;
+    try {
+      await splitter.waitFor();
+      // Same constrained desktop geometry as the native resize contract above.
+      const right = f.page.getByRole('separator', { name: '调整交付成果宽度' });
+      await right.focus();
+      await f.page.keyboard.press('Shift+ArrowLeft');
+      await f.page.addStyleTag({
+        content: 'main { width: calc(100% - 8px) !important; }',
+      });
+      await f.page.setViewportSize({ width: 1101, height: 950 });
+      await expect
+        .poll(async () => Number(await splitter.getAttribute('aria-valuemax')))
+        .toBeLessThan(420);
       await splitter.focus();
       const widenedDefault = Math.min(
         420,
@@ -20721,10 +20776,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.screenshot({
         path: '/tmp/met160-employee-blue-desktop.png',
       });
-      f.state.viewer = id(50);
-      await f.page.reload();
-      await splitter.waitFor();
-      await expect.poll(width).toBe(320);
     } finally {
       await f.close();
     }
