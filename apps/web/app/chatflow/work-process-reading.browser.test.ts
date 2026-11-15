@@ -3240,7 +3240,19 @@ suite('reading a receipt while late native trace changes its group', () => {
               statusBox.y + statusBox.height / 2 - title.y - title.height / 2,
             ),
           ).toBeLessThanOrEqual(2);
-          expect(statusBox.x).toBeGreaterThanOrEqual(title.x + title.width);
+          // Action + description now uses native single-line ellipsis. A text
+          // Range includes the hidden tail; compare the actual clipped label.
+          const label = searchStep(page).locator('[class*="processStepLabel"]');
+          const labelBox = (await label.boundingBox())!;
+          expect(
+            await label.evaluate((node) => ({
+              overflow: getComputedStyle(node).overflow,
+              ellipsis: getComputedStyle(node).textOverflow,
+            })),
+          ).toEqual({ overflow: 'hidden', ellipsis: 'ellipsis' });
+          expect(statusBox.x).toBeGreaterThanOrEqual(
+            labelBox.x + labelBox.width,
+          );
           expect(
             await page.evaluate(
               () => document.documentElement.scrollWidth <= innerWidth,
