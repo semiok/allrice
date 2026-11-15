@@ -39,7 +39,11 @@ import { resolvePortal } from './portal/config';
 import { createPortalSession } from './portal/session';
 import { POST as createFile } from '../app/api/v1/files/route';
 import { POST as signFile } from '../app/api/v1/files/[id]/sign/route';
-import { GET as readSignedFile } from '../app/api/v1/files/[id]/route';
+import {
+  GET as readSignedFile,
+  DELETE as deleteFile,
+} from '../app/api/v1/files/[id]/route';
+import { GET as downloadOriginal } from '../app/api/v1/files/[id]/download/route';
 import * as publications from '../app/api/v1/references/publications/route';
 import { POST as changePublication } from '../app/api/v1/references/publications/[id]/route';
 import { POST as retryReference } from '../app/api/v1/references/[id]/route';
@@ -884,6 +888,91 @@ suite('F3 backend facts through real browser session identity', () => {
     } finally {
       browser.portalToken = '';
       vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '0');
+    }
+  });
+
+  it('R0: the owner cannot delete a delivery or its published copy through ordinary file DELETE, while ordinary uploads remain deletable', async () => {
+    const a = await setup(),
+      content = '交付原件与企业资料固定副本均须保留。',
+      delivery = await a.createArtifact(a.task.runId, content);
+    const [original] =
+      await f.db`select object_id from allrice_deliverable_versions where id=${delivery.artifactId}`;
+    const objectId = original!.object_id as string;
+    const saved = await publish(a.context, {
+      workspaceId: a.context.workspaceId,
+      requestId: randomUUID(),
+      origin: 'file',
+      objectId,
+      audience,
+    });
+    const [copy] =
+      await f.db`select file_object_id from allrice_knowledge_revisions where id=${saved.revisionId}`;
+    expect(copy!.file_object_id).not.toBe(objectId);
+    const records = () =>
+      Promise.all([
+        f.db`select * from allrice_storage_objects where id in (${objectId},${copy!.file_object_id}) order by id`,
+        f.db`select * from allrice_deliverable_versions where id=${delivery.artifactId}`,
+        f.db`select * from allrice_workbench_artifacts where version_id=${delivery.artifactId}`,
+        f.db`select * from allrice_knowledge_sources where id=${saved.sourceId}`,
+        f.db`select * from allrice_knowledge_revisions where id=${saved.revisionId}`,
+      ]);
+    const readBoth = async () => {
+      const responses = await Promise.all([
+        downloadOriginal(
+          request(a.context, `files/${objectId}/download`),
+          route(objectId),
+        ),
+        download(
+          request(
+            a.context,
+            `references/revisions/${saved.revisionId}/download?workspaceId=${a.context.workspaceId}`,
+          ),
+          route(saved.revisionId),
+        ),
+      ]);
+      for (const response of responses) {
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe(content);
+      }
+    };
+    await readBoth();
+    const before = await records();
+    expect(before.map((rows) => rows.length)).toEqual([2, 1, 1, 1, 1]);
+    const remove = vi.spyOn(browser.storage!, 'delete');
+    try {
+      // v30:176: neither delivery originals nor retained copies use this delete path.
+      for (const protectedId of [objectId, copy!.file_object_id as string]) {
+        const response = await deleteFile(
+          new Request(request(a.context, `files/${protectedId}`), {
+            method: 'DELETE',
+          }),
+          route(protectedId),
+        );
+        expect(response.status).toBe(404);
+        expect(await response.json()).toMatchObject({
+          error: { code: 'NOT_FOUND' },
+        });
+      }
+      expect(remove).not.toHaveBeenCalled();
+      expect(await records()).toEqual(before);
+      await readBoth();
+      const upload = await signedOriginal(a.context);
+      const deleted = await deleteFile(
+        new Request(request(a.context, `files/${upload.objectId}`), {
+          method: 'DELETE',
+        }),
+        route(upload.objectId),
+      );
+      expect(deleted.status).toBe(204);
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(remove.mock.calls[0]![0].id).toBe(upload.objectId);
+      const [state] =
+        await f.db`select state,deleted_at from allrice_storage_objects where id=${upload.objectId}`;
+      expect(state!.state).toBe('deleted');
+      expect(state!.deleted_at).not.toBeNull();
+      expect(await records()).toEqual(before);
+    } finally {
+      remove.mockRestore();
     }
   });
 });
