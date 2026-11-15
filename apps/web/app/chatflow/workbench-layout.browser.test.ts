@@ -5761,6 +5761,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             });
           },
         );
+        // Drive the real 1.5s status poll without accumulating wall-clock waits.
+        await f.page.clock.install();
         await f.page.reload();
         if (width < 760) {
           const collapse = f.page.getByRole('button', {
@@ -5890,6 +5892,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await card.locator('header').getByRole('status').innerText(),
         ).toBe('进行中');
         operation.snapshot.status = 'cancel_requested';
+        await f.page.clock.fastForward(1500);
         await card
           .locator('header')
           .getByRole('status', {
@@ -5905,6 +5908,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           output: 'Done',
           trusted: false,
         };
+        await f.page.clock.fastForward(1500);
         await expect
           .poll(() => history.getAttribute('data-status'), { timeout: 5_000 })
           .toBe('已完成');
@@ -5928,6 +5932,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           output: 'network request failed',
           trusted: false,
         };
+        await f.page.clock.fastForward(1500);
         await expect
           .poll(() => history.getAttribute('data-status'), { timeout: 5_000 })
           .toBe('未完成');
@@ -5948,6 +5953,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         ).toBe('mcp__app__list_pull_requests');
         await toggle.press('Space');
         operation.snapshot.status = 'unknown';
+        await f.page.clock.fastForward(1500);
         await card
           .locator('header')
           .getByRole('status', {
@@ -20623,33 +20629,40 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
-  it('resizes the employee sidebar with native capture, preserves scoped width and leaves usable conversation space', async () => {
+  async function employeeSidebarFixture() {
     const f = await fixture({
       artifacts: true,
       employeeCount: 2,
       employeeHistory: true,
     });
+    const sidebar = f.page.locator('#chat-sidebar');
+    const splitter = f.page.getByRole('separator', {
+      name: '调整员工侧栏宽度',
+    });
+    const width = async () => Math.round((await sidebar.boundingBox())!.width);
+    async function dragTo(x: number) {
+      const box = (await splitter.boundingBox())!;
+      await f.page.mouse.move(box.x + box.width / 2, box.y + 150);
+      await f.page.mouse.down();
+      await f.page.mouse.move(x, box.y + 150, { steps: 8 });
+      expect(await f.page.locator('main').getAttribute('data-dragging')).toBe(
+        'true',
+      );
+      await f.page.mouse.up();
+    }
+    return { ...f, splitter, width, dragTo };
+  }
+
+  // Keep each independent contract within the default timeout, including mount
+  // and cleanup. All interactions and geometry assertions still use real time.
+  it('preserves employee sidebar width and draft across collapse and reload, scoped to the viewer', async () => {
+    const f = await employeeSidebarFixture();
+    const { splitter, width, dragTo } = f;
     try {
-      const sidebar = f.page.locator('#chat-sidebar');
-      const splitter = f.page.getByRole('separator', {
-        name: '调整员工侧栏宽度',
-      });
-      const width = async () =>
-        Math.round((await sidebar.boundingBox())!.width);
       await splitter.waitFor();
       await expect.poll(width).toBe(320);
       const composer = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
       await composer.fill('侧栏拖动不丢草稿');
-      async function dragTo(x: number) {
-        const box = (await splitter.boundingBox())!;
-        await f.page.mouse.move(box.x + box.width / 2, box.y + 150);
-        await f.page.mouse.down();
-        await f.page.mouse.move(x, box.y + 150, { steps: 8 });
-        expect(await f.page.locator('main').getAttribute('data-dragging')).toBe(
-          'true',
-        );
-        await f.page.mouse.up();
-      }
       await dragTo(360);
       await expect.poll(width).toBe(360);
       await f.page
@@ -20664,6 +20677,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.reload();
       await splitter.waitFor();
       await expect.poll(width).toBe(360);
+      f.state.viewer = id(50);
+      await f.page.reload();
+      await splitter.waitFor();
+      await expect.poll(width).toBe(320);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('resizes the employee sidebar with native capture and keyboard while reserving conversation space', async () => {
+    const f = await employeeSidebarFixture();
+    const { splitter, width, dragTo } = f;
+    try {
+      await splitter.waitFor();
+      await expect.poll(width).toBe(320);
       await dragTo(900);
       await expect.poll(width).toBe(420);
       const right = f.page.getByRole('separator', { name: '调整交付成果宽度' });
@@ -20693,6 +20721,27 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect.poll(width).toBe(340);
       await splitter.dblclick({ position: { x: 4, y: 150 } });
       await expect.poll(width).toBe(320);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it('preserves the resized employee sidebar across mobile and desktop without horizontal overflow', async () => {
+    const f = await employeeSidebarFixture();
+    const { splitter, width } = f;
+    try {
+      await splitter.waitFor();
+      // Same constrained desktop geometry as the native resize contract above.
+      const right = f.page.getByRole('separator', { name: '调整交付成果宽度' });
+      await right.focus();
+      await f.page.keyboard.press('Shift+ArrowLeft');
+      await f.page.addStyleTag({
+        content: 'main { width: calc(100% - 8px) !important; }',
+      });
+      await f.page.setViewportSize({ width: 1101, height: 950 });
+      await expect
+        .poll(async () => Number(await splitter.getAttribute('aria-valuemax')))
+        .toBeLessThan(420);
       await splitter.focus();
       const widenedDefault = Math.min(
         420,
@@ -20721,10 +20770,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.screenshot({
         path: '/tmp/met160-employee-blue-desktop.png',
       });
-      f.state.viewer = id(50);
-      await f.page.reload();
-      await splitter.waitFor();
-      await expect.poll(width).toBe(320);
     } finally {
       await f.close();
     }
