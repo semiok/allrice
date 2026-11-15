@@ -21970,10 +21970,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const geometry = await detail.evaluate((node) => {
             const rect = (selector: string) =>
               node.querySelector(selector)!.getBoundingClientRect().toJSON();
+            const frame = node.querySelector<HTMLElement>(
+              '[data-document-zoom-frame]',
+            )!;
+            const parent = frame.parentElement!;
+            const parentStyle = getComputedStyle(parent);
             return {
               supported: CSS.supports('height', 'round(down, 100%, 1px)'),
               inner: rect('[data-document-zoom-scrollport]'),
-              frame: rect('[data-document-zoom-frame]'),
+              frame: frame.getBoundingClientRect().toJSON(),
+              parent: parent.getBoundingClientRect().toJSON(),
+              insetLeft:
+                parseFloat(parentStyle.borderLeftWidth) +
+                parseFloat(parentStyle.paddingLeft),
+              insetRight:
+                parseFloat(parentStyle.borderRightWidth) +
+                parseFloat(parentStyle.paddingRight),
               host: rect('[class*="deliveryViewport"]'),
               reading: rect('[class*="deliveryReadingArea"]'),
             };
@@ -21982,11 +21994,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(geometry.supported).toBe(true);
           expect(geometry.inner.height).toBe(Math.floor(geometry.frame.height));
           expect(geometry.frame.height - geometry.inner.height).toBeLessThan(1);
-          expect(geometry.host).toEqual(geometry.frame);
+          expect(geometry.parent).toEqual(geometry.host);
+          // The native frame fills its parent's content box, including when
+          // the image canvas gives that parent inline padding.
+          expect(geometry.frame.x).toBe(geometry.parent.x + geometry.insetLeft);
+          expect(geometry.frame.right).toBe(
+            geometry.parent.right - geometry.insetRight,
+          );
+          expect(geometry.frame.width).toBe(
+            geometry.parent.width - geometry.insetLeft - geometry.insetRight,
+          );
           for (const key of ['x', 'y', 'height'] as const)
-            expect(geometry.reading[key]).toBe(geometry.frame[key]);
+            expect(geometry.reading[key]).toBe(geometry.host[key]);
+          for (const key of ['y', 'height'] as const)
+            expect(geometry.frame[key]).toBe(geometry.host[key]);
           // Platforms with non-overlay scrollbars reserve width in the reader.
-          expect(geometry.frame.right).toBeLessThanOrEqual(
+          expect(geometry.host.right).toBeLessThanOrEqual(
             geometry.reading.right,
           );
           for (const key of ['x', 'y', 'width'] as const)
