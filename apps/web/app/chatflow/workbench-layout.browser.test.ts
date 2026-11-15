@@ -15997,6 +15997,77 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
 
   for (const appearance of ['light', 'dark'] as const)
     for (const width of [1440, 390])
+      it(`MET247 Markdown paper keeps code readable at ${width}px ${appearance}`, async () => {
+        const f = await fixture({ width, appearance });
+        try {
+          const file = catalogFile(9692, { fileName: '代码示例.md' });
+          f.state.workbenchFiles.push(file);
+          f.state.filePreview = {
+            kind: 'text',
+            mediaType: 'text/markdown',
+            text: '行内 `inline_value`\n\n```\nplain_value\n```\n\n```js\nconst total = 28;\n```',
+          };
+          await f.page
+            .locator('header')
+            .getByRole('button', { name: '交付成果', exact: true })
+            .click();
+          await f.panel
+            .getByRole('region', { name: '交付成果', exact: true })
+            .getByRole('button', { name: file.fileName, exact: true })
+            .click();
+          const body = f.panel
+            .locator(`[data-document-id="${file.objectId}"]:visible`)
+            .getByRole('region', { name: '文件正文', exact: true });
+          await body.getByText('inline_value', { exact: true }).waitFor();
+          await body.locator('pre').nth(1).waitFor();
+          const contrasts = await body.evaluate((root) => {
+            const rgb = (value: string) =>
+              (value.match(/[\d.]+/g) ?? []).map(Number);
+            const luminance = (color: number[]) =>
+              color.slice(0, 3).reduce((sum, channel, i) => {
+                const value = channel / 255;
+                return (
+                  sum +
+                  (value <= 0.04045
+                    ? value / 12.92
+                    : ((value + 0.055) / 1.055) ** 2.4) *
+                    [0.2126, 0.7152, 0.0722][i]!
+                );
+              }, 0);
+            return [...root.querySelectorAll('code, pre span, button')]
+              .filter((n) => n.textContent?.trim())
+              .map((n) => {
+                let parent: Element | null = n;
+                let background = [255, 255, 255];
+                while (parent) {
+                  const color = rgb(getComputedStyle(parent).backgroundColor);
+                  if ((color[3] ?? 1) === 1) {
+                    background = color;
+                    break;
+                  }
+                  parent = parent.parentElement;
+                }
+                const [light, dark] = [
+                  luminance(rgb(getComputedStyle(n).color)),
+                  luminance(background),
+                ].sort((a, b) => b - a);
+                return {
+                  text: n.textContent,
+                  ratio: (light! + 0.05) / (dark! + 0.05),
+                };
+              });
+          });
+          expect(contrasts.length).toBeGreaterThanOrEqual(3);
+          for (const value of contrasts)
+            expect(value.ratio, value.text ?? '').toBeGreaterThanOrEqual(4.5);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      }, 30000);
+
+  for (const appearance of ['light', 'dark'] as const)
+    for (const width of [1440, 390])
       it.each(['txt-short', 'txt-long', 'json', 'md'] as const)(
         `MET247 approved canvas keeps text natural and footer adjacent for %s at ${width}px ${appearance}`,
         async (kind) => {
@@ -16307,6 +16378,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 expect(
                   Math.abs(card.width - (canvas.width - inset * 2)),
                 ).toBeLessThan(1);
+              }
+              if (kind === 'image') {
+                const image = preview.locator('[data-image-preview] img');
+                const displayed = (await image.boundingBox())!.width;
+                const intrinsic = await image.evaluate(
+                  (n) => (n as HTMLImageElement).naturalWidth,
+                );
+                expect(
+                  await preview
+                    .getByRole('button', { name: '选择缩放比例', exact: true })
+                    .textContent(),
+                ).toBe(`${Math.round((displayed / intrinsic) * 100)}%`);
               }
             }
             const lastPage = detail.locator(
