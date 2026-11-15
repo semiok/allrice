@@ -142,11 +142,16 @@ async function resolvePackage(
     throw new DataAccessError('not_found');
   const text = EmployeeContentTextSchema.parse(row.content);
   if (!('skillPackage' in text)) throw new DataAccessError('not_found');
-  validateHistoricalSceneSkillPackage(
-    text.skillPackage,
-    text.body,
-    scene.references,
-  );
+  // Candidate publication (including restore) keeps the current tool catalog.
+  // Only an already published original uses historical declarations.
+  if (allowDraft)
+    validateSceneSkillPackage(text.skillPackage, text.body, scene.references);
+  else
+    validateHistoricalSceneSkillPackage(
+      text.skillPackage,
+      text.body,
+      scene.references,
+    );
   const pin = {
     setId: layer.setId,
     revisionId: layer.revision.id,
