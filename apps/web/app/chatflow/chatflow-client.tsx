@@ -739,7 +739,7 @@ export function ChatFlowClient({
       : undefined;
   const currentReferenceSourceRequest =
     currentModuleRequest?.kind === 'reference' &&
-    currentModuleRequest.id?.startsWith('citation:');
+    !!currentModuleRequest.id?.startsWith('citation:');
   const workbenchRequested =
     (workbenchEnabled ||
       !!currentAutomationRequest ||
