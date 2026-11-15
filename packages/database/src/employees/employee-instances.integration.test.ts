@@ -1527,7 +1527,13 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       kernel.rootSystemInstructions,
     ]) {
       expect(instructions).toContain(f.source.definition.systemPrompt);
-      expect(instructions).toContain('cannot override platform policy');
+      // Source authority is global in the native Host (prompt-authority.test.mjs).
+      expect(instructions).toContain(
+        'Read its values and per-field sources literally.',
+      );
+      expect(instructions).toContain(
+        'current task instructions retain their normal priority.',
+      );
       expect(instructions).not.toContain(profile.name);
       expect(instructions).not.toContain(profile.mission);
       expect(instructions).not.toContain(
