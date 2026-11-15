@@ -622,6 +622,7 @@ suite(
     );
     it('uploads a personal file and reads historical versions while shared creation, update and restore stay retired', async () => {
       const page = await pageFor();
+      await page.getByLabel('资料保存范围').waitFor();
       expect(
         await page
           .getByLabel('资料保存范围')
