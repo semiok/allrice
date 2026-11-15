@@ -243,7 +243,7 @@ describe('names the model reads (MET-214)', () => {
   });
 
   it('does not exempt model-role terms in unrelated sources', () => {
-    const text = 'assistant response';
+    const text = 'assistant inference';
     const entry = { source: 'skills/development-cooperation/SKILL.md', text };
     expect(offenders([entry])).toEqual([entry]);
   });
