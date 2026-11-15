@@ -81,6 +81,7 @@ type SourceKind =
   | 'default-rice'
   | 'legacy-package2'
   | 'current-package2'
+  | 'current-package2-retired-memory'
   | 'legacy-package1-plain'
   | 'current-package1-plain'
   | 'legacy-package1-empty'
@@ -94,6 +95,7 @@ const packageRevisions = {
   'legacy-package2': 5,
   'legacy-package1-plain': 6,
   'legacy-package1-empty': 7,
+  'current-package2-retired-memory': 8,
 } as const;
 
 integration(
@@ -107,6 +109,7 @@ integration(
     >;
     let definition: PlatformEmployeeDefinition;
     let emptyDefinition: PlatformEmployeeDefinition;
+    let retiredMemoryDefinition: PlatformEmployeeDefinition;
     let platformSource: Pick<
       Awaited<ReturnType<typeof createEmployeeAdministrationFixture>>,
       'employeeId' | 'revisionId'
@@ -163,6 +166,17 @@ integration(
         ...definition,
         capabilities: { ...definition.capabilities, nativeSkillIds: [] },
       };
+      retiredMemoryDefinition = {
+        ...definition,
+        capabilities: {
+          ...definition.capabilities,
+          toolNames: [
+            ...tools,
+            'workspace.memory.search',
+            'workspace.experience.read',
+          ],
+        },
+      };
       const plainSkills = skills.map(({ bundle: unused, ...skill }) => {
         void unused;
         return skill;
@@ -170,7 +184,12 @@ integration(
       const initialPackage = (kind: keyof typeof packageRevisions) =>
         buildEmployeeRuntimePackage({
           revision: packageRevisions[kind],
-          definition: kind.endsWith('-empty') ? emptyDefinition : definition,
+          definition:
+            kind === 'current-package2-retired-memory'
+              ? retiredMemoryDefinition
+              : kind.endsWith('-empty')
+                ? emptyDefinition
+                : definition,
           skills: kind.endsWith('-empty')
             ? []
             : kind.endsWith('-plain')
@@ -184,6 +203,9 @@ integration(
         'legacy-package2': initialPackage('legacy-package2'),
         'legacy-package1-plain': initialPackage('legacy-package1-plain'),
         'legacy-package1-empty': initialPackage('legacy-package1-empty'),
+        'current-package2-retired-memory': initialPackage(
+          'current-package2-retired-memory',
+        ),
       };
       const currentPackage = packages['current-package2'],
         plainPackage = packages['current-package1-plain'],
@@ -355,11 +377,17 @@ integration(
                 historicalGeneration: kind.startsWith('legacy-')
                   ? oldGeneration
                   : undefined,
-                definition: kind.endsWith('-empty')
-                  ? emptyDefinition
-                  : definition,
+                definition:
+                  kind === 'current-package2-retired-memory'
+                    ? retiredMemoryDefinition
+                    : kind.endsWith('-empty')
+                      ? emptyDefinition
+                      : definition,
               },
         allowedTools: tools,
+        ...(kind === 'current-package2-retired-memory'
+          ? { toolNames: retiredMemoryDefinition.capabilities.toolNames }
+          : {}),
         runtimePolicy: {
           harness: 'dsh',
           provider: 'openai-codex',
@@ -534,6 +562,45 @@ integration(
         storageContextKey: descriptor.storageContextKey,
       });
     };
+
+    it('pre-A2 signed publication admits a new chat and follow-up without reviving retired tools', async () => {
+      const f = await subject('current-package2-retired-memory');
+      const origin = await birth(f);
+      const sourceRows = () =>
+        fixture.db`select manifest,config_checksum from allrice_employee_versions where id=${f.version}`;
+      const original = await sourceRows();
+      expect(f.manifest.capabilityBindings.toolNames).toEqual(
+        expect.arrayContaining([
+          'workspace.memory.search',
+          'workspace.experience.read',
+        ]),
+      );
+      for (let message = 0; message < 2; message++) {
+        const runId = await send(f);
+        const execution = await resolveEmployeeExecution({
+          ...scope(f),
+          runId,
+        });
+        const snapshot = EmployeeExecutionSnapshotSchema.parse(
+          execution.executionSnapshot,
+        );
+        expect(snapshot.employee.definition).toEqual(f.manifest);
+        expect(snapshot.employee.definitionChecksum).toBe(f.configChecksum);
+        for (const retired of [
+          'workspace.memory.search',
+          'workspace.experience.read',
+          'workspace.memory.read',
+        ])
+          expect(snapshot.capabilitySnapshot.bindings.toolNames).not.toContain(
+            retired,
+          );
+        expect(await birth(f)).toEqual(origin);
+        expect(await sourceRows()).toEqual(original);
+        await cancelRun(f.context, f.workspace, runId, {
+          reason: 'Synthetic SQL-only fixture',
+        });
+      }
+    }, 30_000);
 
     it.each([
       'default-rice',
