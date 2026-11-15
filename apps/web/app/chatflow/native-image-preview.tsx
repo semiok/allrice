@@ -21,6 +21,7 @@ import {
 } from './dsh-upstream/document/image/ImageBody';
 import { zh } from './dsh-upstream/document/image/locales';
 import { previewBytes, previewLocale } from './native-document-module';
+import { useNativePreviewGestures } from './native-preview-gestures';
 const imageLocale = previewLocale(zh);
 const retain = () => {};
 
@@ -32,10 +33,10 @@ const labels = {
   fitWidth: '适应宽度',
   value: (percent: number) => `${percent}%`,
 };
-const scrollport = () => {};
 
 /** Allrice supplies existing rendered bytes; DSH owns fit-width, zoom and gestures. */
 export function NativeImagePreview({ src, alt }: { src: string; alt: string }) {
+  const scrollport = useNativePreviewGestures();
   const data = useMemo(
     () => previewBytes(src.slice(src.indexOf(',') + 1)),
     [src],
@@ -75,6 +76,7 @@ export function NativeImagePages({
   images: { src: string; alt: string }[];
   paper?: boolean;
 }) {
+  const scrollport = useNativePreviewGestures();
   const [preference, setPreference] = useState<ZoomPreference>(FIT_WIDTH);
   const [widths, setWidths] = useState<Record<string, number>>({});
   const [failed, setFailed] = useState<Record<string, boolean>>({});

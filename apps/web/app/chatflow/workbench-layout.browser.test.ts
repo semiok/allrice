@@ -21677,4 +21677,179 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.close();
         }
       }, 30_000);
+  it.each([
+    ['image-fit', 1440],
+    ['image-tall', 1440],
+    ['image-tall', 390],
+    ['pdf', 1440],
+    ['docx', 1440],
+    ['pptx', 1440],
+  ] as const)(
+    'MET247 native wheel chaining reaches delivery footer for %s at %ipx',
+    async (kind, width) => {
+      const f = await fixture({ width });
+      try {
+        const file = catalogFile(9690, {
+          fileName: `滚动验收.${kind.startsWith('image') ? 'png' : kind}`,
+        });
+        f.state.workbenchFiles.push(file);
+        if (kind.startsWith('image')) {
+          const base64 = await f.page.evaluate((tall) => {
+            const canvas = document.createElement('canvas');
+            canvas.width = 600;
+            canvas.height = tall ? 2400 : 100;
+            const ctx = canvas.getContext('2d')!;
+            ctx.fillStyle = '#3970d9';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            return canvas.toDataURL('image/png').split(',')[1]!;
+          }, kind === 'image-tall');
+          f.state.filePreview = {
+            kind: 'image',
+            mediaType: 'image/png',
+            base64,
+          };
+        } else {
+          // Word/PPT use the same successful conversion DTO as the real preview endpoint.
+          f.state.filePreview = deliverablePdf([], 4);
+        }
+        await f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true })
+          .click();
+        await f.panel
+          .getByRole('region', { name: '交付成果', exact: true })
+          .getByRole('button', { name: file.fileName, exact: true })
+          .click();
+        const detail = f.panel.locator(
+          `[data-document-id="${file.objectId}"]:visible`,
+        );
+        const reading = detail.locator('[class*="deliveryReadingArea"]');
+        const footer = detail.locator('footer');
+        const frame = detail.locator('[data-document-zoom-frame]');
+        if (kind.startsWith('image')) {
+          await expect
+            .poll(() =>
+              detail
+                .locator('[data-image-preview] img')
+                .evaluate((n) => (n as HTMLImageElement).naturalWidth),
+            )
+            .toBe(600);
+        } else {
+          await detail
+            .getByText('Delivery original preview', { exact: true })
+            .waitFor();
+        }
+        const inner = detail.locator('[data-document-zoom-scrollport]');
+        const hit = inner;
+        const box = (await hit.boundingBox())!;
+        await f.page.mouse.move(
+          box.x + box.width / 2,
+          box.y + Math.min(box.height / 2, 180),
+        );
+        const initialOuter = await reading.evaluate((node) => node.scrollTop);
+        await f.page.mouse.wheel(0, 180);
+        if (kind === 'image-fit') {
+          await expect
+            .poll(() => reading.evaluate((n) => n.scrollTop))
+            .toBeGreaterThan(initialOuter);
+          expect(await inner.evaluate((n) => n.scrollTop)).toBe(0);
+        } else {
+          await expect
+            .poll(() => inner.evaluate((n) => n.scrollTop))
+            .toBeGreaterThan(0);
+          expect(await reading.evaluate((n) => n.scrollTop)).toBe(initialOuter);
+        }
+        // Use actual browser wheel input, not scrollIntoView or a footer click
+        // that could auto-scroll and hide the original regression.
+        await f.page.mouse.wheel(0, 100_000);
+        await expect
+          .poll(() =>
+            inner.evaluate(
+              (n) => n.scrollHeight - n.clientHeight - n.scrollTop,
+            ),
+          )
+          .toBeLessThanOrEqual(1);
+        await f.page.mouse.wheel(0, 1000);
+        await expect
+          .poll(async () => {
+            const a = (await reading.boundingBox())!,
+              b = (await footer.boundingBox())!;
+            return b.y >= a.y - 0.5 && b.y + b.height <= a.y + a.height + 0.5;
+          })
+          .toBe(true);
+        for (const name of ['引用到对话', '下载', '收藏']) {
+          const button = footer.getByRole('button', { name, exact: true });
+          expect(
+            await button.evaluate((n) => {
+              const r = n.getBoundingClientRect();
+              return n.contains(
+                document.elementFromPoint(
+                  r.x + r.width / 2,
+                  r.y + r.height / 2,
+                ),
+              );
+            }),
+          ).toBe(true);
+        }
+        expect(await footer.innerText()).toContain('我的上传');
+        expect(await footer.innerText()).toContain('来自对话');
+        if (kind.startsWith('image')) {
+          await inner.evaluate((n) => {
+            n.scrollTop = 0;
+          });
+          const visible = (await hit.boundingBox())!;
+          await f.page.mouse.move(
+            visible.x + visible.width / 2,
+            Math.max(visible.y + 80, box.y + 40),
+          );
+          await f.page.mouse.wheel(0, -1000);
+          await expect.poll(() => reading.evaluate((n) => n.scrollTop)).toBe(0);
+        }
+        {
+          await reading.evaluate((n) => {
+            n.scrollTop = 0;
+          });
+          await inner.evaluate((n) => {
+            n.scrollTop = 0;
+          });
+          const b = (await inner.boundingBox())!;
+          await f.page.mouse.move(
+            b.x + b.width / 2,
+            b.y + Math.min(140, b.height / 2),
+          );
+          const scale = () =>
+            frame.evaluate((n) =>
+              Number(n.style.getPropertyValue('--document-zoom')),
+            );
+          for (const modifier of ['Control', 'Meta']) {
+            const before = await scale();
+            await f.page.keyboard.down(modifier);
+            await f.page.mouse.wheel(0, -120);
+            await f.page.keyboard.up(modifier);
+            await expect.poll(scale).toBeGreaterThan(before);
+          }
+          expect(
+            await f.page.evaluate(() => window.visualViewport!.scale),
+          ).toBe(1);
+          await inner.evaluate((n) => {
+            n.scrollLeft = 0;
+            n.scrollTop = 0;
+          });
+          // Start on blank document space so native PDF text selection keeps
+          // its own pointer behavior while image/PDF/Office overflow can pan.
+          await f.page.mouse.move(b.x + 150, b.y + 70);
+          await f.page.mouse.down();
+          await f.page.mouse.move(b.x + 90, b.y + 35, { steps: 5 });
+          await f.page.mouse.up();
+          await expect
+            .poll(() => inner.evaluate((n) => n.scrollLeft))
+            .toBeGreaterThan(0);
+        }
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+    30000,
+  );
 });

@@ -262,6 +262,56 @@ suite('DSH native document previews', () => {
       await page.close();
     }
   });
+  it('keeps native PDF text selectable while blank overflow can be dragged', async () => {
+    const { page, errors } = await mount([
+      { name: 'selection.pdf', preview: pdf() },
+    ]);
+    try {
+      await page.setViewportSize({ width: 900, height: 320 });
+      const text = page.getByText('Native PDF selectable text', {
+        exact: true,
+      });
+      await text.waitFor();
+      const inner = page.locator('[data-document-zoom-scrollport]');
+      await expect
+        .poll(() =>
+          inner.evaluate((node) => node.scrollHeight - node.clientHeight),
+        )
+        .toBeGreaterThan(100);
+      const box = (await text.boundingBox())!;
+      await page.mouse.move(box.x + 1, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width - 1, box.y + box.height / 2, {
+        steps: 8,
+      });
+      await page.mouse.up();
+      await expect
+        .poll(() => page.evaluate(() => getSelection()?.toString()))
+        .toContain('PDF selectable');
+      expect(await inner.evaluate((node) => node.scrollTop)).toBe(0);
+      const viewport = (await inner.boundingBox())!;
+      const canvas = (await page.locator('canvas').first().boundingBox())!;
+      const x = Math.min(
+        viewport.x + viewport.width - 30,
+        canvas.x + canvas.width - 30,
+      );
+      const y = viewport.y + Math.min(180, viewport.height - 30);
+      await page.mouse.move(x, y);
+      await page.mouse.down();
+      await page.mouse.move(x, y - 60, { steps: 6 });
+      await page.mouse.up();
+      await expect
+        .poll(() => inner.evaluate((node) => node.scrollTop))
+        .toBeGreaterThan(0);
+      const stopped = await inner.evaluate((node) => node.scrollTop);
+      await page.mouse.move(x, y);
+      expect(await inner.evaluate((node) => node.scrollTop)).toBe(stopped);
+      expect(errors).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  }, 30_000);
+
   it('opens native Excel and PDF concurrently without cross-registering chunks', async () => {
     const ExcelJS = createRequire(resolve('apps/worker/package.json'))(
       'exceljs',

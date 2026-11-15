@@ -123,7 +123,6 @@
   min-height: 0;
   min-width: 0;
   overflow: auto;
-  overscroll-behavior: contain;
   /* Leave the scrollport's top flush so native sticky code banners seal it. */
   padding: 0 16px;
 }

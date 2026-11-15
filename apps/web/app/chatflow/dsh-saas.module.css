@@ -1549,7 +1549,6 @@ div.composerAttachmentMenu,
   overflow-y: auto;
   flex: 1 1 auto;
   min-height: 0;
-  overscroll-behavior: contain;
 }
 
 .userQuestionHeader {
@@ -2084,4 +2083,12 @@ div.composerAttachmentMenu,
 .automationNavigation[aria-current='page'] {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
+}
+
+/* Native nested scrollers hand the gesture to their ancestors at an edge.
+   Keep this host policy outside the pinned DSH styles; modal body locking
+   and every container's size/overflow are unchanged. */
+main.shell *,
+:global(body):has(main.shell) :global([role='dialog'][aria-modal='true']) * {
+  overscroll-behavior: auto;
 }

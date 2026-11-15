@@ -15,6 +15,7 @@ import styles from './workbench.module.css';
 import reader from './document-reader.module.css';
 import { loadNativeDocumentModule } from './native-document-module';
 import { LoadingIndicator } from './dsh-upstream/document/LoadingIndicator';
+import { useNativePreviewGestures } from './native-preview-gestures';
 
 type NativePdfProps = {
   loading: React.ReactNode;
@@ -31,7 +32,6 @@ type NativePdfProps = {
 type PdfModule = { PdfBody: React.ComponentType<NativePdfProps> };
 const loadPdf = () => loadNativeDocumentModule<PdfModule>('pdf');
 const retain = () => {};
-const scrollport = () => {};
 const PdfFooterContext = React.createContext<{
   footer: React.ReactNode;
   setViewportMounted: (mounted: boolean) => void;
@@ -60,6 +60,7 @@ export function NativePdfPreview({
   base64: string;
   footer?: React.ReactNode;
 }) {
+  const scrollport = useNativePreviewGestures();
   const data = React.useMemo(
     () => Uint8Array.from(atob(base64), (char) => char.charCodeAt(0)),
     [base64],

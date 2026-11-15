@@ -107,21 +107,26 @@ export function PendingAttachmentRail({
         : new ResizeObserver(updateEdges);
     observer?.observe(element);
     const onWheel = (event: WheelEvent) => {
-      if (event.deltaY === 0) return;
+      if (event.deltaY === 0 || event.ctrlKey || event.metaKey) return;
       const scale =
         event.deltaMode === WheelEvent.DOM_DELTA_LINE
           ? 16
           : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
             ? element.clientWidth
             : 1;
+      const left =
+        event.deltaX !== 0
+          ? event.deltaX * scale
+          : Math.sign(event.deltaY) *
+            Math.min(Math.abs(event.deltaY) * scale, 60);
+      if (
+        (left < 0 && element.scrollLeft <= 0) ||
+        (left > 0 &&
+          element.scrollLeft >= element.scrollWidth - element.clientWidth)
+      )
+        return;
       event.preventDefault();
-      element.scrollBy({
-        left:
-          event.deltaX !== 0
-            ? event.deltaX * scale
-            : Math.sign(event.deltaY) *
-              Math.min(Math.abs(event.deltaY) * scale, 60),
-      });
+      element.scrollBy({ left });
     };
     element.addEventListener('wheel', onWheel, { passive: false });
     return () => {
