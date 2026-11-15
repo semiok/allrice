@@ -232,14 +232,14 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
           await readable(
             'dialog title',
             dialog.getByRole('heading', {
-              name: '创建一位 AI 员工',
+              name: '创建一位 AI 员工（员工由人设、技能、工作场景、插件、记忆五部分组成）',
               exact: true,
             }),
           );
           await readable(
             'creation guidance',
             dialog.getByText(
-              '一个员工由人设、技能、工作场景、插件、记忆五部分组成。现在先定人设，其他四项创建后在“详情”里随时添加。',
+              '（员工由人设、技能、工作场景、插件、记忆五部分组成）',
               { exact: true },
             ),
           );

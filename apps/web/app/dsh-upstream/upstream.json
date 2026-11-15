@@ -58,6 +58,12 @@
       "target": "apps/web/app/chatflow/automation-trigger.tsx",
       "reuse": "Unmodified native trigger layout, glyph selection and disclosure state; host imports recorded in patches.",
       "productChanges": "Map server-derived AllRice task/occurrence attribution to a schedule source. Plain text notification body and existing clock; no journal mutation, private DSH state or independent scheduler."
+    },
+    {
+      "source": "packages/client/ui-workspace/src/client/rows/Rows.tsx; Rows.module.css; WorkspaceBrowser.module.css",
+      "target": "apps/web/app/chatflow/employee-sidebar.tsx; employee-sidebar.module.css",
+      "reuse": "Existing employee-workspace source sync at 0.2.1-rc.2 / 687f282e8625c6b8d11ff58211a90524be2e4317: SessionNodeItem owns title ellipsis, inline layout, hover marquee, time/action swap and selection. Reuse the unmodified WorkspaceBrowser flatList block flow and spacing; no new row/component source or patch.",
+      "productChanges": "Remove the host grid, extra session padding, hover/selection overrides and broad trailing-span layout overrides. The native indent variable retains the employee card 5px inset; a -20px host margin offsets the native 16px status slot + 4px title gap so session titles align with the avatar. Existing accessible label/icon tokens and recorded keyboard/touch adapters remain."
     }
   ],
   "componentSets": [
