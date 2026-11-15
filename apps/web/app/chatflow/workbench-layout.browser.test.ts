@@ -7262,7 +7262,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('menuitem', { name: '参考资料', exact: true })
             .click();
           await dialog
-            .getByRole('searchbox', { name: '查找参考资料', exact: true })
+            .getByRole('textbox', { name: '查找参考资料', exact: true })
             .waitFor();
           await dialog
             .getByRole('button', { name: shared.fileName, exact: true })
@@ -7574,7 +7574,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('combobox', { name: '范本分类', exact: true })
             .selectOption('运营');
           await dialog
-            .getByRole('searchbox', { name: '查找范本', exact: true })
+            .getByRole('textbox', { name: '查找范本', exact: true })
             .fill('不存在的标题');
           await expect
             .poll(() =>
@@ -7584,7 +7584,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             )
             .toBe(0);
           await dialog
-            .getByRole('searchbox', { name: '查找范本', exact: true })
+            .getByRole('textbox', { name: '查找范本', exact: true })
             .fill('季度经营');
           await dialog
             .getByRole('button', { name: '填写使用', exact: true })

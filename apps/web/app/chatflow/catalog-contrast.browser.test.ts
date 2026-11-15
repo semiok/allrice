@@ -160,7 +160,7 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
           await open('references');
           await readable(
             'D06 查找资料',
-            page.getByRole('searchbox', { name: '查找参考资料' }),
+            page.getByRole('textbox', { name: '查找参考资料' }),
             '::placeholder',
           );
           await fits('references');
@@ -454,7 +454,7 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
     // Its platform reference library is portaled to <body>, outside that
     // palette, so the shared rule paints it.
     await page.getByRole('button', { name: '管理平台参考资料' }).click();
-    const field = page.getByRole('searchbox', { name: '查找参考资料' });
+    const field = page.getByRole('textbox', { name: '查找参考资料' });
     await readable('后台平台参考资料', field, '::placeholder');
     expect(
       await field.evaluate((element) => !element.closest('[data-admin-theme]')),
