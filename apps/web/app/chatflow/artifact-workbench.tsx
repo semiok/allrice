@@ -638,6 +638,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
               ? (tab) => (
                   <span
                     className={moduleUi.dockTitle}
+                    data-materials-tab={tab.kind === 'materials' || undefined}
                     data-native-subagent-tab={
                       tab.kind === 'nativeSubagent' || undefined
                     }
@@ -684,6 +685,8 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                     <span data-native-subagent-tab>{tab.title}</span>
                   ) : tab.kind === GUIDE_KIND ? (
                     '交付成果'
+                  ) : tab.kind === 'materials' ? (
+                    <span data-materials-tab>{tab.title}</span>
                   ) : (
                     tab.title
                   )

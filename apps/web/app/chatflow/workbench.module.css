@@ -488,6 +488,33 @@
 .nativeDock :global([data-dockkit-strip]) :global([role='tab']) {
   padding: 0 8px;
 }
+.nativeDock :global([data-dockkit-strip-tabs]:has([data-materials-tab])) {
+  height: 32px;
+}
+.nativeDock
+  :global([data-dockkit-strip] [role='tab']:has([data-materials-tab])) {
+  box-sizing: border-box;
+  flex: none;
+  min-width: max-content;
+  max-width: none;
+  height: 32px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.nativeDock :global([data-dockkit-tab-title]:has([data-materials-tab])) {
+  flex: none;
+  overflow: visible;
+  padding-right: 22px;
+  mask-image: none;
+}
+.nativeDock
+  :global([role='tab']:has([data-materials-tab]) [data-dockkit-tab-close]) {
+  width: 22px;
+  height: 22px;
+  top: 5px;
+  right: 5px;
+}
 .nativeDock :global([data-dockkit-strip-tabs]:has([data-native-subagent-tab])),
 .nativeDock :global([role='tab']:has([data-native-subagent-tab])) {
   height: 32px;

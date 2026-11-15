@@ -472,7 +472,7 @@ export function EnterpriseMaterialsPanel(props: {
     );
   return (
     <section
-      className={`${files.panel} ${reference ? css.detail : ''}`}
+      className={`${files.panel} ${css.panel} ${reference ? css.detail : ''}`}
       aria-label="企业资料"
     >
       {activeAction?.error && (
