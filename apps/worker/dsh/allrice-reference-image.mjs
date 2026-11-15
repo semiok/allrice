@@ -5,6 +5,7 @@ import {
   ReferenceImageAttachmentSchema,
   ReferenceReadImageResultSchema,
   ReferenceImageErrorSchema,
+  ReferenceImageFailureSchema,
   referenceImagePolicy,
 } from '@allrice/contracts/native-runtime';
 
@@ -25,6 +26,16 @@ const timeout = () => ({
     message: '本次图片读取超过时限，未自动重试。',
   },
 });
+
+export function referenceImageFailure(error) {
+  const parsed = ReferenceImageFailureSchema.safeParse({
+    code: error?.code,
+    message: error?.message,
+    retryable: error?.retryable ?? true,
+  });
+  if (!parsed.success) throw error;
+  return { failure: parsed.data };
+}
 
 /** Private Worker RPC only; model tools never receive a host path/store handle. */
 export async function referenceImageOperation(server, operation, params) {
@@ -55,8 +66,9 @@ export async function referenceImageOperation(server, operation, params) {
   let info;
   try {
     info = await llm.resolveModelInfo(provider, model, signal);
-  } catch {
-    return signal.aborted ? timeout() : routeUnavailable();
+  } catch (error) {
+    if (signal.aborted) return timeout();
+    throw error;
   }
   if (signal.aborted) return timeout();
   if (!info?.inputModalities?.includes('image')) return routeUnavailable();

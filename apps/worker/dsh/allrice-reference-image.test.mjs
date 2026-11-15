@@ -87,6 +87,53 @@ test('current request header, not stale agent defaults, chooses the explicit ima
     /RUN_SESSION_DENIED/,
   );
 });
+test('route resolver faults retain their error rather than claiming unsupported image input', async () => {
+  const fault = Object.assign(Error('resolver failed'), {
+    code: 'INVALID_MODEL_INFO',
+  });
+  const s = server({}, {});
+  s.ctx.get = () => ({
+    resolveModelInfo: async () => {
+      throw fault;
+    },
+  });
+  await assert.rejects(
+    referenceImageOperation(s, 'route', params()),
+    (error) => error === fault,
+  );
+});
+test('native save remains joined past the deadline before returning the business timeout', async () => {
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  let entered;
+  const started = new Promise((resolve) => {
+    entered = resolve;
+  });
+  const s = server(
+    {
+      saveImages: async () => {
+        entered();
+        await held;
+        return [{}];
+      },
+    },
+    { inputModalities: ['image'] },
+  );
+  let settled = false;
+  const result = referenceImageOperation(s, 'save', {
+    ...params(),
+    deadlineAt: Date.now() + 50,
+  }).finally(() => {
+    settled = true;
+  });
+  await started;
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  assert.equal(settled, false);
+  release();
+  assert.equal((await result).error.code, 'REFERENCE_READ_TIMEOUT');
+});
 test('native persistence and image render retain a real attachment across store recreation', async () => {
   const home = await mkdtemp(join(tmpdir(), 'reference-image-'));
   const ctx = new Context();

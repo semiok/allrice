@@ -149,6 +149,18 @@ export type ReferenceReadImageResult = z.infer<
   typeof ReferenceReadImageResultSchema
 >;
 export type ReferenceImageError = z.infer<typeof ReferenceImageErrorSchema>;
+/** Private native/Broker envelope preserves pre-existing fault classifications. */
+export const ReferenceImageFailureSchema = z.union([
+  ReferenceImageErrorSchema,
+  z
+    .object({
+      code: z.string().min(1),
+      message: z.string().min(1),
+      retryable: z.boolean(),
+    })
+    .strict()
+    .refine((value) => !value.code.startsWith('REFERENCE_READ_')),
+]);
 export const ReferenceImageRouteResultSchema = z.union([
   z.object({ supported: z.literal(true) }).strict(),
   z.object({ error: ReferenceImageErrorSchema }).strict(),

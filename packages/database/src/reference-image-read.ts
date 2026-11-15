@@ -20,6 +20,8 @@ import { inspectReferenceImage } from './reference-image.ts';
 
 /** Private Worker binding, never a model argument or a transferable capability. */
 export interface ReferenceImagePort {
+  /** One business deadline measured from the actual native tool invocation. */
+  deadlineAt: number;
   route(): Promise<{ supported: true } | { error: ReferenceImageError }>;
   save(input: {
     data: Buffer;

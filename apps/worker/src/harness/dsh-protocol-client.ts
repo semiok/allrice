@@ -2,6 +2,7 @@ import {
   ReferenceImageCallSchema,
   ReferenceImageRouteResultSchema,
   ReferenceImageSaveResultSchema,
+  ReferenceImageFailureSchema,
   referenceImagePolicy,
 } from '@allrice/contracts';
 import type { ReferenceImagePort } from '@allrice/database';
@@ -602,38 +603,43 @@ export class DshProtocolClient {
     id: string;
     name: string;
     nativeSessionId?: string;
+    deadlineAt?: number;
   }): ReferenceImagePort {
-    const call = ReferenceImageCallSchema.parse(callInput);
+    const { deadlineAt, ...identity } = callInput;
+    const call = ReferenceImageCallSchema.parse(identity);
     const runId = this.runId;
-    const deadlineAt = Date.now() + referenceImagePolicy.operationMilliseconds;
+    if (
+      !Number.isSafeInteger(deadlineAt) ||
+      deadlineAt! > Date.now() + referenceImagePolicy.operationMilliseconds
+    )
+      throw new HandlerError(
+        'REFERENCE_IMAGE_DEADLINE_INVALID',
+        'Invalid native image deadline',
+        false,
+      );
     const request = async (
       operation: string,
       payload: Record<string, unknown> = {},
     ) => {
-      try {
-        return await this.request(
-          `allrice/reference-image/${operation}`,
-          { call, runId, deadlineAt, ...payload },
-          Math.max(1, deadlineAt - Date.now()),
+      const result = await this.request(
+        `allrice/reference-image/${operation}`,
+        { call, runId, deadlineAt, ...payload },
+        // Public saveImages cannot abort mid-save. Join its actual completion;
+        // the native operation checks the shared deadline before returning.
+        0,
+      );
+      if (result.failure) {
+        const failure = ReferenceImageFailureSchema.parse(result.failure);
+        throw new HandlerError(
+          failure.code,
+          failure.message,
+          failure.retryable,
         );
-      } catch (error) {
-        if (
-          !(error instanceof HandlerError) ||
-          error.code !== 'DSH_REQUEST_TIMEOUT'
-        )
-          throw error;
-        return {
-          error: {
-            code: 'REFERENCE_READ_TIMEOUT',
-            reason: 'operation_budget',
-            retryable: true,
-            message:
-              'Image reading exceeded its time budget; no automatic retry.',
-          },
-        };
       }
+      return result;
     };
     return {
+      deadlineAt: deadlineAt!,
       route: async () =>
         ReferenceImageRouteResultSchema.parse(await request('route')),
       save: async ({ data, mediaType, name }) =>

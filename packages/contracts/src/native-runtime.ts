@@ -6,6 +6,7 @@ export {
   ReferenceImageAttachmentSchema,
   ReferenceImageBlocksSchema,
   ReferenceImageErrorSchema,
+  ReferenceImageFailureSchema,
 } from './reference-image.ts';
 export { ModelTransportFailureCodeSchema } from './model-diagnostics.ts';
 export { allRiceToolManifest } from './tool-manifest.ts';

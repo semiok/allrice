@@ -1,9 +1,13 @@
 import {
   referenceImageOperation,
+  referenceImageFailure,
   referenceImageOutput,
   referenceImageValue,
 } from './allrice-reference-image.mjs';
-import { ReferenceImageErrorSchema } from '@allrice/contracts/native-runtime';
+import {
+  ReferenceImageFailureSchema,
+  referenceImagePolicy,
+} from '@allrice/contracts/native-runtime';
 import { searchCodexWeb } from './allrice-codex-web-search.mjs';
 import { installNativeWeb } from './allrice-native-web.mjs';
 import {
@@ -1477,12 +1481,20 @@ export async function createAllRiceRuntime(
                     { type: 'text', text: value.content },
                   ],
                 },
-          // Tool declarations are the single source for DSH's native enforcer.
-          timeoutMs: tool.timeoutMs ?? 65_000,
+          // Image reads own the frozen business timeout code and still join
+          // native persistence. The generic timeout policy would replace it.
+          timeoutMs:
+            tool.canonicalName === 'workspace.reference.read_image'
+              ? undefined
+              : (tool.timeoutMs ?? 65_000),
           isConcurrencySafe: () =>
             tool.isConcurrencySafe ??
             tool.canonicalName !== 'local.process.execute',
           execute: async (args, exec) => {
+            const referenceImageDeadlineAt =
+              tool.canonicalName === 'workspace.reference.read_image'
+                ? Date.now() + referenceImagePolicy.operationMilliseconds
+                : undefined;
             const agent = this.ctx.agents.requireInitiator();
             if (
               tool.canonicalName === 'workspace.employee.profile.update' &&
@@ -1514,6 +1526,9 @@ export async function createAllRiceRuntime(
                   toolCallId: exec.callId,
                   name: tool.canonicalName,
                   arguments: args,
+                  ...(referenceImageDeadlineAt === undefined
+                    ? {}
+                    : { referenceImageDeadlineAt }),
                 },
                 exec.signal,
               );
@@ -1561,7 +1576,7 @@ export async function createAllRiceRuntime(
                   denied.nativeSessionId !== exec.agent.id
                 )
                   throw Error('REFERENCE_IMAGE_FAILURE_INVALID');
-                const error = ReferenceImageErrorSchema.parse(denied.error);
+                const error = ReferenceImageFailureSchema.parse(denied.error);
                 throw new HarnessError(JSON.stringify(error), error.code);
               }
               return referenceImageValue(response);
@@ -1867,7 +1882,7 @@ export async function createAllRiceRuntime(
             this,
             method.split('/').at(-1),
             params,
-          );
+          ).catch(referenceImageFailure);
         case 'session/park-question':
           return {
             checkpoint: await checkpointNativeQuestion(

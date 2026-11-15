@@ -2,7 +2,7 @@ import type { ReferenceImagePort } from '@allrice/database';
 import {
   allRiceToolManifest,
   ReferenceReadImageResultSchema,
-  ReferenceImageErrorSchema,
+  ReferenceImageFailureSchema,
 } from '@allrice/contracts';
 
 import { HandlerError, isConfirmedToolFailure } from '../../errors.js';
@@ -172,6 +172,7 @@ export function dshInboundToolHandler(
       id: string;
       name: string;
       nativeSessionId?: string;
+      deadlineAt?: number;
     }) => ReferenceImagePort;
     fileReadRoot?: {
       nativeSessionId: string;
@@ -250,6 +251,10 @@ export function dshInboundToolHandler(
                 referenceImage: input.referenceImage({
                   id,
                   name,
+                  deadlineAt:
+                    typeof params.referenceImageDeadlineAt === 'number'
+                      ? params.referenceImageDeadlineAt
+                      : undefined,
                   nativeSessionId:
                     typeof params.nativeSessionId === 'string'
                       ? params.nativeSessionId
@@ -264,12 +269,11 @@ export function dshInboundToolHandler(
       .catch((error: unknown) => {
         if (
           name === 'workspace.reference.read_image' &&
-          error instanceof HandlerError &&
-          error.reason
+          error instanceof HandlerError
         ) {
-          const denied = ReferenceImageErrorSchema.safeParse({
+          const denied = ReferenceImageFailureSchema.safeParse({
             code: error.code,
-            reason: error.reason,
+            ...(error.reason ? { reason: error.reason } : {}),
             message: error.message,
             retryable: error.retryable,
           });

@@ -26,6 +26,7 @@ import { referenceReadPin } from '../reference-search.ts';
 import {
   executeEmployeeReferenceTool,
   loadEmployeeRuntimeReferences,
+  loadEmployeeRuntimeReferenceContext,
 } from './employee-runtime-content.ts';
 import { releaseConversationRuntime } from '../conversation/conversation-runtime.ts';
 import type { ReferenceImageExecution } from '../reference-image-read.ts';
@@ -110,6 +111,7 @@ suite('v1.8 publication image reads at real Run and lease boundaries', () => {
         nativeSessionId: 'native-image',
       },
       native: {
+        deadlineAt: Date.now() + 30_000,
         route: vi.fn(async () => ({ supported: true as const })),
         save: vi.fn(async () => ({ image })),
       },
@@ -174,6 +176,21 @@ suite('v1.8 publication image reads at real Run and lease boundaries', () => {
       ),
     ).toEqual([]);
     expect(await receipts(run)).toEqual([]);
+    expect(
+      await loadEmployeeRuntimeReferenceContext(
+        run.scope,
+        run.runtime.generationId,
+        run.worker,
+      ),
+    ).toMatchObject({
+      knowledge: [],
+      references: [
+        {
+          reference: selected.selection,
+          readCapabilities: { text: false, image: true, archive: false },
+        },
+      ],
+    });
     const port = execution();
     const first = await invoke(run, saved.pin, port);
     expect(first).toMatchObject({
@@ -304,6 +321,75 @@ suite('v1.8 publication image reads at real Run and lease boundaries', () => {
       expect(await receipts(run)).toEqual([]);
     },
   );
+  it.each(['revoked', 'expired-lease', 'canceled'] as const)(
+    'conceals a native decode failure after %s',
+    async (kind) => {
+      const saved = await publish();
+      const run = await x.run();
+      const port = execution();
+      const controller = new AbortController();
+      port.native.save = vi.fn(async () => {
+        if (kind === 'revoked') await revoke(saved);
+        if (kind === 'expired-lease')
+          await f.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${run.worker.jobId}`;
+        if (kind === 'canceled') controller.abort();
+        return {
+          error: {
+            code: 'REFERENCE_READ_INVALID',
+            reason: 'image_decode',
+            retryable: false,
+            message: 'private format detail',
+          },
+        };
+      });
+      const error = await invoke(run, saved.pin, port, controller.signal).catch(
+        (value: unknown) => value,
+      );
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toMatchObject({ reason: 'image_decode' });
+      expect(await receipts(run)).toEqual([]);
+    },
+  );
+  it('joins native persistence after the shared deadline and records no read', async () => {
+    const saved = await publish();
+    const run = await x.run();
+    const port = execution();
+    let release!: () => void;
+    let entered!: () => void;
+    const enteredSave = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    port.native.deadlineAt = Date.now() + 1500;
+    port.native.save = vi.fn(async () => {
+      entered();
+      await held;
+      return { image };
+    });
+    let settled = false;
+    const result = invoke(run, saved.pin, port)
+      .catch((error: unknown) => error)
+      .finally(() => {
+        settled = true;
+      });
+    await enteredSave;
+    await new Promise((resolve) =>
+      setTimeout(
+        resolve,
+        Math.max(0, port.native.deadlineAt - Date.now()) + 20,
+      ),
+    );
+    expect(settled).toBe(false);
+    release();
+    expect(await result).toMatchObject({
+      code: 'REFERENCE_READ_TIMEOUT',
+      reason: 'operation_budget',
+      retryable: true,
+    });
+    expect(await receipts(run)).toEqual([]);
+  });
   it('concurrent final receipt slot commits one result and refuses the other', async () => {
     const saved = await publish();
     const other = await publish();

@@ -23,6 +23,7 @@ import {
 import { randomUUID, createHash } from 'node:crypto';
 import {
   assertReferenceSelections,
+  readReferenceSelection,
   referenceCitationLabel,
   retrieveReferenceKnowledgeInTransaction,
   ReferenceRuntimeError,
@@ -1677,6 +1678,17 @@ export async function loadEmployeeRuntimeReferences(
   generationId: string,
   worker: ContentWorker,
 ) {
+  return (
+    await loadEmployeeRuntimeReferenceContext(scope, generationId, worker)
+  ).knowledge;
+}
+
+/** The pin stays unchanged; current server capabilities travel outside it. */
+export async function loadEmployeeRuntimeReferenceContext(
+  scope: RunScope,
+  generationId: string,
+  worker: ContentWorker,
+) {
   const result = await withContentLocks(scope, async (tx) => {
     const run = await ownedRun(scope, tx);
     if (
@@ -1710,6 +1722,19 @@ export async function loadEmployeeRuntimeReferences(
       tx,
       true,
     );
+    const references = [];
+    for (const selection of selections) {
+      const current = await readReferenceSelection(
+        identity(scope),
+        selection.revisionId,
+        tx,
+        true,
+      );
+      references.push({
+        reference: selection,
+        readCapabilities: current.readCapabilities,
+      });
+    }
     const explicit = await retrieveReferenceKnowledgeInTransaction(
       {
         context: identity(scope),
@@ -1745,10 +1770,10 @@ export async function loadEmployeeRuntimeReferences(
       ],
     );
     if (!(await validContentLease(scope, worker, tx))) return unavailable();
-    return { knowledge };
+    return { knowledge, references };
   });
   if ('rejected' in result) return unavailable();
-  return result.knowledge;
+  return result;
 }
 
 /** The private Worker closure supplies Run/generation/lease. Tool arguments
@@ -1791,18 +1816,37 @@ export async function executeEmployeeReferenceTool(
     return run;
   }
   if (toolName === 'workspace.reference.read_image') {
+    if (
+      !imageExecution ||
+      !Number.isSafeInteger(imageExecution.native.deadlineAt) ||
+      imageExecution.native.deadlineAt >
+        Date.now() + referenceImagePolicy.operationMilliseconds
+    )
+      return unavailable();
     const deadline = AbortSignal.timeout(
-      referenceImagePolicy.operationMilliseconds,
+      Math.max(0, imageExecution.native.deadlineAt - Date.now()),
     );
     signal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     await authority(getDatabase(), false);
-    if (!imageExecution) return unavailable();
-    const prepared = await prepareReferenceImage(
-      reader,
-      input,
-      imageExecution,
-      signal,
-    );
+    let prepared: Awaited<ReturnType<typeof prepareReferenceImage>>;
+    try {
+      prepared = await prepareReferenceImage(
+        reader,
+        input,
+        imageExecution,
+        signal,
+      );
+    } catch (error) {
+      // Failed reads may also reveal new format/size facts. Revoke/lease/cancel
+      // gates take precedence over those details, just as on the success path.
+      await withContentLocks(scope, async (tx) => {
+        await authority(tx, true);
+        await requireReferenceImagePin(reader, input, tx, true);
+        checkReferenceImageSignal(signal!);
+        throw error;
+      });
+      throw error;
+    }
     const activeSignal = signal;
     return withContentLocks(scope, async (tx) => {
       checkReferenceImageSignal(activeSignal);

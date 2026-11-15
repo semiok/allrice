@@ -132,7 +132,11 @@ describe('v1.8 strict image identities and historical receipt union', () => {
   });
   it('preserves old strict text receipts without inventing new fields', () => {
     const v = receipt();
-    const { schemaVersion: _version, readKind: _kind, call: _call, ...old } = v;
+    const old = Object.fromEntries(
+      Object.entries(v).filter(
+        ([key]) => !['schemaVersion', 'readKind', 'call'].includes(key),
+      ),
+    );
     const value = {
       ...old,
       origin: { kind: 'explicit' },

@@ -110,7 +110,6 @@ export const referenceNativeTools = [
         description: 'Exact original file SHA256.',
       },
     },
-    timeoutMs: 30_000,
     validateArguments: (args) => ReferenceReadImageInputSchema.parse(args),
   },
 ];
