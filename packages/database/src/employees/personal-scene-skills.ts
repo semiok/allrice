@@ -31,7 +31,10 @@ import {
   readPersonalEmployeeSceneLayer,
 } from './employee-content.ts';
 import { resolveEmployeeContentSource } from './employee-content-sources.ts';
-import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
+import {
+  validateSceneSkillPackage,
+  validateHistoricalSceneSkillPackage,
+} from './employee-scene-skill-package.ts';
 import { parseWorkflowSkillSections } from './workflow-skill.ts';
 import {
   EmployeeContentError,
@@ -139,7 +142,11 @@ async function resolvePackage(
     throw new DataAccessError('not_found');
   const text = EmployeeContentTextSchema.parse(row.content);
   if (!('skillPackage' in text)) throw new DataAccessError('not_found');
-  validateSceneSkillPackage(text.skillPackage, text.body, scene.references);
+  validateHistoricalSceneSkillPackage(
+    text.skillPackage,
+    text.body,
+    scene.references,
+  );
   const pin = {
     setId: layer.setId,
     revisionId: layer.revision.id,

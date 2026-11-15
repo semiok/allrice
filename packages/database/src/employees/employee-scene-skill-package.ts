@@ -2,7 +2,10 @@ import type {
   EmployeeContentReference,
   EmployeeSceneSkillPayload,
 } from '@allrice/contracts';
-import { validateSkillBundle } from '../skill-bundles.ts';
+import {
+  validateSkillBundle,
+  validateHistoricalSkillBundle,
+} from '../skill-bundles.ts';
 import { EmployeeContentError } from './employee-content-model.ts';
 import { parseWorkflowSkillSections } from './workflow-skill.ts';
 
@@ -16,6 +19,24 @@ export function validateSceneSkillPackage(
   body: string,
   references: readonly EmployeeContentReference[],
 ) {
+  return validateScenePackage(payload, body, references, false);
+}
+
+/** Read a digest-bound published revision; preserve all bytes and source checks. */
+export function validateHistoricalSceneSkillPackage(
+  payload: EmployeeSceneSkillPayload,
+  body: string,
+  references: readonly EmployeeContentReference[],
+) {
+  return validateScenePackage(payload, body, references, true);
+}
+
+function validateScenePackage(
+  payload: EmployeeSceneSkillPayload,
+  body: string,
+  references: readonly EmployeeContentReference[],
+  historical: boolean,
+) {
   if (payload.frontmatter) {
     try {
       parseWorkflowSkillSections(body);
@@ -24,7 +45,8 @@ export function validateSceneSkillPackage(
     }
   }
   try {
-    validateSkillBundle(payload.bundle, body);
+    if (historical) validateHistoricalSkillBundle(payload.bundle, body);
+    else validateSkillBundle(payload.bundle, body);
     const declared = new Set(references.map(referenceKey));
     if (
       payload.resourceSources.some((source) =>

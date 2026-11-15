@@ -37,6 +37,14 @@ export function validateSkillBundle(
   return validateSkillBundleDependencies(input, content, false);
 }
 
+/** Historical original bundle metadata, never a current import/publication validator. */
+export function validateHistoricalSkillBundle(
+  input: unknown,
+  content?: string,
+): SkillBundle {
+  return validateSkillBundleDependencies(input, content, true);
+}
+
 function validateSkillBundleDependencies(
   input: unknown,
   content: string | undefined,

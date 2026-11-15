@@ -13,7 +13,7 @@ import { DataAccessError } from '../data.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { readPublishedEmployeeSceneLayers } from './employee-content.ts';
 import { resolveEmployeeContentSource } from './employee-content-sources.ts';
-import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
+import { validateHistoricalSceneSkillPackage } from './employee-scene-skill-package.ts';
 import type { ContentTx } from './employee-content-model.ts';
 
 type Context = Parameters<typeof readPublishedEmployeeSceneLayers>[0];
@@ -76,7 +76,11 @@ async function readScenePackages(
       continue;
     const text = parsed.data;
     try {
-      validateSceneSkillPackage(text.skillPackage, text.body, references);
+      validateHistoricalSceneSkillPackage(
+        text.skillPackage,
+        text.body,
+        references,
+      );
     } catch {
       continue;
     }
