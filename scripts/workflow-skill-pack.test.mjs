@@ -64,7 +64,7 @@ describe('developer packs a native skill into C1 content without publishing', ()
     });
     expect(result.procedure.skillPackage.frontmatter.metadata).toEqual({
       displayName: '品牌内容草稿',
-      version: '1.0.0',
+      version: '1.0.1',
     });
     expect(result.procedure.skillPackage.bundle.resources).toHaveLength(5);
     expect(result.report.scriptsExecuted).toBe(false);
