@@ -683,7 +683,12 @@ suite(
             ],
           },
           textEdits: [
-            { ...original.procedure, contentId, revisionId: sourceRevisionId },
+            {
+              ...original.procedure,
+              contentId,
+              revisionId: sourceRevisionId,
+              expectedRevision: 0,
+            },
           ],
         },
         { active: true },
