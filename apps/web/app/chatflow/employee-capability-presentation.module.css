@@ -137,15 +137,15 @@
 }
 .empty > svg {
   flex: none;
-  width: 28px;
-  height: 28px;
+  width: 24px;
+  height: 24px;
   margin: 0;
   color: var(--ar-text-secondary);
 }
 .empty.empty h3 {
   margin: 0;
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 12px;
+  line-height: 20px;
   font-weight: 500;
 }
 
