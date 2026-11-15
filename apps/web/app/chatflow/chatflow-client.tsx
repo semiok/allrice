@@ -106,6 +106,10 @@ import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-sta
 import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 
 import { type ReferenceDraft } from './reference-chips';
+import {
+  referenceCitationAddress,
+  type ReadReferenceCitation,
+} from './reference-sources';
 import { DraftChatComposer } from './chat-composer';
 import { createComposerDraftStore } from '../../lib/chatflow/composer-draft-store';
 import { type CompanyDraftReference } from './company-template-use';
@@ -944,6 +948,24 @@ export function ChatFlowClient({
       }
     },
     [layout.compact, workbenchEnabled, fileScope, showWorkbench],
+  );
+  const openReferenceCitation = useCallback(
+    (citation: ReadReferenceCitation) => {
+      setModuleRequest((previous) => ({
+        scope: fileScope,
+        kind: 'reference',
+        id: referenceCitationAddress(citation.id),
+        title: `[${citation.referenceLabel}] ${citation.label}`,
+        revision: (previous?.revision ?? 0) + 1,
+      }));
+      showWorkbench(undefined, true);
+    },
+    [fileScope, showWorkbench],
+  );
+  const referenceCitations = (history?.messages ?? []).flatMap((message) =>
+    (message.content.citations ?? []).filter(
+      (c): c is ReadReferenceCitation => c.type === 'reference',
+    ),
   );
   const hasWorkbenchContent =
     !!currentMemoryRequest ||
@@ -3134,6 +3156,7 @@ export function ChatFlowClient({
                         memoryScope={settingsScope}
                         memoryWrites={memoryWrites.current}
                         onOpenReference={openReference}
+                        onOpenReferenceCitation={openReferenceCitation}
                         onOpenAutomation={(id) => openAutomationTask({ id })}
                         streamingOutput={preferences.value.streamingOutput}
                         fontSize={preferences.value.fontSize}
@@ -3285,6 +3308,7 @@ export function ChatFlowClient({
           }}
           desktop={!layout.compact}
           moduleRequest={currentModuleRequest}
+          referenceCitations={referenceCitations}
           experienceAvailable={
             !!activeEmployee?.instanceId || !!currentMemoryRequest
           }

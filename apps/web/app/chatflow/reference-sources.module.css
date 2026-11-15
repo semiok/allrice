@@ -1,0 +1,72 @@
+.sources {
+  display: grid;
+  gap: 12px;
+  margin: 12px 0;
+  min-width: 0;
+}
+.source {
+  min-width: 0;
+}
+.source > * {
+  max-width: 100%;
+}
+.caption {
+  margin-top: 5px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.panel {
+  height: 100%;
+  overflow: auto;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-base);
+  font-size: 13px;
+}
+.heading {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--dsw-alias-border-l2);
+  font-weight: 600;
+}
+.back {
+  margin: 12px 20px 4px;
+  padding: 4px 0;
+  border: 0;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.body {
+  padding: 20px;
+}
+.title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.title > svg {
+  flex: none;
+}
+.title h2 {
+  min-width: 0;
+  margin: 0;
+  font-size: 18px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.member {
+  display: grid;
+  gap: 6px;
+  margin: 16px 0;
+  padding: 12px;
+  background: var(--dsw-alias-bg-l1);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.member > span {
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+}

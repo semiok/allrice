@@ -33,6 +33,11 @@ import {
 } from './workbench-modules';
 import { ReferenceSnapshotPreview } from './workbench-reference-preview';
 import {
+  ReferenceSourcePanel,
+  referenceCitationAddress,
+  type ReadReferenceCitation,
+} from './reference-sources';
+import {
   NativeDocumentPreview,
   hasSourcePreview,
   hasNativeViewport,
@@ -136,6 +141,7 @@ type Props = {
   desktop?: boolean;
   terminalIdentity?: { organizationId: string; ownerId: string };
   onOpenComputerSettings?: () => void;
+  referenceCitations?: readonly ReadReferenceCitation[];
   moduleRequest?: {
     kind: WorkbenchModule | 'guide' | 'reference';
     revision: number;
@@ -366,6 +372,9 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
         !memoryRequest &&
         request?.kind !== 'materials' &&
         request?.kind !== 'workflow' &&
+        !(
+          request?.kind === 'reference' && request.id?.startsWith('citation:')
+        ) &&
         !(props.personalDeliverables && request?.kind === 'files')) ||
       !request ||
       request.revision === lastModuleRequest.current
@@ -831,6 +840,27 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                   ),
                 personalMemoryTarget(tab.kind, tab.contentId),
               )
+            ) : tab.kind === 'reference' &&
+              tab.contentId.startsWith('citation:') ? (
+              (() => {
+                const citation = props.referenceCitations?.find(
+                  (c) => referenceCitationAddress(c.id) === tab.contentId,
+                );
+                return citation ? (
+                  <ReferenceSourcePanel
+                    citation={citation}
+                    onBack={() =>
+                      dock.open(
+                        'materials',
+                        pageAddress('materials'),
+                        moduleLabels.materials,
+                      )
+                    }
+                  />
+                ) : (
+                  <p role="status">引用来源暂未加载。</p>
+                );
+              })()
             ) : tab.kind === 'reference' ? (
               <ReferenceSnapshotPreview
                 revisionId={tab.contentId}
