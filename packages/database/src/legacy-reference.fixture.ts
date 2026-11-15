@@ -23,6 +23,7 @@ export async function legacyReferenceFixture(
   const checksum =
     `sha256:${createHash('sha256').update(bytes).digest('hex')}` as const;
   const sourceId = value.sourceId ?? randomUUID();
+  let sourceWorkspaceId = value.workspaceId;
   let ownership: ContentOwnership =
     value.scope === 'platform'
       ? { scope: 'platform' }
@@ -44,9 +45,10 @@ export async function legacyReferenceFixture(
       values(${sourceId},${context.organizationId},${value.workspaceId},${'legacy-fixture-' + sourceId},${value.fileName},${value.purpose},${context.actor.id},${db.json(ownership)})`;
   else {
     const [source] =
-      await db`select ownership from allrice_knowledge_sources where id=${sourceId}`;
+      await db`select ownership,workspace_id from allrice_knowledge_sources where id=${sourceId}`;
     if (!source) throw Error('Missing legacy source fixture');
     ownership = source.ownership as ContentOwnership;
+    sourceWorkspaceId = source.workspace_id;
   }
   const file = await createStorageMetadata(
     context,
@@ -88,7 +90,7 @@ export async function legacyReferenceFixture(
     )
     .digest('hex')}`;
   await db`insert into allrice_knowledge_revisions(id,organization_id,workspace_id,knowledge_source_id,revision,name,description,status,definition,checksum,created_by,file_object_id,file_name,request_id,request_input,source_artifact_version_id,source_target_key,artifact_snapshot)
-    values(${revisionId},${context.organizationId},${value.workspaceId},${sourceId},${next!.revision},${value.fileName},${value.purpose},'draft',${db.json(definition)},${digest},${context.actor.id},${file.object.id},${value.fileName},${value.requestId},${db.json(value)},${origin?.versionId ?? null},${origin ? 'legacy-fixture:' + sourceId : null},${origin ? db.json(origin.snapshot) : null})`;
+    values(${revisionId},${context.organizationId},${sourceWorkspaceId},${sourceId},${next!.revision},${value.fileName},${value.purpose},'draft',${db.json(definition)},${digest},${context.actor.id},${file.object.id},${value.fileName},${value.requestId},${db.json(value)},${origin?.versionId ?? null},${origin ? 'legacy-fixture:' + sourceId : null},${origin ? db.json(origin.snapshot) : null})`;
   await db`update allrice_knowledge_revisions set status='published',published_at=clock_timestamp() where id=${revisionId}`;
   await db`insert into allrice_knowledge_processing(revision_id) values(${revisionId})`;
   return {

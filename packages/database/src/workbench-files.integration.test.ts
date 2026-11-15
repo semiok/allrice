@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { legacyReferenceFixture } from './legacy-reference.fixture.ts';
 import { allocateWorkbenchFileName } from './workbench-file-name.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
@@ -984,17 +985,31 @@ suite(
         scope: 'company',
         departmentIds: [],
       });
-      const reference = await captureWorkbenchFileReference(
-        t.owner,
-        t.owner.workspaceId!,
-        file.objectId,
-        randomUUID(),
-        storage(),
+      // Historical recipient ownership is fixed at first INSERT. The retained
+      // copy remains immutable; its exact origin binding decides current access.
+      const original = await readWorkbenchFile(t.owner, file.objectId);
+      const bytes = Buffer.from(
+        await new Response(await storage().get(original.object)).arrayBuffer(),
       );
-      // Seed an old recipient-created snapshot with misleading personal fallback.
-      // The existing origin binding, rather than either creator field, is authority.
-      await fixture.db`update allrice_knowledge_sources set created_by=${t.maintainer.actor.id},ownership=${fixture.db.json({ scope: 'personal', organizationId: t.owner.organizationId, ownerId: t.maintainer.actor.id })} where id=${reference.sourceId}`;
-      await fixture.db`update allrice_knowledge_revisions set created_by=${t.maintainer.actor.id} where id=${reference.revisionId}`;
+      const reference = await legacyReferenceFixture(
+        t.maintainer,
+        {
+          workspaceId: t.maintainer.workspaceId,
+          requestId: randomUUID(),
+          scope: 'personal',
+          fileName: original.row.file_name,
+          mediaType: original.object.mediaType,
+          contentBase64: bytes.toString('base64'),
+        },
+        fixture.db,
+      );
+      await storage().put(
+        reference.object,
+        new Blob([new Uint8Array(reference.bytes)]).stream(),
+      );
+      await fixture.db`update allrice_storage_objects set state='ready' where id=${reference.object.id}`;
+      await fixture.db`insert into allrice_workbench_reference_bindings(source_id,origin_object_id,organization_id)
+        values(${reference.sourceId},${file.objectId},${t.owner.organizationId})`;
       const copy = await getReferenceFile(
         t.owner,
         t.owner.workspaceId!,

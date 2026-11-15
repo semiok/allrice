@@ -54,8 +54,8 @@ suite(
       vi.unstubAllEnvs();
       await f?.close();
     }, 30000);
-    async function setup() {
-      const a = await tenantValidationFixture(f.db);
+    async function setup(options: { artifactImmutable?: boolean } = {}) {
+      const a = await tenantValidationFixture(f.db, options);
       await f.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level)
       values(${a.context.organizationId},${a.context.actor.id},'Publisher','company') on conflict(organization_id,user_id) do update set content_maintenance_level='company'`;
       const owner = {
@@ -328,7 +328,9 @@ suite(
       ).toEqual([]);
     });
     it('honors an exact old policy-source origin without treating independent company sources as originals', async () => {
-      const { a, owner, reader, input } = await setup();
+      const { a, owner, reader, input } = await setup({
+        artifactImmutable: false,
+      });
       const original = await getWorkbenchArtifact(
         owner,
         a.task.chatSessionId!,
@@ -380,7 +382,9 @@ suite(
       ).toEqual(saved.bytes);
     });
     it('keeps the owner retained lifetime across original archive/deletion, while current identity and archive still gate new reads', async () => {
-      const { a, owner, reader, input } = await setup();
+      const { a, owner, reader, input } = await setup({
+        artifactImmutable: false,
+      });
       const saved = await legacy(owner, input.artifactVersionId, {
         scope: 'personal',
       });
