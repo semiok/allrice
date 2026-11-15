@@ -24,9 +24,6 @@ import { WorkbenchFilesPanel } from '../app/chatflow/workbench-files-panel';
 import { EnterpriseMaterialsPanel } from '../app/chatflow/enterprise-materials-panel';
 import { WorkspaceFilePickerDialog } from '../app/chatflow/workspace-file-picker-dialog';
 import { ReferencePublicationDialog } from '../app/chatflow/reference-publication-dialog';
-import { ReferenceLibrary } from '../app/chatflow/reference-library';
-import { SessionReferencePicker } from '../app/chatflow/session-reference-picker';
-import { CompanyTemplateBrowser } from '../app/chatflow/company-template-browser';
 import { SidebarSettings } from '../app/chatflow/sidebar-settings';
 import { AutomationTaskList } from '../app/chatflow/automation-tasks';
 import { WorkspaceFilePreview } from '../app/chatflow/workspace-file-preview';
@@ -266,17 +263,11 @@ const controls: Record<string, FocusControl[]> = {
       capture: false,
     },
   ],
-  'legacy-references': [search('search', '查找参考资料')],
-  'session-picker': [search('search', '搜索会话')],
-  templates: [search('search', '查找范本'), select('category', '范本分类')],
 };
 const requiredRead: Record<string, string[]> = {
   deliverables: ['/api/v1/workbench/files'],
   materials: ['/api/v1/references/publications'],
   automation: ['/api/v1/scheduled-tasks'],
-  'legacy-references': ['/api/v1/references'],
-  'session-picker': ['/api/v1/sessions'],
-  templates: ['/api/v1/company-assets'],
 };
 const reads: string[] = [];
 const writes: string[] = [];
@@ -354,18 +345,8 @@ window.fetch = async (input, init) => {
       matches: [],
       fullTextCoverage: { ready: 2, unavailable: 0 },
     };
-  else if (url.pathname === '/api/v1/references')
-    body = { references: [reference], options };
   else if (url.pathname === '/api/v1/scheduled-tasks')
     body = { tasks: [], nextCursor: null };
-  else if (url.pathname === '/api/v1/sessions')
-    body = { sessions: [], nextCursor: null };
-  else if (url.pathname === '/api/v1/company-assets')
-    body = {
-      assets: [],
-      nextCursor: null,
-      ruleBudget: { maximumBytes: 10000, publishedBytes: 0, maximumRules: 100 },
-    };
   else if (/^\/api\/v1\/employee-instances\/[^/]+\/content$/.test(url.pathname))
     body = details;
   else if (url.pathname === '/api/v1/experiences') body = { draftBatches: [] };
@@ -565,35 +546,6 @@ function Fixture() {
       </section>
     );
   else if (caseName === 'settings') content = <SettingsPreview />;
-  else if (caseName === 'legacy-references')
-    content = (
-      <ReferenceLibrary
-        workspaceId={workspaceId}
-        headers={headers}
-        onClose={noop}
-        hideUpload
-      />
-    );
-  else if (caseName === 'session-picker')
-    content = (
-      <SessionReferencePicker
-        workspaceId={workspaceId}
-        activeId={null}
-        headers={headers}
-        selected={[]}
-        onChange={noop}
-        onClose={noop}
-      />
-    );
-  else if (caseName === 'templates')
-    content = (
-      <CompanyTemplateBrowser
-        open
-        workspaceId={workspaceId}
-        headers={headers}
-        onClose={noop}
-      />
-    );
   else if (caseName.startsWith('canvas-')) content = <CanvasPreview />;
   else throw Error(`Unknown preview case: ${caseName}`);
   return (

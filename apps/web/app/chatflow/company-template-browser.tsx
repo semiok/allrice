@@ -1,8 +1,6 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { SelectField } from '../../components/select-field';
-import { SearchField } from '../../components/search-field';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 import { z } from 'zod';
 import {
@@ -235,7 +233,7 @@ export function CompanyAssetRevisionView({
         <>
           <label>
             固定修订
-            <SelectField
+            <select
               aria-label="公司资料修订"
               value={selectedId}
               disabled={loading}
@@ -257,7 +255,7 @@ export function CompanyAssetRevisionView({
                       : ' · 草稿'}
                 </option>
               ))}
-            </SelectField>
+            </select>
           </label>
           {selected && (
             <>
@@ -448,7 +446,7 @@ function Browser({
         </Button>
         <label>
           分类
-          <SelectField
+          <select
             aria-label="范本分类"
             value={category}
             onChange={(e) => setCategory(e.target.value)}
@@ -459,16 +457,16 @@ function Browser({
                 {c}
               </option>
             ))}
-          </SelectField>
+          </select>
         </label>
-        <div className={styles.searchGroup}>
-          <span>查找当前列表</span>
-          <SearchField
+        <label>
+          查找当前列表
+          <input
             aria-label="查找范本"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
-        </div>
+        </label>
       </div>
       {view === 'recommended' && (
         <p>

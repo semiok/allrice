@@ -1,7 +1,6 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { SearchField } from '../../components/search-field';
 import type { SessionReference } from '@allrice/contracts';
 import type { Session } from './chatflow-types';
 import { DshDialog } from './dsh-upstream/Dialog';
@@ -86,7 +85,7 @@ export function SessionReferencePicker({
       <p className={css.hint}>
         将所选会话的文字作为这次工作的参考。最多选择 3 段；文件需单独添加。
       </p>
-      <SearchField
+      <input
         autoFocus
         aria-label="搜索会话"
         className={css.search}
