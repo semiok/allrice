@@ -15674,7 +15674,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .boundingBox())!;
           const areaBox = (await readingArea.boundingBox())!;
           expect(Math.abs(previewBox.y - areaBox.y)).toBeLessThan(1);
-          expect(previewBox.height).toBeGreaterThanOrEqual(areaBox.height - 1);
+          // The approved canvas keeps short text natural after recovering,
+          // with its actions immediately below instead of a full-height gap.
+          expect(previewBox.height).toBeGreaterThan(0);
+          expect(previewBox.height).toBeLessThan(areaBox.height);
+          const recoveredFooter = (await f.panel
+            .locator('footer:visible')
+            .boundingBox())!;
+          expect(
+            Math.abs(recoveredFooter.y - previewBox.y - previewBox.height),
+          ).toBeLessThan(1);
+          expect(
+            recoveredFooter.y + recoveredFooter.height,
+          ).toBeLessThanOrEqual(areaBox.y + areaBox.height);
           await capture('artifact-detail');
           expect(
             await toolbar
