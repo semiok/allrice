@@ -11,6 +11,8 @@ import {
   skillBundleChecksum,
   skillBytesChecksum,
   validateSkillBundle,
+  validateFrozenSkill,
+  validateHistoricalFrozenSkill,
   readFrozenSkillResource,
   frozenPackageSkills,
 } from './skill-bundles.ts';
@@ -113,6 +115,60 @@ function personaPackageFixture() {
 }
 
 describe('P18 immutable reviewed Skill bundles', () => {
+  it.each(['workspace.memory.search', 'workspace.experience.read'])(
+    'reads the original retired dependency %s but rejects it for new publication',
+    (name) => {
+      const pkg = personaPackageFixture();
+      const skill = pkg.skills[0]!;
+      skill.requiredToolRefs.push(name);
+      skill.bundle.dependencies.push({ kind: 'tool', name });
+      const { checksum: _bundleChecksum, ...bundlePayload } = skill.bundle;
+      skill.bundle.checksum = skillBundleChecksum(bundlePayload);
+      pkg.runtimeManifest.toolNames.push(name);
+      const { checksum: _packageChecksum, ...packagePayload } = pkg;
+      pkg.checksum = personaRuntimePackageChecksum(packagePayload);
+      const original = structuredClone(pkg);
+      expect(frozenPackageSkills(pkg)).toEqual(pkg.skills);
+      expect(validateHistoricalFrozenSkill(skill)).toEqual(skill);
+      expect(
+        readFrozenSkillResource(pkg.skills, skill.name, 'references/rules.txt')
+          .bundleChecksum,
+      ).toBe(skill.bundle.checksum);
+      expect(pkg).toEqual(original);
+      expect(() => validateSkillBundle(skill.bundle, skill.content)).toThrow(
+        'skill_bundle_unknown_tool',
+      );
+      expect(() => validateFrozenSkill(skill)).toThrow(
+        'skill_bundle_unknown_tool',
+      );
+
+      const unknown = structuredClone(skill);
+      unknown.requiredToolRefs.push('unknown.never_registered');
+      unknown.bundle.dependencies.push({
+        kind: 'tool',
+        name: 'unknown.never_registered',
+      });
+      const { checksum: _unknownChecksum, ...unknownPayload } = unknown.bundle;
+      unknown.bundle.checksum = skillBundleChecksum(unknownPayload);
+      expect(() => validateHistoricalFrozenSkill(unknown)).toThrow(
+        'skill_bundle_unknown_tool',
+      );
+      const undeclared = structuredClone(skill);
+      undeclared.requiredToolRefs = ['workspace.skill.read'];
+      expect(() => validateHistoricalFrozenSkill(undeclared)).toThrow(
+        'skill_bundle_undeclared_tool',
+      );
+      const corrupt = structuredClone(skill);
+      corrupt.bundle.resources[0]!.contentBase64 =
+        Buffer.from('changed').toString('base64');
+      const { checksum: _corruptChecksum, ...corruptPayload } = corrupt.bundle;
+      corrupt.bundle.checksum = skillBundleChecksum(corruptPayload);
+      expect(() => validateHistoricalFrozenSkill(corrupt)).toThrow(
+        'skill_resource_checksum_mismatch',
+      );
+    },
+  );
+
   it('reads exact reviewed bundle resources from a signed PERSONA package without a second instruction-file catalog', () => {
     const pkg = personaPackageFixture();
     const before = structuredClone(pkg);

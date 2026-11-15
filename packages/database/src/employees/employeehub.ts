@@ -66,7 +66,10 @@ import {
 } from '@allrice/contracts';
 
 import { DataAccessError } from '../data.ts';
-import { frozenPackageSkills, validateFrozenSkill } from '../skill-bundles.ts';
+import {
+  frozenPackageSkills,
+  validateHistoricalFrozenSkill,
+} from '../skill-bundles.ts';
 import {
   freezeEmployeeBaseSkills,
   assertFrozenBaseSkillCatalog,
@@ -1481,7 +1484,7 @@ export async function prepareEmployeeRunBinding(
       taskRuntimePolicy?.timeoutMs ?? modelSnapshot.runLimits.timeoutMs,
   });
   const originalNativeSkills = nativeSkillRows.map((skill) =>
-    validateFrozenSkill({
+    validateHistoricalFrozenSkill({
       id: skill.id,
       name: skill.name,
       description: skill.description,
@@ -1827,7 +1830,7 @@ export async function resolveEmployeeExecution(input: {
   );
   const nativeSkills = DshNativeSkillSnapshotSchema.array()
     .parse(row.native_skills)
-    .map(validateFrozenSkill);
+    .map(validateHistoricalFrozenSkill);
   const executionSnapshot = EmployeeExecutionSnapshotSchema.safeParse(
     row.execution_snapshot,
   );

@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import type postgres from 'postgres';
 import type { EmployeePersonaAdmissionPreparation } from '../employees/employee-instances.ts';
-import { validateFrozenSkill } from '../skill-bundles.ts';
+import {
+  validateFrozenSkill,
+  validateHistoricalFrozenSkill,
+} from '../skill-bundles.ts';
 import {
   RuntimePolicyError,
   runtimePolicyDigest,
@@ -190,7 +193,7 @@ export function validatePlatformEmployeeTestExecutionSnapshot(input: {
     ) {
       throw new Error('platform_employee_test_skill_checksum_mismatch');
     }
-    validateFrozenSkill(skill);
+    validateHistoricalFrozenSkill(skill);
   }
   const packageSkills = new Map(
     runtimePackage.skills.map((skill) => [skill.id, skill]),

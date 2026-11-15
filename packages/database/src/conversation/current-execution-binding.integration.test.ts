@@ -65,6 +65,7 @@ import {
 import { selectCheckedFinalDeliveryArtifact } from '../final-delivery-rollout.ts';
 import { synchronizeTenantEmployeeAccess } from '../tenant-employee-access.ts';
 import { updateEmployeeRelease } from '../employees/employee-quality.ts';
+import { skillBundleChecksum } from '../skill-bundles.ts';
 
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -328,6 +329,21 @@ integration(
 
     function packageFor(kind: Exclude<SourceKind, 'default-rice'>) {
       const pkg = structuredClone(packages[kind]);
+      if (kind === 'current-package2-retired-memory') {
+        // Construct the original historical package, before any reader sees it.
+        const skill = pkg.skills[0]!;
+        const retired = [
+          'workspace.memory.search',
+          'workspace.experience.read',
+        ];
+        skill.requiredToolRefs.push(...retired);
+        const bundle = skill.bundle!;
+        bundle.dependencies.push(
+          ...retired.map((name) => ({ kind: 'tool' as const, name })),
+        );
+        const { checksum: _checksum, ...payload } = bundle;
+        bundle.checksum = skillBundleChecksum(payload);
+      }
       pkg.runtimeManifest.distributionGeneration = kind.startsWith('legacy-')
         ? oldGeneration
         : newNativeGeneration;

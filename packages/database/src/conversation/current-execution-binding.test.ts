@@ -328,6 +328,14 @@ describe('current employee source policy: immutable original identities', () => 
         const pkg = packageOf(source);
         pkg.runtimeManifest.toolNames.push(...retired);
         pkg.skills[0]!.requiredToolRefs.push(...retired);
+        const bundle = pkg.skills[0]!.bundle;
+        if (bundle) {
+          bundle.dependencies.push(
+            ...retired.map((name) => ({ kind: 'tool' as const, name })),
+          );
+          const { checksum: _checksum, ...payload } = bundle;
+          bundle.checksum = skillBundleChecksum(payload);
+        }
         fingerprint(pkg);
         source.configChecksum = pkg.checksum;
       } else source.configChecksum = employeeManifestChecksum(manifest);
