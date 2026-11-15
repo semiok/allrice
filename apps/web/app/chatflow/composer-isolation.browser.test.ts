@@ -4141,18 +4141,50 @@ suite(
         try {
           const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
           await input.fill('保留原要求 🌾');
+          if (width === 1440) await waitForDesktopSidebarLayout(f.page);
           const taskButton = f.page.getByRole('button', {
             name: '常用任务',
             exact: true,
           });
-          const taskBox = (await taskButton.boundingBox())!;
-          const addBox = (await f.page
-            .getByRole('button', { name: '添加文件', exact: true })
-            .boundingBox())!;
-          const sendBox = (await f.page
-            .getByRole('button', { name: '发送', exact: true })
-            .boundingBox())!;
-          const cardBox = (await input.locator('..').boundingBox())!;
+          const { taskBox, addBox, sendBox, cardBox } = await f.page.evaluate(
+            (nodes) => {
+              const measure = () => {
+                const rect = (node: Element | null) => {
+                  if (!node?.isConnected)
+                    throw Error('Composer geometry node is disconnected');
+                  const { x, y, width, height } = node.getBoundingClientRect();
+                  return { x, y, width, height };
+                };
+                return {
+                  taskBox: rect(nodes[0]),
+                  addBox: rect(nodes[1]),
+                  sendBox: rect(nodes[2]),
+                  cardBox: rect(nodes[3]),
+                };
+              };
+              return new Promise<ReturnType<typeof measure>>(
+                (resolve, reject) => {
+                  requestAnimationFrame(() => {
+                    try {
+                      resolve(measure());
+                    } catch (error) {
+                      reject(error);
+                    }
+                  });
+                },
+              );
+            },
+            await Promise.all([
+              taskButton.elementHandle(),
+              f.page
+                .getByRole('button', { name: '添加文件', exact: true })
+                .elementHandle(),
+              f.page
+                .getByRole('button', { name: '发送', exact: true })
+                .elementHandle(),
+              input.locator('..').elementHandle(),
+            ]),
+          );
           expect(taskBox.x).toBeGreaterThanOrEqual(cardBox.x);
           expect(taskBox.x + taskBox.width).toBeLessThanOrEqual(sendBox.x);
           expect(
