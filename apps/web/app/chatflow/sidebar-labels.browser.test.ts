@@ -214,15 +214,64 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
           const marker = (row: Locator) => row.locator(':scope > [role="img"]');
           await readable('pin', marker(pinned), 3);
           await hoverFocused(selected);
-          await readable('selected time, hovered and focused', time(selected));
+          expect(await time(selected).isVisible()).toBe(false);
           await hoverFocused(other);
-          await readable('unselected time, hovered and focused', time(other));
+          expect(await time(other).isVisible()).toBe(false);
           // The pinned session selected: its marker sits on the selected fill.
           await page.goto(`${origin}/?theme=${theme}&active=weekly`);
           const pin = marker(row(page, '整理本周销售周报'));
           await readable('selected pin', pin, 3);
           await hoverFocused(row(page, '整理本周销售周报'));
-          await readable('selected pin, hovered and focused', pin, 3);
+          expect(await pin.isVisible()).toBe(false);
+        }));
+
+      it(`clips long titles and reveals them on native hover at ${at}`, () =>
+        measure(`${at} long titles`, width, async (page) => {
+          await page.emulateMedia({ reducedMotion: 'no-preference' });
+          await page.goto(`${origin}/?theme=${theme}&long-title=1`);
+          const title = tree(page).getByText(/^整理本周销售周报与重点客户/);
+          const avatar = tree(page).getByText('R', { exact: true });
+          const titleBox = await title.boundingBox();
+          const avatarBox = await avatar.boundingBox();
+          expect(Math.abs(titleBox!.x - avatarBox!.x)).toBeLessThanOrEqual(0.5);
+          expect(
+            await tree(page).evaluate(
+              (node) => node.scrollWidth - node.clientWidth,
+            ),
+          ).toBe(0);
+          const titleState = () =>
+            title.evaluate((node) => ({
+              left: node.scrollLeft,
+              range: node.scrollWidth - node.clientWidth,
+              overflow: getComputedStyle(node).textOverflow,
+            }));
+          expect(await titleState()).toMatchObject({
+            left: 0,
+            overflow: 'ellipsis',
+          });
+          expect((await titleState()).range).toBeGreaterThan(8);
+          const unbroken = tree(page).getByText(/^QuarterlyRevenueAndCustomer/);
+          expect(
+            await unbroken.evaluate(
+              (node) =>
+                node.scrollWidth > node.clientWidth &&
+                getComputedStyle(node).textOverflow === 'ellipsis',
+            ),
+          ).toBe(true);
+          await title.hover();
+          await expect
+            .poll(async () => (await titleState()).left)
+            .toBeGreaterThan(8);
+          const moving = await titleState();
+          expect(moving.left).toBeLessThan(moving.range);
+          expect(moving.overflow).toBe('clip');
+          await expect
+            .poll(async () => (await titleState()).left)
+            .toBeGreaterThan(moving.left + 8);
+          await page.mouse.move(width - 1, 899);
+          await expect
+            .poll(titleState)
+            .toMatchObject({ left: 0, overflow: 'ellipsis' });
         }));
 
       it(`reads the create-employee dialog at ${at}`, () =>
