@@ -1,6 +1,7 @@
 /** Native adapters use this explicit runtime boundary. Keep the existing
  * definitions and shared module instances; never re-export the root index. */
 export { ModelTransportFailureCodeSchema } from './model-diagnostics.ts';
+export { allRiceToolManifest } from './tool-manifest.ts';
 export {
   ReferenceSearchInputSchema,
   ReferenceReadInputSchema,
@@ -40,7 +41,6 @@ export {
   ImageToolInputSchema,
 } from './image-generation.ts';
 export { LocalFileToolArguments } from './local-files.ts';
-export { ExperienceSourceHandleSchema } from './memory-context.ts';
 export { MemoryOrdinalInputSchema } from './memory-index.ts';
 export { NativeOfficeExportSchema, OfficePdfExportSchema } from './office.ts';
 export {

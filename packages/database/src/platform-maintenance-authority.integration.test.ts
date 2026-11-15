@@ -74,7 +74,7 @@ import { LocalStorageAdapter } from '@allrice/storage';
 import { preparePlatformRepairInput } from './platform-repair.ts';
 import { preparePlatformRepairVerification } from './platform-repair-verification.ts';
 import { startMaintenanceRepairGrant } from './platform-maintenance-repair.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import {
   savePlatformEmployeeDraft,
   publishPlatformEmployee,
@@ -455,7 +455,7 @@ suite('immutable report-bound maintenance authority', () => {
   async function exerciseMaintenanceAuthority(
     mode: 'authority' | 'native-input',
   ) {
-    const company = await createExperienceFixture(fixture.db);
+    const company = await createCompletedRunFixture(fixture.db);
     const untouched =
       await fixture.db`select * from allrice_memberships where organization_id=${company.org} order by id`;
     for (const f of [

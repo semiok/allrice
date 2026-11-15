@@ -4,6 +4,7 @@ const { gate, host, text } = NativeHost;
 /** Real isolated PostgreSQL and Worker receipt entrypoints. The added end-to-end
  * case runs the actual DSH Host; only its provider and tokens are synthetic. */
 import { randomUUID } from 'node:crypto';
+import type { TransactionSql } from 'postgres';
 import { readFile } from 'node:fs/promises';
 import {
   afterAll,
@@ -22,6 +23,8 @@ import * as client from '../core/client.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createRunAuthorityFixture } from '../run-authority.fixture.ts';
 import { prepareRunMemoryContext } from '../run-memory-context.ts';
+import { freezeEmployeeMemoryIndexV2 } from '../employees/employee-documents.ts';
+import { ensureGeneralEmployeeInstance } from '../employees/employee-instances.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
 import {
   nativeBindingDescriptor,
@@ -113,7 +116,10 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
   ] as const)(
     'serializes native receipts with real memory preparation, root=$root, $first first',
     async ({ root, first }) => {
-      const f = await setup(root);
+      const f = await setup(root, true);
+      const document = f.memoryProjection?.employeeDocuments.memory;
+      if (document === undefined)
+        throw Error('Fixture V2 memory was not frozen');
       await fixture.db`update allrice_employee_runs set status='running' where run_id=${f.rootRunId}`;
       expect(
         await fixture.db`select root_run_id from allrice_runtime_roots where root_run_id=${f.rootRunId}`,
@@ -129,7 +135,7 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
         worker: { ...f.worker, attempt: 1 },
       };
       // Prove the public entry accepts this fixture before opening the lock window.
-      expect(await prepareRunMemoryContext(auth, [])).toEqual([]);
+      expect(await prepareRunMemoryContext(auth, document)).toEqual([]);
       const call = start(f);
       await write(f, call);
       const gate = await fixture.db.reserve();
@@ -141,7 +147,7 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
           (error: unknown) => error,
         );
       const prepare = () =>
-        prepareRunMemoryContext(auth, []).then(
+        prepareRunMemoryContext(auth, document).then(
           () => 'prepared',
           (error: unknown) => error,
         );
@@ -230,11 +236,45 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       }),
     );
   }
-  async function setup(configure = true) {
+  async function setup(configure = true, memory = false) {
+    let memoryProjection:
+      Awaited<ReturnType<typeof freezeEmployeeMemoryIndexV2>> | undefined;
+    const memoryOptions: NonNullable<
+      Parameters<typeof createRunAuthorityFixture>[1]
+    > = memory
+      ? {
+          memoryContextStateV2: () => memoryProjection!.memoryContextStateV2,
+          preparePrompt: async (transaction, who) => {
+            const tx = transaction as unknown as TransactionSql;
+            await ensureGeneralEmployeeInstance(tx, who.employeeAssignmentId);
+            const [assignment] =
+              await tx`select employee_id from allrice_employee_assignments where id=${who.employeeAssignmentId}`;
+            memoryProjection = await freezeEmployeeMemoryIndexV2(
+              tx,
+              {
+                organizationId: who.organizationId,
+                workspaceId: who.workspaceId,
+                ownerId: who.userId,
+                instanceId: who.employeeAssignmentId,
+                employeeId: assignment!.employee_id as string,
+              },
+              {},
+            );
+            return {
+              systemPrompt: 'Synthetic memory and receipt lock-order policy',
+              userRequest: '核对本次回执。',
+              conversation: [],
+              memories: [],
+              employeeDocuments: memoryProjection.employeeDocuments,
+            };
+          },
+        }
+      : {};
     const f = await createRunAuthorityFixture(fixture.db, {
       runtimePackage,
       configure,
       businessCreationOrigin: true,
+      ...memoryOptions,
     });
     await fixture.db`update allrice_jobs set attempt=1 where id=${f.worker.jobId}`;
     f.context.memberships = [
@@ -270,7 +310,7 @@ suite('MET229 immutable native model facts — isolated PostgreSQL', () => {
       descriptor,
     });
     const decision = await route(f);
-    return { ...f, descriptor, decision };
+    return { ...f, descriptor, decision, memoryProjection };
   }
   type Fixture = Awaited<ReturnType<typeof setup>>;
   const start = (

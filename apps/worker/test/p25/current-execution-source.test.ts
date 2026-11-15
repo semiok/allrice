@@ -1,9 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import {
-  EmployeeKernelRequestSchema,
-  InternalKernelRequestSchema,
-} from '@allrice/contracts';
+import { EmployeeKernelRequestSchema } from '@allrice/contracts';
 import {
   source,
   scope,
@@ -11,7 +8,6 @@ import {
 import {
   newCurrentPlatformTestOrigin,
   freezePlatformTestExecutionBinding,
-  type PlatformTestPurpose,
 } from '../../../../packages/database/src/conversation/current-platform-test-binding.ts';
 import { newNativeGeneration } from '../../../../packages/database/src/conversation/current-execution-binding.ts';
 import { LeasedPlatformTestExecutionBindingSchema } from '../../../../packages/database/src/conversation/native-run-execution-binding.ts';
@@ -22,12 +18,9 @@ beforeEach(() => {
   vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
 });
 afterEach(() => vi.unstubAllEnvs());
-function fixture(
-  purpose: PlatformTestPurpose = 'platform_preview',
-  generation: typeof newNativeGeneration = newNativeGeneration,
-) {
+function fixture(generation: typeof newNativeGeneration = newNativeGeneration) {
   const own = scope(),
-    s = source(generation, 'bundled', purpose);
+    s = source(generation, 'bundled', 'platform_preview');
   const origin = newCurrentPlatformTestOrigin({ scope: own, source: s });
   const binding = LeasedPlatformTestExecutionBindingSchema.parse({
     kind: 'current_platform_test_run_execution',
@@ -50,25 +43,12 @@ function fixture(
     runtimePackageChecksum: s.packageChecksum,
     runtimeDistributionGeneration: generation,
   };
-  const kernel =
-    purpose === 'experience_validation'
-      ? InternalKernelRequestSchema.parse({
-          ...common,
-          sessionId: null,
-          userMessageId: null,
-          assistantMessageId: null,
-          nativeContextId: own.testId,
-          internalTask: {
-            kind: 'experience_validation',
-            occurrenceId: randomUUID(),
-          },
-        })
-      : EmployeeKernelRequestSchema.parse({
-          ...common,
-          sessionId: own.testId,
-          userMessageId: randomUUID(),
-          assistantMessageId: randomUUID(),
-        });
+  const kernel = EmployeeKernelRequestSchema.parse({
+    ...common,
+    sessionId: own.testId,
+    userMessageId: randomUUID(),
+    assistantMessageId: randomUUID(),
+  });
   const input = {
     kernel,
     executionEnvironment: {
@@ -82,21 +62,18 @@ function fixture(
   };
   return { input, origin, binding };
 }
-it.each(['platform_preview', 'experience_validation'] as const)(
-  '%s selects the approved executor while retaining its original current package and synthetic version',
-  (purpose) => {
-    const f = fixture(purpose),
-      original = JSON.stringify(f.input);
-    vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
-    vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
-    expect(
-      currentExecutionForNativeInput(f.input, f.origin, f.binding),
-    ).toEqual(f.binding.test);
-    expect(JSON.stringify(f.input)).toBe(original);
-  },
-);
+it('selects the approved preview executor while retaining its original current package and synthetic version', () => {
+  const f = fixture(),
+    original = JSON.stringify(f.input);
+  vi.stubEnv('ALLRICE_DSH_NEW_ROOT_ARTIFACT_ID', undefined);
+  vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', undefined);
+  expect(currentExecutionForNativeInput(f.input, f.origin, f.binding)).toEqual(
+    f.binding.test,
+  );
+  expect(JSON.stringify(f.input)).toBe(original);
+});
 it('accepts the current declared package without changing original source facts', () => {
-  const f = fixture('platform_preview', newNativeGeneration);
+  const f = fixture(newNativeGeneration);
   expect(currentExecutionForNativeInput(f.input, f.origin, f.binding)).toEqual(
     f.binding.test,
   );
@@ -128,22 +105,9 @@ it.each(['runtimePackageChecksum', 'runtimeDistributionGeneration'] as const)(
     ).toThrow('BINDING_MISMATCH');
   },
 );
-it('rejects a different native context, even with the same source package', () => {
-  const f = fixture('experience_validation');
-  if (!('internalTask' in f.input.kernel)) throw Error('fixture');
-  f.input.kernel.nativeContextId = randomUUID();
-  expect(() =>
-    currentExecutionForNativeInput(f.input, f.origin, f.binding),
-  ).toThrow('BINDING_MISMATCH');
-});
-it('rejects an ordinary preview kernel for an experience validation purpose', () => {
-  const f = fixture('experience_validation'),
-    ordinary = fixture();
-  f.input.kernel = EmployeeKernelRequestSchema.parse({
-    ...ordinary.input.kernel,
-    sessionId: f.binding.test.scope.testId,
-    runtimePackageChecksum: f.binding.test.source.packageChecksum,
-  });
+it('rejects a different preview session, even with the same source package', () => {
+  const f = fixture();
+  f.input.kernel.sessionId = randomUUID();
   expect(() =>
     currentExecutionForNativeInput(f.input, f.origin, f.binding),
   ).toThrow('BINDING_MISMATCH');

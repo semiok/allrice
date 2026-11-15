@@ -16,13 +16,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import ExcelJS from 'exceljs';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  renderMemoryDetailV2,
-  memoryContextPolicy,
-  RunMemoryContextStateSchema,
-} from '@allrice/contracts';
-import * as EmployeeHub from '../../../../packages/database/src/employees/employeehub.ts';
-import { runtimePolicyDigest } from '../../../../packages/database/src/runtime-policy.ts';
+import { renderMemoryDetailV2 } from '@allrice/contracts';
 import { readRetiredExecutionHistory } from './retired-execution-history.fixture.ts';
 import { freezeEmployeeRunExecutionBinding } from '../../../../packages/database/src/conversation/current-execution-binding.ts';
 import * as DatabaseClient from '../../../../packages/database/src/core/client.ts';
@@ -35,18 +29,8 @@ import { createEmployeeAdministrationFixture } from '../../../../packages/databa
 import { savePlatformEmployeeDraft } from '../../../../packages/database/src/employees/platform-employees.ts';
 import {
   ensureGeneralEmployeeInstance,
-  prepareEmployeeInstanceSnapshot,
   updateEmployeeInstance,
 } from '../../../../packages/database/src/employees/employee-instances.ts';
-import {
-  seedHistoricalExperienceSource,
-  seedHistoricalExperienceRule,
-  seedHistoricalExperienceOccurrence,
-  seedHistoricalExperienceReceipt,
-  seedHistoricalExperienceAdoption,
-} from '../../../../packages/database/src/experience-history.fixture.ts';
-import { loadPlatformContentCatalog } from '../../../../packages/database/src/platform-content/catalog.ts';
-import { synchronizePlatformContent } from '../../../../packages/database/src/platform-content/sync.ts';
 import {
   assignEmployeeVersion,
   createEmployee,
@@ -56,12 +40,7 @@ import {
   employeeManifest,
   employeeManifestChecksum,
 } from '../../../../packages/database/src/employees/employee-config.ts';
-import {
-  assertFrozenEmployeePersona,
-  confirmedMemoryHandle,
-  employeeMemoryDocument,
-} from '../../../../packages/database/src/employees/employee-documents.ts';
-import { confirmedMemoryPin } from '../../../../packages/database/src/run-memory-context.ts';
+import { assertFrozenEmployeePersona } from '../../../../packages/database/src/employees/employee-documents.ts';
 import {
   readEmployeeChatSourceKind,
   assertEmployeeChatHumanSource,
@@ -100,20 +79,16 @@ import {
 import {
   createAssignedChatSession,
   sendChatMessage,
-  createTraceableMemory,
   createCheckpointMemoryCandidate,
   listWorkspaceMemories,
   getEmployeeWorkspace,
-  deleteWorkspaceMemory,
   createPersonalEmployeeMemory,
   correctPersonalEmployeeMemory,
   promoteManagedEmployeeMemory,
   deleteManagedEmployeeMemory,
 } from '../../../../packages/database/src/workspace/service.ts';
-import {
-  legacyPersonalMemoryPair,
-  memoryPairDigest,
-} from '../../../../packages/database/src/workspace/employee-memory.ts';
+import { memoryPairDigest } from '../../../../packages/database/src/workspace/employee-memory.ts';
+import { getPersonalEmployeeMemory } from '../../../../packages/database/src/employee-memory-management.ts';
 import { mutateCompanyAsset } from '../../../../packages/database/src/company-assets.ts';
 import {
   createRecurringTask,
@@ -533,7 +508,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             ? ['workspace.export.create', 'workspace.document.read']
             : []),
           'workspace.memory.remember',
-          'workspace.memory.search',
+          'workspace.memory.read',
           'local.file.import',
           'workspace.file.read',
         ],
@@ -605,19 +580,21 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     await base.db`update allrice_organizations set name='TASK_ORG_FACT',business_context='TASK_BUSINESS_FACT {{missing}}' where id=${identity.org}`;
     const prompt =
       '月报核对流程：整理12笔交易记录，逐笔保留原始编号与核对依据。退款记录单独列示，不合并退款。先输出中文表格，再列出差异与待确认事项。';
-    const memories: Awaited<ReturnType<typeof createTraceableMemory>>[] = [];
+    const memories: Awaited<ReturnType<typeof createPersonalEmployeeMemory>>[] =
+      [];
     for (const content of [
       `${prompt}TASK_MEMORY_KEEP {{missing}}`,
       `${prompt}TASK_MEMORY_WITHDRAW`,
     ])
       memories.push(
-        await createTraceableMemory(context, {
+        await createPersonalEmployeeMemory(context, {
           workspaceId: identity.workspace,
           instanceId: identity.assignment,
           idempotencyKey: randomUUID(),
-          content,
-          sourceType: 'user',
-          lifecycleState: 'durable',
+          summary: content.includes('TASK_MEMORY_KEEP')
+            ? 'TASK_MEMORY_KEEP {{missing}}'
+            : 'TASK_MEMORY_WITHDRAW',
+          details: content,
         }),
       );
     return {
@@ -634,94 +611,29 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     };
   }
   type PublishedTarget = Awaited<ReturnType<typeof publishedTarget>>;
-  async function historicalReadSource(f: PublishedTarget) {
-    vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
-    // Historical helpers require the real reviewed Skill catalog, which the
-    // migration-only isolated database does not populate by itself.
-    await synchronizePlatformContent(await loadPlatformContentCatalog());
-    const instance = await prepareEmployeeInstanceSnapshot(
-      f.context,
-      f.chat.id,
-      f.identity.assignment,
-      f.identity.version,
-    );
-    const sessionId = randomUUID(),
-      runId = randomUUID(),
-      messageId = randomUUID(),
-      assistantId = randomUUID();
-    const text = '反馈：这份报告简短表达很清晰。';
-    // Completed pre-retirement evidence only: no producer or model execution.
-    await f.db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_instance_id,employee_version_id,title)
-      values(${sessionId},${f.identity.org},${f.identity.workspace},${f.identity.user},${f.identity.assignment},${instance.id},${f.identity.version},'Historical read evidence')`;
-    await f.db`insert into allrice_messages(id,organization_id,workspace_id,owner_id,session_id,role,content,status)
-      values(${messageId},${f.identity.org},${f.identity.workspace},${f.identity.user},${sessionId},'user',${f.db.json({ text, citations: [] })},'completed'),
-      (${assistantId},${f.identity.org},${f.identity.workspace},${f.identity.user},${sessionId},'assistant','{"text":"Historical fixture completed"}','completed')`;
-    await f.db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input)
-      values(${runId},${f.identity.org},${f.identity.workspace},${f.identity.user},'succeeded','{}','{}')`;
-    await f.db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,status,completed_at,provider_snapshot,prompt_snapshot,execution_snapshot,experience_capture_state)
-      values(${runId},${f.identity.org},${f.identity.workspace},${f.identity.user},${f.identity.assignment},${f.identity.version},${sessionId},${messageId},${assistantId},'succeeded',clock_timestamp(),'{}','{}',${f.db.json({ instance, personalSkills: { skills: [] } })},'pending')`;
-    const sourceId = await seedHistoricalExperienceSource(f.db, runId);
-    const rule = await seedHistoricalExperienceRule(f.db, runId);
-    // Historical evidence uses this fixture's already frozen synthetic target.
-    const model = await ModelPool.freezeSessionModelSnapshot(
-      {
-        organizationId: f.identity.org,
-        workspaceId: f.identity.workspace,
-        sessionId: f.chat.id,
-      },
-      f.db,
-    );
-    const freeze = vi
-      .spyOn(ModelPool, 'freezeExperienceModelSnapshot')
-      .mockImplementation(async (input) => ({
-        ...model,
-        schemaVersion: 2,
-        sessionId: null,
-        occurrenceId: input.occurrenceId,
-      }));
-    let historical: Awaited<
-      ReturnType<typeof seedHistoricalExperienceOccurrence>
-    >;
-    try {
-      historical = await seedHistoricalExperienceOccurrence(
-        f.db,
-        runId,
-        rule.id,
-      );
-    } finally {
-      freeze.mockRestore();
-    }
-    await seedHistoricalExperienceReceipt(f.db, historical.row.id, {
-      schemaVersion: 1,
-      drafts: [
-        {
-          sourceIds: [sourceId],
-          rule: '撰写同类报告时，在保留必要信息的前提下优先采用简短、清晰的表达。',
-          applicability:
-            '适用于同类报告的措辞与篇幅选择；不推广到所有文体，也不覆盖明确的详细说明要求。',
-          reason: 'Synthetic historical expression feedback',
-          confidence: 'tentative',
-          validation: {
-            kind: 'preference',
-            check: 'Synthetic historical feedback',
-          },
-        },
-      ],
-      discarded: [],
+  async function differentInstanceMemory(f: PublishedTarget) {
+    const assignment = await createEmployee(f.context, {
+      workspaceId: f.identity.workspace,
+      name: 'Other personal memory scope',
+      description: 'Current V2 scope isolation fixture.',
+      partnerProfile: employeeManifest({
+        key: 'other-memory-scope',
+        name: 'Other personal memory scope',
+        description: 'Current V2 scope isolation fixture.',
+      }).partnerProfile,
     });
-    const adopted = await seedHistoricalExperienceAdoption(
-      f.db,
-      historical.row.id,
-      f.identity.user,
-      'concise',
-    );
-    return {
-      id: adopted.memory.id as string,
-      runId,
-      sessionId,
-      messageId,
-      text,
+    await ensureGeneralEmployeeInstance(f.db, assignment.id);
+    const pair = {
+      summary: 'OTHER_INSTANCE_ONLY',
+      details: '反馈：这份报告简短表达很清晰。',
     };
+    const memory = await createPersonalEmployeeMemory(f.context, {
+      workspaceId: f.identity.workspace,
+      instanceId: assignment.id,
+      idempotencyKey: randomUUID(),
+      ...pair,
+    });
+    return { id: memory.id, text: pair.details };
   }
 
   function expectMemoryReadDescriptions(request: ModelRequest) {
@@ -984,7 +896,10 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           (entry: { id: string }) => entry.id,
         ),
       ).not.toContain(history.id);
-      const pair = legacyPersonalMemoryPair(f.memories[0]!.content);
+      const pair = {
+        summary: f.memories[0]!.summary,
+        details: f.memories[0]!.details,
+      };
       const current = JSON.stringify(
         request.messages
           .filter(
@@ -1025,7 +940,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         };
       return { text: 'Synthetic complete V2 memory read completed.' };
     });
-    const history = await historicalReadSource(f);
+    const history = await differentInstanceMemory(f);
     f.prompt += '请生成月度报告。';
     const runId = (
       await sendChatMessage(f.context, f.identity.workspace, f.chat.id, {
@@ -1050,10 +965,10 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       const pin = stored!.s.pins.find(
         (entry: { id: string }) => entry.id === f.memories[0]!.id,
       );
-      const readText = renderMemoryDetailV2(
-        pin.number,
-        legacyPersonalMemoryPair(f.memories[0]!.content),
-      );
+      const readText = renderMemoryDetailV2(pin.number, {
+        summary: f.memories[0]!.summary,
+        details: f.memories[0]!.details,
+      });
       const reads = await Promise.all(
         broker.mock.calls.flatMap(([input], index) =>
           input.call.name === 'workspace.memory.read'
@@ -1518,150 +1433,113 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     expect(await db`select id from allrice_runs`).toHaveLength(0);
   }, 45000);
 
-  it('restores a pre-retirement task with a V1 ledger without memory disclosure or rewriting its frozen history', async () => {
+  it('refuses a pre-retirement Run with a raw V1 memory snapshot before native admission and preserves its frozen history', async () => {
     const requests: ModelRequest[] = [];
-    const f = await publishedTarget(async (request, index) => {
+    const f = await setup(async (request) => {
       requests.push(request);
-      return index === 1
-        ? {
-            nativeTool: {
-              name: 'workspace_memory_search',
-              arguments: { query: '不可读取个人记忆' },
-            },
-          }
-        : { text: 'Synthetic restored task completed.' };
+      return { text: 'Must never dispatch an obsolete memory payload.' };
     });
-    const memories = f.memories.map((memory) => ({
-      id: memory.id,
-      revision: memory.revision,
-      content: memory.content,
-      lifecycleState: memory.lifecycleState,
-      memoryClass: memory.memoryClass,
-      sourceLabel: memory.sourceLabel,
-      trust: memory.trust,
-      confidence: memory.confidence,
-      capturedAt: memory.capturedAt,
-      sourceHandle: confirmedMemoryHandle(memory),
-    }));
-    const memoryDocument = employeeMemoryDocument(memories, memories.length);
-    const plan = await oncePlan(f);
-    const original = EmployeeHub.prepareEmployeeRunBinding;
-    const hook = vi
-      .spyOn(EmployeeHub, 'prepareEmployeeRunBinding')
-      .mockImplementation(async (...args) => {
-        const binding = await original(...args);
-        if (!args[0].taskPersona) return binding;
-        // Reproduce the old producer at first INSERT, never mutate a frozen row
-        // or disable its immutable trigger. The real task source remains intact.
-        binding.executionSnapshot.capabilitySnapshot.bindings.toolNames = [
-          ...new Set([
-            ...binding.executionSnapshot.capabilitySnapshot.bindings.toolNames,
-            'workspace.memory.read',
-            'workspace.memory.search',
-            'workspace.memory.remember',
-            'workspace.experience.read',
-          ]),
-        ];
-        binding.promptSnapshot.memories = memories;
-        binding.promptSnapshot.employeeDocuments = {
-          ...binding.promptSnapshot.employeeDocuments!,
-          memory: memoryDocument,
-        };
-        return binding;
-      });
-    let runId: string;
-    try {
-      runId = await plan.dispatch();
-    } finally {
-      hook.mockRestore();
-    }
-    const bytes = Buffer.byteLength(memoryDocument, 'utf8');
-    const ledger = RunMemoryContextStateSchema.parse({
-      schemaVersion: 1,
-      meter: 'utf8_bytes',
-      limits: memoryContextPolicy,
-      initial: {
-        ids: memories.map((m) => m.id),
-        digest: runtimePolicyDigest(memories),
-        bytes,
-        documentDigest: runtimePolicyDigest(memoryDocument),
+    const historical = await createRunAuthorityFixture(f.db, {
+      configure: false,
+      runtimePolicy: f.identity.manifest.runtimePolicy,
+      // Dedicated historical first INSERT, not a new public admission or an
+      // immutable prompt rewrite. Current enqueue must keep rejecting V1.
+      preparePrompt: async () => ({
+        systemPrompt: 'Synthetic historical task',
+        conversation: [],
+        memories: [{ id: randomUUID(), content: 'TASK_MEMORY_KEEP' }],
+        employeeDocuments: {
+          user: '',
+          memory: '# MEMORY.md\nTASK_MEMORY_KEEP',
+        },
+      }),
+      snapshot: (snapshot) => {
+        snapshot.capabilitySnapshot.bindings.toolNames.push(
+          'workspace.memory.search',
+          'workspace.experience.read',
+        );
+        return snapshot;
       },
-      confirmedPins: memories.map(confirmedMemoryPin),
-      spentBytes: bytes + 23,
-      toolReads: 1,
     });
-    // This is the pre-upgrade mutable accounting row left by an earlier attempt.
+    const runId = historical.rootRunId;
+    const [row] = await f.db`
+      select user_message_id,assistant_message_id from allrice_employee_runs where run_id=${runId}`;
+    const payload = {
+      schemaVersion: 1,
+      type: 'allrice.employee.run',
+      input: {
+        employeeAssignmentId: historical.assignment,
+        employeeVersionId: historical.version,
+        sessionId: historical.session,
+        userMessageId: row!.user_message_id,
+        assistantMessageId: row!.assistant_message_id,
+      },
+    };
+    // This owned fixture already has a real policy and lease; issue its
+    // claimed job input so startClaimedJob produces the ordinary Worker context.
+    await f.db`update allrice_jobs set status='claimed',attempt=1,payload=${f.db.json(payload)} where id=${historical.worker.jobId}`;
+    const ledger = { schemaVersion: 1, spentBytes: 23, toolReads: 1 };
     await f.db`update allrice_employee_runs set memory_context_state=${f.db.json(ledger)} where run_id=${runId}`;
     const history = async () =>
       (
         await f.db`select prompt_snapshot,execution_snapshot,memory_context_state from allrice_employee_runs where run_id=${runId}`
       )[0]!;
     const before = await history();
+    expect(before.memory_context_state).toEqual(ledger);
+    expect(before.prompt_snapshot.memories).toEqual([
+      { id: expect.any(String), content: 'TASK_MEMORY_KEEP' },
+    ]);
+    const workflowLease = { ...historical.worker, leaseMs: 300000 };
+    const execution = (await startClaimedJob(
+      workflowLease.workerId,
+      workflowLease.jobId,
+      workflowLease.leaseToken,
+    ))!;
+    expect(execution).toBeDefined();
+    const isolation = await prepareExecutionIsolation({
+      root: join(directory!, 'execution'),
+      organizationId: historical.org,
+      workspaceId: historical.workspace,
+      ownerId: historical.user,
+      runId,
+      jobId: workflowLease.jobId,
+      attempt: execution.job.attempt,
+    });
     const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
-    const task = await claim(f, runId, true);
+    const native = vi.spyOn(adapter!, 'execute');
     try {
-      await task.run();
-      expect(requests.length).toBeGreaterThan(0);
-      for (const request of requests) {
-        for (const name of [
-          'workspace_memory_read',
-          'workspace_memory_search',
-          'workspace_memory_remember',
-          'workspace_experience_read',
-        ])
-          expect(
-            request.tools?.map((t) => t.function.name) ?? [],
-          ).not.toContain(name);
-        expect(JSON.stringify(request.messages)).not.toContain(
-          'TASK_MEMORY_KEEP',
-        );
-        expect(JSON.stringify(request.messages)).not.toContain(
-          'TASK_MEMORY_WITHDRAW',
-        );
-      }
+      await expect(
+        executeEmployeeRun({
+          execution,
+          workflowLease,
+          isolation,
+          signal: AbortSignal.timeout(15000),
+          onHarnessEvent: async () => {},
+        }),
+      ).rejects.toMatchObject({
+        name: 'ZodError',
+        issues: expect.arrayContaining([
+          expect.objectContaining({ path: ['memories', 0] }),
+        ]),
+      });
+      expect(requests).toEqual([]);
       expect(broker.mock.calls).toEqual([]);
-      const auth = {
-        scope: {
-          organizationId: f.identity.org,
-          workspaceId: f.identity.workspace,
-          ownerId: f.identity.user,
-          sessionId: f.chat.id,
-          runId,
-        },
-        worker: { ...task.workflowLease, attempt: task.execution.job.attempt },
-      };
-      for (const call of [
-        {
-          name: 'workspace.memory.search',
-          arguments: { query: 'TASK_MEMORY_KEEP' },
-        },
-        { name: 'workspace.memory.read', arguments: { number: 1 } },
-        {
-          name: 'workspace.experience.read',
-          arguments: { handle: 'experience:sha256:' + 'a'.repeat(64) },
-        },
+      expect(native.mock.calls).toEqual([]);
+      for (const name of [
+        'workspace.memory.search',
+        'workspace.experience.read',
       ])
         await expect(
           ToolBroker.executeRiceTool({
-            context: task.execution.context,
-            employeeDocuments: before.prompt_snapshot.employeeDocuments,
+            context: execution.context,
             capabilities: ['storage:read'],
             storageRoot: '/must-not-export',
-            sessionId: f.chat.id,
-            memoryReadAuthority: auth,
-            call: {
-              id: randomUUID(),
-              nativeSessionId: 'synthetic-' + f.chat.id,
-              ...call,
-            },
+            call: { id: randomUUID(), name, arguments: {} },
           }),
-        ).rejects.toMatchObject({
-          code: 'MEMORY_CONTEXT_UNAVAILABLE',
-          retryable: false,
-        });
+        ).rejects.toMatchObject({ code: 'TOOL_NOT_ALLOWED', retryable: false });
       expect(await history()).toEqual(before);
     } finally {
-      await task.isolation.cleanup();
+      await isolation.cleanup();
     }
   }, 90000);
 
@@ -1825,14 +1703,14 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
           await f.db`select employee_version_id from allrice_employee_assignments where id=${f.identity.assignment}`;
         expect(latest!.employee_version_id).not.toBe(f.identity.version);
         const memory = f.memories[1]!;
-        await deleteWorkspaceMemory(
+        await deleteManagedEmployeeMemory(
           f.context,
           f.identity.workspace,
           memory.id,
           {
             instanceId: f.identity.assignment,
             expectedRevision: memory.revision,
-            contentDigest: memory.contentDigest,
+            pairDigest: memory.pairDigest,
             idempotencyKey: randomUUID(),
           },
         );
@@ -2880,14 +2758,12 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       expect(JSON.stringify(request.messages)).toContain('重新检查后继续');
       return { text: '已按答复继续原任务。' };
     });
-    const memory = await createTraceableMemory(f.context, {
+    const memory = await createPersonalEmployeeMemory(f.context, {
       workspaceId: f.identity.workspace,
       instanceId: f.identity.assignment,
       idempotencyKey: randomUUID(),
-      sourceType: 'user',
-      content: 'R6 冻结偏好：中文摘要并保留依据。',
-      memoryClass: 'user_preference',
-      lifecycleState: 'durable',
+      summary: 'R6 冻结偏好：中文摘要并保留依据。',
+      details: null,
     });
     const task = await prepare(f, '检查目录；重复失败时等我确认。', true);
     const readFrozen = async () =>
@@ -3170,7 +3046,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
       },
       false,
       false,
-      ['workspace.memory.search', 'workspace.export.create'],
+      ['workspace.memory.read', 'workspace.export.create'],
     );
     const memory = await createPersonalEmployeeMemory(f.context, {
       workspaceId: f.identity.workspace,
@@ -3303,7 +3179,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         false,
         [
           'workspace.memory.remember',
-          'workspace.memory.search',
+          'workspace.memory.read',
           'workspace.export.create',
         ],
       );
@@ -3533,162 +3409,152 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     }
   }, 45000);
 
-  it.each(['durable', 'candidate'])(
-    'R2 rejects %s memory from a real recurring producer and Worker',
-    async (lifecycleState) => {
-      const requests: ModelRequest[] = [];
-      const f = await setup(
-        async (request, count) => {
-          requests.push(request);
-          return count === 1
-            ? {
-                nativeTool: {
-                  name: 'workspace_memory_remember',
-                  arguments: { content: '我偏好中文周报', lifecycleState },
-                },
-              }
-            : { text: 'Synthetic completed.' };
-        },
-        false,
-        false,
-        ['workspace.memory.remember'],
-      );
-      vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
-      const reference = {
-        artifactId: f.artifactId,
-        profileId: 'allrice-recurring-control-v1',
-        storageId: 'r2-internal-source',
-        stateRoot: directory!,
+  it('R2 rejects V2 remember from a real recurring producer and Worker', async () => {
+    const requests: ModelRequest[] = [];
+    const f = await setup(
+      async (request, count) => {
+        requests.push(request);
+        return count === 1
+          ? {
+              nativeTool: {
+                name: 'workspace_memory_remember',
+                arguments: { summary: '我偏好中文周报', details: null },
+              },
+            }
+          : { text: 'Synthetic completed.' };
+      },
+      false,
+      false,
+      ['workspace.memory.remember'],
+    );
+    vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
+    const reference = {
+      artifactId: f.artifactId,
+      profileId: 'allrice-recurring-control-v1',
+      storageId: 'r2-internal-source',
+      stateRoot: directory!,
+    };
+    vi.stubEnv('ALLRICE_NATIVE_RECURRING_REFERENCE', JSON.stringify(reference));
+    await initializeNativeRecurringPartition(reference);
+    const ready = {
+      enabled: true,
+      storageReady: true,
+      legacyClockExcluded: true,
+      controlArtifactApproved: true,
+    };
+    const store = createNativeRecurringSqlStore({
+      db: f.db,
+      partitionId: 'allrice-recurring-v1',
+      ownerId: randomUUID(),
+      reference,
+      ttlMs: 300000,
+      readiness: () => ready,
+      decodeTask: (value) => structuredClone(value) as NativeRecurringTask,
+      lockAdmission: lockNativeRecurringAdmissions,
+      proveClosed: async () => null,
+    });
+    const grant = (await store.acquireWriter())!;
+    const created = await createRecurringTask(f.context, f.chat.id, {
+      clientRequestId: randomUUID(),
+      name: 'Synthetic memory source check',
+      prompt: '请记住：我偏好中文周报',
+      rule: { kind: 'every', seconds: 60 },
+    });
+    const [row] = await f.db<
+      { snapshot: NativeRecurringSnapshot }[]
+    >`select snapshot from allrice_native_recurring_controls where automation_id=${created.id}`;
+    const control = row!.snapshot.control;
+    const mutate = async (mutation: NativeRecurringMutation) => {
+      const write = {
+        writeId: randomUUID(),
+        digest: nativeOnceDigest(mutation),
+        mutation,
       };
-      vi.stubEnv(
-        'ALLRICE_NATIVE_RECURRING_REFERENCE',
-        JSON.stringify(reference),
-      );
-      await initializeNativeRecurringPartition(reference);
-      const ready = {
-        enabled: true,
-        storageReady: true,
-        legacyClockExcluded: true,
-        controlArtifactApproved: true,
-      };
-      const store = createNativeRecurringSqlStore({
-        db: f.db,
-        partitionId: 'allrice-recurring-v1',
-        ownerId: randomUUID(),
-        reference,
-        ttlMs: 300000,
-        readiness: () => ready,
-        decodeTask: (value) => structuredClone(value) as NativeRecurringTask,
-        lockAdmission: lockNativeRecurringAdmissions,
-        proveClosed: async () => null,
-      });
-      const grant = (await store.acquireWriter())!;
-      const created = await createRecurringTask(f.context, f.chat.id, {
-        clientRequestId: randomUUID(),
-        name: 'Synthetic memory source check',
-        prompt: '请记住：我偏好中文周报',
-        rule: { kind: 'every', seconds: 60 },
-      });
-      const [row] = await f.db<
-        { snapshot: NativeRecurringSnapshot }[]
-      >`select snapshot from allrice_native_recurring_controls where automation_id=${created.id}`;
-      const control = row!.snapshot.control;
-      const mutate = async (mutation: NativeRecurringMutation) => {
-        const write = {
-          writeId: randomUUID(),
-          digest: nativeOnceDigest(mutation),
-          mutation,
-        };
-        expect(await store.commitMutation(grant.writer, write)).toBe(
-          'committed',
-        );
-      };
-      await mutate({
-        kind: 'session_initializing',
-        controlId: control.controlId,
-      });
-      await mutate({ kind: 'session_ready', controlId: control.controlId });
-      const scheduledAt = new Date(Date.now() - 180000).toISOString();
-      const native: NativeRecurringTask = {
-        sessionId: control.controlSessionId,
-        status: 'active',
-        record: {
-          id: randomUUID(),
-          kind: 'every',
-          everySeconds: 60,
-          title: 'AllRice once control',
-          prompt:
-            'Synthetic schedule control only. Never execute business work.',
-          scheduledAt,
-        },
-      };
-      await mutate({
-        kind: 'put_task',
-        controlId: control.controlId,
-        task: native,
-      });
-      await mutate({
-        kind: 'confirm_command',
-        controlId: control.controlId,
-        commandId: control.command.id,
-        nativeTaskId: native.record.id,
-      });
-      // Only the timer receipt is synthetic, as in the existing SQL corpus.
-      // The recurring dispatcher, ordinary-message admission and Worker are real.
-      native.lastDelivery = {
+      expect(await store.commitMutation(grant.writer, write)).toBe('committed');
+    };
+    await mutate({
+      kind: 'session_initializing',
+      controlId: control.controlId,
+    });
+    await mutate({ kind: 'session_ready', controlId: control.controlId });
+    const scheduledAt = new Date(Date.now() - 180000).toISOString();
+    const native: NativeRecurringTask = {
+      sessionId: control.controlSessionId,
+      status: 'active',
+      record: {
+        id: randomUUID(),
+        kind: 'every',
+        everySeconds: 60,
+        title: 'AllRice once control',
+        prompt: 'Synthetic schedule control only. Never execute business work.',
         scheduledAt,
-        deliveredAt: new Date().toISOString(),
-        messageId: randomUUID(),
-      };
-      native.deliveryHistory = {
-        records: [{ ...native.lastDelivery, prompt: native.record.prompt }],
-        earlierRecordsUnavailable: false,
-      };
-      native.record.scheduledAt = new Date(
-        Date.parse(scheduledAt) + 60000,
-      ).toISOString();
-      await mutate({
-        kind: 'put_task',
-        controlId: control.controlId,
-        task: native,
-      });
-      expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
-        true,
-      );
-      const [queued] =
-        await f.db`select ar.run_id,m.role,m.content->>'text' text from allrice_automation_runs ar
+      },
+    };
+    await mutate({
+      kind: 'put_task',
+      controlId: control.controlId,
+      task: native,
+    });
+    await mutate({
+      kind: 'confirm_command',
+      controlId: control.controlId,
+      commandId: control.command.id,
+      nativeTaskId: native.record.id,
+    });
+    // Only the timer receipt is synthetic, as in the existing SQL corpus.
+    // The recurring dispatcher, ordinary-message admission and Worker are real.
+    native.lastDelivery = {
+      scheduledAt,
+      deliveredAt: new Date().toISOString(),
+      messageId: randomUUID(),
+    };
+    native.deliveryHistory = {
+      records: [{ ...native.lastDelivery, prompt: native.record.prompt }],
+      earlierRecordsUnavailable: false,
+    };
+    native.record.scheduledAt = new Date(
+      Date.parse(scheduledAt) + 60000,
+    ).toISOString();
+    await mutate({
+      kind: 'put_task',
+      controlId: control.controlId,
+      task: native,
+    });
+    expect(await dispatchNextNativeRecurringOccurrence(randomUUID())).toBe(
+      true,
+    );
+    const [queued] =
+      await f.db`select ar.run_id,m.role,m.content->>'text' text from allrice_automation_runs ar
       join allrice_employee_runs er on er.run_id=ar.run_id join allrice_messages m on m.id=er.user_message_id where ar.automation_id=${created.id}`;
-      expect(queued).toMatchObject({ role: 'user' });
-      expect(queued!.text).toContain('请记住：我偏好中文周报');
-      const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
-      const task = await claim(f, queued!.run_id as string);
-      try {
-        await task.run();
-        expect(requests.length).toBeGreaterThan(0);
-        for (const request of requests)
-          for (const name of [
-            'workspace_memory_read',
-            'workspace_memory_search',
-            'workspace_memory_remember',
-            'workspace_experience_read',
-          ])
-            expect(
-              request.tools?.map((tool) => tool.function.name) ?? [],
-            ).not.toContain(name);
-        expect(
-          broker.mock.calls.filter(
-            ([input]) => input.call.name === 'workspace.memory.remember',
-          ),
-        ).toEqual([]);
-        expect(
-          await f.db`select id from allrice_memories where workspace_id=${f.identity.workspace}`,
-        ).toHaveLength(0);
-      } finally {
-        await task.isolation.cleanup();
-      }
-    },
-    45000,
-  );
+    expect(queued).toMatchObject({ role: 'user' });
+    expect(queued!.text).toContain('请记住：我偏好中文周报');
+    const broker = vi.spyOn(ToolBroker, 'executeRiceTool');
+    const task = await claim(f, queued!.run_id as string);
+    try {
+      await task.run();
+      expect(requests.length).toBeGreaterThan(0);
+      for (const request of requests)
+        for (const name of [
+          'workspace_memory_read',
+          'workspace_memory_search',
+          'workspace_memory_remember',
+          'workspace_experience_read',
+        ])
+          expect(
+            request.tools?.map((tool) => tool.function.name) ?? [],
+          ).not.toContain(name);
+      expect(
+        broker.mock.calls.filter(
+          ([input]) => input.call.name === 'workspace.memory.remember',
+        ),
+      ).toEqual([]);
+      expect(
+        await f.db`select id from allrice_memories where workspace_id=${f.identity.workspace}`,
+      ).toHaveLength(0);
+    } finally {
+      await task.isolation.cleanup();
+    }
+  }, 45000);
 
   it.each([
     {
@@ -3899,35 +3765,33 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
     await f.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,status,content)
       values(${historyId},${f.identity.org},${f.identity.workspace},${f.chat.id},${f.identity.user},'user','completed',
       '{"text":"AUTHORIZED_HISTORY_236","citations":[]}')`;
-    const explicit = await createTraceableMemory(f.context, {
+    const explicit = await createPersonalEmployeeMemory(f.context, {
       workspaceId: f.identity.workspace,
-      employeeId: f.identity.employee,
-      content: '我的偏好是中文周报。',
-      sourceType: 'message',
-      sourceId: historyId,
-      sourceLabel: '用户明确要求记住',
-      lifecycleState: 'durable',
-      memoryClass: 'user_preference',
-      confidence: 1,
+      instanceId: f.chat.employeeInstanceId ?? f.identity.assignment,
+      idempotencyKey: randomUUID(),
+      summary: '我的偏好是中文周报。',
+      details: null,
     });
     let historical: Awaited<ReturnType<typeof getLatestContextCheckpoint>> =
       null;
     const memoryFacts = async () =>
-      (
-        await listWorkspaceMemories(
-          f.context,
-          f.identity.workspace,
-          f.identity.employee,
-          { instanceId: f.chat.employeeInstanceId ?? f.identity.assignment },
-        )
-      ).map(
-        ({ id, content, lifecycleState, sourceId, sourceType, revision }) => ({
-          id,
-          content,
-          lifecycleState,
-          sourceId,
-          sourceType,
-          revision,
+      Promise.all(
+        (
+          await listWorkspaceMemories(
+            f.context,
+            f.identity.workspace,
+            f.identity.employee,
+            { instanceId: f.chat.employeeInstanceId ?? f.identity.assignment },
+          )
+        ).map(async ({ id }) => {
+          const { memory } = await getPersonalEmployeeMemory(
+            f.context,
+            f.identity.workspace,
+            f.chat.employeeInstanceId ?? f.identity.assignment,
+            id,
+          );
+          const { summary, details, revision, pairDigest } = memory;
+          return { id, summary, details, revision, pairDigest };
         }),
       );
     let memories: Awaited<ReturnType<typeof memoryFacts>> = [];
@@ -4029,7 +3893,9 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
             employeeId: f.identity.employee,
             sessionId: f.chat.id,
             checkpointId,
-            content: '历史候选偏好：每周整理记录。',
+            summary: '历史候选偏好：每周整理记录。',
+            details: null,
+            idempotencyKey: randomUUID(),
             sourceLabel: '历史自动候选',
           });
           memories = await memoryFacts();

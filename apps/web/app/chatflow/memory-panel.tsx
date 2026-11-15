@@ -2,15 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  WorkspaceMemorySchema,
+  EmployeeMemoryRowSchema,
+  UuidSchema,
   type ChatFlowEventEnvelope,
+  type EmployeeMemoryRecord,
 } from '@allrice/contracts';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 import { z } from 'zod';
-import {
-  memoryClassLabel,
-  memorySourceLabel,
-} from '../../lib/memory/presenter';
 import {
   employeeMemoryClient,
   MemoryClientError,
@@ -22,9 +20,12 @@ import {
 import { EmployeeMemoryDeleteConfirmation } from './employee-memory-delete-confirmation';
 import css from './memory-panel.module.css';
 
-const MemoryViewSchema = WorkspaceMemorySchema.extend({
+const MemoryViewSchema = EmployeeMemoryRowSchema.extend({
+  workspaceId: UuidSchema,
+  ownerId: UuidSchema,
+  instanceId: UuidSchema,
   ownedByMe: z.boolean(),
-});
+}).strict();
 type MemoryView = z.infer<typeof MemoryViewSchema>;
 const changedEvent = 'allrice:memory-changed';
 
@@ -54,20 +55,7 @@ async function memoryResponse(response: Response) {
 }
 
 export function MemoryCard(props: {
-  memory: Pick<
-    MemoryView,
-    | 'id'
-    | 'workspaceId'
-    | 'ownerId'
-    | 'instanceId'
-    | 'content'
-    | 'revision'
-    | 'lifecycleState'
-    | 'expiresAt'
-    | 'memoryClass'
-    | 'sourceType'
-    | 'trust'
-  > & { ownedByMe?: boolean };
+  memory: MemoryView;
   isOwner?: boolean;
   onEdit?: () => void;
   readOnly?: boolean;
@@ -88,8 +76,13 @@ export function MemoryCard(props: {
   const [settled, setSettled] = useState(false);
   const [deleting, setDeleting] = useState<MemoryRow | null>(null);
   const [error, setError] = useState('');
+  const [completePair, setCompletePair] = useState<EmployeeMemoryRecord | null>(
+    null,
+  );
   const pendingWrite = useRef(false);
   const live = useRef(true);
+  const onAccessLost = useRef(props.onAccessLost);
+  onAccessLost.current = props.onAccessLost;
   const lastMemory = useRef(memory);
   const frozen = useRef<{
     action: 'promote' | 'delete';
@@ -101,7 +94,7 @@ export function MemoryCard(props: {
         {
           scopeId: props.scopeId,
           workspaceId: props.workspaceId,
-          instanceId: memory.instanceId!,
+          instanceId: memory.instanceId,
           headers: props.headers,
         },
         props.writes,
@@ -130,11 +123,48 @@ export function MemoryCard(props: {
       live.current = false;
     };
   }, []);
+  const visiblePair =
+    completePair?.revision === memory.revision &&
+    completePair.pairDigest === memory.pairDigest
+      ? completePair
+      : null;
+  useEffect(() => {
+    const controller = new AbortController();
+    setCompletePair(null);
+    if (!memory.hasDetails) return () => controller.abort();
+    void client
+      .detail(memory, controller.signal)
+      .then((row) => {
+        if (controller.signal.aborted) return;
+        if (
+          row.revision !== memory.revision ||
+          row.pairDigest !== memory.pairDigest
+        )
+          throw new MemoryClientError(
+            '记忆已变化，请重新读取后再操作。',
+            true,
+            'cas_conflict',
+          );
+        setCompletePair(row);
+      })
+      .catch((cause) => {
+        if (controller.signal.aborted) return;
+        if (cause instanceof MemoryAccessLost) onAccessLost.current();
+        setError(
+          cause instanceof MemoryClientError
+            ? cause.message
+            : '记忆读取失败，请重试。',
+        );
+      });
+    return () => controller.abort();
+  }, [client, memory]);
   async function snapshot() {
     const row = await client.detail(memory);
-    // A stale legacy card may not approve newer, unseen content. The pair is
-    // read from the real v2 detail endpoint, never derived from contentDigest.
-    if (row.revision !== memory.revision)
+    // Confirm only the exact complete pair this current card represents.
+    if (
+      row.revision !== memory.revision ||
+      row.pairDigest !== memory.pairDigest
+    )
       throw new MemoryClientError(
         '记忆已变化，请重新读取后再操作。',
         true,
@@ -170,7 +200,13 @@ export function MemoryCard(props: {
     }
   }
   async function mutate(action: 'promote' | 'delete') {
-    if (pendingWrite.current || settled || !ownedByMe) return;
+    if (
+      pendingWrite.current ||
+      settled ||
+      !ownedByMe ||
+      (action === 'promote' && memory.hasDetails && !visiblePair)
+    )
+      return;
     pendingWrite.current = true;
     setBusy(true);
     setError('');
@@ -213,32 +249,16 @@ export function MemoryCard(props: {
       }
     }
   }
-  const candidate = memory.lifecycleState === 'candidate';
+  const candidate = memory.state === 'pending';
   return (
     <article className={css.card} data-memory-id={memory.id} aria-busy={busy}>
-      <strong>
-        {candidate
-          ? memory.expiresAt
-            ? '已记为候选，等待你确认'
-            : '已记为候选，确认后才生效'
-          : '长期记忆'}
-      </strong>
-      <p className={css.content}>{memory.content}</p>
-      <small>
-        {memoryClassLabel(memory.memoryClass)} · {memorySourceLabel(memory)}
-        {props.showRevision !== false && ` · v${memory.revision}`}
-      </small>
-      {memory.expiresAt && (
-        <p>
-          有效期至{' '}
-          <time dateTime={memory.expiresAt}>
-            {new Date(memory.expiresAt).toLocaleString('zh-CN', {
-              timeZoneName: 'short',
-            })}
-          </time>
-          。
-        </p>
-      )}
+      <strong>{candidate ? '已记为候选，确认后才生效' : '长期记忆'}</strong>
+      <p className={css.content}>
+        {visiblePair?.details === null || !visiblePair
+          ? memory.summary
+          : `${memory.summary}\n${visiblePair.details}`}
+      </p>
+      {props.showRevision !== false && <small>v{memory.revision}</small>}
       {!props.readOnly && ownedByMe && (candidate || !props.inline) && (
         <div className={css.actions}>
           {props.onEdit && (
@@ -254,7 +274,7 @@ export function MemoryCard(props: {
           {candidate && (
             <Button
               type="button"
-              disabled={busy || settled}
+              disabled={busy || settled || (memory.hasDetails && !visiblePair)}
               onClick={() => void mutate('promote')}
             >
               确认并记住
@@ -490,21 +510,21 @@ export function MemoryPanel(props: {
         cards(current.memories)
       ) : (
         <>
-          {(['candidate', 'durable'] as const).map((state) => {
+          {(['pending', 'active'] as const).map((state) => {
             const group = current.memories!.filter(
-              (memory) => memory.lifecycleState === state,
+              (memory) => memory.state === state,
             );
             return (
               <section
                 key={state}
-                aria-label={state === 'candidate' ? '待你确认' : '长期记忆'}
+                aria-label={state === 'pending' ? '待你确认' : '长期记忆'}
               >
-                <h4>{state === 'candidate' ? '待你确认' : '长期记忆'}</h4>
+                <h4>{state === 'pending' ? '待你确认' : '长期记忆'}</h4>
                 {group.length ? (
                   cards(group)
                 ) : (
                   <p>
-                    {state === 'candidate'
+                    {state === 'pending'
                       ? '暂无待确认的记忆。'
                       : '暂无长期记忆。'}
                   </p>

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { resourcePrincipal } from './resource-principal.ts';
 import type { TransactionSql } from 'postgres';
 import {
   BridgeDeviceSchema,
@@ -88,7 +89,7 @@ export async function publishLocalFileDerivationArtifacts(
       authenticatedAt: new Date().toISOString(),
     };
   const { object } = await getStoredFile(
-    requestContext,
+    resourcePrincipal(requestContext),
     initial.object.objectId,
     db,
   );

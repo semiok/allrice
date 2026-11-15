@@ -11,6 +11,7 @@ import {
   ExecutionContextSchema,
   makeObjectKey,
   type RequestContext,
+  type ContentOwnership,
 } from '@allrice/contracts';
 import {
   createRuntimeFixtureDatabase,
@@ -71,6 +72,7 @@ type Plan = {
   newer?: boolean;
   reviewFeedback?: boolean;
   foreign?: 'session' | 'owner' | 'tenant';
+  publication?: boolean;
   bad?:
     | 'review-checksum'
     | 'review-kind'
@@ -216,7 +218,9 @@ async function seedInput(tx: Tx, x: SeedIdentity, plan: Plan) {
     sourceId = randomUUID();
     revisionId = randomUUID();
     copyId = randomUUID();
-    const ownership = { scope: 'company' as const, organizationId: org };
+    const ownership: ContentOwnership = plan.publication
+      ? { scope: 'personal', organizationId: org, ownerId: user }
+      : { scope: 'company', organizationId: org };
     const copied = {
       ...first.object,
       id: copyId,
@@ -235,8 +239,8 @@ async function seedInput(tx: Tx, x: SeedIdentity, plan: Plan) {
     await tx`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,visibility,state,immutable,retention_until)
       values(${copyId},${org},${workspace},${user},${copied.key},'uploads',${copied.mediaType},${copied.sizeBytes},${copied.checksum},'private','ready',true,
         ${plan.bad === 'copy-expiry' ? new Date(Date.now() + 60000) : null})`;
-    await tx`insert into allrice_knowledge_sources(id,organization_id,workspace_id,slug,name,description,created_by,ownership)
-      values(${sourceId},${org},${workspace},${'reference-' + sourceId},'same-name.txt','Fixed reference',${user},${tx.json(ownership)})`;
+    await tx`insert into allrice_knowledge_sources(id,organization_id,workspace_id,slug,name,description,created_by,ownership,publication_kind,publication_origin_object_id)
+      values(${sourceId},${org},${workspace},${'reference-' + sourceId},'same-name.txt','Fixed reference',${user},${tx.json(ownership)},${plan.publication ? 'file' : null},${plan.publication ? first.object.id : null})`;
     const origin =
       plan.bad === 'origin-shape'
         ? {}
@@ -259,8 +263,15 @@ async function seedInput(tx: Tx, x: SeedIdentity, plan: Plan) {
     await tx`insert into allrice_knowledge_revisions(id,organization_id,workspace_id,knowledge_source_id,revision,name,description,status,definition,checksum,created_by,published_at,
       file_object_id,file_name,request_id,request_input,source_artifact_version_id,source_target_key,artifact_snapshot)
       values(${revisionId},${org},${workspace},${sourceId},1,'same-name.txt','Fixed reference','published','{}',${sha('manifest v1')},${user},clock_timestamp(),
-        ${plan.bad === 'copy-alias' ? first.object.id : copyId},'same-name.txt',${randomUUID()},'{}',${mode === 'ordinary' ? null : first.id},${mode === 'ordinary' ? null : 'company:' + org},${mode === 'ordinary' ? null : tx.json(origin)})`;
+        ${plan.bad === 'copy-alias' ? first.object.id : copyId},'same-name.txt',${randomUUID()},'{}',${mode === 'ordinary' || plan.publication ? null : first.id},${mode === 'ordinary' || plan.publication ? null : 'company:' + org},${mode === 'ordinary' || plan.publication ? null : tx.json(origin)})`;
     await tx`insert into allrice_knowledge_processing(revision_id,state,indexed_at) values(${revisionId},'ready',clock_timestamp())`;
+    if (plan.publication) {
+      // The new publication grants company access to its separate retained
+      // copy. Legacy artifact origin fields above stay NULL for this branch.
+      await tx`insert into allrice_workbench_file_policies
+        (object_id,organization_id,workspace_id,owner_id,file_name,scope,department_ids,reference_source_id,reference_enabled)
+        values(${copyId},${org},${workspace},${user},'same-name.txt','company','{}',${sourceId},true)`;
+    }
     selected.push(revisionId);
     if (plan.newer) {
       // A later normal revision must not replace the frozen v1 mapping.
@@ -563,7 +574,11 @@ describe
             foreign +
             ' access',
           async () => {
-            const f = await fixture({ mode: 'knowledge', foreign });
+            const f = await fixture({
+              mode: 'knowledge',
+              foreign,
+              publication: foreign === 'owner',
+            });
             const copy = await db().begin((tx) =>
               readReferenceSelection(f.context, f.revisionId!, tx, true),
             );

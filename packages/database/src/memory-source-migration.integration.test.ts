@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1' ? describe : describe.skip;
@@ -15,7 +15,7 @@ suite('0240 empty memory source storage over existing legacy data', () => {
     });
     const mock = vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     try {
-      const legacy = await createExperienceFixture(f.db);
+      const legacy = await createCompletedRunFixture(f.db);
       const id = randomUUID(),
         digest = 'sha256:' + 'b'.repeat(64);
       const [identity] =

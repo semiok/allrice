@@ -4,9 +4,11 @@ import {
   ReferenceSaveResultSchema,
   WorkbenchDeliverablesCatalogSchema,
   SessionReferenceEligibilitySchema,
+  StorageObjectSchema,
   type RequestContext,
   type StoragePort,
 } from '@allrice/contracts';
+import { SignedAccessService } from '@allrice/storage';
 import * as client from '../../../packages/database/src/core/client.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -33,6 +35,15 @@ import {
 } from '../../../packages/database/src/reference-processing.ts';
 import { readArtifactBytes } from '../../../packages/database/src/artifact-review.ts';
 import { getRequestContext } from './identity/session';
+import { resolvePortal } from './portal/config';
+import { createPortalSession } from './portal/session';
+import { POST as createFile } from '../app/api/v1/files/route';
+import { POST as signFile } from '../app/api/v1/files/[id]/sign/route';
+import {
+  GET as readSignedFile,
+  DELETE as deleteFile,
+} from '../app/api/v1/files/[id]/route';
+import { GET as downloadOriginal } from '../app/api/v1/files/[id]/download/route';
 import * as publications from '../app/api/v1/references/publications/route';
 import { POST as changePublication } from '../app/api/v1/references/publications/[id]/route';
 import { POST as retryReference } from '../app/api/v1/references/[id]/route';
@@ -43,19 +54,27 @@ import { GET as eligibility } from '../app/api/v1/sessions/[id]/reference-eligib
 
 const browser = vi.hoisted(() => ({
   token: '',
+  portalToken: '',
   storage: null as StoragePort | null,
+  signer: null as SignedAccessService | null,
 }));
 // Only the Next cookie transport is substituted. Identity is authenticated in PostgreSQL.
 vi.mock('next/headers', () => ({
   cookies: async () => ({
-    get: (key: string) =>
-      key === 'allrice_session' && browser.token
-        ? { value: browser.token }
-        : undefined,
+    get: (key: string) => {
+      const value =
+        key === 'allrice_session'
+          ? browser.token
+          : key === 'allrice_portal_session'
+            ? browser.portalToken
+            : '';
+      return value ? { value } : undefined;
+    },
   }),
 }));
 vi.mock('./storage/runtime', () => ({
   getStorageAdapter: () => browser.storage!,
+  getSignedAccessService: () => browser.signer!,
 }));
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -70,6 +89,9 @@ suite('F3 backend facts through real browser session identity', () => {
     f = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
     browser.storage = runtimeFixtureStorage(f.db);
+    browser.signer = new SignedAccessService(
+      'r0-isolated-signing-secret-' + 'x'.repeat(32),
+    );
   }, 120000);
   afterAll(async () => {
     vi.restoreAllMocks();
@@ -685,5 +707,272 @@ suite('F3 backend facts through real browser session identity', () => {
     expect(
       (await eligibility(request(a.context, path), route(sessionId))).status,
     ).toBe(401);
+  });
+
+  // Use the real upload/sign/read handlers, signer, session resolver and PG grants.
+  // Only Next's cookie accessor and the isolated storage location are adapted.
+  async function signedOriginal(
+    context: RequestContext,
+    category: 'uploads' | 'memory' = 'uploads',
+  ) {
+    const content = `R0 exact original bytes ${randomUUID()}`;
+    const created = await createFile(
+      request(context, 'files', {
+        workspaceId: context.workspaceId,
+        category,
+        visibility: 'organization',
+        mediaType: 'text/plain',
+        contentBase64: Buffer.from(content).toString('base64'),
+      }),
+    );
+    expect(created.status).toBe(201);
+    const object = StorageObjectSchema.parse(
+      (await created.json()).file.object,
+    );
+    expect(object.ownerId).toBe(context.actor.id);
+    expect(object.key).toContain(`/${category}/${object.id}`);
+    expect(
+      await f.db`select object_id from allrice_workbench_file_policies where object_id=${object.id}`,
+    ).toHaveLength(0);
+    const signed = await signFile(
+      request(context, `files/${object.id}/sign`, { lifetimeSeconds: 60 }),
+      route(object.id),
+    );
+    expect(signed.status).toBe(200);
+    const { url } = (await signed.json()) as { url: string };
+    expect(new URL(url, 'https://allrice.bplabs.xyz').pathname).toBe(
+      `/api/v1/files/${object.id}`,
+    );
+    return { objectId: object.id, url, content };
+  }
+  function signedRequest(url: string, host = 'allrice.bplabs.xyz') {
+    // Image fetches and preview/download anchors send cookies without tenant headers.
+    return new Request(new URL(url, `https://${host}`), { headers: { host } });
+  }
+  async function expectSignedBytes(
+    file: Awaited<ReturnType<typeof signedOriginal>>,
+    host?: string,
+  ) {
+    const req = signedRequest(file.url, host);
+    expect(req.headers.get('x-allrice-organization-id')).toBeNull();
+    expect(req.headers.get('x-allrice-workspace-id')).toBeNull();
+    const response = await readSignedFile(req, route(file.objectId));
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    expect(await response.text()).toBe(file.content);
+  }
+  async function expectSignedDenied(
+    file: Awaited<ReturnType<typeof signedOriginal>>,
+    status: number,
+    host?: string,
+  ) {
+    const get = vi.spyOn(browser.storage!, 'get');
+    try {
+      const response = await readSignedFile(
+        signedRequest(file.url, host),
+        route(file.objectId),
+      );
+      expect(response.status).toBe(status);
+      expect(await response.text()).not.toContain(file.content);
+      expect(get).not.toHaveBeenCalled();
+    } finally {
+      get.mockRestore();
+    }
+  }
+  async function additionalScope(context: RequestContext, sameOrg = false) {
+    const organizationId = sameOrg ? context.organizationId : randomUUID(),
+      workspaceId = randomUUID();
+    if (!sameOrg)
+      await f.db`insert into allrice_organizations(id,slug,name)
+        values(${organizationId},${`r0-${organizationId}`},'R0 isolated scope')`;
+    await f.db`insert into allrice_workspaces(id,organization_id,slug,name)
+      values(${workspaceId},${organizationId},${`r0-${workspaceId}`},'R0 second workspace')`;
+    await f.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role)
+      values(${organizationId},${workspaceId},${context.actor.id},'member')`;
+    const selected = await authenticateSession(browser.token, {
+      organizationId,
+      workspaceId,
+    });
+    expect(selected).toMatchObject({
+      actor: context.actor,
+      organizationId,
+      workspaceId,
+    });
+    return selected!;
+  }
+
+  it.each(['uploads', 'memory'] as const)(
+    'R0: an owner can open an ordinary %s upload without scope headers, but a colleague or anonymous visitor cannot borrow its signed URL',
+    async (category) => {
+      const a = await setup(),
+        file = await signedOriginal(a.context, category);
+      await expectSignedBytes(file);
+      const b = await colleague(a.context);
+      const deniedSign = await signFile(
+        request(b.context, `files/${file.objectId}/sign`, {}),
+        route(file.objectId),
+      );
+      expect(deniedSign.status).toBe(403);
+      await expectSignedDenied(file, 403);
+      browser.token = '';
+      await expectSignedDenied(file, 401);
+      browser.token = a.token;
+      await expectSignedBytes(file);
+    },
+  );
+
+  it.each(['session', 'membership'] as const)(
+    'R0: withdrawing the current %s after signing denies the same URL before any original bytes are read',
+    async (withdrawn) => {
+      const a = await setup(),
+        file = await signedOriginal(a.context);
+      await expectSignedBytes(file);
+      if (withdrawn === 'session')
+        await f.db`update allrice_sessions set revoked_at=clock_timestamp() where id=${a.context.sessionId}`;
+      else
+        await f.db`update allrice_memberships set active=false
+          where user_id=${a.context.actor.id} and organization_id=${a.context.organizationId}`;
+      await expectSignedDenied(file, withdrawn === 'session' ? 401 : 403);
+    },
+  );
+
+  it('R0: a multi-organization owner opens exact original bytes in a non-default organization/workspace without scope headers', async () => {
+    const a = await setup(),
+      target = await additionalScope(a.context),
+      file = await signedOriginal(target);
+    expect(
+      await getRequestContext(signedRequest('/api/v1/auth/session')),
+    ).toMatchObject({
+      actor: a.context.actor,
+      organizationId: a.context.organizationId,
+      workspaceId: null,
+    });
+    expect(target.organizationId).not.toBe(a.context.organizationId);
+    expect(target.workspaceId).not.toBe(a.context.workspaceId);
+    await expectSignedBytes(file);
+  });
+
+  it('R0: a dedicated portal requires both real cookies and its exact host, organization and workspace when consuming a signed URL', async () => {
+    const a = await setup(),
+      own = await signedOriginal(a.context),
+      otherOrg = await signedOriginal(await additionalScope(a.context)),
+      otherWorkspace = await signedOriginal(
+        await additionalScope(a.context, true),
+      ),
+      host = 'allrice-snow.bplabs.xyz',
+      portal = resolvePortal(host)!;
+    vi.stubEnv(
+      'ALLRICE_PORTAL_SESSION_SECRET',
+      'r0-isolated-portal-secret-' + 'x'.repeat(32),
+    );
+    const cookie = createPortalSession({
+      portal,
+      subject: a.context.actor.id,
+      organizationId: a.context.organizationId,
+      workspaceId: a.context.workspaceId!,
+    }).value;
+    vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '1');
+    browser.portalToken = cookie;
+    try {
+      await expectSignedBytes(own, host);
+      await expectSignedDenied(otherOrg, 401, host);
+      await expectSignedDenied(otherWorkspace, 401, host);
+      await expectSignedDenied(own, 401, 'allrice-drink.bplabs.xyz');
+      browser.portalToken = '';
+      await expectSignedDenied(own, 401, host);
+      browser.portalToken = cookie;
+      browser.token = '';
+      await expectSignedDenied(own, 401, host);
+      browser.token = a.token;
+      await expectSignedBytes(own, host);
+    } finally {
+      browser.portalToken = '';
+      vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '0');
+    }
+  });
+
+  it('R0: the owner cannot delete a delivery or its published copy through ordinary file DELETE, while ordinary uploads remain deletable', async () => {
+    const a = await setup(),
+      content = '交付原件与企业资料固定副本均须保留。',
+      delivery = await a.createArtifact(a.task.runId, content);
+    const [original] =
+      await f.db`select object_id from allrice_deliverable_versions where id=${delivery.artifactId}`;
+    const objectId = original!.object_id as string;
+    const saved = await publish(a.context, {
+      workspaceId: a.context.workspaceId,
+      requestId: randomUUID(),
+      origin: 'file',
+      objectId,
+      audience,
+    });
+    const [copy] =
+      await f.db`select file_object_id from allrice_knowledge_revisions where id=${saved.revisionId}`;
+    expect(copy!.file_object_id).not.toBe(objectId);
+    const records = () =>
+      Promise.all([
+        f.db`select * from allrice_storage_objects where id in (${objectId},${copy!.file_object_id}) order by id`,
+        f.db`select * from allrice_deliverable_versions where id=${delivery.artifactId}`,
+        f.db`select * from allrice_workbench_artifacts where version_id=${delivery.artifactId}`,
+        f.db`select * from allrice_knowledge_sources where id=${saved.sourceId}`,
+        f.db`select * from allrice_knowledge_revisions where id=${saved.revisionId}`,
+      ]);
+    const readBoth = async () => {
+      const responses = await Promise.all([
+        downloadOriginal(
+          request(a.context, `files/${objectId}/download`),
+          route(objectId),
+        ),
+        download(
+          request(
+            a.context,
+            `references/revisions/${saved.revisionId}/download?workspaceId=${a.context.workspaceId}`,
+          ),
+          route(saved.revisionId),
+        ),
+      ]);
+      for (const response of responses) {
+        expect(response.status).toBe(200);
+        expect(await response.text()).toBe(content);
+      }
+    };
+    await readBoth();
+    const before = await records();
+    expect(before.map((rows) => rows.length)).toEqual([2, 1, 1, 1, 1]);
+    const remove = vi.spyOn(browser.storage!, 'delete');
+    try {
+      // v30:176: neither delivery originals nor retained copies use this delete path.
+      for (const protectedId of [objectId, copy!.file_object_id as string]) {
+        const response = await deleteFile(
+          new Request(request(a.context, `files/${protectedId}`), {
+            method: 'DELETE',
+          }),
+          route(protectedId),
+        );
+        expect(response.status).toBe(404);
+        expect(await response.json()).toMatchObject({
+          error: { code: 'NOT_FOUND' },
+        });
+      }
+      expect(remove).not.toHaveBeenCalled();
+      expect(await records()).toEqual(before);
+      await readBoth();
+      const upload = await signedOriginal(a.context);
+      const deleted = await deleteFile(
+        new Request(request(a.context, `files/${upload.objectId}`), {
+          method: 'DELETE',
+        }),
+        route(upload.objectId),
+      );
+      expect(deleted.status).toBe(204);
+      expect(remove).toHaveBeenCalledTimes(1);
+      expect(remove.mock.calls[0]![0].id).toBe(upload.objectId);
+      const [state] =
+        await f.db`select state,deleted_at from allrice_storage_objects where id=${upload.objectId}`;
+      expect(state!.state).toBe('deleted');
+      expect(state!.deleted_at).not.toBeNull();
+      expect(await records()).toEqual(before);
+    } finally {
+      remove.mockRestore();
+    }
   });
 });

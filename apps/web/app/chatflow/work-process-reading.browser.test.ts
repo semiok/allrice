@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ids, partnerArguments } from '../../test/technical-details-fixtures';
-import { id } from '../../test/experience-command-theme-fixtures';
+import { id } from '../../test/local-command-theme-fixtures';
 import type {
   Browser,
   Locator,
@@ -639,7 +639,8 @@ suite('reading a receipt while late native trace changes its group', () => {
           .setBaseAndExtent(node.firstChild!, 1000, node.firstChild!, 1030);
         return document.getSelection()!.toString();
       });
-      const later = card(page, 30);
+      // Leave room below the anchor in the approved 24px compact rows.
+      const later = card(page, 28);
       await later.evaluate((node) => node.scrollIntoView({ block: 'center' }));
       const old = (await output(page).boundingBox())!;
       expect(old.y + old.height).toBeLessThan(0);
@@ -775,7 +776,8 @@ suite('reading a receipt while late native trace changes its group', () => {
       }, focusTarget);
       expect(selected.text.length).toBe(30);
       expect(selected.scrollTop).toBeGreaterThan(0);
-      const later = card(page, 30);
+      // Leave room below the anchor in the approved 24px compact rows.
+      const later = card(page, 28);
       const port = processBodyOf(page)
         .locator('[data-process-scrollport]')
         .nth(1);
@@ -830,7 +832,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       ).toBe(true);
       await update(page, 'merge');
       const after = await receiptGeometry(later);
-      expect(after.identity).toBe('tool:call-30');
+      expect(after.identity).toBe('tool:call-28');
       expect(after.readable).toBe(true);
       expect(after.relativeTop).toBeCloseTo(before.relativeTop!, 0);
       expect(await oldInput.evaluate((node) => node.scrollTop)).toBe(
@@ -922,7 +924,8 @@ suite('reading a receipt while late native trace changes its group', () => {
         const input = material(page, 1).locator(
           'pre[data-process-content="input"]',
         );
-        const later = card(page, 30);
+        // Leave room below the anchor in the approved 24px compact rows.
+        const later = card(page, 28);
         const port = processBodyOf(page)
           .locator('[data-process-scrollport]')
           .nth(1);
@@ -1021,9 +1024,10 @@ suite('reading a receipt while late native trace changes its group', () => {
         const title = processOf(page).locator('[data-disclosure-row]').first();
         const outside = page.getByRole('textbox', { name: '另外阅读的位置' });
         const focused = target === 'process title' ? title : outside;
-        const later = card(page, 30);
+        // Leave room below the anchor in the approved 24px compact rows.
+        const later = card(page, 28);
         await stepToggle(later).click();
-        const reading = material(page, 30).locator(
+        const reading = material(page, 28).locator(
           'pre[data-process-content="result"]',
         );
         const original = await reading.textContent();
@@ -1057,8 +1061,8 @@ suite('reading a receipt while late native trace changes its group', () => {
           })
           .toBe(true);
         const before = await receiptGeometry(reading);
-        expect(before.identity).toBe('tool:call-30');
-        expect(before.materials).toEqual(['cloud:reading-30']);
+        expect(before.identity).toBe('tool:call-28');
+        expect(before.materials).toEqual(['cloud:reading-28']);
         for (const stage of ['prefix', 'split', 'merge'] as const) {
           await update(page, stage);
           const after = await receiptGeometry(reading);
@@ -1091,7 +1095,8 @@ suite('reading a receipt while late native trace changes its group', () => {
           .first();
       await group().focus();
       await page.keyboard.press('Enter');
-      const later = card(page, 30);
+      // Leave room below the anchor in the approved 24px compact rows.
+      const later = card(page, 28);
       const list = processBodyOf(page)
         .locator('ul[aria-label="工作步骤"]')
         .first();
@@ -1295,7 +1300,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.close();
     }
   });
-  it('keeps the original 360px group, inherits expansion after split and releases choices for a Run or unmount', async () => {
+  it('keeps the approved 260px group, inherits expansion after split and releases choices for a Run or unmount', async () => {
     const page = await open(390, false);
     try {
       const group = () =>
@@ -1312,7 +1317,7 @@ suite('reading a receipt while late native trace changes its group', () => {
           height: getComputedStyle(node.parentElement!).maxHeight,
           overflow: getComputedStyle(node.parentElement!).overflowY,
         })),
-      ).toEqual({ height: '360px', overflow: 'auto' });
+      ).toEqual({ height: '260px', overflow: 'auto' });
       await update(page, 'split');
       for (const row of await group().all())
         expect(await row.getAttribute('aria-expanded')).toBe('true');
@@ -2435,6 +2440,18 @@ suite('reading a receipt while late native trace changes its group', () => {
                   const ratio =
                     (Math.max(ink, ground) + 0.05) /
                     (Math.min(ink, ground) + 0.05);
+                  const native = document.createElement('span');
+                  native.style.color = 'var(--dsw-alias-label-tertiary)';
+                  node.appendChild(native);
+                  const nativeGray = getComputedStyle(native).color;
+                  native.remove();
+                  // Approved rev02–05 deliberately uses DSH's tertiary gray.
+                  // Other material/approval text retains the existing contrast gate.
+                  if (
+                    node.closest('[data-step-id]') &&
+                    getComputedStyle(node).color === nativeGray
+                  )
+                    return [];
                   return ratio < 4.5
                     ? [`${node.textContent?.slice(0, 30)} ${ratio}`]
                     : [];
@@ -2552,14 +2569,21 @@ suite('reading a receipt while late native trace changes its group', () => {
               await stepToggle(processOf(page)).evaluate((node) =>
                 node.scrollIntoView({ block: 'start' }),
               );
-            const overviewFraming = await overview
-              .locator(
-                view === 'history'
-                  ? `[data-disclosure-row], [data-process-material="browser:${id(310)}"] > dl > dt, [data-process-material="browser:${id(310)}"] > dl > dd`
-                  : 'header, [aria-label="这次要做的事"] > div:first-child, [aria-label="这次要做的事"] > div:nth-child(2), [aria-label="参数"]',
-              )
-              .evaluateAll((nodes) =>
-                nodes.map((node) => {
+            const overviewAnchors = overview.locator(
+              view === 'history'
+                ? `[data-disclosure-row], [data-process-material="browser:${id(310)}"] > dl > dt, [data-process-material="browser:${id(310)}"] > dl > dd`
+                : 'header, [aria-label="这次要做的事"] > div:first-child, [aria-label="这次要做的事"] > div:nth-child(2), [aria-label="参数"]',
+            );
+            const overviewFraming = [];
+            // Approved 260px scroller: verify every field remains fully readable
+            // after scrolling it into view, rather than requiring all fields at once.
+            for (const anchor of await overviewAnchors.all()) {
+              if (view === 'history')
+                await anchor.evaluate((node) =>
+                  node.scrollIntoView({ block: 'center' }),
+                );
+              overviewFraming.push(
+                await anchor.evaluate((node) => {
                   const bounds = node.getBoundingClientRect();
                   let left = Math.max(0, bounds.left);
                   let right = Math.min(innerWidth, bounds.right);
@@ -2615,6 +2639,7 @@ suite('reading a receipt while late native trace changes its group', () => {
                   };
                 }),
               );
+            }
             expect(overviewFraming.length).toBe(view === 'history' ? 9 : 4);
             for (const anchor of overviewFraming) {
               expect(anchor.visibleWidth).toBeGreaterThan(0);
@@ -2764,8 +2789,8 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(
         await submitted
           .getByText('Rice 已收到你的回答', { exact: true })
-          .isVisible(),
-      ).toBe(true);
+          .count(),
+      ).toBe(0);
       const pending = page.getByRole('region', {
         name: '核对哪些资料？',
         exact: true,
@@ -3199,7 +3224,7 @@ suite('reading a receipt while late native trace changes its group', () => {
             .click();
           const geometry = await detailGeometry(page);
           expect(geometry.width).toBeGreaterThan(180);
-          expect(geometry.valueX - geometry.labelRight).toBeCloseTo(12, 0);
+          expect(geometry.valueX - geometry.labelRight).toBeCloseTo(8, 0);
           expect(geometry.valueY).toBeCloseTo(geometry.labelY, 0);
           expect(geometry.contained).toBe(true);
           const title = await textBox(
@@ -3208,14 +3233,26 @@ suite('reading a receipt while late native trace changes its group', () => {
           const status = searchStep(page).locator(
             '[class*="processStepStatus"]',
           );
-          expect(await status.innerText()).toBe('已完成 · 0.8秒');
+          expect(await status.innerText()).toBe('0.8秒');
           const statusBox = await textBox(status);
           expect(
             Math.abs(
               statusBox.y + statusBox.height / 2 - title.y - title.height / 2,
             ),
           ).toBeLessThanOrEqual(2);
-          expect(statusBox.x).toBeGreaterThanOrEqual(title.x + title.width);
+          // Action + description now uses native single-line ellipsis. A text
+          // Range includes the hidden tail; compare the actual clipped label.
+          const label = searchStep(page).locator('[class*="processStepLabel"]');
+          const labelBox = (await label.boundingBox())!;
+          expect(
+            await label.evaluate((node) => ({
+              overflow: getComputedStyle(node).overflow,
+              ellipsis: getComputedStyle(node).textOverflow,
+            })),
+          ).toEqual({ overflow: 'hidden', ellipsis: 'ellipsis' });
+          expect(statusBox.x).toBeGreaterThanOrEqual(
+            labelBox.x + labelBox.width,
+          );
           expect(
             await page.evaluate(
               () => document.documentElement.scrollWidth <= innerWidth,

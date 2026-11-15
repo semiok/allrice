@@ -1,3 +1,4 @@
+import { legacyReferenceFixture } from '../legacy-reference.fixture.ts';
 import { removePersonalSceneSkill } from './personal-scene-remove.ts';
 import { assembleEmployeeKernel } from '../../../../apps/worker/src/employee-kernel.ts';
 import {
@@ -9,7 +10,6 @@ import { failJob } from '../execution/queue.ts';
 import { personalWorkflowHistoryUnavailableMessage } from '@allrice/contracts';
 import { updateQueuedMessage } from '../conversation/queued-messages.ts';
 import {
-  prepareReferenceUpload,
   completeReferenceUpload,
   changeReference,
   publishReference,
@@ -2446,7 +2446,7 @@ suite(
         mediaType: 'text/plain',
         contentBase64: Buffer.from(body).toString('base64'),
       };
-      const ref = await prepareReferenceUpload(s.a, input);
+      const ref = await legacyReferenceFixture(s.a, input, f.db);
       await runtimeFixtureStorage(f.db).put(
         ref.object,
         new Blob([new Uint8Array(ref.bytes)]).stream(),
@@ -5657,9 +5657,7 @@ suite(
     it('existing workflow bindings and current confirmed memories remain independent authority boundaries', async () => {
       const s = await setup(),
         workflowId = randomUUID(),
-        workflowRevisionId = randomUUID(),
-        memoryId = randomUUID(),
-        memoryRevisionId = randomUUID();
+        workflowRevisionId = randomUUID();
       const workflowDefinition = WorkflowDefinitionSchema.parse({
         schemaVersion: 1,
         steps: [
@@ -5674,10 +5672,19 @@ suite(
       await f.db`insert into allrice_employee_workflow_bindings(organization_id,workspace_id,employee_id,workflow_revision_id,bound_by)
       values(${s.company.organizationId},${s.company.workspaceId},${s.employeeId},${workflowRevisionId},${s.a.actor.id})`;
       const body = 'Use the original data dictionary.';
-      await f.db`insert into allrice_memories(id,organization_id,workspace_id,employee_id,owner_id,instance_id,content)
-      values(${memoryId},${s.company.organizationId},${s.company.workspaceId},${s.employeeId},${s.a.actor.id},${s.instance.id},${body})`;
-      await f.db`insert into allrice_memory_revisions(id,organization_id,workspace_id,memory_id,revision,content,trust_level,confidence,reason,changed_by)
-      values(${memoryRevisionId},${s.company.organizationId},${s.company.workspaceId},${memoryId},1,${body},'user_confirmed',1,'Confirmed fixture',${s.a.actor.id})`;
+      const memory = await createPersonalEmployeeMemory(s.a, {
+        workspaceId: s.company.workspaceId,
+        instanceId: s.instance.id,
+        idempotencyKey: randomUUID(),
+        summary: body,
+        details: null,
+      });
+      const memoryId = memory.id;
+      const [memoryRevision] = await f.db<
+        { id: string }[]
+      >`select id from allrice_memory_revisions
+        where memory_id=${memoryId} and revision=${memory.revision}`;
+      const memoryRevisionId = memoryRevision!.id;
       const memoryRef: EmployeeContentReference = {
         sourceKind: 'experience',
         contentId: memoryId,

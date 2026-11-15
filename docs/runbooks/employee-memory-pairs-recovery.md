@@ -1,47 +1,27 @@
-# 个人记忆 pair 存储迁移与恢复（0236，draft）
+# 个人记忆 V2 存储与恢复
 
-离完整记忆侧栏还差：v2 HTTP/管理消费端、冻结 Run 的 v2 索引/详情与最终预算、候选管线及其独立验收。PR1 仅提供字段、可调用存储函数和旧写保护，**不可单独部署**；本文不授权 Dev 迁移、恢复、停止 Run 或数据处置。
+当前个人记忆只使用 summary/details pair、本人确认和 V2 Run 索引。旧经验、V1 全文入口和旧搜索读取已退出；历史迁移仍是建库演进输入，不是恢复旧产品能力的开关。本文不授权部署、停止 Run 或数据处置。
 
-## 合同与部署前记录
+## 当前合同
 
-- 唯一记忆迁移名为 `0236_employee_memory_pairs.sql`；排在 PERSONA 的 `0235_persona_runtime_package_compatibility.sql` 之后，保留两个既有 `0234_*` 文件名。PERSONA 迁移只更新既有 `allrice_native_session_version_compatible`，本迁移仅涉及 memory/revisions pair、预检和审计，不覆盖该函数。四个 nullable 列是业务内容，不是生命周期状态；无新表。
-- 普通个人 pair 使用 Unicode code point 40/2000。详情仅在全空白时规范为 NULL，非空详情逐字保留；摘要仅将行分隔符机械换为空格并处理首尾空白。NUL、孤立 surrogate 按 PostgreSQL/JSON 存储能力拒绝。
-- `pairDigest` 复用现有 canonical JSON SHA-256，输入为 `{version:2,summary,details}`。当前行、递增 revision、原幂等回执表和审计在同一事务中提交。
-- 迁移不改旧 `content`、旧 revision、raw review、pin metadata、归档身份及原 `updated_at`/`captured_at`。短正文完整作为 summary；长正文前 40 code point 作为 summary，**完整原文**作为 details。普通未归档行的未来 expiry 清 NULL；已过期行先拒绝，不复活。
-- 旧完整 content 创建/一次 legacy 修改保留原 content 输入语义，且不扩旧调用方的校验、权限和确认权。新写同时保存 pair；以后新的旧单字段修改返回 409 `employee_memory_contract_changed`，包括 details=NULL、当前 revision/contentDigest 均匹配的情况。合法同请求的当前回执先按原合同重放。
-- 显式 v2 今后新建/编辑的 content 兼容正文为 summary + 单个 LF + 完整 details；details=NULL 时仅 summary。原 pair、40/2000 字符限制、索引/编号读取不变；不改迁移、旧 row/revision/回执/pin/handle/digest/已耗预算。旧完整正文消费者自然读取全部条件，仍按 V1 原 6000/8000/24000/12 预算处理整条，不发放 V2 资格。普通 remember 模型回执保留原摘要；旧聊天卡和公司素材 picker 的原70字摘录自然可见详情，不改 UI 布局或权限，V2 侧栏保持摘要/详情各自合同。PR1 不可单独部署，必须与完整消费者组合验证。
+- summary 为 1–40 Unicode code points，details 为 NULL 或最多 2000 code points。非空 details 原文保留；只有全空白才规范为 NULL。NUL 与孤立 surrogate 由存储字符约束拒绝。
+- pairDigest 使用 canonical JSON SHA-256，输入为 `{version:2,summary,details}`。当前行、递增 revision、操作回执和审计在同一事务提交。
+- 本人新建或编辑保存后生效；模型 remember 永远写 pending，须本人确认或编辑保存。管理员不能代确认。
+- 写入比较当前 revision 和 pairDigest；重试同一操作保留幂等键和原 CAS。冲突不能换键覆盖、清空 details 或由摘要推导全文。
+- 当前 `allrice_memories`、`allrice_memory_revisions` 和 operations 保留；共用 content 列仍供企业资料正文等现行接缝使用。该列不重新开放为个人记忆工具或管理 API 参数。
 
-发布负责人将来申请迁移前，使用正式停写/快照工具保存数据库、Run/DSH 状态目录、配置和执行包，记录应用 SHA、完整迁移名集合、时间及存储高水位。只读状态命令为 `~/allrice-dev/bin/deploy-dev --status`。实际部署/恢复必须另外取得对应授权。
+## 前向恢复
 
-## 预检与原始失败
+发布负责人在获批窗口用正式工具保存数据库、Run/DSH 状态、配置与执行包，记录应用 SHA、完整迁移名、时间和存储高水位。只读状态命令为 `~/allrice-dev/bin/deploy-dev --status`；实际迁移和恢复另需授权。
 
-迁移在同一 PG 事务中加字段、持有 memory/revision 关系锁、输出 `employee_memory_pair_preflight` 聚合，合格后才开始回填。聚合覆盖普通行数、无有效归属、空白/无效摘要、超过 2000、过期/未来期限、scope 生效数超过 100、可被旧读取但不在个人管理集合的 legacy review、当前修订缺失/原文不符，以及分类/状态/sourceType/lineage 计数。
+| 状态                          | 必须保留                                                  | 恢复边界                                                                                                                       |
+| ----------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| 事务失败                      | 首次错误、原 pair/revision/回执与 Run 状态                | 整笔自然回滚，不手工登记成功、不重跑求绿。                                                                                     |
+| 已有当前用户、候选或 Run 写入 | 当前 pair、全部修订、回执、审计、归档、冻结编号和已耗预算 | 前向修复；不逆迁移、丢新数据、复活归档、升格候选或重置预算。                                                                   |
+| 当前 pair 需要修复            | 最新 revision/pairDigest、来源与确认记录                  | 在同一事务锁当前 scope/identity，比较 revision 和 pairDigest，追加明确原因的补偿修订与审计。CAS 不符拒绝，不原地修改历史修订。 |
 
-该 SQL 的 L1 只证明原始 message identity 精确落在同 scope；它不授予当前真人权限。checkpoint、user+NULL、不完整 occurrence、file/connector 均不伪造成 message lineage。候选采集/确认的授权与来源政策不由本迁移决定。
+机械回填历史由原迁移与审计识别；A2 退出迁移只处理批准的精确旧记录，不把旧正文转换成新记忆。本人已在 V2 再次编辑确认、或无法可靠分开的数据不得猜测删除，交发布主线裁定。
 
-任一异常返回 SQLSTATE `23514`、`employee_memory_pair_preflight_failed` 和聚合 JSON detail，整笔事务回滚。保留第一次日志；不截断、猜归属、删行、保留前 100 条、自动归档或重跑求绿。无原文、用户 ID、来源正文进入 notice。修正或业务处置由主线按授权决定。
+已发放 V2 Run 继续使用其冻结 revision、编号与累计预算。普通后续编辑不替换已发放 pair；当前身份或来源撤回仍重新核验。某条冻结 revision 本身错误时，记录准确 Run/修订交主线处理，不能自动重绑、取消或重置计数。
 
-成功 notice `employee_memory_pair_backfill` 含 migrated 数和前后集合 digest。digest 先逐行哈希全部列，再按 ID 有序聚合固定长度哈希，避免聚合 raw 全文。每条迁移审计使用空 actor、`memory.migrate_pair`/`system_backfill`，metadata 保存迁移名、原/新 revision、原 contentDigest 和 pairDigest；新 revision 的 reason 明示 system 迁移及原 revision。旧表要求 changed_by 非空，因此引用原 owner，不把该修订标为本人删除/确认。
-
-## 恢复矩阵
-
-| 状态                                       | 必须保留/验证                                                                       | 允许的恢复方向                                                                                                                                                                               |
-| ------------------------------------------ | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 迁移事务未提交而失败                       | 初始错误、数据库原字段/正文/修订/回执、Run 状态                                     | 事务自然回滚；不手工登记迁移成功。修复后另定精确候选与演练，不自动重试。                                                                                                                     |
-| 已提交，证明没有任何新用户、候选、Run 写入 | 比较快照高水位、行/revision/回执集合、Run 及其原生日志/状态目录；不能只凭页面未开放 | 首选认识 0236 的前向修复。若确实要恢复全套快照，须另获恢复/数据处置授权，并按现有 [数据库手册](m1-database.md#恢复备份或迁移前快照) 一起恢复配套数据库、Run/DSH 状态、配置和执行包。         |
-| 已有新建/编辑/确认/删除/候选/Run 写入      | 当前 pair、所有新旧 revision、回执、审计、归档、候选状态、冻结 pin 和已消耗预算     | 默认前向兼容修复，保留 0236 迁移认识范围及内容列。禁止逆迁移、删新行/新 revision、清 details、回退 revision、复活归档或把候选升为 active。                                                   |
-| 某条机械回填确需修复                       | 迁移审计和原 revision、最新 pair/revision/归档/信任状态                             | 锁当前 scope/identity，在同一事务比较当前 revision **及 pairDigest**，追加带 system 修复原因及被修复 revision 引用的补偿修订、更新当前行/投影并留审计。CAS 不符则整笔拒绝；不改旧 revision。 |
-
-已被本人编辑/确认/删除的记录不能被迁移前原文覆盖。若错误仅在表示上，依据最新合法 pair 修复；无法确定时停止受影响 scope 并上报。修复不得伪造本人删除审计、触发 cutoff、改变候选状态、回退回执或擅自取消 Run。没有丢新数据的逆迁移脚本。
-
-兼容修复版本必须认识数据库中的全部迁移；旧 binary 不认识 0236 时，正式部署工具会拒绝回滚。将来采用的前向候选命令仍为 `~/allrice-dev/bin/deploy-dev --release-manager --ref <已批准的完整兼容提交>`，只能由发布负责人在获批窗口执行。旧单字段 UI 对 paired 记忆不能无损编辑，必须先配套消费者，不能先解除 409 门卫。
-
-## 冻结 Run 与隔离验收
-
-v1 已发放 pin 继续读取旧 revision 的原 content；不重绑 pin、改 snapshot 或重置已消耗预算。迁移追加当前 revision 不会替换旧 pin 引用。若将来已有 v2 冻结 Run，兼容修复必须保留其 pair revision、编号和预算解析，直至这些 Run 不再需要。PR1 没有创建 v2 Run 合同，不能构造假 v2 snapshot 冒充验收。
-
-若已发放的某 revision 本身错误，仅补偿当前 revision 不能宣称修好了该 pin。记录精确 Run/修订，交主线按现有安全门卫、停任务授权和恢复规则决定；不自动重绑或取消。
-
-本包隔离测试包含：七类异常及整笔回滚；旧 content/历史 revision/raw review/排序不变；迁移系统修订/审计；真实冻结 v1 pin 迁移前后读取与原预算；迁移后新建、编辑、删除、候选与过时 CAS 补偿拒绝。测试仍须由主线在精确提交上执行。新 v2 冻结 Run、最终消费者组合、真实快照恢复、Dev 迁移/部署均未验证，后续组合获批前不得标 ready。
-
-异常通过预检错误、CAS/409、原审计及测试发现。当前没有独立常驻 pair 业务巡检；需要时由主线在 MET-222 记录，不能把缺失巡检写成已经就绪。
+恢复版本必须认识当前全部迁移与当前 schema。数据库备份是故障恢复手段，不是产品旧数据迁移；旧二进制必须通过新 schema 核验后才能作为恢复候选。实际恢复和 Dev/Prod 操作状态由发布证据分别记录。

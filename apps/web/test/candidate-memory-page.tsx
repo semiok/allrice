@@ -193,12 +193,9 @@ function App({ fixture }: { fixture: Fixture }) {
       )}
       {management ? (
         <WorkbenchExperiencePanel
-          memoryRequest={
-            query.has('instance') ? { instanceId, revision: 1 } : undefined
-          }
+          memoryRequest={{ instanceId, revision: 1 }}
           scopeId={workspaceId}
           workspaceId={workspaceId}
-          instanceId={instanceId}
           employees={[
             {
               id: instanceId,
@@ -207,10 +204,6 @@ function App({ fixture }: { fixture: Fixture }) {
           ]}
           headers={headers}
           active
-          automatic={false}
-          onCorrect={() => {
-            throw Error('Unexpected correction/model path');
-          }}
         />
       ) : (
         <ChatTranscript

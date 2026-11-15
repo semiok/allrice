@@ -1,17 +1,13 @@
 import { createHash } from 'node:crypto';
 
 import {
-  createTraceableMemory,
   createRememberedMemoryCandidate,
   assertEmployeeChatHumanSource,
   DataAccessError,
   getToolBrokerFile,
   listToolBrokerFiles,
-  readToolBrokerMemoryContext,
-  readRunExperienceSource,
   readRunMemoryOrdinal,
   MemoryContextError,
-  ExperienceError,
   searchToolBrokerSessions,
   markCompanyMaterialRead,
 } from '@allrice/database';
@@ -19,7 +15,6 @@ import {
   MemoryOrdinalInputSchema,
   WorkspaceDocumentReadArgsSchema,
   RememberPersonalMemoryInputSchema,
-  isMemoryIndexDocuments,
   type ExecutionContext,
   type RequestContext,
 } from '@allrice/contracts';
@@ -30,12 +25,7 @@ import { officeMediaTypes, type OfficeFormat } from '../../office/package.js';
 import { parseDocument } from '../../document-reader.js';
 import { readPdfLocally } from '../../document-read-local.js';
 import { confirmToolFailure, HandlerError } from '../../errors.js';
-import {
-  limitValue,
-  memoryClassValue,
-  memoryLifecycleStateValue,
-  stringValue,
-} from '../input-values.js';
+import { limitValue, stringValue } from '../input-values.js';
 import type { RiceToolExecutionInput, RiceToolHandler } from '../types.js';
 
 const maximumReadableBytes = 2_000_000;
@@ -437,56 +427,6 @@ function memoryAuthority(input: Parameters<RiceToolHandler>[0]['input']) {
     );
   return auth;
 }
-async function memoryResult(
-  read: () => Promise<{ items: unknown[]; omittedItems: number }>,
-) {
-  try {
-    const result = await read();
-    return {
-      modelContent: JSON.stringify(result),
-      summary: `读取 ${result.items.length} 条完整记录${result.omittedItems ? `，${result.omittedItems} 条超出记忆加载上限，未返回` : ''}`,
-      itemCount: result.items.length,
-    };
-  } catch (error) {
-    if (error instanceof MemoryContextError)
-      throw new HandlerError(
-        error.code,
-        '已达到本次记忆加载上限，或当前加载状态不可用。请说明缺少资料，不要循环重试。',
-        false,
-      );
-    if (error instanceof ExperienceError)
-      throw new HandlerError(
-        'MEMORY_CONTEXT_UNAVAILABLE',
-        '经验来源、任务或当前权限已变化，无法继续读取；请说明资料不可用。',
-        false,
-      );
-    throw error;
-  }
-}
-export const searchWorkspaceMemory: RiceToolHandler = async ({
-  input,
-  arguments: args,
-}) => {
-  const auth = memoryAuthority(input);
-  return memoryResult(() =>
-    readToolBrokerMemoryContext(
-      input.context,
-      stringValue(args.query, 'query'),
-      limitValue(args.limit, 5, 20),
-      auth,
-    ),
-  );
-};
-export const readExperienceSource: RiceToolHandler = async ({
-  input,
-  arguments: args,
-}) => {
-  const auth = memoryAuthority(input);
-  return memoryResult(() =>
-    readRunExperienceSource(auth, stringValue(args.handle, 'handle')),
-  );
-};
-
 export const readMemoryOrdinal: RiceToolHandler = async ({
   input,
   arguments: args,
@@ -506,11 +446,9 @@ export const readMemoryOrdinal: RiceToolHandler = async ({
       itemCount: 1,
     };
   } catch (error) {
-    if (error instanceof MemoryContextError || error instanceof ExperienceError)
+    if (error instanceof MemoryContextError)
       throw new HandlerError(
-        error instanceof MemoryContextError
-          ? error.code
-          : 'MEMORY_CONTEXT_UNAVAILABLE',
+        error.code,
         '记忆不可用或无法在本次剩余预算中完整读取；请说明资料不足，不要循环重试。',
         false,
       );
@@ -531,12 +469,9 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
     });
     return error;
   };
-  const pairArguments = isMemoryIndexDocuments(input.employeeDocuments)
-    ? RememberPersonalMemoryInputSchema.safeParse(args)
-    : undefined;
-  if (pairArguments && !pairArguments.success)
+  const pairArguments = RememberPersonalMemoryInputSchema.safeParse(args);
+  if (!pairArguments.success)
     throw new HandlerError('TOOL_INPUT_INVALID', '记忆候选参数不合法', false);
-  if (!pairArguments) memoryLifecycleStateValue(args.lifecycleState);
   if (!input.context.workspaceId || !input.employeeId || !input.userMessageId) {
     throw rejected(
       'MEMORY_SOURCE_MESSAGE_REQUIRED',
@@ -559,58 +494,25 @@ export const rememberWorkspaceMemory: RiceToolHandler = async ({
       );
     throw error;
   }
-  const memory = await (async () => {
-    if (pairArguments?.success) {
-      if (!input.call.nativeSessionId || !input.call.id)
-        throw rejected('MEMORY_OPERATION_ID_REQUIRED', '记忆缺少原生调用身份');
-      return (input.memoryCandidateCreate ?? createRememberedMemoryCandidate)(
-        requestContextFromExecution(input.context),
-        {
-          ...pairArguments.data,
-          workspaceId: input.context.workspaceId,
-          employeeId: input.employeeId,
-          sourceId: input.userMessageId,
-        },
-        input.context,
-        { nativeSessionId: input.call.nativeSessionId, callId: input.call.id },
-      );
-    }
-    const content = stringValue(args.content, 'content');
-    if (content.length > 10_000) {
-      throw new HandlerError(
-        'TOOL_INPUT_INVALID',
-        'content 不能超过 10000 个字符',
-        false,
-      );
-    }
-    const expiresAt =
-      args.expiresAt === undefined || args.expiresAt === null
-        ? null
-        : stringValue(args.expiresAt, 'expiresAt');
-    return (input.memoryCreate ?? createTraceableMemory)(
-      requestContextFromExecution(input.context),
-      {
-        workspaceId: input.context.workspaceId,
-        employeeId: input.employeeId,
-        content,
-        visibility: 'private',
-        sourceType: 'message',
-        sourceId: input.userMessageId,
-        sourceLabel: '模型提取候选',
-        confidence: 0.8,
-        expiresAt,
-        lifecycleState: 'candidate',
-        memoryClass: memoryClassValue(args.memoryClass),
-      },
-      input.context,
-    );
-  })();
+  if (!input.call.nativeSessionId || !input.call.id)
+    throw rejected('MEMORY_OPERATION_ID_REQUIRED', '记忆缺少原生调用身份');
+  const memory = await (
+    input.memoryCandidateCreate ?? createRememberedMemoryCandidate
+  )(
+    requestContextFromExecution(input.context),
+    {
+      ...pairArguments.data,
+      workspaceId: input.context.workspaceId,
+      employeeId: input.employeeId,
+      sourceId: input.userMessageId,
+    },
+    input.context,
+    { nativeSessionId: input.call.nativeSessionId, callId: input.call.id },
+  );
   return {
     modelContent: JSON.stringify({
       id: memory.id,
-      content: pairArguments?.success
-        ? pairArguments.data.summary
-        : memory.content,
+      summary: pairArguments.data.summary,
       memoryClass: memory.memoryClass,
       lifecycleState: memory.lifecycleState,
       requiresConfirmation: true,

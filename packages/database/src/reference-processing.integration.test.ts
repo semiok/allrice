@@ -88,7 +88,7 @@ suite(
       const saved = await prepareReferenceUpload(f.context, {
         workspaceId: f.workspaceId,
         requestId: randomUUID(),
-        scope: 'company',
+        scope: 'personal',
         fileName,
         purpose: '必须可以读取最后一句',
         mediaType,

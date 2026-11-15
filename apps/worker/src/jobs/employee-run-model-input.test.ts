@@ -11,10 +11,11 @@ import {
   renderMemoryIndexV2,
 } from '@allrice/contracts';
 
-const legacyKernel = {
+const currentKernel = {
   systemInstructions: 'GENERIC_POLICY',
   rootSystemInstructions: 'ROOT_POLICY',
   employeeDocuments: {
+    schemaVersion: 2 as const,
     user: '# USER.md\nUSER_FACTS',
     memory: '# MEMORY.md\nCONFIRMED_MEMORY',
   },
@@ -24,19 +25,19 @@ const legacyKernel = {
 };
 
 describe('employee first-call input estimates', () => {
-  it('preserves the old USER/MEMORY input bytes when persona is absent or empty', () => {
+  it('accounts for V2 USER/MEMORY input bytes when persona is absent or empty', () => {
     const original =
       'ROOT_POLICY\n# USER.md\nUSER_FACTS\n# MEMORY.md\nCONFIRMED_MEMORY\nHISTORY\nAUTHORIZED_REFERENCES\nCURRENT_REQUEST';
-    expect(employeeRunModelInput(legacyKernel)).toBe(original);
+    expect(employeeRunModelInput(currentKernel)).toBe(original);
     expect(
       employeeRunModelInput({
-        ...legacyKernel,
-        employeeDocuments: { ...legacyKernel.employeeDocuments, persona: '' },
+        ...currentKernel,
+        employeeDocuments: { ...currentKernel.employeeDocuments, persona: '' },
       }),
     ).toBe(original);
     expect(
       employeeRunModelInput({
-        ...legacyKernel,
+        ...currentKernel,
         rootSystemInstructions: undefined,
       }),
     ).toBe(original.replace('ROOT_POLICY', 'GENERIC_POLICY'));
@@ -45,8 +46,8 @@ describe('employee first-call input estimates', () => {
   it('includes the full literal PERSONA in admission telemetry without restoring old input limits', () => {
     const persona = '# PERSONA.md\n' + '人设 {{literal}}\n'.repeat(200);
     const input = employeeRunModelInput({
-      ...legacyKernel,
-      employeeDocuments: { ...legacyKernel.employeeDocuments, persona },
+      ...currentKernel,
+      employeeDocuments: { ...currentKernel.employeeDocuments, persona },
     });
     expect(input).toContain(persona);
     expect(input.indexOf('# PERSONA.md')).toBeLessThan(
@@ -57,7 +58,7 @@ describe('employee first-call input estimates', () => {
     );
     const estimatedInputTokens = estimateConversationTokens(input);
     const legacyTokens = estimateConversationTokens(
-      employeeRunModelInput(legacyKernel),
+      employeeRunModelInput(currentKernel),
     );
     expect(estimatedInputTokens).toBeGreaterThan(legacyTokens);
     const scope = {
@@ -88,10 +89,10 @@ describe('employee first-call input estimates', () => {
       },
     ];
     const routed = employeeRunModelInput({
-      ...legacyKernel,
+      ...currentKernel,
       systemInstructions: 'GENERIC_POLICY\nROUTE',
       rootSystemInstructions: 'ROOT_POLICY\nROUTE',
-      employeeDocuments: { ...legacyKernel.employeeDocuments, persona },
+      employeeDocuments: { ...currentKernel.employeeDocuments, persona },
       authorizedMemoryContext: 'AUTHORIZED_REFERENCES\nKNOWLEDGE',
       mcpToolCatalog,
     });
@@ -102,7 +103,7 @@ describe('employee first-call input estimates', () => {
       'AUTHORIZED_REFERENCES\nKNOWLEDGE\nCURRENT_REQUEST',
     );
     expect(estimateConversationTokens(routed)).toBeGreaterThan(
-      estimateConversationTokens(employeeRunModelInput(legacyKernel)),
+      estimateConversationTokens(employeeRunModelInput(currentKernel)),
     );
   });
 
@@ -122,10 +123,13 @@ describe('employee first-call input estimates', () => {
       memory,
     });
     const withoutPersona = employeeRunModelInput({
-      ...legacyKernel,
+      ...currentKernel,
       employeeDocuments: { ...employeeDocuments, persona: undefined },
     });
-    const input = employeeRunModelInput({ ...legacyKernel, employeeDocuments });
+    const input = employeeRunModelInput({
+      ...currentKernel,
+      employeeDocuments,
+    });
     expect(Buffer.byteLength(memory)).toBe(18303);
     expect(Buffer.byteLength(persona)).toBe(16384);
     expect(input).toContain(persona);

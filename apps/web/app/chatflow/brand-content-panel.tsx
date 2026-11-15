@@ -330,33 +330,6 @@ function BrandContentReader(props: BrandContentPanelProps) {
       setBusy(false);
     }
   };
-  const forgetExperience = async (id: string) => {
-    if (
-      inFlight.current ||
-      !data?.board?.experiences?.some((e) => e.id === id && !e.archived)
-    )
-      return;
-    inFlight.current = true;
-    setBusy(true);
-    setError('');
-    try {
-      const response = await fetch(
-        `/api/v1/memories/${encodeURIComponent(id)}?workspaceId=${encodeURIComponent(props.workspaceId)}`,
-        { method: 'DELETE', headers: headersRef.current },
-      );
-      if (!response.ok) throw Error('撤回结果未确认，请刷新后核对。');
-      if (mounted.current) {
-        await read(data.board.brand.id);
-        setNotice('经验已撤回，历史复盘和引用记录保留。');
-      }
-    } catch (cause) {
-      if (mounted.current)
-        setError(errorText(cause, '撤回结果未确认，请刷新后核对。'));
-    } finally {
-      inFlight.current = false;
-      setBusy(false);
-    }
-  };
   const registerReminder: RegisterReminder = async (plan) => {
     if (inFlight.current || !data?.board) return;
     inFlight.current = true;
@@ -573,7 +546,6 @@ function BrandContentReader(props: BrandContentPanelProps) {
                 disabled={disabled}
                 draftKey={`${scope}.feedback.${board.brand.id}`}
                 onMutate={mutate}
-                onForget={forgetExperience}
                 onOpenSession={props.onOpenSession}
               />
             )}

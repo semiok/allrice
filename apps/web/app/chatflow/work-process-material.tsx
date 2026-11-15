@@ -6,6 +6,7 @@ import styles from './dsh-saas.module.css';
 /** Authorized display facts, never an execution or approval authority. */
 export interface WorkProcessMaterial extends WorkProcessReference {
   fields: readonly { label: string; value: ReactNode }[];
+  interaction?: ReactNode;
 }
 
 export interface WorkProcessMaterialFeed {
@@ -56,6 +57,7 @@ export function ProcessMaterialFields({
           </Fragment>
         ))}
       </dl>
+      {material.interaction}
     </div>
   );
 }

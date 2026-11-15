@@ -24,6 +24,9 @@ suite('message-scoped attachment delivery', () => {
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
     const f = await createP27CodexWorkerFixture({ allowCiDatabase: true });
     try {
+      // The message API uses a real Web login without enabling personalProfile.
+      await f.db`insert into allrice_sessions(id,user_id,token_hash,expires_at)
+        values(${f.context.sessionId!},${f.ownerId},${createHash('sha256').update(randomUUID()).digest('hex')},clock_timestamp()+interval '1 hour')`;
       const session = await createAssignedChatSession(f.context, {
         workspaceId: f.workspaceId,
         employeeAssignmentId: f.assignmentId,

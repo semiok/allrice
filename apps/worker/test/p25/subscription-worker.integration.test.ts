@@ -16,7 +16,9 @@ import { prepareExecutionIsolation } from '../../src/isolation.ts';
 import {
   getOrganizationModelQuota,
   assertQuotaAvailable,
-  createTraceableMemory,
+  createRememberedMemoryCandidate,
+  createPersonalEmployeeMemory,
+  promoteManagedEmployeeMemory,
   prepareEmployeeRunBinding,
   enqueueRun,
   claimNextJob,
@@ -234,33 +236,41 @@ integration(
               job.lease.token,
             );
             expect(execution?.context.runId).toBe(prior.run.id);
-            const draftMemory = await createTraceableMemory(fixture.context, {
-              workspaceId: fixture.workspaceId,
-              content: 'QUEUED_DRAFT_MEMORY',
-              visibility: 'private',
-              sourceType: 'message',
-              sourceId: userMessageId,
-              sourceLabel: 'Synthetic prior discussion',
-              lifecycleState: 'durable',
-              memoryClass: 'user_preference',
-              confidence: 1,
-              expiresAt: null,
-            });
-            const ordinaryMemory = await createTraceableMemory(
+            const draftMemory = await createRememberedMemoryCandidate(
               fixture.context,
               {
                 workspaceId: fixture.workspaceId,
-                instanceId: draftMemory.instanceId!,
-                idempotencyKey: randomUUID(),
-                content: 'ORDINARY_MEMORY_RETAINED',
-                visibility: 'private',
-                sourceType: 'user',
-                sourceId: null,
-                sourceLabel: 'Synthetic ordinary preference',
-                lifecycleState: 'durable',
+                employeeId: binding.executionSnapshot.employee.id,
+                sourceId: userMessageId,
+                summary: 'QUEUED_DRAFT_MEMORY',
+                details: null,
                 memoryClass: 'user_preference',
-                confidence: 1,
-                expiresAt: null,
+              },
+              execution!.context,
+              {
+                nativeSessionId: `synthetic-${sessionId}`,
+                callId: randomUUID(),
+              },
+            );
+            await promoteManagedEmployeeMemory(
+              fixture.context,
+              fixture.workspaceId,
+              draftMemory.id,
+              {
+                instanceId: fixture.assignmentId,
+                expectedRevision: draftMemory.revision,
+                pairDigest: draftMemory.pairDigest,
+                idempotencyKey: randomUUID(),
+              },
+            );
+            const ordinaryMemory = await createPersonalEmployeeMemory(
+              fixture.context,
+              {
+                workspaceId: fixture.workspaceId,
+                instanceId: fixture.assignmentId,
+                idempotencyKey: randomUUID(),
+                summary: 'ORDINARY_MEMORY_RETAINED',
+                details: null,
               },
             );
             ordinaryMemoryId = ordinaryMemory.id;

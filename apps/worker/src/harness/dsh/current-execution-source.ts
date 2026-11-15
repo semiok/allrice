@@ -56,15 +56,8 @@ export function currentExecutionForNativeInput(
       String(leased.attempt) !== env.ALLRICE_ATTEMPT
     )
       return bad();
-    if ('internalTask' in input.kernel) {
-      if (
-        leased.test.source.purpose !== 'experience_validation' ||
-        input.kernel.internalTask.kind !== 'experience_validation' ||
-        input.kernel.nativeContextId !== leased.test.scope.testId
-      )
-        return bad();
-    } else if (
-      leased.test.source.purpose === 'experience_validation' ||
+    if (
+      'internalTask' in input.kernel ||
       input.kernel.sessionId !== leased.test.scope.testId
     )
       return bad();

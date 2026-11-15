@@ -78,7 +78,7 @@ export type SettingsSection =
 export function normalizeSettingsSection(
   section: string | null,
 ): SettingsSection | null {
-  if (section === 'capabilities' || section === 'experience') return 'work';
+  if (section === 'capabilities') return 'work';
   if (section === 'skills') return 'preferences';
   return section === 'preferences' ||
     section === 'computer' ||
@@ -432,7 +432,6 @@ export function SidebarSettings({
   bridgeReleases,
   onCapabilitiesChange,
 }: {
-  experienceEnabled?: boolean;
   sessionId?: string;
   capabilities: (section: 'work' | 'computer') => ReactNode;
   collapsed: boolean;

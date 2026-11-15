@@ -96,14 +96,11 @@ function LifecycleHost() {
         memoryRequest={{ instanceId: id(17), revision }}
         scopeId={scopeId}
         workspaceId={id(4)}
-        instanceId={id(7)}
         employees={[
           { id: id(7), name: 'Rice' },
           { id: id(17), name: '流程哥' },
         ]}
         headers={headers}
-        automatic={false}
-        onCorrect={() => {}}
       />
     </main>
   );
@@ -119,10 +116,7 @@ createRoot(document.getElementById('root')!).render(
     ) : query.get('host') === 'lifecycle' ? (
       <LifecycleHost />
     ) : (
-      <ChatFlowClient
-        workbenchEnabled={!query.has('disabled')}
-        experienceEnabled={query.has('legacy')}
-      />
+      <ChatFlowClient workbenchEnabled={!query.has('disabled')} />
     )}
   </>,
 );

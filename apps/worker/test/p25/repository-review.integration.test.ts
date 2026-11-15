@@ -51,7 +51,7 @@ import {
   createRuntimeFixtureDatabase,
   runtimeFixtureStorage,
 } from '../../../../packages/database/src/runtime.fixture.ts';
-import { createExperienceFixture } from '../../../../packages/database/src/experience.fixture.ts';
+import { createCompletedRunFixture } from '../../../../packages/database/src/completed-run.fixture.ts';
 import {
   ensureBootstrapPortalPrincipal,
   createSession,
@@ -250,7 +250,7 @@ suite(
         'MEMORY_SOURCE_CAPTURE',
       ])
         vi.stubEnv(`ALLRICE_${flag}_ENABLED`, '1');
-      await createExperienceFixture(f.db);
+      await createCompletedRunFixture(f.db);
       await f.db`update allrice_model_connections set status='ready' where id='52000000-0000-4000-8000-000000000001'`;
       await f.db`update allrice_model_providers set enabled=true where provider_key='codex'`;
       const [revision] =

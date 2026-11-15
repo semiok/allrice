@@ -38,7 +38,6 @@ import {
   hasNativeViewport,
 } from './native-document-preview';
 import { DocumentToolbar } from './document-reader';
-import { SaveArtifactReference } from './save-artifact-reference';
 import { WorkbenchFileToolbarActions } from './workbench-file-toolbar-actions';
 import { clearWorkbenchFileLink } from './workbench-file-link';
 import type {
@@ -1591,23 +1590,6 @@ function ArtifactReview({
                   readOnly={readOnly}
                   onUse={onUseFileReference}
                   onTemplate={onTemplateFile}
-                  referenceAction={
-                    !toolResult &&
-                    ['document', 'plan', 'file'].includes(artifact.kind) ? (
-                      <SaveArtifactReference
-                        key={artifact.version.id}
-                        workspaceId={workspaceId}
-                        headers={tenantHeaders}
-                        versionId={artifact.version.id}
-                        fileName={artifact.version.fileName}
-                        version={artifact.version.version}
-                        readOnly={readOnly}
-                        icon
-                      />
-                    ) : (
-                      false
-                    )
-                  }
                 />
               ) : undefined
             }
@@ -1659,21 +1641,7 @@ function ArtifactReview({
                 void onReload();
               }
             }}
-          >
-            {!onUseFileReference &&
-              !toolResult &&
-              ['document', 'plan', 'file'].includes(artifact.kind) && (
-                <SaveArtifactReference
-                  key={artifact.version.id}
-                  workspaceId={workspaceId}
-                  headers={tenantHeaders}
-                  versionId={artifact.version.id}
-                  fileName={artifact.version.fileName}
-                  version={artifact.version.version}
-                  readOnly={readOnly}
-                />
-              )}
-          </DocumentToolbar>
+          />
           {!!artifact.provenance.referenceReads?.length && (
             <details className={styles.notice}>
               <summary>生成此版本时已检索的资料</summary>

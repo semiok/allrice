@@ -1,7 +1,6 @@
 import { personalInstanceNameSql } from '../employees/employee-instance-policy.ts';
 import { freezeConversationCapabilities } from './conversation-capabilities.ts';
 import {
-  EmployeeMemoryPinInputSchema,
   CreatePersonalEmployeeMemoryInputSchema,
   CorrectPersonalEmployeeMemoryInputSchema,
   PersonalEmployeeMemorySchema,
@@ -11,7 +10,6 @@ import {
   PersonalMemoryDetailsSchema,
   CreateRememberedMemoryCandidateInputSchema,
   CreateCheckpointPersonalMemoryCandidateInputSchema,
-  WorkspaceMemorySchema as WorkspaceMemoryResponseSchema,
   type PersonalMemoryPair,
 } from '@allrice/contracts';
 import {
@@ -23,9 +21,11 @@ import {
 } from '../employee-memory-management.ts';
 import { isModelFailureCode, modelFailure } from '@allrice/contracts';
 import { requireNativeQuestionAdmission } from '../native-questions.ts';
-import { archivePrivateExperience } from '../experience-runtime.ts';
 import { nativeContextExecutionRetired } from '../conversation/native-context-retirement.ts';
-import type { ResourcePrincipal } from '../resource-principal.ts';
+import {
+  resourcePrincipal,
+  type ResourcePrincipal,
+} from '../resource-principal.ts';
 import type { enqueueManualAutomationRunInTransaction } from '../execution/queue.ts';
 import { readSessionMcpFailures } from './mcp-failures.ts';
 import {
@@ -51,24 +51,18 @@ import {
 import { platformEmployeeModelPolicy } from '../providers/platform-model-settings.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  assertMemoryRevision,
   assertMemoryPairRevision,
   EmployeeMemoryConflict,
   EmployeeMemoryContractChanged,
   employeeMemoryScope,
   memoryContentDigest,
   memoryPairDigest,
-  legacyPersonalMemoryPair,
   memoryOperation,
   lockMemorySource,
   type EmployeeMemoryIdentity,
   type EmployeeMemoryScope,
 } from './employee-memory.ts';
 import { memoryPairContent } from './employee-memory-primitives.ts';
-import {
-  employeeMemoryReadPredicate,
-  searchConfirmedEmployeeMemories,
-} from './employee-memory-read.ts';
 import { assertEmployeeChatHumanSource } from '../employees/employee-chat-authority.ts';
 import { employeeAccessTransaction } from '../employees/employee-access-cancellation.ts';
 import { captureReferenceSelections } from '../reference-runtime.ts';
@@ -86,12 +80,7 @@ import { prepareReviewContinuation } from '../conversation/review-continuation.t
 import { prepareChangesetAction } from '../changeset-service.ts';
 import {
   ChatMessageContentSchema,
-  CorrectMemoryInputSchema,
-  CreateCheckpointMemoryCandidateInputSchema,
   CreateChatSessionInputSchema,
-  CreateWorkspaceMemoryInputSchema,
-  MemoryRevisionSchema,
-  MemoryMutationInputSchema,
   SessionModelSnapshotSchema,
   SendChatMessageInputSchema,
   RequestContextSchema,
@@ -108,8 +97,6 @@ import {
   type Visibility,
   type MemoryClass,
   type MemoryLifecycleState,
-  type MemoryTrust,
-  type WorkspaceMemorySchema,
 } from '@allrice/contracts';
 import { z } from 'zod';
 import { newCurrentEmployeeChatOrigin } from '../conversation/current-execution-binding.ts';
@@ -127,32 +114,16 @@ import {
   defaultContextCompactThreshold,
   sessionCompactionStatus,
 } from '../conversation/usage.ts';
-import {
-  applyWorkspaceMemoryRecallBudget,
-  rankWorkspaceMemoryRecallCandidates,
-  embedWorkspaceText,
-  workspaceMemoryRecallPolicy,
-} from './memory-recall.ts';
-
-export {
-  applyWorkspaceMemoryRecallBudget,
-  embedWorkspaceText,
-  rankWorkspaceMemoryRecallCandidates,
-  workspaceMemoryRecallPolicy,
-} from './memory-recall.ts';
-export type { RankedMemoryRecallCandidate } from './memory-recall.ts';
-
 // Bump when the built-in Rice prompt contract changes so existing assignments
 // receive the new version while historical Sessions remain pinned.
 // Built-in Rice manifests are immutable once published. Bump this whenever
 // the default employee capability contract changes so existing sessions stay
 // frozen while newly provisioned sessions receive the updated tool set.
-const riceVersion = 10;
+const riceVersion = 11;
 
 type ChatSession = z.infer<typeof ChatSessionSchema>;
 type ChatMessage = z.infer<typeof ChatMessageSchema>;
 type EmployeeAssignment = z.infer<typeof EmployeeAssignmentSchema>;
-type WorkspaceMemory = z.infer<typeof WorkspaceMemorySchema>;
 type WorkspaceSql = ReturnType<typeof getDatabase> | TransactionSql;
 
 interface AssignmentRow {
@@ -235,12 +206,13 @@ interface MemoryRow {
   summary: string | null;
   details: string | null;
   visibility: Visibility;
-  source_type: WorkspaceMemory['sourceType'];
+  source_type:
+    'user' | 'file' | 'message' | 'checkpoint' | 'tool' | 'connector';
   source_id: string | null;
   lifecycle_state: MemoryLifecycleState;
   memory_class: MemoryClass;
   revision: number;
-  trust_level: WorkspaceMemory['trust'];
+  trust_level: 'user_confirmed' | 'derived';
   confidence: number | string;
   source_label: string;
   captured_at: Date;
@@ -252,23 +224,6 @@ interface MemoryRow {
   created_at: Date;
   updated_at: Date;
   archived_at: Date | null;
-}
-
-interface MemoryRecallRow {
-  id: string;
-  revision: number;
-  content: string;
-  source_type: WorkspaceMemory['sourceType'];
-  source_id: string | null;
-  lifecycle_state: MemoryLifecycleState;
-  memory_class: MemoryClass;
-  trust_level: MemoryTrust;
-  confidence: number | string;
-  source_label: string;
-  captured_at: Date;
-  updated_at: Date;
-  vector_score: number | string;
-  lexical_score: number | string;
 }
 
 function requireUser(context: ResourcePrincipal) {
@@ -1302,176 +1257,6 @@ export async function getChatSessionHistory(
   };
 }
 
-function vectorLiteral(values: number[]) {
-  return `[${values.join(',')}]`;
-}
-
-async function loadWorkspaceMemoryRecallCandidates(
-  input: {
-    context: ResourcePrincipal;
-    workspaceId: string;
-    employeeId?: string;
-    instanceId: string;
-    query: string;
-    poolSize: number;
-    durableOnly: boolean;
-  },
-  sql: WorkspaceSql = getDatabase(),
-) {
-  const employeeScope = input.employeeId ?? null;
-  const embedding = vectorLiteral(embedWorkspaceText(input.query));
-  const rows = await sql<MemoryRecallRow[]>`
-    select m.id, m.revision, m.content, m.source_type, m.source_id,
-      m.lifecycle_state, m.memory_class, m.trust_level, m.confidence,
-      m.source_label, m.captured_at, m.updated_at,
-      greatest(0, 1 - (c.embedding <=> ${embedding}::vector)) as vector_score,
-      greatest(
-        similarity(lower(m.content), lower(${input.query})),
-        word_similarity(lower(${input.query}), lower(m.content)),
-        case
-          when position(lower(${input.query}) in lower(m.content)) > 0 then 1
-          else 0
-        end
-      ) as lexical_score
-    from allrice_rag_chunks c
-    join allrice_memories m
-      on m.organization_id = c.organization_id
-     and m.workspace_id = c.workspace_id
-     and m.id = c.memory_id
-    where c.organization_id = ${input.context.organizationId}
-      and c.workspace_id = ${input.workspaceId}
-      and ${employeeMemoryReadPredicate(sql, {
-        organizationId: input.context.organizationId,
-        workspaceId: input.workspaceId,
-        ownerId: requireUser(input.context),
-        instanceId: input.instanceId,
-      })}
-      and (
-        ${input.durableOnly}::boolean = false
-        or (
-          m.lifecycle_state = 'durable'
-          and m.trust_level in ('user_confirmed', 'platform_verified', 'derived')
-          and m.confidence >= 0.5
-        )
-      )
-      and (m.expires_at is null or m.expires_at > now())
-      and (${employeeScope}::uuid is null or m.employee_id is null or m.employee_id = ${employeeScope})
-      and (c.owner_id = ${requireUser(input.context)} or c.visibility <> 'private')
-    order by greatest(
-      greatest(0, 1 - (c.embedding <=> ${embedding}::vector)),
-      word_similarity(lower(${input.query}), lower(m.content))
-    ) desc, m.updated_at desc
-    limit ${input.poolSize}
-  `;
-  return rows.map((row) => ({
-    id: row.id,
-    revision: row.revision,
-    content: row.content,
-    sourceType: row.source_type,
-    sourceId: row.source_id,
-    lifecycleState: row.lifecycle_state,
-    memoryClass: row.memory_class,
-    trust: row.trust_level,
-    confidence: Number(row.confidence),
-    sourceLabel: row.source_label,
-    capturedAt: row.captured_at.toISOString(),
-    updatedAt: row.updated_at.toISOString(),
-    vectorScore: Number(row.vector_score),
-    lexicalScore: Number(row.lexical_score),
-  }));
-}
-
-async function recallForReply(
-  context: ResourcePrincipal,
-  workspaceId: string,
-  employeeId: string | undefined,
-  text: string,
-  sql: WorkspaceSql,
-  instanceId: string,
-) {
-  const candidates = await loadWorkspaceMemoryRecallCandidates(
-    {
-      context,
-      workspaceId,
-      employeeId,
-      instanceId,
-      query: text,
-      poolSize: 60,
-      durableOnly: true,
-    },
-    sql,
-  );
-  const recalled = applyWorkspaceMemoryRecallBudget(
-    rankWorkspaceMemoryRecallCandidates(candidates, {
-      threshold: workspaceMemoryRecallPolicy.automaticThreshold,
-      limit: workspaceMemoryRecallPolicy.maximumAutomaticResults,
-      durableOnly: true,
-    }),
-    workspaceMemoryRecallPolicy.maximumAutomaticBytes,
-  );
-  if (recalled.length > 0) {
-    const recalledIds = recalled.map((memory) => memory.id);
-    await sql`
-      update allrice_memories
-      set last_recalled_at = now(), recall_count = recall_count + 1
-      where organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-        and id in ${sql(recalledIds)}
-    `;
-  }
-  return recalled.map((memory) => ({
-    id: memory.id,
-    revision: memory.revision,
-    content: memory.content,
-    lifecycleState: memory.lifecycleState,
-    memoryClass: memory.memoryClass,
-    sourceLabel: memory.sourceLabel,
-    trust: memory.trust,
-    confidence: memory.confidence,
-    capturedAt: memory.capturedAt,
-  }));
-}
-
-export async function searchWorkspaceMemories(
-  context: RequestContext,
-  input: {
-    workspaceId: string;
-    instanceId: string;
-    query: string;
-    limit?: number;
-  },
-) {
-  const workspaceId = await resolveWorkspaceId(context, input.workspaceId);
-  const query = z.string().trim().min(1).max(4_000).parse(input.query);
-  const limit = z.number().int().min(1).max(20).default(5).parse(input.limit);
-  return getDatabase().begin(async (sql) => {
-    const scope = await employeeMemoryScope(
-      context,
-      workspaceId,
-      UuidSchema.parse(input.instanceId),
-      sql,
-    );
-    const rows = await searchConfirmedEmployeeMemories(
-      sql,
-      scope,
-      query,
-      limit,
-    );
-    return rows.map((memory) => ({
-      id: memory.id,
-      content: memory.content,
-      source_type: memory.source_type,
-      source_id: memory.source_id,
-      lifecycle_state: memory.lifecycle_state,
-      memory_class: memory.memory_class,
-      trust_level: memory.trust_level,
-      confidence: Number(memory.confidence),
-      source_label: memory.source_label,
-      relevance_score: Number(memory.relevance_score),
-    }));
-  });
-}
-
 export async function authorizeSessionOwner(
   context: RequestContext,
   workspaceId: string,
@@ -1846,11 +1631,11 @@ async function persistChatMessageInTransaction(
 async function loadChatRunContext(
   input: Pick<
     ChatRunPreparationInput,
-    'context' | 'workspaceId' | 'session' | 'message' | 'result'
+    'context' | 'workspaceId' | 'session' | 'message' | 'result' | 'options'
   >,
   sql: WorkspaceSql,
 ) {
-  const { context, workspaceId, session, message, result } = input;
+  const { context, workspaceId, session, message, result, options } = input;
   const historyRows = await sql<MessageRow[]>`
     select m.* from allrice_messages m
     where organization_id = ${context.organizationId}
@@ -1880,7 +1665,13 @@ async function loadChatRunContext(
   );
   const attachedFiles = await Promise.all(
     message.attachmentIds.map((objectId) =>
-      getStoredFile(RequestContextSchema.parse(context), objectId, sql),
+      getStoredFile(
+        options.folderEventId
+          ? resourcePrincipal(context)
+          : RequestContextSchema.parse(context),
+        objectId,
+        sql,
+      ),
     ),
   );
   const imageMediaTypes = new Set<ImageMediaType>([
@@ -1915,7 +1706,7 @@ async function loadChatRunContext(
 
 type ChatRunContext = Awaited<ReturnType<typeof loadChatRunContext>>;
 
-/** Freeze the real employee binding with the same SQL as memory recall. */
+/** Freeze the real employee binding; MEMORY is supplied only by its V2 document. */
 async function prepareChatRunBinding(
   input: ChatRunPreparationInput,
   runContext: ChatRunContext,
@@ -1923,30 +1714,12 @@ async function prepareChatRunBinding(
   employeeDocuments = false,
   task?: Pick<EmployeePersonaTask, 'kind' | 'id'>,
 ) {
-  const {
-    context,
-    workspaceId,
-    session,
-    message,
-    result,
-    effectiveEmployeeVersionId,
-  } = input;
+  const { context, workspaceId, session, result, effectiveEmployeeVersionId } =
+    input;
   const { historyRows, userRequest, imageAttachments } = runContext;
-  const sql = database.sql;
   const transaction =
     database.kind === 'transaction' ? database.sql : undefined;
-  // Internal tasks keep PERSONA but neither recall memory nor create a V2 index.
-  const memories =
-    employeeDocuments || task
-      ? []
-      : await recallForReply(
-          context,
-          workspaceId,
-          result.currentAssignment.employee_id,
-          message.text,
-          sql,
-          session.employee_instance_id ?? session.employee_assignment_id,
-        );
+  const memories: never[] = [];
   const { prepareEmployeeRunBinding } =
     await import('../employees/employeehub.ts');
   const binding = await prepareEmployeeRunBinding(
@@ -2316,7 +2089,7 @@ export async function sendChatMessage(
     if (retries[0]) result.assistantMessage = retries[0];
   }
   const runContext = await loadChatRunContext(
-    { context, workspaceId, session, message, result },
+    { context, workspaceId, session, message, result, options },
     sql,
   );
   try {
@@ -2531,35 +2304,98 @@ export async function linkWorkspaceFileToSession(input: {
   };
 }
 
-function mapMemory(row: MemoryRow): WorkspaceMemory {
-  return {
-    id: row.id,
-    organizationId: row.organization_id,
-    workspaceId: row.workspace_id,
-    employeeId: row.employee_id,
-    instanceId: row.instance_id,
-    contentDigest: memoryContentDigest(row.content),
-    ownerId: row.owner_id,
-    content: row.content,
-    visibility: row.visibility,
+const MemoryCandidateReceiptSchema = PersonalEmployeeMemorySchema.extend({
+  memoryClass: z.enum([
+    'user_preference',
+    'project_fact',
+    'decision',
+    'work_note',
+  ]),
+  lifecycleState: z.enum(['candidate', 'durable']),
+  sourceType: z.enum(['user', 'message', 'checkpoint']),
+  sourceId: UuidSchema.nullable(),
+  sourceLabel: z.string(),
+  trust: z.enum(['user_confirmed', 'derived']),
+  confidence: z.number(),
+  capturedAt: z.string().datetime(),
+});
+function mapMemory(row: MemoryRow) {
+  return MemoryCandidateReceiptSchema.parse({
+    ...mapPersonalMemory(row),
+    memoryClass: row.memory_class,
+    lifecycleState: row.lifecycle_state,
     sourceType: row.source_type,
     sourceId: row.source_id,
-    lifecycleState: row.lifecycle_state,
-    memoryClass: row.memory_class,
-    revision: row.revision,
+    sourceLabel: row.source_label,
     trust: row.trust_level,
     confidence: Number(row.confidence),
-    sourceLabel: row.source_label,
     capturedAt: row.captured_at.toISOString(),
-    expiresAt: row.expires_at?.toISOString() ?? null,
-    lastVerifiedAt: row.last_verified_at?.toISOString() ?? null,
-    supersedesMemoryId: row.supersedes_memory_id,
-    lastRecalledAt: row.last_recalled_at?.toISOString() ?? null,
-    recallCount: row.recall_count,
-    createdAt: row.created_at.toISOString(),
-    updatedAt: row.updated_at.toISOString(),
-  };
+  });
 }
+
+/** Current V2 candidates already have a paired request digest, even when their
+ * stored response predates the paired DTO. The operation gate checks that exact
+ * request and current row before replay; this never accepts a V1 write. */
+function candidateReceiptForPair(pair: PersonalMemoryPair) {
+  return z.preprocess((value) => {
+    if (!value || typeof value !== 'object') return value;
+    const receipt = value as Record<string, unknown>;
+    if (
+      'pairDigest' in receipt ||
+      receipt.content !== memoryPairContent(pair) ||
+      receipt.contentDigest !== memoryContentDigest(memoryPairContent(pair)) ||
+      receipt.visibility !== 'private' ||
+      receipt.expiresAt !== null
+    )
+      return value;
+    return Object.fromEntries([
+      ...[
+        'id',
+        'organizationId',
+        'workspaceId',
+        'ownerId',
+        'instanceId',
+        'revision',
+        'createdAt',
+        'updatedAt',
+        'memoryClass',
+        'lifecycleState',
+        'sourceType',
+        'sourceId',
+        'sourceLabel',
+        'trust',
+        'confidence',
+        'capturedAt',
+      ].map((key) => [key, receipt[key]]),
+      ['summary', pair.summary],
+      ['details', pair.details],
+      ['pairDigest', memoryPairDigest(pair)],
+    ]);
+  }, MemoryCandidateReceiptSchema);
+}
+
+// Private storage/source input; public writes accept complete V2 pairs only.
+// Keep the existing V2 operation digest representation and property order.
+// These fixed storage fields are not accepted by any public input schema.
+const MemoryWriteSourceSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    instanceId: UuidSchema.optional(),
+    idempotencyKey: UuidSchema.optional(),
+    employeeId: UuidSchema.nullable().default(null),
+    content: z.string().trim().min(1).max(100_000),
+    visibility: z.literal('private').default('private'),
+    sourceType: z.enum(['user', 'message', 'checkpoint']),
+    sourceId: UuidSchema.nullable().default(null),
+    sourceLabel: z.string().trim().min(1).max(240).default('用户保存的记忆'),
+    lifecycleState: z.enum(['candidate', 'durable']).default('durable'),
+    memoryClass: z
+      .enum(['user_preference', 'project_fact', 'decision', 'work_note'])
+      .default('work_note'),
+    confidence: z.number().min(0).max(1).default(1),
+    expiresAt: z.null().default(null),
+  })
+  .strict();
 
 function mapPersonalMemory(row: MemoryRow) {
   if (row.summary === null) throw new EmployeeMemoryContractChanged();
@@ -2646,27 +2482,21 @@ export async function listWorkspaceMemories(
     const rows = await tx<MemoryRow[]>`select * from allrice_memories m
       where m.organization_id=${context.organizationId} and m.workspace_id=${workspaceId}
         and m.owner_id=${scope.ownerId} and m.instance_id=${scope.instanceId} and m.archived_at is null
-        and not exists(select 1 from allrice_experience_reviews er where er.memory_id=m.id)
+        and ${ordinaryMemoryPredicate(tx, scope)} and m.summary is not null
         ${sourceIds ? tx`and m.source_type='message' and m.source_id in ${tx(sourceIds)}` : tx``}
       order by m.updated_at desc,m.id desc limit 100`;
-    return rows.map(mapMemory);
+    return rows.map((row) => {
+      const record = EmployeeMemoryRowSchema.strip().parse(
+        mapEmployeeMemoryRecord(row),
+      );
+      return {
+        ...record,
+        workspaceId: row.workspace_id,
+        ownerId: row.owner_id,
+        instanceId: row.instance_id,
+      };
+    });
   });
-}
-
-export async function createTraceableMemory(
-  context: RequestContext,
-  input: unknown,
-  executionContext?: ExecutionContext,
-) {
-  const memory = CreateWorkspaceMemoryInputSchema.parse(input);
-  return createEmployeeMemoryRecord(
-    context,
-    memory,
-    executionContext,
-    null,
-    mapMemory,
-    WorkspaceMemoryResponseSchema,
-  );
 }
 
 /** A thin candidate adapter over the same source gates, storage and receipt transaction. */
@@ -2684,7 +2514,7 @@ export async function createRememberedMemoryCandidate(
     })
     .strict()
     .parse(invocation);
-  const memory = CreateWorkspaceMemoryInputSchema.parse({
+  const memory = MemoryWriteSourceSchema.parse({
     workspaceId: candidate.workspaceId,
     employeeId: candidate.employeeId,
     content: candidate.summary,
@@ -2709,7 +2539,7 @@ export async function createRememberedMemoryCandidate(
     executionContext,
     { summary: candidate.summary, details: candidate.details },
     mapMemory,
-    WorkspaceMemoryResponseSchema,
+    candidateReceiptForPair(candidate),
     key,
   );
 }
@@ -2720,7 +2550,7 @@ export async function createPersonalEmployeeMemory(
   input: unknown,
 ) {
   const pair = CreatePersonalEmployeeMemoryInputSchema.parse(input);
-  const memory = CreateWorkspaceMemoryInputSchema.parse({
+  const memory = MemoryWriteSourceSchema.parse({
     workspaceId: pair.workspaceId,
     instanceId: pair.instanceId,
     idempotencyKey: pair.idempotencyKey,
@@ -2757,7 +2587,7 @@ export async function createManagedEmployeeMemory(
   input: unknown,
 ) {
   const pair = CreatePersonalEmployeeMemoryInputSchema.parse(input);
-  const memory = CreateWorkspaceMemoryInputSchema.parse({
+  const memory = MemoryWriteSourceSchema.parse({
     workspaceId: pair.workspaceId,
     instanceId: pair.instanceId,
     idempotencyKey: pair.idempotencyKey,
@@ -2778,9 +2608,9 @@ async function createEmployeeMemoryRecord<
   T extends { id: string; revision: number },
 >(
   context: RequestContext,
-  memory: z.infer<typeof CreateWorkspaceMemoryInputSchema>,
+  memory: z.infer<typeof MemoryWriteSourceSchema>,
   executionContext: ExecutionContext | undefined,
-  pair: PersonalMemoryPair | null,
+  pair: PersonalMemoryPair,
   map: (
     row: MemoryRow,
     tx: TransactionSql,
@@ -2837,11 +2667,7 @@ async function createEmployeeMemoryRecord<
     if (['message', 'checkpoint'].includes(memory.sourceType) && !source)
       throw new DataAccessError('authorization_denied');
     const instanceId = source?.instance_id ?? memory.instanceId;
-    if (
-      !instanceId ||
-      (memory.instanceId && memory.instanceId !== instanceId) ||
-      memory.visibility !== 'private'
-    )
+    if (!instanceId || (memory.instanceId && memory.instanceId !== instanceId))
       throw new DataAccessError('authorization_denied');
     const scope = await employeeMemoryScope(
       identity,
@@ -2859,9 +2685,7 @@ async function createEmployeeMemoryRecord<
       memory.sourceType === 'user' ||
       (memory.sourceType === 'message' && lifecycleState === 'durable')
         ? 'user_confirmed'
-        : ['tool', 'connector'].includes(memory.sourceType)
-          ? 'untrusted_external'
-          : 'derived';
+        : 'derived';
     // Scope -> source -> receipt -> row. Pending production does not take this lock.
     if (lifecycleState === 'durable' && trust === 'user_confirmed')
       await lockEmployeeMemoryOrder(tx, scope);
@@ -2883,21 +2707,13 @@ async function createEmployeeMemoryRecord<
       (memory.sourceType === 'user' && memory.sourceId !== null)
     )
       throw new DataAccessError('authorization_denied');
-    if (memory.sourceType === 'file') {
-      if (!memory.sourceId) throw new DataAccessError('not_found');
-      const file = await getStoredFile(context, memory.sourceId, tx);
-      if (file.object.workspaceId !== workspaceId)
-        throw new DataAccessError('authorization_denied');
-    }
-    if (['tool', 'connector'].includes(memory.sourceType) && !memory.sourceId)
-      throw new DataAccessError('not_found');
     if (source) {
       await lockMemorySource(tx, scope, memory.sourceType, memory.sourceId);
     }
     const key =
       candidateOperationKey ??
       (source
-        ? `source:${memory.sourceType}:${memory.sourceId}:${memoryContentDigest(memory.content)}`
+        ? `source:${memory.sourceType}:${memory.sourceId}:${memoryPairDigest(pair)}`
         : memory.idempotencyKey);
     if (!key) throw new DataAccessError('authorization_denied');
     return memoryOperation(
@@ -2909,7 +2725,8 @@ async function createEmployeeMemoryRecord<
         ...memory,
         instanceId,
         lifecycleState,
-        ...(pair ? { version: 2, pair } : {}),
+        version: 2,
+        pair,
       },
       async () => {
         // Deleting another identity is not source withdrawal. New proposals stay
@@ -2924,9 +2741,8 @@ async function createEmployeeMemoryRecord<
         }
         if (lifecycleState === 'durable' && trust === 'user_confirmed')
           await assertEmployeeMemoryAdmission(tx, scope);
-        const savedPair = pair ?? legacyPersonalMemoryPair(memory.content);
-        const content =
-          pair === null ? memory.content : memoryPairContent(pair);
+        const savedPair = pair;
+        const content = memoryPairContent(pair);
         const [row] = await tx<MemoryRow[]>`
           insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,
             content,summary,details,visibility,source_type,source_id,trust_level,confidence,source_label,
@@ -2942,7 +2758,6 @@ async function createEmployeeMemoryRecord<
           row,
           `created from ${memory.sourceLabel}`,
         );
-        await insertMemoryChunk(tx, row);
         await audit(
           {
             context,
@@ -2959,13 +2774,6 @@ async function createEmployeeMemoryRecord<
       responseSchema,
     );
   });
-}
-
-/** Chunks are a projection of the exact saved row, never a second write API. */
-async function insertMemoryChunk(tx: TransactionSql, row: MemoryRow) {
-  const embedding = `[${embedWorkspaceText(row.content).join(',')}]`;
-  await tx`insert into allrice_rag_chunks(organization_id,workspace_id,memory_id,owner_id,content,embedding,visibility)
-    values(${row.organization_id},${row.workspace_id},${row.id},${row.owner_id},${row.content},${embedding}::vector,${row.visibility})`;
 }
 
 async function insertMemoryRevision(
@@ -3045,36 +2853,6 @@ async function assertPendingMemorySource(
   // Their opaque source UUID is not external-resource authority or a C receipt.
 }
 
-async function rejectGovernedMemoryMutation(
-  context: RequestContext,
-  workspaceId: string,
-  memoryId: string,
-) {
-  const [review] =
-    await getDatabase()`select memory_id from allrice_experience_reviews
-    where memory_id=${UuidSchema.parse(memoryId)} and organization_id=${context.organizationId}
-      and workspace_id=${UuidSchema.parse(workspaceId)} and owner_id=${requireUser(context)}`;
-  if (review) throw new DataAccessError('authorization_denied');
-}
-
-export async function correctWorkspaceMemory(
-  context: RequestContext,
-  workspaceIdInput: string,
-  memoryIdInput: string,
-  input: unknown,
-) {
-  await rejectGovernedMemoryMutation(context, workspaceIdInput, memoryIdInput);
-  const correction = CorrectMemoryInputSchema.parse(input);
-  return correctEmployeeMemoryRecord(
-    context,
-    workspaceIdInput,
-    memoryIdInput,
-    correction,
-    mapMemory,
-    WorkspaceMemoryResponseSchema,
-  );
-}
-
 /** Complete pair editing; saving a pending record also confirms it atomically. */
 export async function correctPersonalEmployeeMemory(
   context: RequestContext,
@@ -3082,7 +2860,6 @@ export async function correctPersonalEmployeeMemory(
   memoryIdInput: string,
   input: unknown,
 ) {
-  await rejectGovernedMemoryMutation(context, workspaceIdInput, memoryIdInput);
   const correction = CorrectPersonalEmployeeMemoryInputSchema.parse(input);
   return correctEmployeeMemoryRecord(
     context,
@@ -3100,7 +2877,6 @@ export async function correctManagedEmployeeMemory(
   memoryId: string,
   input: unknown,
 ) {
-  await rejectGovernedMemoryMutation(context, workspaceId, memoryId);
   return correctEmployeeMemoryRecord(
     context,
     workspaceId,
@@ -3117,9 +2893,7 @@ async function correctEmployeeMemoryRecord<
   context: RequestContext,
   workspaceIdInput: string,
   memoryIdInput: string,
-  correction:
-    | z.infer<typeof CorrectMemoryInputSchema>
-    | z.infer<typeof CorrectPersonalEmployeeMemoryInputSchema>,
+  correction: z.infer<typeof CorrectPersonalEmployeeMemoryInputSchema>,
   map: (
     row: MemoryRow,
     tx: TransactionSql,
@@ -3147,22 +2921,15 @@ async function correctEmployeeMemoryRecord<
       {
         memoryId,
         ...correction,
-        ...('pairDigest' in correction ? { version: 2 } : {}),
+        version: 2,
       },
       async () => {
         const current = await lockPersonalMemory(tx, scope, memoryId);
-        let pair: PersonalMemoryPair;
-        if ('pairDigest' in correction) {
-          assertMemoryPairRevision(current, correction);
-          pair = { summary: correction.summary, details: correction.details };
-        } else {
-          // Check after a valid current receipt can replay, before ANY write.
-          if (current.summary !== null || current.details !== null)
-            throw new EmployeeMemoryContractChanged();
-          assertMemoryRevision(current, correction);
-          legacyPersonalMemoryPair(current.content);
-          pair = legacyPersonalMemoryPair(correction.content);
-        }
+        assertMemoryPairRevision(current, correction);
+        const pair = {
+          summary: correction.summary,
+          details: correction.details,
+        };
         if (
           current.lifecycle_state !== 'durable' ||
           current.trust_level !== 'user_confirmed'
@@ -3171,16 +2938,13 @@ async function correctEmployeeMemoryRecord<
           await assertEmployeeMemoryAdmission(tx, scope);
         }
         const [row] = await tx<MemoryRow[]>`update allrice_memories
-        set content=${'content' in correction ? correction.content : memoryPairContent(pair)},summary=${pair.summary},details=${pair.details},revision=revision+1,trust_level='user_confirmed',
-          confidence=${'confidence' in correction ? correction.confidence : 1},lifecycle_state='durable',source_label='用户更正',
+        set content=${memoryPairContent(pair)},summary=${pair.summary},details=${pair.details},revision=revision+1,trust_level='user_confirmed',
+          confidence=${1},lifecycle_state='durable',source_label='用户更正',
           expires_at=null,last_verified_at=now(),updated_at=now()
-        -- Check the stored expiry at the write, even if a legacy caller sends NULL.
+        -- Check the stored expiry at the write.
         where id=${memoryId} and (expires_at is null or expires_at>clock_timestamp()) returning *`;
         if (!row) throw new EmployeeMemoryContractChanged();
         await insertMemoryRevision(tx, context, row, correction.reason);
-        await tx`delete from allrice_rag_chunks where memory_id=${memoryId}
-        and organization_id=${scope.organizationId} and workspace_id=${workspaceId}`;
-        await insertMemoryChunk(tx, row);
         await audit(
           {
             context,
@@ -3199,124 +2963,12 @@ async function correctEmployeeMemoryRecord<
   });
 }
 
-/** Retired management mutation. Keep current identity/target gates, but never
- * change historic pin metadata, revisions, receipts or frozen v1 Run data. */
-export async function setPersonalEmployeeMemoryPin(
-  context: RequestContext,
-  workspaceInput: string,
-  memoryInput: string,
-  input: unknown,
-) {
-  const preference = EmployeeMemoryPinInputSchema.parse(input);
-  const workspaceId = await resolveWorkspaceId(context, workspaceInput);
-  const memoryId = UuidSchema.parse(memoryInput);
-  return employeeAccessTransaction(getDatabase(), async (tx) => {
-    const scope = await employeeMemoryScope(
-      context,
-      workspaceId,
-      preference.instanceId,
-      tx,
-      true,
-    );
-    await lockPersonalMemory(tx, scope, memoryId);
-    throw new EmployeeMemoryContractChanged();
-  });
-}
-
-export async function listWorkspaceMemoryRevisions(
-  context: RequestContext,
-  workspaceIdInput: string,
-  memoryIdInput: string,
-  instanceId: string,
-) {
-  const workspaceId = await resolveWorkspaceId(context, workspaceIdInput);
-  const memoryId = UuidSchema.parse(memoryIdInput);
-  return getDatabase().begin(async (sql) => {
-    const scope = await employeeMemoryScope(
-      context,
-      workspaceId,
-      instanceId,
-      sql,
-    );
-    const [memory] = await sql`select id from allrice_memories m
-    where m.id=${memoryId} and m.organization_id=${context.organizationId} and m.workspace_id=${workspaceId}
-      and m.owner_id=${scope.ownerId} and m.instance_id=${scope.instanceId}
-      and m.archived_at is null
-      and not exists(select 1 from allrice_experience_reviews e where e.memory_id=m.id)`;
-    if (!memory) throw new DataAccessError('not_found');
-    const rows = await sql<
-      {
-        id: string;
-        organization_id: string;
-        workspace_id: string;
-        memory_id: string;
-        revision: number;
-        content: string;
-        trust_level:
-          | 'user_confirmed'
-          | 'platform_verified'
-          | 'derived'
-          | 'untrusted_external';
-        lifecycle_state: MemoryLifecycleState;
-        memory_class: MemoryClass;
-        confidence: string | number;
-        expires_at: Date | null;
-        reason: string;
-        changed_by: string;
-        changed_at: Date;
-      }[]
-    >`
-    select * from allrice_memory_revisions
-    where organization_id = ${context.organizationId}
-      and workspace_id = ${workspaceId}
-      and memory_id = ${memoryId}
-    order by revision desc
-  `;
-    return rows.map((row) =>
-      MemoryRevisionSchema.parse({
-        id: row.id,
-        organizationId: row.organization_id,
-        workspaceId: row.workspace_id,
-        memoryId: row.memory_id,
-        revision: row.revision,
-        content: row.content,
-        trust: row.trust_level,
-        lifecycleState: row.lifecycle_state,
-        memoryClass: row.memory_class,
-        confidence: Number(row.confidence),
-        expiresAt: row.expires_at?.toISOString() ?? null,
-        reason: row.reason,
-        changedBy: row.changed_by,
-        changedAt: row.changed_at.toISOString(),
-      }),
-    );
-  });
-}
-
-export async function promoteWorkspaceMemory(
-  context: RequestContext,
-  workspaceId: string,
-  memoryId: string,
-  input?: unknown,
-) {
-  await rejectGovernedMemoryMutation(context, workspaceId, memoryId);
-  return promoteEmployeeMemoryRecord(
-    context,
-    workspaceId,
-    memoryId,
-    MemoryMutationInputSchema.parse(input),
-    mapMemory,
-    WorkspaceMemoryResponseSchema,
-  );
-}
-
 export async function promoteManagedEmployeeMemory(
   context: RequestContext,
   workspaceId: string,
   memoryId: string,
   input: unknown,
 ) {
-  await rejectGovernedMemoryMutation(context, workspaceId, memoryId);
   return promoteEmployeeMemoryRecord(
     context,
     workspaceId,
@@ -3333,9 +2985,7 @@ async function promoteEmployeeMemoryRecord<
   context: RequestContext,
   workspaceIdInput: string,
   memoryIdInput: string,
-  expected:
-    | z.infer<typeof MemoryMutationInputSchema>
-    | z.infer<typeof EmployeeMemoryMutationInputSchema>,
+  expected: z.infer<typeof EmployeeMemoryMutationInputSchema>,
   map: (
     row: MemoryRow,
     tx: TransactionSql,
@@ -3363,13 +3013,11 @@ async function promoteEmployeeMemoryRecord<
       {
         memoryId,
         ...expected,
-        ...('pairDigest' in expected ? { version: 2 } : {}),
+        version: 2,
       },
       async () => {
         const current = await lockPersonalMemory(tx, scope, memoryId);
-        if ('pairDigest' in expected)
-          assertMemoryPairRevision(current, expected);
-        else assertMemoryRevision(current, expected);
+        assertMemoryPairRevision(current, expected);
         const [eligible] =
           await tx`select id from allrice_memories where id=${memoryId}
           and (expires_at is null or expires_at>clock_timestamp())`;
@@ -3415,12 +3063,8 @@ export async function createCheckpointMemoryCandidate(
   context: RequestContext,
   input: unknown,
 ) {
-  const candidate = z
-    .union([
-      CreateCheckpointMemoryCandidateInputSchema,
-      CreateCheckpointPersonalMemoryCandidateInputSchema,
-    ])
-    .parse(input);
+  const candidate =
+    CreateCheckpointPersonalMemoryCandidateInputSchema.parse(input);
   const workspaceId = await resolveWorkspaceId(context, candidate.workspaceId);
   const sql = getDatabase();
   const sessions = await sql<{ id: string }[]>`
@@ -3448,74 +3092,38 @@ export async function createCheckpointMemoryCandidate(
       and owner_id = ${requireUser(context)}
   `;
   if (!checkpoints[0]) throw new DataAccessError('authorization_denied');
-  const memory = CreateWorkspaceMemoryInputSchema.parse({
+  const memory = MemoryWriteSourceSchema.parse({
     workspaceId,
     employeeId: candidate.employeeId,
-    content: 'summary' in candidate ? candidate.summary : candidate.content,
-    visibility: 'private',
+    content: candidate.summary,
     sourceType: 'checkpoint',
     sourceId: candidate.checkpointId,
     sourceLabel: candidate.sourceLabel,
     lifecycleState: 'candidate',
     memoryClass: 'work_note',
     confidence: 0.7,
-    expiresAt: null,
   });
   return createEmployeeMemoryRecord(
     context,
     memory,
     undefined,
-    'summary' in candidate
-      ? { summary: candidate.summary, details: candidate.details }
-      : null,
+    { summary: candidate.summary, details: candidate.details },
     mapMemory,
-    WorkspaceMemoryResponseSchema,
-    'idempotencyKey' in candidate
-      ? `candidate:checkpoint:${candidate.idempotencyKey}`
-      : undefined,
+    candidateReceiptForPair(candidate),
+    `candidate:checkpoint:${candidate.idempotencyKey}`,
   );
 }
 
-/** Browser management uses pair CAS. The pre-existing governed raw-source
- * forget path remains separate and never becomes an ordinary v2 mutation. */
+/** Archive an ordinary V2 record with current scope and pair CAS. */
 export async function deleteManagedEmployeeMemory(
   context: RequestContext,
   workspaceId: string,
   memoryId: string,
   input: unknown,
 ) {
-  const [review] =
-    await getDatabase()`select memory_id from allrice_experience_reviews
-    where memory_id=${UuidSchema.parse(memoryId)} and organization_id=${context.organizationId}
-      and workspace_id=${UuidSchema.parse(workspaceId)} and owner_id=${requireUser(context)}`;
-  return deleteWorkspaceMemory(
-    context,
-    workspaceId,
-    memoryId,
-    review ? input : EmployeeMemoryMutationInputSchema.parse(input),
-  );
-}
-
-export async function deleteWorkspaceMemory(
-  context: RequestContext,
-  workspaceId: string,
-  memoryId: string,
-  input?: unknown,
-) {
   workspaceId = await resolveWorkspaceId(context, workspaceId);
   memoryId = UuidSchema.parse(memoryId);
-  // Existing governed experience has its own immutable proof/forget contract.
-  // It is not a personal MEMORY entry; never fall through to the ordinary API.
-  const [experience] =
-    await getDatabase()`select memory_id from allrice_experience_reviews
-    where memory_id=${memoryId} and organization_id=${context.organizationId}
-      and workspace_id=${workspaceId} and owner_id=${requireUser(context)}`;
-  if (experience)
-    return archiveGovernedWorkspaceMemory(context, workspaceId, memoryId);
-  const expected =
-    input && typeof input === 'object' && 'pairDigest' in input
-      ? EmployeeMemoryMutationInputSchema.parse(input)
-      : MemoryMutationInputSchema.parse(input);
+  const expected = EmployeeMemoryMutationInputSchema.parse(input);
   await employeeAccessTransaction(getDatabase(), async (tx) => {
     const scope = await employeeMemoryScope(
       context,
@@ -3534,15 +3142,11 @@ export async function deleteWorkspaceMemory(
       { memoryId, ...expected },
       async () => {
         const current = await lockPersonalMemory(tx, scope, memoryId);
-        if ('pairDigest' in expected)
-          assertMemoryPairRevision(current, expected);
-        else assertMemoryRevision(current, expected);
+        assertMemoryPairRevision(current, expected);
         const [row] = await tx<MemoryRow[]>`update allrice_memories
         set archived_at=now(),updated_at=now(),revision=revision+1 where id=${memoryId} returning *`;
         if (!row) throw new Error('memory archival failed');
         await insertMemoryRevision(tx, context, row, 'archived by owner');
-        await tx`delete from allrice_rag_chunks where memory_id=${memoryId}
-        and organization_id=${scope.organizationId} and workspace_id=${workspaceId}`;
         await audit(
           {
             context,
@@ -3554,54 +3158,10 @@ export async function deleteWorkspaceMemory(
           },
           tx,
         );
-        return mapMemory(row);
+        return mapPersonalMemory(row);
       },
+      PersonalEmployeeMemorySchema,
     );
-  });
-}
-
-async function archiveGovernedWorkspaceMemory(
-  context: RequestContext,
-  workspaceId: string,
-  memoryId: string,
-) {
-  const sql = getDatabase();
-  const memory = await sql.begin(async (transaction) => {
-    const experience = await archivePrivateExperience(
-      transaction,
-      { ...context, workspaceId: UuidSchema.parse(workspaceId) },
-      UuidSchema.parse(memoryId),
-      context.requestId,
-    );
-    if (experience) return experience;
-    const rows = await transaction<MemoryRow[]>`
-      update allrice_memories
-      set archived_at = now(), updated_at = now()
-      where id = ${UuidSchema.parse(memoryId)}
-        and organization_id = ${context.organizationId}
-        and workspace_id = ${UuidSchema.parse(workspaceId)}
-        and owner_id = ${requireUser(context)}
-        and archived_at is null
-        and exists(select 1 from allrice_experience_reviews review where review.memory_id=allrice_memories.id)
-      returning *
-    `;
-    const row = rows[0];
-    if (!row) throw new DataAccessError('not_found');
-    await transaction`
-      delete from allrice_rag_chunks
-      where organization_id = ${context.organizationId}
-        and workspace_id = ${workspaceId}
-        and memory_id = ${row.id}
-    `;
-    return row;
-  });
-  await audit({
-    context,
-    workspaceId,
-    action: 'memory.delete',
-    resourceType: 'memory',
-    resourceId: memory.id,
-    reason: 'resource_owner',
   });
 }
 

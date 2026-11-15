@@ -6,7 +6,6 @@ import {
   RememberPersonalMemoryInputSchema,
   CreateCheckpointPersonalMemoryCandidateInputSchema,
 } from './personal-employee-memory.ts';
-import { CreateWorkspaceMemoryInputSchema } from './workspace.ts';
 
 const id = '00000000-0000-4000-8000-000000000001';
 const input = {
@@ -100,14 +99,6 @@ describe('personal pair storage contracts', () => {
         summary: '\u3000\t',
       }).success,
     ).toBe(false);
-    // The shared original-source DTO is deliberately not replaced by pair limits.
-    expect(
-      CreateWorkspaceMemoryInputSchema.parse({
-        workspaceId: id,
-        content: '原文'.repeat(2000),
-        sourceType: 'tool',
-      }).content,
-    ).toHaveLength(4000);
   });
 });
 

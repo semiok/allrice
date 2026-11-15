@@ -106,7 +106,6 @@ const tabs = [
   ['skills', '技能'],
   ['workflows', 'Workflow'],
   ['knowledge', 'Knowledge'],
-  ['experience', '经验沉淀'],
   ['model', '模型'],
   ['debug', '测试'],
   ['publish', '发布更新'],
@@ -1371,19 +1370,6 @@ function EmployeeTemplateEditor({
         </div>
         <PlatformReferenceLibrary />
       </>
-    );
-  } else if (tab === 'experience') {
-    panel = (
-      <div className={styles.notice}>
-        <h3>经验沉淀</h3>
-        <p>所有 AI 员工共用经验整理能力，按所在公司的生效策略执行。</p>
-        <p>
-          个人经验仅本人可见，不汇入平台模板。公司和部门已共享的工作内容，可在员工实例详情中查看。
-        </p>
-        <AdminButton onClick={() => onInspectInstances(selected.id)}>
-          查看此模板的共享工作内容
-        </AdminButton>
-      </div>
     );
   } else if (tab === 'model') {
     panel = (

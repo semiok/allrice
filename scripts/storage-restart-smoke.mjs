@@ -22,11 +22,6 @@ async function request(path, init = {}, expectedStatus = 200) {
   return response;
 }
 
-const download = await request(state.signedUrl);
-if ((await download.text()) !== state.persistedContent) {
-  throw new Error('storage content changed after restart');
-}
-
 const loggedIn = await request('/api/v1/auth/login', {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
@@ -37,6 +32,11 @@ const loggedIn = await request('/api/v1/auth/login', {
 });
 const cookie = loggedIn.headers.get('set-cookie')?.split(';')[0];
 if (!cookie) throw new Error('restart login did not set a session');
+
+const download = await request(state.signedUrl, { headers: { cookie } });
+if ((await download.text()) !== state.persistedContent) {
+  throw new Error('storage content changed after restart');
+}
 const headers = {
   cookie,
   origin: new URL(baseUrl).origin,
@@ -96,7 +96,7 @@ await request(
   { method: 'DELETE', headers },
   204,
 );
-await request(state.signedUrl, {}, 403);
+await request(state.signedUrl, { headers: { cookie } }, 403);
 
 const memoriesResponse = await request(
   `/api/v1/memories?workspaceId=${state.workspaceId}&instanceId=${state.memoryInstanceId}`,
@@ -111,24 +111,40 @@ if (
 ) {
   throw new Error('memory deletion did not propagate after restart');
 }
-const recallResponse = await request('/api/v1/memories/recall', {
-  method: 'POST',
-  headers: { ...headers, 'content-type': 'application/json' },
-  body: JSON.stringify({
-    workspaceId: state.workspaceId,
-    instanceId: state.memoryInstanceId,
-    query: 'restart proof private memory',
-    limit: 20,
-  }),
-});
-const recalled = (await recallResponse.json()).results;
+await request(
+  '/api/v1/memories/recall',
+  {
+    method: 'POST',
+    headers: { ...headers, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      workspaceId: state.workspaceId,
+      instanceId: state.memoryInstanceId,
+      query: 'restart proof private memory',
+      limit: 20,
+    }),
+  },
+  405,
+);
+const managedResponse = await request(
+  `/api/v1/memories/manage?workspaceId=${state.workspaceId}&instanceId=${state.memoryInstanceId}`,
+  { headers },
+);
+const managed = await managedResponse.json();
 if (
-  recalled.some(
+  managed.schemaVersion !== 2 ||
+  [...managed.active, ...managed.pending].some(
     (result) =>
       result.id === state.messageMemoryId || result.id === state.fileMemoryId,
   )
 ) {
-  throw new Error('deleted memory remained in vector recall');
+  throw new Error('deleted memory remained in the current V2 memory list');
+}
+for (const id of [state.messageMemoryId, state.fileMemoryId]) {
+  await request(
+    `/api/v1/memories/${id}?workspaceId=${state.workspaceId}&instanceId=${state.memoryInstanceId}`,
+    { headers },
+    404,
+  );
 }
 
 console.info(

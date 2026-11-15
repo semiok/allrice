@@ -20,10 +20,7 @@ function need(value: unknown, code: string): asserts value {
 }
 export const platformTestSourceFamily =
   'allrice_declarative_platform_test_v1' as const;
-export const PlatformTestPurposeSchema = z.enum([
-  'platform_preview',
-  'experience_validation',
-]);
+export const PlatformTestPurposeSchema = z.literal('platform_preview');
 export type PlatformTestPurpose = z.infer<typeof PlatformTestPurposeSchema>;
 const ownerScope = z
   .object({

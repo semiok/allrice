@@ -177,182 +177,159 @@ it('assembles each frozen common rule once and rejects conflicting implicit vers
   );
 });
 
-it.each([1, 2])(
-  'v%s: replaces only root facts and memories while preserving knowledge and the child deployment persona',
-  (documentVersion) => {
-    const source = (sourceKind: string, body: string) => ({
-      reference: {
-        sourceKind,
-        contentId: randomUUID(),
-        revisionId: randomUUID(),
-        digest: `sha256:${'a'.repeat(64)}`,
+it('keeps V2 root facts and memory out of child policy while preserving knowledge and the task PERSONA', () => {
+  const source = (sourceKind: string, body: string) => ({
+    reference: {
+      sourceKind,
+      contentId: randomUUID(),
+      revisionId: randomUUID(),
+      digest: `sha256:${'a'.repeat(64)}`,
+    },
+    available: true,
+    title: sourceKind,
+    body,
+  });
+  const input = {
+    employeeAssignmentId: randomUUID(),
+    employeeVersionId: randomUUID(),
+    sessionId: randomUUID(),
+    userMessageId: randomUUID(),
+    assistantMessageId: randomUUID(),
+    commonContent: [source('knowledge', 'COMPANY_KNOWLEDGE')],
+    resolved: {
+      promptSnapshot: {
+        systemPrompt: 'PLATFORM_BOUNDARY',
+        userRequest: '核对部门资料',
+        conversation: [],
+        organizationContext: { companyName: 'ORG_FACT' },
+        memories: [],
       },
-      available: true,
-      title: sourceKind,
-      body,
-    });
-    const input = {
-      employeeAssignmentId: randomUUID(),
-      employeeVersionId: randomUUID(),
-      sessionId: randomUUID(),
-      userMessageId: randomUUID(),
-      assistantMessageId: randomUUID(),
-      commonContent: [
-        source('experience', 'OLD_COMMON_MEMORY'),
-        source('knowledge', 'COMPANY_KNOWLEDGE'),
-      ],
-      resolved: {
-        promptSnapshot: {
-          systemPrompt: 'PLATFORM_BOUNDARY',
-          userRequest: '核对部门资料',
-          conversation: [],
-          organizationContext: { companyName: 'ORG_FACT' },
-          memories: [{ id: randomUUID(), content: 'LEGACY_RECALLED_MEMORY' }],
-        },
-        executionSnapshot: null,
-        grantedCapabilities: ['model:invoke'],
-        nativeSkills: [],
-      },
-    } as unknown as Parameters<typeof assembleEmployeeKernel>[0];
-    const old = assembleEmployeeKernel(input);
-    input.resolved.promptSnapshot.employeeDocuments = {
-      ...(documentVersion === 2 ? { schemaVersion: 2 as const } : {}),
-      user: '# USER.md\nORG_FACT',
-      memory: '# MEMORY.md\nCONFIRMED_MEMORY',
-    };
-    const current = assembleEmployeeKernel(input);
-    expect(current.systemInstructions).toBe(old.systemInstructions);
-    expect(current.rootSystemInstructions).toContain('COMPANY_KNOWLEDGE');
-    expect(current.rootSystemInstructions).toContain('PLATFORM_BOUNDARY');
-    expect(current.rootSystemInstructions).not.toContain('OLD_COMMON_MEMORY');
-    expect(current.rootSystemInstructions).not.toContain('ORG_FACT');
-    expect(current.rootSystemInstructions).not.toContain(
-      'LEGACY_RECALLED_MEMORY',
-    );
-    expect(current.authorizedMemoryContext).toBe('');
-    expect(current.employeeDocuments).toEqual(
-      input.resolved.promptSnapshot.employeeDocuments,
-    );
-    // Task provenance was independently checked at enqueue/resolve. Both kernel
-    // scopes exclude legacy memory content while preserving PERSONA and knowledge.
-    const digest = `sha256:${'a'.repeat(64)}`;
-    const definition = employeeManifest({
-      key: 'task-kernel-fixture',
-      name: 'Synthetic task engine',
-      description: 'Frozen task kernel fixture',
-      toolNames: [],
-    });
-    if (definition.schemaVersion !== 2) throw Error('expected v2 task engine');
-    const checksum = employeeManifestChecksum(definition),
-      employeeId = randomUUID(),
-      organizationId = randomUUID(),
-      workspaceId = randomUUID(),
-      ownerId = randomUUID(),
-      at = '2026-10-01T00:00:00.000Z';
-    const version = {
-      employeeVersionId: input.employeeVersionId,
-      kind: 'tenant_version',
-      configChecksum: checksum,
-      manifestDigest: runtimePolicyDigest(definition),
-    };
-    input.resolved.executionSnapshot = EmployeeExecutionSnapshotV2Schema.parse({
-      schemaVersion: 2,
-      employee: {
-        id: employeeId,
-        key: definition.key,
-        versionId: input.employeeVersionId,
-        revision: 1,
-        definitionChecksum: checksum,
-        definition,
-      },
-      assignment: {
-        id: input.employeeAssignmentId,
-        userId: ownerId,
-        assignedBy: null,
-        assignedAt: at,
-      },
-      runtimePolicy: definition.runtimePolicy,
-      capabilitySnapshot: {
-        declaredCapabilities: definition.capabilities,
-        grantedCapabilities: input.resolved.grantedCapabilities,
-        bindings: definition.capabilityBindings,
-        skillBindings: [],
-        agentSkills: [],
-        workflows: [],
-        knowledge: [],
-        resolvedForActorId: ownerId,
-      },
-      tenantContext: {
+      executionSnapshot: null,
+      grantedCapabilities: ['model:invoke'],
+      nativeSkills: [],
+    },
+  } as unknown as Parameters<typeof assembleEmployeeKernel>[0];
+  const old = assembleEmployeeKernel(input);
+  input.resolved.promptSnapshot.employeeDocuments = {
+    schemaVersion: 2 as const,
+    user: '# USER.md\nORG_FACT',
+    memory: '# MEMORY.md\nCONFIRMED_MEMORY',
+  };
+  const current = assembleEmployeeKernel(input);
+  expect(current.systemInstructions).toBe(old.systemInstructions);
+  expect(current.rootSystemInstructions).toContain('COMPANY_KNOWLEDGE');
+  expect(current.rootSystemInstructions).toContain('PLATFORM_BOUNDARY');
+  expect(current.rootSystemInstructions).not.toContain('ORG_FACT');
+  expect(current.authorizedMemoryContext).toBe('');
+  expect(current.systemInstructions).not.toContain('CONFIRMED_MEMORY');
+  expect(current.employeeDocuments).toEqual(
+    input.resolved.promptSnapshot.employeeDocuments,
+  );
+  // Task provenance was independently checked at enqueue/resolve. Both kernel
+  // scopes exclude legacy memory content while preserving PERSONA and knowledge.
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const definition = employeeManifest({
+    key: 'task-kernel-fixture',
+    name: 'Synthetic task engine',
+    description: 'Frozen task kernel fixture',
+    toolNames: [],
+  });
+  if (definition.schemaVersion !== 2) throw Error('expected v2 task engine');
+  const checksum = employeeManifestChecksum(definition),
+    employeeId = randomUUID(),
+    organizationId = randomUUID(),
+    workspaceId = randomUUID(),
+    ownerId = randomUUID(),
+    at = '2026-10-01T00:00:00.000Z';
+  const version = {
+    employeeVersionId: input.employeeVersionId,
+    kind: 'tenant_version',
+    configChecksum: checksum,
+    manifestDigest: runtimePolicyDigest(definition),
+  };
+  input.resolved.executionSnapshot = EmployeeExecutionSnapshotV2Schema.parse({
+    schemaVersion: 2,
+    employee: {
+      id: employeeId,
+      key: definition.key,
+      versionId: input.employeeVersionId,
+      revision: 1,
+      definitionChecksum: checksum,
+      definition,
+    },
+    assignment: {
+      id: input.employeeAssignmentId,
+      userId: ownerId,
+      assignedBy: null,
+      assignedAt: at,
+    },
+    runtimePolicy: definition.runtimePolicy,
+    capabilitySnapshot: {
+      declaredCapabilities: definition.capabilities,
+      grantedCapabilities: input.resolved.grantedCapabilities,
+      bindings: definition.capabilityBindings,
+      skillBindings: [],
+      agentSkills: [],
+      workflows: [],
+      knowledge: [],
+      resolvedForActorId: ownerId,
+    },
+    tenantContext: {
+      organizationId,
+      workspaceId,
+      actorId: ownerId,
+      policySnapshotId: randomUUID(),
+    },
+    userProfile: { schemaVersion: 1, displayName: null, preferences: {} },
+    createdAt: at,
+    persona: EmployeePersonaPinSchema.parse({
+      schemaVersion: 1,
+      personaDigest: digest,
+      systemDigest: digest,
+      source: {
+        kind: 'employee_run',
         organizationId,
         workspaceId,
-        actorId: ownerId,
-        policySnapshotId: randomUUID(),
-      },
-      userProfile: { schemaVersion: 1, displayName: null, preferences: {} },
-      createdAt: at,
-      persona: EmployeePersonaPinSchema.parse({
-        schemaVersion: 1,
-        personaDigest: digest,
-        systemDigest: digest,
-        source: {
-          kind: 'employee_run',
-          organizationId,
-          workspaceId,
-          employeeId,
-          assignmentId: input.employeeAssignmentId,
-          instanceId: randomUUID(),
-          ownerId,
-          profileRevision: 1,
-          profileEligibility: 'expression_only',
-          basis: version,
-          engine: version,
-          task: {
-            kind: 'automation_manual',
-            id: randomUUID(),
-            sessionId: input.sessionId,
-            userMessageId: input.userMessageId,
-          },
+        employeeId,
+        assignmentId: input.employeeAssignmentId,
+        instanceId: randomUUID(),
+        ownerId,
+        profileRevision: 1,
+        profileEligibility: 'expression_only',
+        basis: version,
+        engine: version,
+        task: {
+          kind: 'automation_manual',
+          id: randomUUID(),
+          sessionId: input.sessionId,
+          userMessageId: input.userMessageId,
         },
-      }),
-    });
-    input.resolved.promptSnapshot.employeeDocuments.persona =
-      'TASK_LITERAL {{missing}}';
-    input.commonContent![0]!.reference.contentId =
-      input.resolved.promptSnapshot.memories[0]!.id;
-    input.commonContent![0]!.body =
-      input.resolved.promptSnapshot.memories[0]!.content;
-    input.commonContent!.push({
-      ...input.commonContent![0]!,
-      reference: {
-        ...input.commonContent![0]!.reference,
-        contentId: randomUUID(),
       },
-      body: 'EXISTING_LEGAL_TASK_METHOD',
-    });
-    const task = assembleEmployeeKernel(input);
-    expect(task.systemInstructions).toBe(task.rootSystemInstructions);
-    expect(task.systemInstructions).toContain('frozen actual task engine');
-    expect(task.systemInstructions).not.toContain('EXISTING_LEGAL_TASK_METHOD');
-    expect(task.systemInstructions).toContain(
-      'This internal task has empty MEMORY.md and no personal memory tools.',
-    );
-    expect(task.systemInstructions).not.toContain(
-      'facts or confirmed memories',
-    );
-    for (const literal of [
-      'ORG_FACT',
-      'LEGACY_RECALLED_MEMORY',
-      'OLD_COMMON_MEMORY',
-      'TASK_LITERAL',
-    ])
-      expect(task.systemInstructions).not.toContain(literal);
-    expect(task.employeeDocuments?.persona).toBe('TASK_LITERAL {{missing}}');
-    expect(task.authorizedMemoryContext).toBe('');
-    expect(task.grantedCapabilities).toEqual(current.grantedCapabilities);
-  },
-);
+    }),
+  });
+  input.resolved.promptSnapshot.employeeDocuments = {
+    persona: 'TASK_LITERAL {{missing}}',
+    user: '# USER.md\nORG_FACT',
+    memory: '',
+  };
+  const task = assembleEmployeeKernel(input);
+  expect(task.systemInstructions).toBe(task.rootSystemInstructions);
+  expect(task.systemInstructions).toContain('frozen actual task engine');
+  expect(task.systemInstructions).toContain('COMPANY_KNOWLEDGE');
+  expect(task.systemInstructions).toContain(
+    'This internal task has empty MEMORY.md and no personal memory tools.',
+  );
+  expect(task.systemInstructions).not.toContain('facts or confirmed memories');
+  for (const literal of ['ORG_FACT', 'CONFIRMED_MEMORY', 'TASK_LITERAL'])
+    expect(task.systemInstructions).not.toContain(literal);
+  expect(task.employeeDocuments?.persona).toBe('TASK_LITERAL {{missing}}');
+  expect(task.authorizedMemoryContext).toBe('');
+  expect(task.employeeDocuments?.memory).toBe('');
+  expect(task.employeeDocuments).not.toHaveProperty('schemaVersion');
+  expect(task.grantedCapabilities).toEqual(current.grantedCapabilities);
+});
 
-it('bootstraps authorized messages and memories without consuming a retired automatic summary', () => {
+it('bootstraps authorized messages and V2 documents without reviving automatic summary injection', () => {
   const messageId = randomUUID();
   const input = {
     employeeAssignmentId: randomUUID(),
@@ -367,7 +344,12 @@ it('bootstraps authorized messages and memories without consuming a retired auto
         conversation: [
           { id: messageId, role: 'user', text: 'AUTHORIZED_HISTORY' },
         ],
-        memories: [{ id: randomUUID(), content: 'EXPLICIT_MEMORY' }],
+        memories: [],
+        employeeDocuments: {
+          schemaVersion: 2,
+          user: '',
+          memory: '# MEMORY.md\nCONFIRMED_MEMORY',
+        },
       },
       executionSnapshot: null,
       grantedCapabilities: ['model:invoke'],
@@ -389,7 +371,8 @@ it('bootstraps authorized messages and memories without consuming a retired auto
       text: 'user: AUTHORIZED_HISTORY',
     }),
   ]);
-  expect(kernel.authorizedMemoryContext).toContain('EXPLICIT_MEMORY');
+  expect(kernel.authorizedMemoryContext).toBe('');
+  expect(kernel.employeeDocuments?.memory).toContain('CONFIRMED_MEMORY');
   expect(JSON.stringify(kernel)).not.toContain('RETIRED_SUMMARY');
 });
 

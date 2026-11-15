@@ -1,3 +1,4 @@
+import { resourcePrincipal } from './resource-principal.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import {
@@ -558,7 +559,7 @@ async function processEvent(id: string) {
   if (payload.capability !== 'local.file.import')
     throw new DataAccessError('grant_invalid');
   const original = await getStoredFile(
-    context,
+    resourcePrincipal(context),
     payload.arguments.object.objectId,
   );
   if (

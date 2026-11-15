@@ -29,7 +29,9 @@ const toolLabels: Record<string, string> = {
   write: '写入文件',
   'local.fs.write': '写入文件',
   'local.process.execute': '运行本地任务',
-  'cloud.process.execute': '运行云端任务',
+  'cloud.process.execute': '云端计算',
+  'python.execute': '运行代码',
+  python_execute: '运行代码',
   bash: '运行命令',
   run_code: '运行代码',
   skill: '加载技能',
@@ -109,6 +111,10 @@ function classification(
   if (item.kind === 'search' || /search|grep|glob/.test(name))
     return ['search', '搜索'];
   if (name === 'market.history') return ['analyze', '分析'];
+  if (
+    ['python.execute', 'python_execute', 'cloud.process.execute'].includes(name)
+  )
+    return ['analyze', '计算'];
   if (name.startsWith('market.')) return ['market', '行情'];
   if (/browser/.test(name)) return ['browse', '浏览'];
   if (/read|fetch/.test(name)) return ['read', '阅读'];
@@ -118,7 +124,8 @@ function classification(
   if (/memory/.test(name)) return ['organize', '记忆'];
   if (name === 'skill') return ['skill', '技能'];
   if (name === 'ask_user_question') return ['question', '确认'];
-  if (/process|service|bash|run_code/.test(name)) return ['execute', '执行'];
+  if (/process|service|bash|run_code|python/.test(name))
+    return ['execute', '执行'];
   return ['tool', '工具'];
 }
 
@@ -133,12 +140,21 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
     .map((item) => {
       const [category, label] = classification(item);
       const isTool = !item.modelWait && ['tool', 'search'].includes(item.kind);
-      const toolLabel = isTool
-        ? resolvedToolActivityLabel(
-            item.toolName ?? item.title,
-            item.kind === 'search',
-          )
-        : undefined;
+      const cloud = item.operations?.some(
+        (op) =>
+          op.source === 'cloud' &&
+          ['cloud.process.execute', 'python.execute'].includes(
+            op.binding?.action ?? '',
+          ),
+      );
+      const toolLabel = cloud
+        ? '云端计算'
+        : isTool
+          ? resolvedToolActivityLabel(
+              item.toolName ?? item.title,
+              item.kind === 'search',
+            )
+          : undefined;
       const fallback = item.modelWait
         ? (readableSummary(item.title) ?? '等待模型响应')
         : item.kind === 'think'
@@ -149,11 +165,16 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
               ? '更新工作计划'
               : (toolLabel ?? genericToolLabel);
       const input =
-        item.kind !== 'think'
-          ? readableSummary(item.activityDetail)
-          : undefined;
+        item.toolName === 'skill'
+          ? item.skillName
+          : item.kind !== 'think'
+            ? readableSummary(item.activityDetail)
+            : undefined;
       const result =
-        item.kind !== 'think' ? readableSummary(item.detail) : undefined;
+        item.kind !== 'think' &&
+        (item.toolName !== 'skill' || item.status === 'failed')
+          ? readableSummary(item.detail)
+          : undefined;
       const started = item.startedAt ? Date.parse(item.startedAt) : NaN;
       const finished = item.finishedAt ? Date.parse(item.finishedAt) : NaN;
       return {
@@ -164,8 +185,18 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
         title:
           item.toolName === 'ask_user_question'
             ? '提问'
-            : (input ??
-              (isTool ? (toolLabel ?? item.toolName ?? fallback) : fallback)),
+            : isTool
+              ? [
+                  toolLabel ?? fallback,
+                  input?.replace(
+                    // r1-exempt(display): Remove an existing activity-label prefix only from the row title, never from execution inputs.
+                    /^(?:搜索资料|阅读文件|生成文件|修改文件|查找文件)：/,
+                    '',
+                  ),
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
+              : fallback,
         ...(input ? { input } : {}),
         ...(result ? { result } : {}),
         ...(Number.isFinite(started) &&

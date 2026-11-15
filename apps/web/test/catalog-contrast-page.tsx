@@ -8,7 +8,6 @@ import {
 import { AutomationTrigger } from '../app/chatflow/automation-trigger';
 import { WorkbenchFilesPanel } from '../app/chatflow/workbench-files-panel';
 import { ReferenceLibrary } from '../app/chatflow/reference-library';
-import { SaveArtifactReference } from '../app/chatflow/save-artifact-reference';
 import { EmployeeDetailsDialog } from '../app/chatflow/employee-details-dialog';
 import {
   EmployeeProfileForm,
@@ -232,15 +231,6 @@ const cases: Record<string, ReactNode> = {
   ),
   references: (
     <ReferenceLibrary workspaceId={workspaceId} headers={{}} onClose={noop} />
-  ),
-  save: (
-    <SaveArtifactReference
-      workspaceId={workspaceId}
-      headers={{}}
-      versionId={id(91)}
-      fileName="十月经营周报.md"
-      version={1}
-    />
   ),
   employee: (
     <EmployeeDetailsDialog

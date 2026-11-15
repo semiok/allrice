@@ -1,4 +1,3 @@
-import { employeeMemoryReadPredicate } from './workspace/employee-memory-read.ts';
 import type { ResourcePrincipal } from './resource-principal.ts';
 import { randomUUID } from 'node:crypto';
 
@@ -6,7 +5,6 @@ import {
   ObjectKeySchema,
   StorageCategorySchema,
   UuidSchema,
-  VectorRecallInputSchema,
   VisibilitySchema,
   authorizeResource,
   makeObjectKey,
@@ -21,7 +19,7 @@ import type { TransactionSql } from 'postgres';
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { readContentPrincipal } from './content-maintenance.ts';
-import { workbenchFileAccess } from './workbench-file-access.ts';
+import { workbenchOriginFileAccess } from './workbench-file-access.ts';
 
 const CreateStorageMetadataSchema = z
   .object({
@@ -295,6 +293,8 @@ export async function getStoredFile(
       and organization_id = ${context.organizationId}
       and (${context.workspaceId}::uuid is null or workspace_id = ${context.workspaceId})
       and state = 'ready'
+      and deleted_at is null
+      and (retention_until is null or retention_until>clock_timestamp())
       and not exists(select 1 from allrice_company_asset_revisions r where r.snapshot_object_id=allrice_storage_objects.id)
       and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=allrice_storage_objects.id)
       and not exists(select 1 from allrice_company_asset_materials m where m.object_id=allrice_storage_objects.id)
@@ -303,10 +303,8 @@ export async function getStoredFile(
   const row = rows[0];
   if (!row) throw new DataAccessError('not_found');
   try {
-    const access = await workbenchFileAccess(context, row.id, sql);
-    if (access) {
-      if (!access.canRead) throw new DataAccessError('authorization_denied');
-    } else authorizeFile(context, row, 'resource:read');
+    const access = await workbenchOriginFileAccess(context, row.id, sql);
+    if (!access.canRead) throw new DataAccessError('authorization_denied');
   } catch (error) {
     await audit(
       {
@@ -335,6 +333,7 @@ export async function prepareStorageDelete(
       and organization_id = ${context.organizationId}
       and (${context.workspaceId}::uuid is null or workspace_id = ${context.workspaceId})
       and state = 'ready'
+      and not exists(select 1 from allrice_deliverable_versions d where d.object_id=allrice_storage_objects.id)
       and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=allrice_storage_objects.id)
   `;
   const row = rows[0];
@@ -354,6 +353,7 @@ export async function completeStorageDelete(
     where id = ${UuidSchema.parse(objectId)}
       and organization_id = ${context.organizationId}
       and state = 'ready'
+      and not exists(select 1 from allrice_deliverable_versions d where d.object_id=allrice_storage_objects.id)
       and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=allrice_storage_objects.id)
     returning *
   `;
@@ -365,7 +365,7 @@ export async function completeStorageDelete(
     where object_id = ${row.id} and revoked_at is null
   `;
   await sql.begin(async (transaction) => {
-    const memories = await transaction<{ id: string }[]>`
+    await transaction`
       update allrice_memories
       set archived_at = now(), updated_at = now()
       where organization_id = ${context.organizationId}
@@ -375,14 +375,6 @@ export async function completeStorageDelete(
         and archived_at is null
       returning id
     `;
-    if (memories.length > 0) {
-      await transaction`
-        delete from allrice_rag_chunks
-        where organization_id = ${context.organizationId}
-          and workspace_id = ${row.workspace_id}
-          and memory_id in ${transaction(memories.map((memory) => memory.id))}
-      `;
-    }
   });
   await audit({
     context,
@@ -421,7 +413,12 @@ export async function saveStorageGrant(
   });
 }
 
-export async function resolveStorageGrant(grant: SignedAccessGrant) {
+export async function resolveStorageGrant(
+  grant: SignedAccessGrant,
+  authenticate: (
+    target: Pick<StorageObject, 'organizationId' | 'workspaceId'>,
+  ) => Promise<RequestContext | null>,
+) {
   const sql = getDatabase();
   const rows = await sql<StorageObjectRow[]>`
     select o.*
@@ -441,65 +438,24 @@ export async function resolveStorageGrant(grant: SignedAccessGrant) {
   `;
   const row = rows[0];
   if (!row) throw new DataAccessError('grant_invalid');
-  const access = await workbenchFileAccess(
-    {
-      actor: { type: 'user', id: grant.subjectId },
-      organizationId: row.organization_id,
-      workspaceId: row.workspace_id,
-    },
-    row.id,
-    sql,
-  );
-  if (access && !access.canRead) throw new DataAccessError('grant_invalid');
-  return mapStoredFile(row);
-}
-
-function vectorLiteral(values: number[]) {
-  return `[${values.join(',')}]`;
-}
-
-type RecalledMemoryChunk = {
-  id: string;
-  memory_id: string;
-  content: string;
-  owner_id: string;
-  similarity: number;
-};
-
-export async function recallRagChunks(context: RequestContext, input: unknown) {
-  const query = VectorRecallInputSchema.parse(input);
-  const owner = actorId(context);
-  if (!hasWorkspaceMembership(context, query.workspaceId))
-    throw new DataAccessError('authorization_denied');
-  const embedding = vectorLiteral(query.embedding);
-  return getDatabase().begin(async (sql): Promise<RecalledMemoryChunk[]> => {
-    const { employeeMemoryScope } =
-      await import('./workspace/employee-memory.ts');
-    if (
-      !(await readContentPrincipal(
-        { ...context, workspaceId: query.workspaceId },
-        sql,
-      ))
-    )
-      throw new DataAccessError('authorization_denied');
-    // These are memory chunks, not the enterprise knowledge source. Missing
-    // instance authority cannot fall back to a legacy shared review.
-    if (!query.instanceId) return [];
-    const scope = await employeeMemoryScope(
-      context,
-      query.workspaceId,
-      query.instanceId,
-      sql,
-    );
-    return sql<RecalledMemoryChunk[]>`
-      select c.id,c.memory_id,c.content,c.owner_id,1-(c.embedding <=> ${embedding}::vector) similarity
-      from allrice_rag_chunks c join allrice_memories m
-        on m.id=c.memory_id and m.organization_id=c.organization_id and m.workspace_id=c.workspace_id
-      where c.organization_id=${context.organizationId} and c.workspace_id=${query.workspaceId}
-        and (c.owner_id=${owner} or c.visibility<>'private')
-        and ${employeeMemoryReadPredicate(sql, scope)}
-      order by c.embedding <=> ${embedding}::vector limit ${query.limit}`;
+  // The target comes from the validated grant's object, never browser headers.
+  // Authentication keeps the host/portal boundary before selecting this scope.
+  const context = await authenticate({
+    organizationId: row.organization_id,
+    workspaceId: row.workspace_id,
   });
+  if (!context) throw new DataAccessError('authentication_required');
+  if (
+    context.actor.type !== 'user' ||
+    !context.sessionId ||
+    context.actor.id !== grant.subjectId ||
+    context.actor.id !== row.owner_id ||
+    context.organizationId !== row.organization_id ||
+    context.workspaceId !== row.workspace_id ||
+    !(await readContentPrincipal(context, sql))
+  )
+    throw new DataAccessError('grant_invalid');
+  return getStoredFile(context, row.id, sql);
 }
 
 export function newStorageObjectId() {

@@ -14,10 +14,7 @@ import * as client from '../core/client.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { employeeManifest } from '../employees/employee-config.ts';
 import { readPlatformModelSettings } from './platform-model-settings.ts';
-import {
-  freezeExperienceModelSnapshot,
-  freezeSessionModelSnapshot,
-} from './model-pool.ts';
+import { freezeSessionModelSnapshot } from './model-pool.ts';
 
 type Sql = ReturnType<typeof client.getDatabase> | TransactionSql;
 const integration =
@@ -195,53 +192,6 @@ integration('model freeze full SQL chain: isolated PostgreSQL', () => {
     const slots = await fixture.db<{ slot: number }[]>`
       select slot from allrice_codex_subscriptions where enabled`;
     expect(slots).toEqual([{ slot: 1 }]);
-    expect(pool).not.toHaveBeenCalled();
-  }, 15_000);
-
-  it('uses the same real transaction for Experience without creating a Session cache', async () => {
-    const scope = await seedScope();
-    const before = await readPlatformModelSettings(fixture.db);
-    const configuration = { ...before.configuration, timeoutMs: 600_000 };
-    const occurrenceId = randomUUID();
-    const rollback = Error('intentional_experience_freeze_rollback');
-    const pool = forbidPool();
-    await expect(
-      fixture.db.begin(async (tx) => {
-        await tx`select set_config('search_path', ${schema}, true)`;
-        await tx`update allrice_platform_model_settings
-          set configuration=${tx.json(configuration)}, revision=revision+1 where singleton`;
-        const snapshot = await freezeExperienceModelSnapshot(
-          {
-            organizationId: scope.organizationId,
-            workspaceId: scope.workspaceId,
-            employeeId: scope.employeeId,
-            ownerId: scope.ownerId,
-            occurrenceId,
-          },
-          tx,
-        );
-        expect(snapshot).toMatchObject({
-          schemaVersion: 2,
-          sessionId: null,
-          occurrenceId,
-          policyRevision: before.revision + 1,
-          runLimits: {
-            timeoutMs: 300_000,
-            maxInputTokens: 24_000,
-            maxOutputTokens: 4_000,
-            maxTotalTokens: 28_000,
-          },
-        });
-        expect(await counts(scope, tx)).toEqual({ policies: 1, cache: 0 });
-        expect(await counts(scope, fixture.db)).toEqual({
-          policies: 0,
-          cache: 0,
-        });
-        throw rollback;
-      }),
-    ).rejects.toBe(rollback);
-    expect(await counts(scope, fixture.db)).toEqual({ policies: 0, cache: 0 });
-    expect(await readPlatformModelSettings(fixture.db)).toEqual(before);
     expect(pool).not.toHaveBeenCalled();
   }, 15_000);
 });

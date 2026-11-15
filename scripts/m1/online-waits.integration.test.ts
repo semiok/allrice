@@ -403,7 +403,6 @@ suite('MET-222 online human waits through real monitor SQL', () => {
     expect(collect()).toMatchObject(unknown);
     const extra = await runFixture(fixture.db);
     await report(extra.worker.workerId);
-    await fixture.db`update allrice_jobs set payload='{"type":"allrice.experience.consolidate"}' where id=${extra.worker.jobId}`;
     await publish(f, []);
     expect(collect()).toMatchObject({ ...unknown, total_slots: 8 });
     await fixture.db`update allrice_jobs set payload='{"type":"allrice.platform.technical"}' where id=${extra.worker.jobId}`;

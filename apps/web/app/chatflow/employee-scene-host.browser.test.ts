@@ -1045,7 +1045,7 @@ suite('U1 mounted employee Workflow host', () => {
       if (path === '/api/v1/workspace/monthly-quota' && method === 'GET')
         return route.fulfill(problem(404, 'RESOURCE_NOT_FOUND'));
       if (path === '/api/v1/workbench/updates' && method === 'GET')
-        return route.fulfill(json({ fileIds: [], experienceIds: [] }));
+        return route.fulfill(json({ fileIds: [] }));
       if (path === '/api/v1/workbench/files' && method === 'GET')
         return route.fulfill(
           json({

@@ -238,6 +238,35 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
       .toBeGreaterThanOrEqual(4.5);
     return seen;
   };
+  // Approved rev02–05 uses native tertiary gray in process rows. Assert the
+  // exact native color and typography instead of imposing our older 4.5:1
+  // override. The composer, replies and standalone operation panels keep it.
+  const nativeProcessText = async (
+    node: Locator,
+    token = '--dsw-alias-label-tertiary',
+  ) => {
+    await node.waitFor();
+    const seen = await look(node);
+    expect.soft(seen.overImage, await label(node)).toBe(false);
+    expect.soft(seen.inside, await label(node)).toBe(true);
+    const style = await node.evaluate((element, token) => {
+      const probe = document.createElement('span');
+      probe.style.color = `var(${token})`;
+      element.appendChild(probe);
+      const expected = getComputedStyle(probe).color;
+      probe.remove();
+      const actual = getComputedStyle(element);
+      return {
+        color: actual.color,
+        expected,
+        size: actual.fontSize,
+        weight: actual.fontWeight,
+      };
+    }, token);
+    expect.soft(style.color, await label(node)).toBe(style.expected);
+    expect.soft(style.size).toBe('12px');
+    expect.soft(style.weight).toBe('400');
+  };
   /** Words on a gradient (the composer seat's fade): read the painted ground. */
   const readableOnPixels = async (node: Locator) => {
     const seen = await look(node);
@@ -568,15 +597,17 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
             name: '提问 · 2/2 已回答',
             exact: true,
           });
-          await readable(receiptTitle.locator('[class*="processStepLabel"]'));
+          await nativeProcessText(
+            receiptTitle.locator('[class*="processStepLabel"]'),
+          );
           await receiptTitle.click();
           const quiet = receipt.locator(
             'dl dt, dl dd, [class*="processQuestionNote"]',
           );
           expect(await quiet.count()).toBeGreaterThanOrEqual(5);
-          for (const node of await quiet.all()) await readable(node);
-          await readable(receipt.getByText('已跳过', { exact: true }));
-          await readable(receipt.getByText('推荐', { exact: true }));
+          for (const node of await quiet.all()) await nativeProcessText(node);
+          await nativeProcessText(receipt.getByText('已跳过', { exact: true }));
+          await nativeProcessText(receipt.getByText('推荐', { exact: true }));
           // A follow-up the running task did not take.
           await readable(page.getByText('补充未被采纳', { exact: true }));
           // L04: links in a reply.
@@ -586,38 +617,60 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
 
           // L02 and the failed step, in the work process.
           const process = page.locator('[data-case="process"]');
-          await readable(process.getByLabel('本轮运行时间'));
+          await nativeProcessText(process.getByLabel('本轮运行时间'));
           for (const [id, words] of [
             ['think', '分析任务与处理步骤'],
-            ['search', '搜索资料：本周销售数据'],
-            ['quote', '查询 NVDA 的实时行情'],
+            ['search', '搜索资料 · 本周销售数据'],
+            ['quote', '查询实时行情 · 服务超时'],
             ['ask', '提问'],
           ]) {
             const title = process.locator(
               `[data-step-id="${id}"] [class*="processStepLabel"]`,
             );
             expect(await title.innerText()).toBe(words);
-            await readable(title);
+            await nativeProcessText(
+              title,
+              id === 'quote'
+                ? '--dsw-alias-state-error-primary'
+                : '--dsw-alias-label-tertiary',
+            );
           }
           for (const step of await process.locator('[data-step-id]').all()) {
-            await readable(step.locator('[class*="processStepStatus"]'));
+            for (const status of await step
+              .locator('[class*="processStepStatus"]')
+              .all())
+              await nativeProcessText(status);
+            if (
+              ['think', 'search'].includes(
+                (await step.getAttribute('data-step-id'))!,
+              )
+            )
+              expect(
+                await step.locator('[class*="processStepStatus"]').count(),
+              ).toBe(0);
             const toggle = step.locator('[data-disclosure-row]').first();
             if ((await toggle.getAttribute('aria-expanded')) === 'false')
               await toggle.click();
             for (const detail of await step.locator('dl dt, dl dd').all())
-              await readable(detail);
+              await nativeProcessText(detail);
           }
-          await readable(
+          await nativeProcessText(
             process
               .locator('[data-step-id="ask"]')
               .getByText('结果未确认', { exact: true }),
           );
-          await readable(
-            process
-              .locator('[data-step-id="quote"]')
-              .getByText('未成功', { exact: true }),
+          // Failure is announced for assistive technology; the visible title
+          // carries the native error color, without a duplicate status tail.
+          expect(
+            await process
+              .locator(
+                '[data-step-id="quote"] [class*="processAccessibleStatus"]',
+              )
+              .textContent(),
+          ).toBe('未成功');
+          await nativeProcessText(
+            process.getByText('服务超时', { exact: true }),
           );
-          await readable(process.getByText('服务超时', { exact: true }));
         } finally {
           await page.close();
         }

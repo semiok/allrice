@@ -61,7 +61,7 @@ import {
 import {
   createAssignedChatSession,
   createChatSession,
-  createTraceableMemory,
+  createPersonalEmployeeMemory,
   getEmployeeWorkspace,
   listChatSessions,
   sendChatMessage,
@@ -1099,12 +1099,12 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         text: 'Preserve original input and verify every amount.',
         clientMessageId: randomUUID(),
       };
-      const memory = await createTraceableMemory(f.a.context, {
+      const memory = await createPersonalEmployeeMemory(f.a.context, {
         workspaceId: f.a.workspaceId,
         instanceId,
         idempotencyKey: randomUUID(),
-        content: input.text,
-        sourceType: 'user',
+        summary: 'Preserve every amount',
+        details: input.text,
       });
       const memoryState = () =>
         fixture.db`select recall_count,last_recalled_at from allrice_memories where id=${memory.id}`;
@@ -1190,7 +1190,7 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         { summary: string; details: string | null }[]
       >`select summary,details from allrice_memories where id=${memory.id}`;
       expect(pair).toEqual({
-        summary: Array.from(input.text).slice(0, 40).join(''),
+        summary: 'Preserve every amount',
         details: input.text,
       });
       expect(restoredRun!.prompt_snapshot.memories).toEqual([]);
@@ -1592,12 +1592,12 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       references: [],
       changeSummary: 'Synthetic setup',
     });
-    const memory = await createTraceableMemory(f.a.context, {
+    const memory = await createPersonalEmployeeMemory(f.a.context, {
       workspaceId: f.a.workspaceId,
       instanceId: id,
       idempotencyKey: randomUUID(),
-      content: 'Retained personal memory',
-      sourceType: 'user',
+      summary: 'Retained personal memory',
+      details: null,
     });
     // Synthetic pre-existing ordinary Skill binding, independent of profile reset.
     const installationId = randomUUID(),

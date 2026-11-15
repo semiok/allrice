@@ -44,10 +44,6 @@ import {
   nextMonthlyBusinessTarget,
   latestMonthlyBusinessTarget,
 } from './native-schedule-monthly-time.ts';
-import {
-  dispatchExperienceCalendarNative,
-  experienceNativeCalendarEnabled,
-} from './experience-native.ts';
 import { isDeepStrictEqual } from 'node:util';
 import type { NativeOrdinaryJobBinding } from './native-schedule-once-authority.ts';
 import { access, realpath, stat } from 'node:fs/promises';
@@ -1603,11 +1599,10 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
       where (o.outbox_state='pending' or (o.outbox_state='blocked' and o.payload->'control'->'dispatch'->>'consumer'='platform-quality-v1'
         and o.outbox_reason<>'QUALITY_TARGET_ALREADY_CLAIMED'
         and not exists(select 1 from allrice_automation_runs ar where ar.native_recurring_occurrence_id=o.occurrence_id))
-        or (o.outbox_state='blocked' and o.payload->'control'->'dispatch'->>'consumer' in ('experience-consolidation-v1','ordinary-monthly-v1')
+        or (o.outbox_state='blocked' and o.payload->'control'->'dispatch'->>'consumer' ='ordinary-monthly-v1'
           and o.calendar_period_id is not null and not exists(select 1 from allrice_native_calendar_decisions d where d.period_id=o.calendar_period_id)))
         and (o.outbox_owner_id is null or o.outbox_expires_at<=clock_timestamp())
         and (o.calendar_period_id is null
-          or (o.payload->'control'->'dispatch'->>'consumer'='experience-consolidation-v1' and ${experienceNativeCalendarEnabled()})
           or (o.payload->'control'->'dispatch'->>'consumer'='ordinary-monthly-v1' and ${ordinaryMonthlyEnabled()}))
       order by o.created_at,o.occurrence_id limit 1 for update of o skip locked`;
     if (!row) return null;
@@ -1638,25 +1633,14 @@ export async function dispatchNextNativeRecurringOccurrence(workerId: string) {
       // A deployment switch must never consume an already durable calendar P.
       // Leave its exact receipt for a later enabled dispatcher.
       const calendar = NativeCalendarControlSchema.parse(rawControl);
-      if (calendar.dispatch.consumer === 'ordinary-monthly-v1') {
-        if (!ordinaryMonthlyEnabled()) return;
-        await dispatchOrdinaryMonthlyNative(
-          tx,
-          ordinaryMonthlyControl(calendar),
-          occurrence,
-          workerId,
-          tokenDigest,
-        );
-      } else {
-        if (!experienceNativeCalendarEnabled()) return;
-        await dispatchExperienceCalendarNative(
-          tx,
-          calendar,
-          occurrence,
-          workerId,
-          tokenDigest,
-        );
-      }
+      if (!ordinaryMonthlyEnabled()) return;
+      await dispatchOrdinaryMonthlyNative(
+        tx,
+        ordinaryMonthlyControl(calendar),
+        occurrence,
+        workerId,
+        tokenDigest,
+      );
       return;
     }
     const control = NativeRecurringControlSchema.parse(

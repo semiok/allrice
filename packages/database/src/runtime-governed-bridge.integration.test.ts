@@ -1419,6 +1419,9 @@ suite('B1 production Bridge authority assembly / real PostgreSQL', () => {
       ['workspace.export.create', 'local.process.execute'],
       manifest,
     );
+    // Artifact controls use this Web login, distinct from the chat/device IDs.
+    await database`insert into allrice_sessions(id,user_id,token_hash,expires_at)
+      values(${f.context.sessionId!},${f.context.actor.id},${createHash('sha256').update(randomUUID()).digest('hex')},clock_timestamp()+interval '1 hour')`;
     const root = await mkdtemp(join(tmpdir(), 'allrice-p06-artifacts-'));
     artifactRoots.push(root);
     const storage = new LocalStorageAdapter(root);

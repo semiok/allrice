@@ -36,7 +36,7 @@ describe('chronological public work process', () => {
     [
       'unknown',
       { toolName: 'cloud_mcp_call' },
-      'cloud_mcp_call',
+      '执行工具操作',
       '工具',
       '执行工具操作',
     ],
@@ -117,7 +117,7 @@ describe('chronological public work process', () => {
       }),
     ]).steps;
     expect(result[0]).toMatchObject({
-      title: '查询 NVDA 的实时行情',
+      title: '查询实时行情 · 查询 NVDA 的实时行情',
       input: '查询 NVDA 的实时行情',
       result: '找到一条行情',
       elapsedMs: 121,
@@ -127,6 +127,36 @@ describe('chronological public work process', () => {
     expect(result[2]?.elapsedMs).toBeUndefined();
     expect(result[3]?.input).toBeUndefined();
     expect(result[3]?.result).toBeUndefined();
+  });
+  it('names each frozen skill without extra descriptions or live catalog lookups', () => {
+    const steps = summarizeWorkProcess(
+      ['数据分析', 'spreadsheets', '演示文稿'].map((skillName, index) =>
+        call(index, {
+          toolName: 'skill',
+          skillName,
+          activityDetail: '不应出现的重复说明',
+          detail: '不应出现的重复结果',
+        }),
+      ),
+    ).steps;
+    expect(steps.map((step) => step.title)).toEqual([
+      '加载技能 · 数据分析',
+      '加载技能 · spreadsheets',
+      '加载技能 · 演示文稿',
+    ]);
+    expect(steps.every((step) => !step.result)).toBe(true);
+    expect(
+      summarizeWorkProcess([call(9, { toolName: 'skill' })]).steps[0]?.title,
+    ).toBe('加载技能');
+  });
+  it('uses business names for Python while location remains authoritative', () => {
+    const step = summarizeWorkProcess([
+      call(1, {
+        toolName: 'python.execute',
+        activityDetail: '按月份汇总销售额与毛利率',
+      }),
+    ]).steps[0];
+    expect(step?.title).toBe('运行代码 · 按月份汇总销售额与毛利率');
   });
   it('preserves distinct operations and their actual target in execution order', () => {
     const state = summarizeWorkProcess([
@@ -234,7 +264,7 @@ it('uses native action titles for live, settled, failed and mixed work', () => {
 it.each([
   ['todo_write', '更新了计划'],
   ['read_image', '已读取图片'],
-  ['workspace.memory.search', '已调用工具'],
+  ['workspace.memory.read', '已调用工具'],
   ['workspace.memory.read', '已调用工具'],
   ['cloud_mcp_call', '已调用工具'],
   ['web_search', '已搜索网页'],

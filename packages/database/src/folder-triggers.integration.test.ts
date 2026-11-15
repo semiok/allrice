@@ -121,6 +121,9 @@ suite(
           ],
         },
       });
+      // Only this user-facing context gains a login; automatic device authority does not.
+      await database.db`insert into allrice_sessions(id,user_id,token_hash,expires_at)
+        values(${f.context.sessionId!},${f.user},${createHash('sha256').update(randomUUID()).digest('hex')},clock_timestamp()+interval '1 hour')`;
       const deviceId = randomUUID(),
         token = `synthetic-folder-${randomUUID()}`,
         folder = join(root, deviceId);
@@ -615,6 +618,9 @@ suite(
       );
       await processFolderTriggerEvents(16);
       await processFolderTriggerEvents(16);
+      expect(
+        await database.db`select id from allrice_sessions where id=${f.deviceId}`,
+      ).toHaveLength(0);
       const h = await listFolderTriggerHistory(
         f.context,
         f.workspace,

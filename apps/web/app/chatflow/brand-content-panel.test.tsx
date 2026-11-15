@@ -730,7 +730,7 @@ browserSuite(
         await openFeedback();
         await dialog
           .getByText(
-            '部分历史反馈的附件已不可用，相关反馈、复盘和经验已隐藏。仍可使用其他有效资料。',
+            '部分历史反馈的附件已不可用，相关反馈和复盘已隐藏。仍可使用其他有效资料。',
             { exact: true },
           )
           .waitFor();

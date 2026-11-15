@@ -1,35 +1,25 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import postgres, { type TransactionSql } from 'postgres';
+import type { TransactionSql } from 'postgres';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
-import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 import { createRunAuthorityFixture } from './run-authority.fixture.ts';
-import { authenticateSession, createSession } from './identity.ts';
 import { ensureGeneralEmployeeInstance } from './employees/employee-instances.ts';
-import { freezeEmployeeDocuments } from './employees/employee-documents.ts';
 import {
-  prepareRunMemoryContext,
-  assertRunMemoryContextCurrent,
-  type RunMemoryAuthority,
-} from './run-memory-context.ts';
-import { readRunExperienceSource } from './run-experience-source.ts';
-import {
-  createPersonalEmployeeMemory,
-  correctPersonalEmployeeMemory,
-  createTraceableMemory,
-  deleteWorkspaceMemory,
-  deleteManagedEmployeeMemory,
-  listWorkspaceMemoryRevisions,
-} from './workspace/service.ts';
-import { getPersonalEmployeeMemory } from './employee-memory-management.ts';
-import {
-  legacyPersonalMemoryPair,
   memoryContentDigest,
   memoryPairDigest,
 } from './workspace/employee-memory.ts';
 
+// Oracle for the immutable 0236 migration; this is not a runtime compatibility adapter.
+const historicalPair = (content: string) => ({
+  summary: Array.from(content)
+    .slice(0, 40)
+    .join('')
+    .replace(/[\r\n\u2028\u2029]/gu, ' ')
+    .trim(),
+  details: Array.from(content).length > 40 ? content : null,
+});
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
     ? describe.sequential
@@ -38,7 +28,9 @@ const migration = await readFile(
   new URL('../migrations/0236_employee_memory_pairs.sql', import.meta.url),
   'utf8',
 );
-async function personaCompatibility(db: ReturnType<typeof postgres>) {
+async function personaCompatibility(
+  db: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>['db'],
+) {
   return db`select
     pg_get_functiondef('allrice_native_session_version_compatible(jsonb,jsonb)'::regprocedure) definition,
     allrice_native_session_version_compatible(
@@ -50,13 +42,9 @@ suite(
   '0236: isolated old data, atomic refusal and forward-compatible recovery',
   () => {
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
-    let runtimeDb: ReturnType<typeof postgres> | undefined;
     let f: Awaited<ReturnType<typeof createRunAuthorityFixture>>;
-    let context: NonNullable<Awaited<ReturnType<typeof authenticateSession>>>;
-    let auth: RunMemoryAuthority;
     let shortId: string, longId: string, archivedId: string, rawId: string;
     let before: Record<string, unknown>[];
-    let frozen: Awaited<ReturnType<typeof freezeEmployeeDocuments>>;
     let runState: unknown;
     let compatibility: Awaited<ReturnType<typeof personaCompatibility>>;
     const original = '🧑'.repeat(39) + '\n原始条件：月结前不得外发。';
@@ -86,10 +74,6 @@ suite(
         allowedTools: ['workspace.memory.search', 'workspace.experience.read'],
       });
       await ensureGeneralEmployeeInstance(fixture.db, f.assignment);
-      context = (await authenticateSession(
-        (await createSession(f.user)).token,
-        { organizationId: f.org, workspaceId: f.workspace },
-      ))!;
       await fixture.db.begin(async (tx) => {
         shortId = await seed(tx, '日报不得外发');
         longId = await seed(tx, original);
@@ -107,41 +91,13 @@ suite(
       before = await fixture.db`select id,to_jsonb(m) as memory,
       (select to_jsonb(r) from allrice_memory_revisions r where memory_id=m.id and revision=1) as revision
       from allrice_memories m order by id`;
-      const scope = {
-        organizationId: f.org,
-        workspaceId: f.workspace,
-        ownerId: f.user,
-        runId: f.rootRunId,
-        sessionId: f.session,
-      };
-      const [job] =
-        await fixture.db`select attempt from allrice_jobs where id=${f.worker.jobId}`;
-      auth = {
-        scope,
-        worker: { ...f.worker, attempt: job!.attempt as number },
-      };
-      frozen = await freezeEmployeeDocuments(
-        fixture.db,
-        { ...scope, instanceId: f.assignment },
-        {},
-        true,
-      );
       await fixture.db`update allrice_employee_runs set status='running',memory_context_state='{"schemaVersion":1,"pending":true}' where run_id=${f.rootRunId}`;
-      await prepareRunMemoryContext(
-        auth,
-        frozen.memories,
-        frozen.employeeDocuments.memory,
-      );
       [runState] =
         await fixture.db`select memory_context_state from allrice_employee_runs where run_id=${f.rootRunId}`;
     }, 120000);
     afterAll(async () => {
       vi.restoreAllMocks();
-      try {
-        await runtimeDb?.end({ timeout: 5 });
-      } finally {
-        await fixture?.close();
-      }
+      await fixture?.close();
     });
     it.each([
       ['over2000', 'long'],
@@ -218,7 +174,7 @@ suite(
             expires_at: saved.id === archivedId ? oldMemory.expires_at : null,
           });
           expect({ summary, details }).toEqual(
-            legacyPersonalMemoryPair(saved.content as string),
+            historicalPair(saved.content as string),
           );
         }
         const [revision] =
@@ -239,7 +195,7 @@ suite(
       const [migrated] =
         await fixture.db`select metadata from allrice_audit_events where action='memory.migrate_pair' and resource_id=${longId}`;
       expect(migrated!.metadata.pairDigest).toBe(
-        memoryPairDigest(legacyPersonalMemoryPair(original)),
+        memoryPairDigest(historicalPair(original)),
       );
       expect(migrated!.metadata.migration).toBe(
         '0236_employee_memory_pairs.sql',
@@ -259,194 +215,6 @@ suite(
           await fixture.db`select memory_context_state from allrice_employee_runs where run_id=${f.rootRunId}`
         )[0],
       ).toEqual(runState);
-      await assertRunMemoryContextCurrent(auth.scope);
-      for (const pin of frozen.memories)
-        expect(
-          (await readRunExperienceSource(auth, pin.sourceHandle!)).items[0],
-        ).toMatchObject({ memory: { content: pin.content } });
-      expect(
-        (
-          await fixture.db`select memory_context_state from allrice_employee_runs where run_id=${f.rootRunId}`
-        )[0],
-      ).not.toEqual(runState);
-      // Source reads spend the existing budget. Migration itself left its frozen state untouched.
-    });
-    it('keeps post-migration create/edit/delete/candidate writes and old revisions during forward recovery; stale compensation cannot overwrite an edit', async () => {
-      // Only this fully migrated runtime phase needs public's pgvector types.
-      // Preflight, migration and historical assertions retain the own-only pool.
-      const [owned] =
-        await fixture.db`select current_schema() schema,current_schemas(false) path,
-        array_agg(c.relname::text order by c.relname) names,array_agg(c.oid order by c.relname) oids
-        from pg_class c where c.relnamespace=current_schema()::regnamespace and c.relkind in ('r','p','v','m','f')`;
-      expect(owned!.schema).toMatch(/^p25_[a-f0-9]{32}$/);
-      expect(owned!.path).toEqual([owned!.schema]);
-      expect(owned!.names).toContain('allrice_memories');
-      expect(owned!.names).toContain('allrice_rag_chunks');
-      const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
-      assertRuntimeFixtureDatabase(url);
-      url.searchParams.set('options', `-csearch_path=${owned!.schema},public`);
-      runtimeDb = postgres(url.toString(), {
-        max: 1,
-        connect_timeout: 5,
-        onnotice: () => {},
-        connection: {
-          application_name: `memory-pair-recovery-${owned!.schema}`,
-        },
-      });
-      const [visible] =
-        await runtimeDb`select current_schema() schema,current_schemas(false) path,
-        array(select to_regclass(r.name)::oid from unnest(${owned!.names}::text[]) with ordinality r(name,ord) order by ord) oids,
-        to_regtype('vector')::oid vector_type,
-        (select atttypid from pg_attribute where attrelid='allrice_rag_chunks'::regclass and attname='embedding') embedding_type`;
-      expect(visible).toMatchObject({
-        schema: owned!.schema,
-        path: [owned!.schema, 'public'],
-        oids: owned!.oids,
-        vector_type: expect.any(Number),
-      });
-      expect(visible!.vector_type).toBe(visible!.embedding_type);
-      vi.spyOn(client, 'getDatabase').mockReturnValue(runtimeDb);
-      const created = await createPersonalEmployeeMemory(context, {
-        workspaceId: f.workspace,
-        instanceId: f.assignment,
-        idempotencyKey: randomUUID(),
-        summary: '迁移后新增',
-        details: '新数据不得丢失',
-      });
-      const edited = await correctPersonalEmployeeMemory(
-        context,
-        f.workspace,
-        created.id,
-        {
-          instanceId: f.assignment,
-          expectedRevision: created.revision,
-          pairDigest: created.pairDigest,
-          idempotencyKey: randomUUID(),
-          summary: '迁移后本人修改',
-          details: created.details,
-          reason: '本人修改',
-        },
-      );
-      await expect(
-        correctPersonalEmployeeMemory(context, f.workspace, created.id, {
-          instanceId: f.assignment,
-          expectedRevision: created.revision,
-          pairDigest: created.pairDigest,
-          idempotencyKey: randomUUID(),
-          summary: created.summary,
-          details: null,
-          reason: '过时补偿不得覆盖',
-        }),
-      ).rejects.toThrow('employee_memory_conflict');
-      const candidate = await createTraceableMemory(context, {
-        workspaceId: f.workspace,
-        instanceId: f.assignment,
-        idempotencyKey: randomUUID(),
-        sourceType: 'user',
-        lifecycleState: 'candidate',
-        content: '迁移后待确认',
-      });
-      await deleteWorkspaceMemory(context, f.workspace, created.id, {
-        instanceId: f.assignment,
-        expectedRevision: edited.revision,
-        contentDigest: memoryContentDigest(
-          `${edited.summary}\n${edited.details}`,
-        ),
-        idempotencyKey: randomUUID(),
-      });
-      vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
-      const [saved] =
-        await fixture.db`select summary,details,revision,archived_at from allrice_memories where id=${created.id}`;
-      expect(saved).toMatchObject({
-        summary: edited.summary,
-        details: edited.details,
-        revision: 3,
-        archived_at: expect.any(Date),
-      });
-      const [pending] =
-        await fixture.db`select summary,lifecycle_state,revision from allrice_memories where id=${candidate.id}`;
-      expect(pending).toMatchObject({
-        summary: '迁移后待确认',
-        lifecycle_state: 'candidate',
-        revision: 1,
-      });
-      const [history] =
-        await fixture.db`select count(*)::int count from allrice_memory_revisions where memory_id=${created.id}`;
-      expect(history!.count).toBe(3);
-      await assertRunMemoryContextCurrent(auth.scope);
-      for (const pin of frozen.memories)
-        expect(
-          (await readRunExperienceSource(auth, pin.sourceHandle!)).items[0],
-        ).toMatchObject({ memory: { content: pin.content } });
-    });
-
-    it('hides a deleted mechanically migrated record while preserving full-content history and migration audit', async () => {
-      const current = (
-        await getPersonalEmployeeMemory(
-          context,
-          f.workspace,
-          f.assignment,
-          longId,
-        )
-      ).memory;
-      expect(current).toMatchObject({ details: original, revision: 2 });
-      expect(
-        (
-          await listWorkspaceMemoryRevisions(
-            context,
-            f.workspace,
-            longId,
-            f.assignment,
-          )
-        ).map((row) => row.content),
-      ).toEqual([original, original]);
-      const before =
-        await fixture.db`select * from allrice_memory_revisions where memory_id=${longId} order by revision`;
-      const auditBefore =
-        await fixture.db`select * from allrice_audit_events where resource_id=${longId} order by id`;
-      expect(auditBefore).toHaveLength(1);
-      expect(auditBefore[0]!.action).toBe('memory.migrate_pair');
-      await deleteManagedEmployeeMemory(context, f.workspace, longId, {
-        instanceId: f.assignment,
-        expectedRevision: current.revision,
-        pairDigest: current.pairDigest,
-        idempotencyKey: randomUUID(),
-      });
-      await expect(
-        getPersonalEmployeeMemory(context, f.workspace, f.assignment, longId),
-      ).rejects.toThrow('not_found');
-      await expect(
-        listWorkspaceMemoryRevisions(
-          context,
-          f.workspace,
-          longId,
-          f.assignment,
-        ),
-      ).rejects.toThrow('not_found');
-      const saved =
-        await fixture.db`select * from allrice_memory_revisions where memory_id=${longId} order by revision`;
-      expect(saved).toHaveLength(3);
-      expect(saved.slice(0, 2)).toEqual(before);
-      expect(saved[2]).toMatchObject({
-        content: original,
-        summary: current.summary,
-        details: original,
-        revision: 3,
-        reason: 'archived by owner',
-      });
-      const auditAfter =
-        await fixture.db`select * from allrice_audit_events where resource_id=${longId} order by id`;
-      expect(auditAfter).toHaveLength(auditBefore.length + 1);
-      expect(auditAfter).toEqual(expect.arrayContaining(auditBefore));
-      expect(
-        auditAfter.filter((row) => row.action === 'memory.delete'),
-      ).toHaveLength(1);
-      const [deleted] =
-        await fixture.db`select content,archived_at from allrice_memories where id=${longId}`;
-      expect(deleted).toMatchObject({
-        content: original,
-        archived_at: expect.any(Date),
-      });
     });
   },
 );
