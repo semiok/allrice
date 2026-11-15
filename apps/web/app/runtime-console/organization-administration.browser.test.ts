@@ -1638,14 +1638,22 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
             return {
               width: frame.getBoundingClientRect().width,
               height: frame.getBoundingClientRect().height,
-              paddingLeft: outer.paddingLeft,
-              paddingRight: outer.paddingRight,
+              insetLeft:
+                parseFloat(outer.paddingLeft) +
+                parseFloat(inner.borderLeftWidth),
+              insetRight:
+                parseFloat(outer.paddingRight) +
+                parseFloat(inner.borderRightWidth),
               background: outer.backgroundColor,
               border: outer.borderColor,
               primary: outer
                 .getPropertyValue('--dsw-alias-state-business-primary')
                 .trim(),
               innerBorder: inner.borderWidth,
+              innerBorderColors: [
+                inner.borderLeftColor,
+                inner.borderRightColor,
+              ],
               innerOutline: inner.outlineStyle,
               innerShadow: inner.boxShadow,
               appearance: inner.appearance,
@@ -1654,8 +1662,8 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
           });
         const idleSelect = await selectLook();
         expect(idleSelect.height).toBe(width > 700 ? 40 : 44);
-        expect(idleSelect.paddingLeft).toBe('12px');
-        expect(idleSelect.paddingRight).toBe('12px');
+        expect(Math.abs(idleSelect.insetLeft - 12)).toBeLessThanOrEqual(0.5);
+        expect(Math.abs(idleSelect.insetRight - 12)).toBeLessThanOrEqual(0.5);
         expect(idleSelect.appearance).not.toBe('none');
         await department.focus();
         await department.press('Tab');
@@ -1668,7 +1676,8 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
           height: idleSelect.height,
           background: idleSelect.background,
           border: focusedSelect.primary,
-          innerBorder: '0px',
+          innerBorder: '0px 12px',
+          innerBorderColors: ['rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, 0)'],
           innerOutline: 'none',
           innerShadow: 'none',
           keyboard: true,

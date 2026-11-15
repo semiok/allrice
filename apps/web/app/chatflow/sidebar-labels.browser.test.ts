@@ -372,15 +372,23 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
               .closest('form')!
               .querySelector('[data-employee-name]')!;
             const css = getComputedStyle(shell);
+            const nativeCss = getComputedStyle(node);
             const inputCss = getComputedStyle(input);
             const box = shell.getBoundingClientRect();
             const nativeBox = node.getBoundingClientRect();
             return {
-              appearance: getComputedStyle(node).appearance,
+              appearance: nativeCss.appearance,
               height: box.height,
-              left: nativeBox.left - box.left - parseFloat(css.borderLeftWidth),
+              left:
+                nativeBox.left -
+                box.left -
+                parseFloat(css.borderLeftWidth) +
+                parseFloat(nativeCss.borderLeftWidth),
               right:
-                box.right - nativeBox.right - parseFloat(css.borderRightWidth),
+                box.right -
+                nativeBox.right -
+                parseFloat(css.borderRightWidth) +
+                parseFloat(nativeCss.borderRightWidth),
               inputLeft: parseFloat(inputCss.paddingLeft),
               inputRight: parseFloat(inputCss.paddingRight),
             };

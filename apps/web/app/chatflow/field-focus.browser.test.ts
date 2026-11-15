@@ -138,6 +138,8 @@ suite('fields retain one native focus owner without a fill jump', () => {
         outline: css.outlineStyle,
         innerOutline: inner.outlineStyle,
         innerBorder: inner.borderWidth,
+        nativeSelect: node.tagName === 'SELECT',
+        innerBorderColors: [inner.borderLeftColor, inner.borderRightColor],
         innerShadow: inner.boxShadow,
         focusColor,
         keyboard:
@@ -212,7 +214,14 @@ suite('fields retain one native focus owner without a fill jump', () => {
                 expect(focused.background).toBe(before.background);
                 expect(focused.shadow).toBe(before.shadow);
                 if (focused.wrapper) {
-                  expect(focused.innerBorder).toBe('0px');
+                  expect(focused.innerBorder).toBe(
+                    focused.nativeSelect ? '0px 12px' : '0px',
+                  );
+                  if (focused.nativeSelect)
+                    expect(focused.innerBorderColors).toEqual([
+                      'rgba(0, 0, 0, 0)',
+                      'rgba(0, 0, 0, 0)',
+                    ]);
                   expect(focused.innerShadow).toBe('none');
                 }
               }
@@ -227,4 +236,110 @@ suite('fields retain one native focus owner without a fill jump', () => {
             await page.close();
           }
         });
+
+  for (const width of [1440, 390])
+    for (const theme of ['light', 'dark'])
+      it(`native select edges open the actual picker at ${width}px ${theme}`, async () => {
+        const page = await browser.newPage({
+          viewport: { width, height: 900 },
+          reducedMotion: 'reduce',
+        });
+        const errors: string[] = [];
+        page.on('pageerror', (error) => errors.push(error.message));
+        try {
+          for (const [name, control] of [
+            ['deliverables', { role: 'combobox', name: '按员工筛选' }],
+            ['automation', { role: 'combobox', name: '筛选员工' }],
+            ['settings', { label: '外观' }],
+          ] as const) {
+            await page.goto(
+              `${origin}/?${new URLSearchParams({ case: name, theme })}`,
+            );
+            await page.waitForFunction(
+              () => window.__focusCapture?.ready === true,
+            );
+            const field = locate(page, control);
+            await field.waitFor();
+            await page.evaluate(() => document.fonts.ready);
+            const geometry = await field.evaluate((node) => {
+              const frame = node.closest('[data-select-field]')!;
+              const outer = getComputedStyle(frame),
+                inner = getComputedStyle(node);
+              const box = frame.getBoundingClientRect(),
+                native = node.getBoundingClientRect();
+              // Headless Chrome can dismiss its native popup before a later
+              // CDP read. Observe :open inside the real trusted click instead.
+              node.addEventListener('click', (event) =>
+                node.setAttribute(
+                  'data-edge-hit',
+                  JSON.stringify({
+                    nativeTarget: event.target === node,
+                    trusted: event.isTrusted,
+                    focused: node === document.activeElement,
+                    open: node.matches(':open'),
+                  }),
+                ),
+              );
+              return {
+                outerLabel: node.closest('label') !== null,
+                appearance: inner.appearance,
+                height: box.height,
+                contentInset: [
+                  native.left -
+                    box.left -
+                    parseFloat(outer.borderLeftWidth) +
+                    parseFloat(inner.borderLeftWidth),
+                  box.right -
+                    native.right -
+                    parseFloat(outer.borderRightWidth) +
+                    parseFloat(inner.borderRightWidth),
+                ],
+                nativeEdgeGap: [
+                  native.left - box.left - parseFloat(outer.borderLeftWidth),
+                  box.right - native.right - parseFloat(outer.borderRightWidth),
+                ],
+              };
+            });
+            expect(geometry.outerLabel).toBe(false);
+            expect(geometry.appearance).not.toBe('none');
+            expect(
+              Math.abs(geometry.height - (width > 700 ? 40 : 44)),
+            ).toBeLessThanOrEqual(0.5);
+            for (const inset of geometry.contentInset)
+              expect(Math.abs(inset - 12)).toBeLessThanOrEqual(0.5);
+            for (const gap of geometry.nativeEdgeGap)
+              expect(Math.abs(gap)).toBeLessThanOrEqual(0.5);
+            const originalValue = await field.inputValue();
+            for (const edge of ['left', 'right']) {
+              await field.evaluate((node) => {
+                (node as HTMLElement).blur();
+                node.removeAttribute('data-edge-hit');
+              });
+              const box = (await field.locator('..').boundingBox())!;
+              await page.mouse.click(
+                edge === 'left' ? box.x + 5 : box.x + box.width - 5,
+                box.y + box.height / 2,
+              );
+              expect(
+                JSON.parse((await field.getAttribute('data-edge-hit'))!),
+              ).toEqual({
+                nativeTarget: true,
+                trusted: true,
+                focused: true,
+                open: true,
+              });
+              await page.keyboard.press('Tab');
+              expect(await field.inputValue()).toBe(originalValue);
+            }
+            const final = await page.evaluate(
+              () => window.__focusCapture as Metadata,
+            );
+            expect(final.writes).toEqual([]);
+            expect(final.unexpectedReads).toEqual([]);
+          }
+          expect(errors).toEqual([]);
+        } finally {
+          await page.close();
+        }
+      });
 });
