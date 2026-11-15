@@ -66,7 +66,6 @@
   min-height: 0;
   padding: 18px 20px 24px;
   overflow: auto;
-  overscroll-behavior: contain;
   overflow-wrap: anywhere;
 }
 
