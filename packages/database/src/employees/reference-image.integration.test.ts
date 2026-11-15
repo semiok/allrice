@@ -250,15 +250,17 @@ suite('v1.8 publication image reads at real Run and lease boundaries', () => {
     const saved = await publish();
     const run = await x.run();
     const port = execution();
-    port.native.route = vi.fn(async () => ({
-      error: {
-        code: 'REFERENCE_READ_UNSUPPORTED',
-        reason: 'image_route',
-        message:
-          '当前模型路由未明确支持图片输入，暂时无法查看这张企业资料图片。',
-        retryable: false,
-      },
-    }));
+    port.native.route = vi.fn<ReferenceImageExecution['native']['route']>(
+      async () => ({
+        error: {
+          code: 'REFERENCE_READ_UNSUPPORTED',
+          reason: 'image_route',
+          message:
+            '当前模型路由未明确支持图片输入，暂时无法查看这张企业资料图片。',
+          retryable: false,
+        },
+      }),
+    );
     const get = vi.spyOn(port.storage, 'get');
     try {
       await expect(invoke(run, saved.pin, port)).rejects.toMatchObject({
@@ -308,13 +310,15 @@ suite('v1.8 publication image reads at real Run and lease boundaries', () => {
       const run = await x.run();
       const port = execution();
       const controller = new AbortController();
-      port.native.save = vi.fn(async () => {
-        if (kind === 'revoked') await revoke(saved);
-        if (kind === 'expired-lease')
-          await f.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${run.worker.jobId}`;
-        if (kind === 'canceled') controller.abort();
-        return { image };
-      });
+      port.native.save = vi.fn<ReferenceImageExecution['native']['save']>(
+        async () => {
+          if (kind === 'revoked') await revoke(saved);
+          if (kind === 'expired-lease')
+            await f.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${run.worker.jobId}`;
+          if (kind === 'canceled') controller.abort();
+          return { image };
+        },
+      );
       await expect(
         invoke(run, saved.pin, port, controller.signal),
       ).rejects.toBeInstanceOf(Error);
@@ -329,20 +333,22 @@ suite('v1.8 publication image reads at real Run and lease boundaries', () => {
       const run = await x.run();
       const port = execution();
       const controller = new AbortController();
-      port.native.save = vi.fn(async () => {
-        if (kind === 'revoked') await revoke(saved);
-        if (kind === 'expired-lease')
-          await f.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${run.worker.jobId}`;
-        if (kind === 'canceled') controller.abort();
-        return {
-          error: {
-            code: 'REFERENCE_READ_INVALID',
-            reason: 'image_decode',
-            retryable: false,
-            message: 'private format detail',
-          },
-        };
-      });
+      port.native.save = vi.fn<ReferenceImageExecution['native']['save']>(
+        async () => {
+          if (kind === 'revoked') await revoke(saved);
+          if (kind === 'expired-lease')
+            await f.db`update allrice_jobs set lease_expires_at=clock_timestamp()-interval '1 second' where id=${run.worker.jobId}`;
+          if (kind === 'canceled') controller.abort();
+          return {
+            error: {
+              code: 'REFERENCE_READ_INVALID',
+              reason: 'image_decode',
+              retryable: false,
+              message: 'private format detail',
+            },
+          };
+        },
+      );
       const error = await invoke(run, saved.pin, port, controller.signal).catch(
         (value: unknown) => value,
       );
@@ -364,11 +370,13 @@ suite('v1.8 publication image reads at real Run and lease boundaries', () => {
       release = resolve;
     });
     port.native.deadlineAt = Date.now() + 1500;
-    port.native.save = vi.fn(async () => {
-      entered();
-      await held;
-      return { image };
-    });
+    port.native.save = vi.fn<ReferenceImageExecution['native']['save']>(
+      async () => {
+        entered();
+        await held;
+        return { image };
+      },
+    );
     let settled = false;
     const result = invoke(run, saved.pin, port)
       .catch((error: unknown) => error)
