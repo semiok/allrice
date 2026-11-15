@@ -117,6 +117,143 @@ async function archiveConversations(page: Page) {
   return dialog;
 }
 
+/** Read-only browser observations; retain the original input sequence and assertions. */
+async function observeScrollDiagnostics(target: Locator) {
+  const handle = await target.evaluateHandle((node) => {
+    const identify = (element: Element | null) =>
+      element && {
+        tag: element.tagName,
+        id: element.id,
+        className: element.getAttribute('class'),
+        role: element.getAttribute('role'),
+        attributes: Object.fromEntries(
+          element
+            .getAttributeNames()
+            .filter(
+              (name) => name.startsWith('data-') || name.startsWith('aria-'),
+            )
+            .map((name) => [name, element.getAttribute(name)]),
+        ),
+        text: element.textContent?.slice(0, 100),
+      };
+    const geometry = (element: Element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return {
+        ...identify(element),
+        rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+        scrollTop: element.scrollTop,
+        scrollLeft: element.scrollLeft,
+        scrollHeight: element.scrollHeight,
+        scrollWidth: element.scrollWidth,
+        clientHeight: element.clientHeight,
+        clientWidth: element.clientWidth,
+        overflowX: style.overflowX,
+        overflowY: style.overflowY,
+        overscrollBehaviorX: style.overscrollBehaviorX,
+        overscrollBehaviorY: style.overscrollBehaviorY,
+        scrollBehavior: style.scrollBehavior,
+        overflowAnchor: style.overflowAnchor,
+        contain: style.contain,
+      };
+    };
+    const ancestors = (element: Element | null) => {
+      const result = [];
+      for (let current = element; current; current = current.parentElement)
+        result.push(current);
+      return result;
+    };
+    const records: unknown[] = [];
+    let lastPoint: { x: number; y: number } | undefined;
+    const mark = (phase: string, details?: unknown) => {
+      const rect = node.getBoundingClientRect();
+      const point = lastPoint ?? {
+        x: rect.x + rect.width / 2,
+        y: rect.y + rect.height / 2,
+      };
+      const hit = document.elementFromPoint(point.x, point.y);
+      records.push({
+        phase,
+        at: performance.now(),
+        details,
+        point,
+        activeElement: identify(document.activeElement),
+        targetChain: ancestors(node).map(geometry),
+        hitChain: ancestors(hit).map(geometry),
+        deliveryFooters: [
+          ...(node.closest('[data-document-id]')?.querySelectorAll('footer') ??
+            []),
+        ].map(geometry),
+      });
+      if (records.length > 160) records.shift();
+    };
+    const observe = (stage: string) => (event: Event) => {
+      const source = event.target;
+      if (
+        !(source instanceof Element) ||
+        (!node.contains(source) &&
+          !(event.type === 'scroll' && ancestors(node).includes(source)))
+      )
+        return;
+      if (event instanceof MouseEvent)
+        lastPoint = { x: event.clientX, y: event.clientY };
+      mark(`${event.type}-${stage}`, {
+        source: identify(source),
+        defaultPrevented: event.defaultPrevented,
+        ...(event instanceof KeyboardEvent ? { key: event.key } : {}),
+        ...(event instanceof WheelEvent
+          ? {
+              deltaX: event.deltaX,
+              deltaY: event.deltaY,
+              deltaMode: event.deltaMode,
+              ctrlKey: event.ctrlKey,
+              metaKey: event.metaKey,
+            }
+          : {}),
+      });
+    };
+    for (const name of [
+      'pointerdown',
+      'mousedown',
+      'click',
+      'keydown',
+      'wheel',
+      'scroll',
+    ]) {
+      // Observation only: no preventDefault, propagation changes, or scroll writes.
+      document.addEventListener(name, observe('capture'), {
+        capture: true,
+        passive: true,
+      });
+      document.addEventListener(name, observe('bubble'), { passive: true });
+    }
+    document.addEventListener(
+      'pointermove',
+      (event) => {
+        lastPoint = { x: event.clientX, y: event.clientY };
+      },
+      { capture: true, passive: true },
+    );
+    mark('installed');
+    return { records, mark };
+  });
+  return {
+    mark: (phase: string, details?: unknown) =>
+      handle.evaluate(
+        (state, input) => state.mark(input.phase, input.details),
+        {
+          phase,
+          details,
+        },
+      ),
+    read: () =>
+      handle.evaluate((state) => {
+        state.mark('failure-capture');
+        return state.records;
+      }),
+  };
+}
+
 const id = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
 const A = id(1),
@@ -4664,6 +4801,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         touch: width < 760,
         streamingOutput: false,
       });
+      let diagnostics:
+        Awaited<ReturnType<typeof observeScrollDiagnostics>> | undefined;
+      const evidence = createFailureEvidence({
+        file: import.meta.url,
+        test: `expands tool details downward without moving the clicked header at ${width}px`,
+        collect: () => diagnostics?.read(),
+      });
+      evidence.observePage(f.page);
       const operations = Array.from({ length: 5 }, (_, index) => ({
         snapshot: {
           status: 'succeeded',
@@ -4725,6 +4870,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const header = card.locator('[data-disclosure-header]');
         const toggle = header.getByRole('button');
         await toggle.waitFor();
+        diagnostics = await observeScrollDiagnostics(header);
         await scroll.evaluate((node) => {
           node.scrollTop = node.scrollHeight;
           node.dispatchEvent(new Event('scroll'));
@@ -4764,6 +4910,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               node.focus({ preventScroll: true }),
             );
           const before = await geometry();
+          await diagnostics.mark(`${input}-before-expand`, before);
           if (input === 'keyboard') await toggle.press('Enter');
           else if (width < 760) await toggle.tap();
           else await toggle.click();
@@ -4781,6 +4928,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 parseFloat(style.marginBottom)
               );
             });
+          await diagnostics.mark(`${input}-after-expand`, {
+            before,
+            after,
+            detailHeight,
+            headerDelta: after.top - before.top,
+            outerScrollDelta: after.scroll - before.scroll,
+          });
           expect(after.height - before.height).toBe(detailHeight);
           expect(detailHeight).toBeGreaterThan(100);
           expect(Math.abs(after.top - before.top)).toBeLessThan(2);
@@ -4788,8 +4942,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(
             Math.abs(after.next - before.next - (after.height - before.height)),
           ).toBeLessThan(2);
+          await diagnostics.mark(`${input}-before-collapse`);
           await toggle.press('Space');
           await settle();
+          await diagnostics.mark(`${input}-after-collapse`, await geometry());
           expect(Math.abs((await geometry()).top - before.top)).toBeLessThan(2);
         }
         // Reading older content must also keep its position on expansion.
@@ -4798,8 +4954,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
         await settle();
         const before = await geometry();
+        await diagnostics.mark('older-content-before-expand', before);
         await toggle.click();
         await settle();
+        await diagnostics.mark('older-content-after-expand', await geometry());
         expect(Math.abs((await geometry()).top - before.top)).toBeLessThan(2);
         await f.page
           .getByRole('button', { name: '回到底部', exact: true })
@@ -4860,7 +5018,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               .count(),
           ).toBe(1);
         }
+      } catch (error) {
+        await evidence.capture(error);
+        throw error;
       } finally {
+        evidence.dispose();
         await f.close();
       }
     },
@@ -21688,6 +21850,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     'MET247 native wheel chaining reaches delivery footer for %s at %ipx',
     async (kind, width) => {
       const f = await fixture({ width });
+      let diagnostics:
+        Awaited<ReturnType<typeof observeScrollDiagnostics>> | undefined;
+      const evidence = createFailureEvidence({
+        file: import.meta.url,
+        test: `MET247 native wheel chaining reaches delivery footer for ${kind} at ${width}px`,
+        collect: () => diagnostics?.read(),
+      });
+      evidence.observePage(f.page);
       try {
         const file = catalogFile(9690, {
           fileName: `滚动验收.${kind.startsWith('image') ? 'png' : kind}`,
@@ -21740,6 +21910,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .waitFor();
         }
         const inner = detail.locator('[data-document-zoom-scrollport]');
+        diagnostics = await observeScrollDiagnostics(inner);
         const hit = inner;
         const box = (await hit.boundingBox())!;
         await f.page.mouse.move(
@@ -21747,6 +21918,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           box.y + Math.min(box.height / 2, 180),
         );
         const initialOuter = await reading.evaluate((node) => node.scrollTop);
+        await diagnostics.mark('before-wheel-180', { initialOuter });
         await f.page.mouse.wheel(0, 180);
         if (kind === 'image-fit') {
           await expect
@@ -21759,8 +21931,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .toBeGreaterThan(0);
           expect(await reading.evaluate((n) => n.scrollTop)).toBe(initialOuter);
         }
+        await diagnostics.mark('after-wheel-180');
         // Use actual browser wheel input, not scrollIntoView or a footer click
         // that could auto-scroll and hide the original regression.
+        await diagnostics.mark('before-wheel-100000');
         await f.page.mouse.wheel(0, 100_000);
         await expect
           .poll(() =>
@@ -21769,7 +21943,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ),
           )
           .toBeLessThanOrEqual(1);
+        await diagnostics.mark('after-wheel-100000-inner-bottom');
+        await diagnostics.mark('before-wheel-1000');
         await f.page.mouse.wheel(0, 1000);
+        await diagnostics.mark('after-wheel-1000-dispatched');
         await expect
           .poll(async () => {
             const a = (await reading.boundingBox())!,
@@ -21846,7 +22023,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .toBeGreaterThan(0);
         }
         expect(f.errors).toEqual([]);
+      } catch (error) {
+        await evidence.capture(error);
+        throw error;
       } finally {
+        evidence.dispose();
         await f.close();
       }
     },
