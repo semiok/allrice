@@ -1,5 +1,4 @@
 import { legacyReferenceFixture } from './legacy-reference.fixture.ts';
-import { POST as retiredSave } from '../../../apps/web/app/api/v1/references/artifacts/route';
 import { randomUUID } from 'node:crypto';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -38,11 +37,17 @@ suite(
   () => {
     let f: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
       storage: StoragePort;
+    let retiredSave: (request: Request) => Promise<Response>;
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
       f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       storage = runtimeFixtureStorage(f.db);
+      // Web checks its bundler graph; load the real route through the existing
+      // cross-project test seam without importing it into NodeNext.
+      ({ POST: retiredSave } = await vi.importActual<{
+        POST: typeof retiredSave;
+      }>('../../../apps/web/app/api/v1/references/artifacts/route.ts'));
     }, 120000);
     afterAll(async () => {
       vi.restoreAllMocks();
