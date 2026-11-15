@@ -305,10 +305,8 @@ export async function getStoredFile(
   const row = rows[0];
   if (!row) throw new DataAccessError('not_found');
   try {
-    if (row.category !== 'memory') {
-      const access = await workbenchOriginFileAccess(context, row.id, sql);
-      if (!access.canRead) throw new DataAccessError('authorization_denied');
-    } else authorizeFile(context, row, 'resource:read');
+    const access = await workbenchOriginFileAccess(context, row.id, sql);
+    if (!access.canRead) throw new DataAccessError('authorization_denied');
   } catch (error) {
     await audit(
       {
@@ -448,8 +446,6 @@ export async function resolveStorageGrant(
   `;
   const row = rows[0];
   if (!row) throw new DataAccessError('grant_invalid');
-  // Memory has its own resource policy; R0 retires ordinary file sharing only.
-  if (row.category === 'memory') return mapStoredFile(row);
   // The target comes from the validated grant's object, never browser headers.
   // Authentication keeps the host/portal boundary before selecting this scope.
   const context = await authenticate({

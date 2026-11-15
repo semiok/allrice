@@ -558,7 +558,7 @@ async function processEvent(id: string) {
   if (payload.capability !== 'local.file.import')
     throw new DataAccessError('grant_invalid');
   const original = await getStoredFile(
-    context,
+    resourcePrincipal(context),
     payload.arguments.object.objectId,
   );
   if (
@@ -667,3 +667,4 @@ export async function folderTriggerOptions(
     })),
   };
 }
+import { resourcePrincipal } from './resource-principal.ts';
