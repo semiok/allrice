@@ -258,6 +258,7 @@ suite(
       return fetch(origin + '/api/v1/references' + path, {
         ...init,
         headers: {
+          origin,
           cookie: 'fixture_session=' + token,
           'content-type': 'application/json',
         },
