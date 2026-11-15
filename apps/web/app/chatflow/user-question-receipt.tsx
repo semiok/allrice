@@ -67,7 +67,7 @@ export function userQuestionReceiptState(status: InputStatus | undefined) {
       state: 'confirmed',
       mark: '✓',
       title: '已确认',
-      note: 'Rice 已收到你的回答',
+      note: '',
     };
   if (status === 'unknown')
     return {
@@ -105,6 +105,7 @@ export function UserQuestionReceipt(props: {
   status?: InputStatus;
   questions?: readonly UserQuestionItem[];
   messageId?: string;
+  elapsedMs?: number;
 }) {
   const rows = projectUserQuestionReceipt(props.text, props.answer);
   const state = userQuestionReceiptState(props.status);
@@ -124,6 +125,7 @@ export function UserQuestionReceipt(props: {
           props.answer.questionId,
           props.messageId,
         )}
+        elapsedMs={props.elapsedMs}
         sharedQuestion
         icon={<IconQuestionOutlineRegular />}
         title={

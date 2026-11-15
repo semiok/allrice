@@ -425,7 +425,8 @@ describe('native process display surface', () => {
         ],
       });
       expect(html).toContain('检查入口文件');
-      expect(html).toContain(`已完成 · ${duration}`);
+      expect(html).toContain(duration);
+      expect(html).not.toContain(`已完成 · ${duration}`);
       expect(html).toContain('data-step-id="tool:read"');
       expect(html).not.toContain('过程加载失败');
       const unknownTime = render({

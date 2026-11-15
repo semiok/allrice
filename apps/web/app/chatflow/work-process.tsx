@@ -166,7 +166,9 @@ export function WorkProcess({
     materialReveal &&
     items.some((item) =>
       item.operations?.some(
-        (ref) => workProcessReferenceKey(ref) === materialReveal,
+        (ref) =>
+          ref.requiresAttention ||
+          workProcessReferenceKey(ref) === materialReveal,
       ),
     )
       ? materialReveal
@@ -457,6 +459,7 @@ export function WorkProcess({
         aria-owns={ownedIds || undefined}
         data-transcript-view={policy.mode}
         data-process-open={display.open}
+        data-executing={title === '执行中…' || undefined}
       >
         <DisclosureRow
           icon={<IconThinkOutline14 />}
@@ -546,6 +549,7 @@ export function WorkProcess({
       aria-label={label}
       data-transcript-view={policy.mode}
       data-process-open={display.open}
+      data-executing={title === '执行中…' || undefined}
     >
       <DisclosureRow
         icon={<IconThinkOutline14 />}
@@ -838,21 +842,23 @@ function WorkProcessSteps({
         const pending = active && step.category !== 'plan';
         const status =
           unassigned?.status ??
-          (step.status === 'failed'
-            ? '未成功'
-            : stepRunning && question?.pending && !question.answer
-              ? '等待回答'
-              : question?.answered
-                ? '已回答'
-                : step.status === 'info'
-                  ? '结果未确认'
-                  : step.status === 'completed'
-                    ? '已完成'
-                    : active && !stepRunning
-                      ? '结果未确认'
-                      : active
-                        ? '运行中'
-                        : '结果未确认');
+          (item?.stopped
+            ? '已停止'
+            : step.status === 'failed'
+              ? '失败'
+              : stepRunning && question?.pending && !question.answer
+                ? '等待回答'
+                : question?.answered
+                  ? '已回答'
+                  : step.status === 'info'
+                    ? '结果未确认'
+                    : step.status === 'completed'
+                      ? '已完成'
+                      : active && !stepRunning
+                        ? '结果未确认'
+                        : active
+                          ? '运行中'
+                          : '结果未确认');
         return (
           <li
             key={step.id}
@@ -861,6 +867,7 @@ function WorkProcessSteps({
           >
             {question?.answer ? (
               <UserQuestionReceipt
+                elapsedMs={step.elapsedMs}
                 messageId={question.answer.id}
                 answer={question.answer.answer}
                 text={question.answer.text}
@@ -875,7 +882,9 @@ function WorkProcessSteps({
                   (ref) => `operation:${workProcessReferenceKey(ref)}`,
                 )}
                 reveal={operations.some(
-                  (ref) => workProcessReferenceKey(ref) === materialReveal,
+                  (ref) =>
+                    ref.requiresAttention ||
+                    workProcessReferenceKey(ref) === materialReveal,
                 )}
                 icon={
                   <span
@@ -888,45 +897,56 @@ function WorkProcessSteps({
                   </span>
                 }
                 title={
-                  question
-                    ? `提问 · ${question.request.questions[0]?.question ?? step.title}`
-                    : subagentCallKind === 'create'
-                      ? `创建子智能体${step.input ? ` · ${step.input}` : ''}`
-                      : subagentCallKind === 'directory'
-                        ? '查看子智能体'
-                        : (unassigned?.title ?? step.title)
+                  item?.stopped
+                    ? `${step.label} · 已停止`
+                    : step.error
+                      ? `${step.title.split(' · ')[0]} · ${step.error}`
+                      : question
+                        ? `提问 · ${question.request.questions[0]?.question ?? step.title}`
+                        : subagentCallKind === 'create'
+                          ? `创建子智能体${step.input ? ` · ${step.input}` : ''}`
+                          : subagentCallKind === 'directory'
+                            ? '查看子智能体'
+                            : (unassigned?.title ?? step.title)
                 }
                 status={status}
                 elapsedMs={unassigned ? unassigned.elapsedMs : step.elapsedMs}
                 running={pending && stepRunning}
-                failed={step.status === 'failed'}
+                failed={step.status === 'failed' && !item?.stopped}
+                stopped={item?.stopped}
                 initialOpen={
                   policy.mode === 'verbose' || step.status === 'failed'
                 }
                 details={
-                  question
-                    ? question.request.questions.map((item) => ({
-                        label: '问题',
-                        value: item.question,
-                      }))
-                    : materialized ||
-                        (subagentCallKind === 'create' &&
-                          step.status === 'completed')
-                      ? []
-                      : [
-                          ...(step.input
-                            ? [{ label: '输入', value: step.input }]
-                            : []),
-                          ...(step.result
-                            ? [
-                                {
-                                  label:
-                                    step.status === 'failed' ? '原因' : '结果',
-                                  value: step.result,
-                                },
-                              ]
-                            : []),
-                        ]
+                  item?.stopped
+                    ? `${step.label} · 已停止`
+                    : step.error
+                      ? `${step.title.split(' · ')[0]} · ${step.error}`
+                      : question
+                        ? question.request.questions.map((item) => ({
+                            label: '问题',
+                            value: item.question,
+                          }))
+                        : materialized ||
+                            (subagentCallKind === 'create' &&
+                              step.status === 'completed')
+                          ? []
+                          : [
+                              ...(step.input
+                                ? [{ label: '输入', value: step.input }]
+                                : []),
+                              ...(step.result
+                                ? [
+                                    {
+                                      label:
+                                        step.status === 'failed'
+                                          ? '原因'
+                                          : '结果',
+                                      value: step.result,
+                                    },
+                                  ]
+                                : []),
+                            ]
                 }
               >
                 {materialized && step.result && (

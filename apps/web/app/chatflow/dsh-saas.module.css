@@ -1106,17 +1106,17 @@ div.composerAttachmentMenu,
 
 .confirmationValue,
 .confirmationSkipped {
-  display: inline-flex;
-  min-width: 0;
-  align-items: center;
-  gap: 6px;
-  border-radius: 8px;
-  padding: 3px 8px;
-  margin: 0 4px 4px 0;
-  color: var(--dsw-alias-label-primary);
-  background: var(--dsw-alias-interactive-bg-hover);
-  font: var(--ar-font-body);
+  display: inline;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  vertical-align: baseline;
   overflow-wrap: anywhere;
+}
+.confirmationValue + .confirmationValue::before {
+  content: '、';
 }
 
 .confirmationValue em {
@@ -1755,17 +1755,19 @@ div.composerAttachmentMenu,
 }
 
 /* Allrice public-event adapter over native DSH disclosure chrome. */
+/* Public DSH DisclosureRow/TextShimmer own disclosure, keyboard and motion.
+   Only the approved host spacing, material surface and employee accent differ. */
 .processBlock {
   min-width: 0;
+  font-family: var(--ar-font-family-ui);
 }
 .workProcess {
-  margin: 4px 0 8px;
+  margin: 0 0 8px;
   min-width: 0;
 }
 .processExpanded {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
-
 .processBlock .processHeader {
   height: 24px;
   min-height: 24px;
@@ -1776,41 +1778,56 @@ div.composerAttachmentMenu,
 .processSeparator {
   align-self: center;
 }
-.processBlock .processTitle {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 24px;
+.processBlock .processTitle,
+.processBlock .processSummary,
+.processTiming,
+.processStepLabel,
+.processStepStatus,
+.processStepDescription {
+  color: var(--dsw-alias-label-tertiary);
+  font: 400 12px/24px var(--ar-font-family-ui);
 }
-.processBlock .processSummary {
-  font-size: 13px;
-  font-weight: 400;
-  line-height: 24px;
-}
-.processBlock [data-disclosure-row]:focus-visible {
+.processBlock [data-disclosure-row]:focus-visible,
+.processStep [data-disclosure-row]:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
   outline-offset: 2px;
   border-radius: 4px;
 }
 .processDetails {
-  max-height: 360px;
+  max-height: 260px;
   overflow-y: auto;
-  padding: 8px 0 0 22px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
-  line-height: 22px;
+  scrollbar-gutter: stable;
+  color: var(--dsw-alias-label-tertiary);
+  font: 400 12px/22px var(--ar-font-family-ui);
   overflow-wrap: anywhere;
+}
+.processDetails[data-process-scrollport] {
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-label-primary) 2%,
+    var(--dsw-alias-bg-base)
+  );
+  padding: 9px 10px 8px;
+}
+.processDetails::-webkit-scrollbar {
+  width: 5px;
+}
+.processDetails::-webkit-scrollbar-thumb {
+  background: var(--dsw-alias-border-l3);
+  border-radius: 4px;
 }
 .processDetails p {
   margin: 4px 0;
 }
 .processTiming {
   flex: none;
-  /* Native header accessory has an 8px gap; keep AllRice 12px timing spacing. */
-  margin-left: 4px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
-  line-height: 24px;
+  margin-left: 0;
+}
+.processTiming::before {
+  content: '·';
+  margin-right: 8px;
 }
 .processSteps {
   list-style: none;
@@ -1818,16 +1835,11 @@ div.composerAttachmentMenu,
   padding: 0;
 }
 .processSteps li {
-  padding: 4px 0;
+  padding: 0;
 }
 .processStep {
   min-width: 0;
   container: work-process-step / inline-size;
-}
-.processStep [data-disclosure-row]:focus-visible {
-  outline: 2px solid var(--ar-link);
-  outline-offset: 2px;
-  border-radius: var(--ar-radius-sm);
 }
 .processStep [data-disclosure-header] {
   display: grid;
@@ -1836,17 +1848,22 @@ div.composerAttachmentMenu,
   gap: 8px;
 }
 .processStep .processStepRow {
-  min-height: 42px;
-  height: auto;
-  align-items: flex-start;
-  padding: 10px 0;
+  min-height: 24px;
+  height: 24px;
+  align-items: center;
+  padding: 0;
 }
 .processStepRow > :first-child {
-  align-self: flex-start;
-  margin-top: 3px;
-  margin-right: 8px;
+  align-self: center;
+  margin-top: 0;
+  margin-right: 6px;
   width: 16px;
   height: 16px;
+  color: var(--dsw-alias-label-tertiary);
+}
+.processStepRow > :first-child svg {
+  width: 14px;
+  height: 14px;
 }
 .processStepContent {
   flex: 1;
@@ -1854,55 +1871,51 @@ div.composerAttachmentMenu,
   width: auto;
 }
 .processStepText {
-  display: block;
+  display: flex;
+  align-items: center;
   min-width: 0;
 }
 .processStepLabel {
   min-width: 0;
-  color: var(--ar-text);
-  font: var(--ar-font-body);
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .processStepDescription {
-  color: var(--dsw-alias-label-secondary);
-  font-size: 13px;
-  line-height: 22px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 .processStepStatus {
-  padding-top: 10px;
-  color: var(--ar-text-secondary);
-  font: var(--ar-font-caption);
-  line-height: 22px;
+  padding: 0;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
-.processStep[data-failed] .processStepStatus {
-  color: var(--ar-danger-text);
+.processStep[data-failed] .processStepLabel {
+  color: var(--dsw-alias-state-error-primary);
 }
-.processStep[data-running] .processStepStatus {
-  color: var(--ar-link);
-}
-.processStep[data-status='已完成'] .processStepStatus,
-.processStep[data-status='已回答'] .processStepStatus {
-  color: var(--ar-success-text);
+.processStep[data-stopped] .processStepLabel {
+  color: var(--dsw-alias-state-warn-label);
 }
 .processStepDetails {
   container: work-process-detail / inline-size;
-  margin: 0 0 12px 24px;
+  margin: 4px 0 6px 22px;
   padding: 12px 16px;
   min-width: 0;
   border-radius: var(--ar-radius-md);
   background: var(--ar-surface-subtle);
-  color: var(--ar-text);
-  font: var(--ar-font-body);
+  color: var(--dsw-alias-label-tertiary);
+  font: 400 12px/22px var(--ar-font-family-ui);
+}
+.processStepDetails :is(dt, dd, p, pre, code, strong, span) {
+  font: inherit;
+  color: inherit;
 }
 .processDetailGrid {
   display: grid;
   grid-template-columns: 40px minmax(0, 1fr);
-  gap: 8px 12px;
+  gap: 8px;
   margin: 0;
+  align-items: baseline;
 }
 .processStepDetails pre {
   max-height: 240px;
@@ -1911,16 +1924,8 @@ div.composerAttachmentMenu,
   overflow: auto;
   border-radius: 8px;
   background: color-mix(in srgb, currentColor 6%, transparent);
-  font-family: var(--ds-font-family-code);
-  font-size: 12px;
-  line-height: 18px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-.processDetailGrid dt {
-  color: var(--ar-text-secondary);
-  font: var(--ar-font-caption);
-  line-height: 22px;
 }
 .processDetailGrid dd {
   margin: 0;
@@ -1943,25 +1948,52 @@ div.composerAttachmentMenu,
   .processStepDetails {
     padding: 12px;
   }
-  .processStepRow > :first-child {
-    margin-right: 6px;
-  }
 }
 .processPulse {
   display: inline-flex;
   animation: nativeEventPulse 1.4s ease-in-out infinite;
 }
-/* DSH owns title animation; keep the employee activity indicator separate. */
 [data-working='true'] > .assistantIdentity i {
   animation: nativeEventPulse 1.4s ease-in-out infinite;
 }
 .processStatus {
-  color: var(--dsw-alias-label-secondary);
+  color: var(--dsw-alias-label-tertiary);
+}
+.processBlock [data-shimmer] {
+  --dsw-alias-label-shimmer: color-mix(
+    in srgb,
+    var(--dsw-alias-label-tertiary) 75%,
+    var(--dsw-alias-label-primary)
+  );
+}
+.processBlock [data-executing] .processTitle,
+.processBlock [data-executing] .processHeader > :first-child {
+  color: var(--employee-end, var(--dsw-alias-state-business-primary));
+}
+.processBlock [data-executing] .processHeader [data-shimmer] {
+  --dsw-alias-label-shimmer: color-mix(
+    in srgb,
+    var(--employee-end, var(--dsw-alias-state-business-primary)) 75%,
+    white
+  );
+}
+.processBlock [data-shimmer] > [aria-hidden='true'] > span {
+  mask-image: linear-gradient(
+    105deg,
+    transparent 0%,
+    black 25% 75%,
+    transparent 100%
+  );
+}
+.processBlock [data-shimmer] > [aria-hidden='true'] > span,
+.processBlock [data-shimmer] > [aria-hidden='true'] > span > span {
+  animation-duration: 1.6s;
+  animation-delay: 0s;
+  animation-timing-function: linear;
 }
 @media (prefers-reduced-motion: reduce) {
   .processPulse,
-  [data-working='true'] > .assistantIdentity i,
-  [data-working='true'] > .workProcess > div > .processHeader {
+  [data-working='true'] > .assistantIdentity i {
     animation: none;
   }
 }
@@ -2084,4 +2116,13 @@ div.composerAttachmentMenu,
 .automationNavigation[aria-current='page'] {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-primary);
+}
+
+.processAccessibleStatus {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
