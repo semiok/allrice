@@ -457,7 +457,7 @@ suite('R4b exact parent ZIP permissions and typed read ledger', () => {
     const get = vi.spyOn(port.storage, 'get');
     await expect(
       invoke(run, 'workspace.reference.archive_list', saved.pin, port),
-    ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
+    ).rejects.toMatchObject({ code: 'EMPLOYEE_CONTENT_UNAVAILABLE' });
     expect(get).not.toHaveBeenCalled();
   });
   it('shares the final receipt slot with all previous read kinds atomically', async () => {
