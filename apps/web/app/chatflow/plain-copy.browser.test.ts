@@ -257,7 +257,7 @@ suite('plain words in settings and automation for ordinary employees', () => {
             ).toBe('暂时读不到自动化任务，请稍后点「刷新」再试。');
           // Searching an empty catalog is a filter result, not a first-run state.
           await caseOf(page, 'automation-empty')
-            .getByRole('textbox', { name: '搜索自动化任务' })
+            .getByRole('searchbox', { name: '搜索自动化任务' })
             .fill('日报');
           await caseOf(page, 'automation-empty')
             .getByText('没有匹配的自动化任务', { exact: true })

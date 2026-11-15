@@ -7262,7 +7262,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('menuitem', { name: '参考资料', exact: true })
             .click();
           await dialog
-            .getByRole('textbox', { name: '查找参考资料', exact: true })
+            .getByRole('searchbox', { name: '查找参考资料', exact: true })
             .waitFor();
           await dialog
             .getByRole('button', { name: shared.fileName, exact: true })
@@ -7574,7 +7574,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('combobox', { name: '范本分类', exact: true })
             .selectOption('运营');
           await dialog
-            .getByRole('textbox', { name: '查找范本', exact: true })
+            .getByRole('searchbox', { name: '查找范本', exact: true })
             .fill('不存在的标题');
           await expect
             .poll(() =>
@@ -7584,7 +7584,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             )
             .toBe(0);
           await dialog
-            .getByRole('textbox', { name: '查找范本', exact: true })
+            .getByRole('searchbox', { name: '查找范本', exact: true })
             .fill('季度经营');
           await dialog
             .getByRole('button', { name: '填写使用', exact: true })
@@ -13980,6 +13980,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         material(9710, '写作习惯.md'),
         material(9720, '待处理资料.md', { processing: 'failed' }),
       ],
+      departments: [] as Array<{ id: string; name: string }>,
       denied: new Set<string>(),
       catalogStatus: 200,
       catalogViewer: user,
@@ -14077,7 +14078,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               maintenanceLevel: 'personal',
               writable: true,
               departmentId: null,
-              departments: [],
+              departments: state.departments,
             },
           },
           state.catalogStatus,
@@ -14197,6 +14198,262 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .click();
     }
   }
+
+  for (const theme of ['light', 'dark'] as const)
+    for (const width of [1440, 390, 320])
+      it(`MET247 native file rows keep shared geometry, dates and independent actions at ${width}px ${theme}`, async () => {
+        const f = await materialFixture({ width, appearance: theme });
+        try {
+          const dates = await f.page.evaluate(() => {
+            const today = new Date();
+            today.setHours(10, 30, 0, 0);
+            const other = new Date(today);
+            other.setDate(other.getDate() - 1);
+            other.setHours(22, 45);
+            return {
+              today: today.toISOString(),
+              other: other.toISOString(),
+              otherLabel: `${other.getMonth() + 1}/${other.getDate()}`,
+            };
+          });
+          const name =
+            '很长的中英文文件名称-QuarterlyFinancialReview-'.repeat(6) + '.md';
+          const purpose = '只在这份已发布资料展示的超长用途说明。'.repeat(20);
+          const department = '财务与跨境业务复核部门'.repeat(10);
+          const first = f.materials.references[0]!,
+            second = f.materials.references[1]!;
+          first.fileName = name;
+          first.purpose = purpose;
+          first.createdAt = dates.today;
+          first.publication!.audience = {
+            scope: 'departments',
+            departmentIds: [id(60)],
+          };
+          second.createdAt = dates.other;
+          f.materials.references.splice(2);
+          f.materials.departments.push({ id: id(60), name: department });
+          const delivery = catalogFile(9860, {
+            fileName: name,
+            category: 'artifact',
+            createdAt: dates.today,
+          });
+          const earlier = catalogFile(9861, {
+            fileName: '以前的交付.md',
+            category: 'artifact',
+            createdAt: dates.other,
+          });
+          f.state.workbenchFiles.splice(
+            0,
+            f.state.workbenchFiles.length,
+            delivery,
+            earlier,
+          );
+          f.state.favoriteIds.add(`${user}/${workspace}/${delivery.objectId}`);
+          const dimensions = (row: Locator) =>
+            row.evaluate((node) => {
+              const box = node.getBoundingClientRect(),
+                style = getComputedStyle(node);
+              const open = node.querySelector('[data-file-row-open]')!;
+              const icon = open.querySelector('svg')!.getBoundingClientRect();
+              const name = node.querySelector('[data-file-row-name]')!,
+                text = getComputedStyle(name);
+              const subtitle = node.querySelector('[data-file-row-subtitle]')!;
+              const actions = node.querySelector('[data-file-row-actions]')!,
+                tools = [...actions.querySelectorAll('button')];
+              const list = node.parentElement!,
+                listStyle = getComputedStyle(list);
+              return {
+                height: box.height,
+                padding: [
+                  style.paddingTop,
+                  style.paddingRight,
+                  style.paddingBottom,
+                  style.paddingLeft,
+                ],
+                gap: style.gap,
+                border: style.borderBottomWidth,
+                font: [text.fontSize, text.fontWeight, text.lineHeight],
+                ellipsis: text.textOverflow,
+                icon: [icon.width, icon.height],
+                actions: tools.map((tool) => {
+                  const at = tool.getBoundingClientRect();
+                  return [at.width, at.height];
+                }),
+                actionWidth: actions.getBoundingClientRect().width,
+                actionInset: box.right - actions.getBoundingClientRect().right,
+                subtitleStyle: [
+                  getComputedStyle(subtitle).fontSize,
+                  getComputedStyle(subtitle).lineHeight,
+                  getComputedStyle(subtitle).textOverflow,
+                ],
+                subtitleTitle: subtitle.getAttribute('title'),
+                subtitleText: subtitle.textContent,
+                nameClipped: name.scrollWidth > name.clientWidth,
+                noNestedButtons: node.querySelector('button button') === null,
+                inside:
+                  box.x >= 0 &&
+                  box.right <= innerWidth &&
+                  node.scrollWidth <= node.clientWidth,
+                list: [
+                  listStyle.paddingTop,
+                  listStyle.paddingRight,
+                  listStyle.paddingBottom,
+                  listStyle.paddingLeft,
+                  listStyle.marginRight,
+                  listStyle.scrollbarGutter,
+                ],
+              };
+            });
+          const measure = async (row: Locator) => {
+            const seen = await dimensions(row);
+            expect(Math.abs(seen.height - 49.5)).toBeLessThanOrEqual(0.5);
+            expect(seen.padding).toEqual(['5px', '10px', '5px', '10px']);
+            expect(seen.gap).toBe('6px');
+            expect(seen.border).toBe('0px');
+            expect(seen.font).toEqual(['13px', '400', '19.5px']);
+            expect(seen.ellipsis).toBe('ellipsis');
+            expect(seen.icon).toEqual([28, 28]);
+            expect(seen.actions).toEqual([
+              [28, 28],
+              [28, 28],
+            ]);
+            expect(Math.abs(seen.actionWidth - 56)).toBeLessThanOrEqual(0.5);
+            expect(Math.abs(seen.actionInset - 10)).toBeLessThanOrEqual(0.5);
+            expect(seen.subtitleStyle).toEqual(['12px', '18px', 'ellipsis']);
+            expect(seen.nameClipped).toBe(true);
+            expect(seen.inside).toBe(true);
+            expect(seen.noNestedButtons).toBe(true);
+            expect(seen.list).toEqual([
+              '8px',
+              '0px',
+              '8px',
+              '8px',
+              '2px',
+              'stable',
+            ]);
+            return seen;
+          };
+          const filesEntry = f.page
+            .locator('header')
+            .getByRole('button', { name: '交付成果', exact: true });
+          await filesEntry.click();
+          const files = f.panel.getByRole('region', {
+            name: '交付成果',
+            exact: true,
+          });
+          const deliveryRow = files.locator(
+            `[data-file-id="${delivery.objectId}"]`,
+          );
+          await deliveryRow.waitFor();
+          const delivered = await measure(deliveryRow);
+          expect(delivered.subtitleTitle).toBe('今日 10:30');
+          expect(delivered.subtitleText?.trim()).toBe('今日 10:30');
+          expect(
+            await files
+              .locator(
+                `[data-file-id="${earlier.objectId}"] [data-file-row-subtitle]`,
+              )
+              .textContent(),
+          ).toBe(dates.otherLabel);
+          await deliveryRow.getByLabel('已收藏', { exact: true }).waitFor();
+          await deliveryRow
+            .getByRole('button', { name: `文件选项 ${name}`, exact: true })
+            .click();
+          expect(
+            await f.page
+              .getByRole('menu')
+              .evaluate((node) => !node.closest('[data-native-file-row]')),
+          ).toBe(true);
+          expect(
+            await f.panel.locator('header[aria-label="文件操作"]').count(),
+          ).toBe(0);
+          await f.page.keyboard.press('Escape');
+          await deliveryRow
+            .getByRole('button', { name: `引用到对话 ${name}`, exact: true })
+            .click();
+          await f.page
+            .getByRole('button', { name: `移除资料 ${name} v1`, exact: true })
+            .waitFor();
+          if (!(await files.isVisible())) await filesEntry.click();
+          await deliveryRow.waitFor();
+          expect(
+            await f.panel.locator('header[aria-label="文件操作"]').count(),
+          ).toBe(0);
+          await deliveryRow
+            .getByRole('button', { name, exact: true })
+            .press('Enter');
+          await f.panel
+            .getByRole('button', { name: '‹ 交付成果', exact: true })
+            .waitFor();
+
+          const materialsEntry = f.page
+            .locator('header')
+            .getByRole('button', { name: '企业资料', exact: true });
+          await materialsEntry.click();
+          const materials = f.panel.getByRole('region', {
+            name: '企业资料',
+            exact: true,
+          });
+          const materialRow = materials.locator(
+            `[data-file-id="${first.revisionId}"]`,
+          );
+          await materialRow.waitFor();
+          const published = await measure(materialRow);
+          expect(published.height).toBe(delivered.height);
+          expect(published.subtitleTitle).toBe(`${purpose} · 我 · 今日 10:30`);
+          expect(published.subtitleText).toBe(published.subtitleTitle);
+          expect(
+            await materials
+              .locator(
+                `[data-file-id="${second.revisionId}"] [data-file-row-subtitle]`,
+              )
+              .textContent(),
+          ).toContain(dates.otherLabel);
+          const scope = materialRow.locator('[data-file-row-scope]');
+          expect(await scope.getAttribute('title')).toBe(department);
+          expect(
+            await scope.evaluate((node) => node.scrollWidth > node.clientWidth),
+          ).toBe(true);
+          await materialRow
+            .getByRole('button', { name: `资料选项 ${name}`, exact: true })
+            .click();
+          expect(f.materials.reads).toEqual([]);
+          expect(
+            await f.page
+              .getByRole('menu')
+              .evaluate((node) => !node.closest('[data-native-file-row]')),
+          ).toBe(true);
+          await f.page.keyboard.press('Escape');
+          await materialRow
+            .getByRole('button', { name: '引用到对话', exact: true })
+            .click();
+          await expect
+            .poll(() => f.materials.selections)
+            .toEqual([first.revisionId]);
+          expect(f.materials.reads).toEqual([]);
+          if (!(await materials.isVisible())) await materialsEntry.click();
+          const search = materials.getByRole('searchbox', {
+            name: '查找资料（文件名、用途、正文）',
+          });
+          await search.fill('配色');
+          await materialRow.locator('mark').waitFor();
+          expect(await materialRow.locator('mark').innerText()).toBe('配色');
+          expect((await materialRow.boundingBox())!.height).toBeGreaterThan(
+            published.height,
+          );
+          expect(await materialRow.locator('script').count()).toBe(0);
+          await search.fill('');
+          await materialRow
+            .getByRole('button', { name, exact: true })
+            .press('Space');
+          await materials
+            .getByRole('heading', { name: '资料原文', exact: true })
+            .waitFor();
+          expect(f.materials.reads).toContain(first.revisionId);
+        } finally {
+          await f.close();
+        }
+      }, 30000);
 
   for (const theme of ['light', 'dark'] as const)
     for (const width of [1440, 390]) {
@@ -15652,7 +15909,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               .getByRole('searchbox', { name: '查找文件' })
               .locator('..')
               .boundingBox())!;
-            expect(Math.abs(filterBox.y - searchBox.y)).toBeLessThan(1);
+            expect(
+              Math.abs(
+                filterBox.y +
+                  filterBox.height / 2 -
+                  searchBox.y -
+                  searchBox.height / 2,
+              ),
+            ).toBeLessThanOrEqual(0.5);
           }
           expect(
             await employee

@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useEffect, useState } from 'react';
 import type { OrganizationActivityOverview } from '@allrice/contracts';
 import { AdminButton as Button } from '../../components/admin/admin-ui';
@@ -41,7 +42,7 @@ export function OrganizationActivity() {
       <div className={styles.selectors}>
         <label>
           公司
-          <select
+          <SelectField
             aria-label="公司"
             value={organizationId}
             onChange={(e) => choose(e.target.value)}
@@ -56,7 +57,7 @@ export function OrganizationActivity() {
                 {o.name}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <Button
           icon="refresh"

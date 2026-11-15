@@ -1,5 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { SelectField } from '../../components/select-field';
+import { SearchField } from '../../components/search-field';
 import { z } from 'zod';
 import {
   ReferenceRevisionSchema,
@@ -329,7 +331,7 @@ export function ReferenceLibrary({
         </p>
       )}
       <div className={css.toolbar}>
-        <input
+        <SearchField
           aria-label="查找参考资料"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
@@ -373,7 +375,7 @@ export function ReferenceLibrary({
                 actions={[{ id: 'refresh', label: '刷新预览' }]}
                 onAction={() => void open(selected, false)}
               >
-                <select
+                <SelectField
                   aria-label="参考资料版本"
                   value={selected.revisionId}
                   onChange={(e) =>
@@ -388,7 +390,7 @@ export function ReferenceLibrary({
                       v{v.revision}
                     </option>
                   ))}
-                </select>
+                </SelectField>
               </DocumentToolbar>
               {onSelect && (
                 <Button
@@ -431,7 +433,7 @@ export function ReferenceLibrary({
           <legend>{updating ? '更新参考资料' : '上传参考资料'}</legend>
           <label>
             保存范围
-            <select
+            <SelectField
               aria-label="资料保存范围"
               value={scope}
               disabled={!!updating}
@@ -457,12 +459,12 @@ export function ReferenceLibrary({
                   )}
                 </>
               )}
-            </select>
+            </SelectField>
           </label>
           {scope === 'department' && (
             <label>
               部门
-              <select
+              <SelectField
                 aria-label="资料所属部门"
                 value={department}
                 disabled={!!updating}
@@ -477,7 +479,7 @@ export function ReferenceLibrary({
                     {d.name}
                   </option>
                 ))}
-              </select>
+              </SelectField>
             </label>
           )}
           <label>

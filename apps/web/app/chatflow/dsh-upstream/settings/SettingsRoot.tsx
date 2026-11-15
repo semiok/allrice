@@ -9,6 +9,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import css from './SettingsRoot.module.css'
 import design from '../../settings-design.module.css'
+import { SelectField } from '../../../../components/select-field'
 
 /** Nav glyph by section id; unknown ids fall back to the settings gear. */
 function navIcon(id: string) {
@@ -80,7 +81,7 @@ export function SettingsPanel({ rows, renderSlot, activeId, onSelect, onClose }:
     >
         <nav className={css.nav}>
           <div className={css.navTitle} id={titleId}>{renderSlot('settings.header', {})}</div>
-          <select className={design.mobileNav} aria-label="设置页面" value={active} onChange={event => onSelect(event.target.value)}>{rows.map(row => <option key={row.id} value={row.id}>{row.label}</option>)}</select>
+          <SelectField className={design.mobileNav} aria-label="设置页面" value={active} onChange={event => onSelect(event.target.value)}>{rows.map(row => <option key={row.id} value={row.id}>{row.label}</option>)}</SelectField>
           <div className={css.navList}>
             {rows.map(row => (
               <button

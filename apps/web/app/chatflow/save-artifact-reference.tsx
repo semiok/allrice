@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { SelectField } from '../../components/select-field';
 import type { z } from 'zod';
 import {
   ReferenceArtifactSaveInputSchema,
@@ -170,7 +171,7 @@ function SaveDialog({
           <div className={css.upload}>
             <label>
               保存范围
-              <select
+              <SelectField
                 aria-label="保存范围"
                 disabled={readOnly || busy || !options?.writable}
                 value={scope}
@@ -184,12 +185,12 @@ function SaveDialog({
                 {options?.maintenanceLevel === 'company' && (
                   <option value="company">全公司</option>
                 )}
-              </select>
+              </SelectField>
             </label>
             {scope === 'department' && (
               <label>
                 部门
-                <select
+                <SelectField
                   aria-label="部门"
                   disabled={readOnly || busy}
                   value={departmentId}
@@ -200,7 +201,7 @@ function SaveDialog({
                       {d.name}
                     </option>
                   ))}
-                </select>
+                </SelectField>
               </label>
             )}
             <label>

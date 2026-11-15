@@ -157,3 +157,9 @@
 .presets .card {
   margin: 0;
 }
+
+.apps .credential input:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+  box-shadow: none;
+}

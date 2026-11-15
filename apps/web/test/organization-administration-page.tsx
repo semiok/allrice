@@ -1,3 +1,4 @@
+import '../app/dsh-upstream/design-platform.css';
 import { WorkAdoption } from '../app/chatflow/work-adoption';
 import { RuntimeConsole } from '../app/runtime-console/runtime-console';
 import { createRoot } from 'react-dom/client';

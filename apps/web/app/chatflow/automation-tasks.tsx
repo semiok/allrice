@@ -10,6 +10,8 @@ import {
   type FormEvent,
   type SetStateAction,
 } from 'react';
+import { SelectField } from '../../components/select-field';
+import { SearchField } from '../../components/search-field';
 import {
   Button,
   IconClockOutlineRegular,
@@ -310,7 +312,7 @@ export function AutomationTaskList(
                   ))}
                 </div>
                 {!props.sessionId && (
-                  <select
+                  <SelectField
                     aria-label="筛选员工"
                     className={css.employeeFilter}
                     value={employeeId}
@@ -322,19 +324,17 @@ export function AutomationTaskList(
                         {e.name}
                       </option>
                     ))}
-                  </select>
+                  </SelectField>
                 )}
               </div>
             )}
-            <label className={css.search}>
-              <span aria-hidden>⌕</span>
-              <input
-                aria-label="搜索自动化任务"
-                placeholder="搜索名称、工作内容或员工"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-            </label>
+            <SearchField
+              className={css.search}
+              aria-label="搜索自动化任务"
+              placeholder="搜索名称、工作内容或员工"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
             {error && (
               <p role="alert" className={native.notice}>
                 {error}
@@ -1040,7 +1040,7 @@ function AutomationDetailBody({
                 </label>
                 <label>
                   在哪个对话里执行
-                  <select
+                  <SelectField
                     aria-label="在哪个对话里执行"
                     value={draft.conversationMode ?? 'reuse'}
                     disabled={!editable || disabled}
@@ -1056,7 +1056,7 @@ function AutomationDetailBody({
                   >
                     <option value="reuse">沿用原对话</option>
                     <option value="new_each_run">每次新建对话</option>
-                  </select>
+                  </SelectField>
                 </label>
                 <p className={css.caption}>
                   只影响还没排队的执行，已经排队的这一轮不变。原对话仍用于管理这个任务和检查权限。
@@ -1065,7 +1065,7 @@ function AutomationDetailBody({
                 <div className={css.rules}>
                   <label>
                     重复
-                    <select
+                    <SelectField
                       aria-label="重复"
                       disabled={!editable || disabled}
                       value={draft.kind}
@@ -1100,7 +1100,7 @@ function AutomationDetailBody({
                       >
                         每月
                       </option>
-                    </select>
+                    </SelectField>
                   </label>
                   {draft.kind === 'every' ? (
                     <label>
@@ -1136,7 +1136,7 @@ function AutomationDetailBody({
                       </label>
                       <label>
                         时区
-                        <select
+                        <SelectField
                           aria-label="时区"
                           disabled={!editable || disabled}
                           value={draft.timezone}
@@ -1158,7 +1158,7 @@ function AutomationDetailBody({
                               </option>
                             ))}
                           </optgroup>
-                        </select>
+                        </SelectField>
                       </label>
                     </>
                   )}

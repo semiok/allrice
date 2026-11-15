@@ -1,5 +1,6 @@
 'use client';
 import { useState } from 'react';
+import { SelectField } from '../../components/select-field';
 import {
   ChangesetDocumentSchema,
   type RuntimeLocalCommand,
@@ -39,7 +40,7 @@ export function CommandCandidatePreview({
       )}
       <label>
         查看候选文件{' '}
-        <select
+        <SelectField
           value={selected}
           onChange={(e) => setSelected(Number(e.target.value))}
         >
@@ -48,7 +49,7 @@ export function CommandCandidatePreview({
               {f.path} · {f.before ? (f.after ? '修改' : '删除') : '新增'}
             </option>
           ))}
-        </select>
+        </SelectField>
       </label>
       <ToolFileDiff
         key={`${candidate.checksum}:${file.path}`}

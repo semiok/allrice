@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { Button, Input, Switch } from '@deepseek-ai/dsh-client-ui-primitives';
@@ -417,7 +418,7 @@ export function FolderRules({ workspaceId }: { workspaceId?: string }) {
                 </label>
                 <label>
                   负责的 AI 员工
-                  <select
+                  <SelectField
                     aria-label="负责的 AI 员工"
                     value={employee}
                     onChange={(e) => setEmployee(e.target.value)}
@@ -429,11 +430,11 @@ export function FolderRules({ workspaceId }: { workspaceId?: string }) {
                         {e.name}
                       </option>
                     ))}
-                  </select>
+                  </SelectField>
                 </label>
                 <label>
                   处理电脑
-                  <select
+                  <SelectField
                     aria-label="处理电脑"
                     value={device}
                     onChange={(e) => {
@@ -453,11 +454,11 @@ export function FolderRules({ workspaceId }: { workspaceId?: string }) {
                         {d.ready ? '' : ' · 请安装新版 AllRice 助手并保持在线'}
                       </option>
                     ))}
-                  </select>
+                  </SelectField>
                 </label>
                 <label>
                   已授权文件夹
-                  <select
+                  <SelectField
                     aria-label="已授权文件夹"
                     value={grant}
                     onChange={(e) => setGrant(e.target.value)}
@@ -469,7 +470,7 @@ export function FolderRules({ workspaceId }: { workspaceId?: string }) {
                         {g.label}
                       </option>
                     ))}
-                  </select>
+                  </SelectField>
                 </label>
                 <label>
                   监听子文件夹

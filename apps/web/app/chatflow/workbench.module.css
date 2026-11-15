@@ -18,7 +18,8 @@
       [data-terminal-guide] button,
       [data-native-subagent-id] button,
       :global(.md-code-block) [data-code-block-banner] button,
-      [data-employee-capabilities] button
+      [data-employee-capabilities] button,
+      [data-native-file-row] button
     )
   ),
 .entry {
@@ -35,10 +36,6 @@
   cursor: not-allowed;
 }
 .panel button:focus-visible:not(:where([data-employee-capabilities] button)),
-.panel input:focus-visible:not(:where([data-employee-capabilities] input)),
-.panel
-  textarea:focus-visible:not(:where([data-employee-capabilities] textarea)),
-.panel select:focus-visible:not(:where([data-employee-capabilities] select)),
 .entry:focus-visible {
   outline: 2px solid #4678e9;
   outline-offset: 2px;
@@ -80,9 +77,15 @@
 .row input {
   max-width: 80px;
 }
-.panel select:not(:where([data-employee-capabilities] select)),
+.panel
+  select:not(
+    :where([data-employee-capabilities] select, [data-select-field] select)
+  ),
 .panel textarea:not(:where([data-employee-capabilities] textarea)),
-.panel input:not(:where([data-employee-capabilities] input)) {
+.panel
+  input:not(
+    :where([data-employee-capabilities] input, [data-search-field] input)
+  ) {
   font: inherit;
   color: inherit;
   background: var(--dsw-alias-bg-base, #fff);
@@ -90,6 +93,26 @@
   border-radius: 6px;
   padding: 6px;
   max-width: 100%;
+}
+/* Unclassed host fields own this panel's fallback border. Published Input
+   internals and framed shared controls retain their component focus owner. */
+.panel
+  input:not(
+    [class],
+    [type='checkbox'],
+    [type='radio'],
+    [type='file'],
+    [type='color'],
+    [type='range']
+  ):focus:not(
+    :where([data-employee-capabilities] input, [data-search-field] input)
+  ),
+.panel
+  textarea:not([class]):focus:not(
+    :where([data-employee-capabilities] textarea)
+  ) {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
 }
 .selector {
   width: 100%;

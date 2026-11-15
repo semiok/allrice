@@ -325,10 +325,16 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
               { exact: true },
             ),
           );
-          await readable(
-            'required fields guidance',
-            dialog.getByText('名字和使命填好后才能创建', { exact: true }),
-          );
+          expect(
+            await dialog
+              .getByText('名字和使命填好后才能创建', { exact: true })
+              .count(),
+          ).toBe(0);
+          expect(
+            await dialog
+              .getByRole('button', { name: '确认创建', exact: true })
+              .isDisabled(),
+          ).toBe(true);
           expect(await dialog.getByText('默认', { exact: true }).count()).toBe(
             0,
           );
@@ -394,9 +400,24 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
           await expression.selectOption('concise');
           expect(await expression.inputValue()).toBe('concise');
           await expression.focus();
-          await expression.press('ArrowDown');
-          await expression.press('Enter');
+          // macOS headless Chrome cannot drive its OS select popup with arrows.
+          // A trusted character key uses the native Chinese option typeahead;
+          // keyboard.type would insert Unicode text instead of dispatching it.
+          const keyboard = await page.context().newCDPSession(page);
+          try {
+            await keyboard.send('Input.dispatchKeyEvent', {
+              type: 'char',
+              text: '结',
+              unmodifiedText: '结',
+            });
+          } finally {
+            await keyboard.detach();
+          }
           await expect.poll(() => expression.inputValue()).toBe('structured');
+          await dialog
+            .getByRole('textbox', { name: '员工名字', exact: true })
+            .fill('焦点验证');
+          expect(await expression.inputValue()).toBe('structured');
           await expression.selectOption('exploratory');
           expect(await expression.inputValue()).toBe('exploratory');
         }));

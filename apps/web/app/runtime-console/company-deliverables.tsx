@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useEffect, useState } from 'react';
 import { AdminButton as Button } from '../../components/admin/admin-ui';
 import {
@@ -56,7 +57,7 @@ export function CompanyDeliverableLibrary({
       <div className={styles.selectors}>
         <label>
           文件类型
-          <select
+          <SelectField
             aria-label="成果文件类型"
             value={format}
             onChange={(e) => setFormat(e.target.value)}
@@ -77,7 +78,7 @@ export function CompanyDeliverableLibrary({
                 {f.toUpperCase()}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label>
           <input
@@ -257,7 +258,7 @@ function CompanyFilePreview({
       <div className={styles.selectors}>
         <label>
           成果版本
-          <select
+          <SelectField
             aria-label="成果版本"
             value={selected.id}
             onChange={(e) => {
@@ -284,7 +285,7 @@ function CompanyFilePreview({
                 {new Date(r.createdAt).toLocaleString()}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         {history.data?.nextCursor && (
           <Button

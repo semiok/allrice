@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useState } from 'react';
 import {
   ExperienceCollectionPolicySchema,
@@ -114,7 +115,7 @@ export function ExperiencePolicyPanel({
         <div className={css.filters}>
           <label>
             整理频率
-            <select
+            <SelectField
               aria-label="整理频率"
               disabled={busy}
               value={settings.frequency}
@@ -129,7 +130,7 @@ export function ExperiencePolicyPanel({
               <option value="daily">每天</option>
               <option value="weekly">每周</option>
               <option value="monthly">每月</option>
-            </select>
+            </SelectField>
           </label>
           {settings.frequency !== 'off' && (
             <>
@@ -159,7 +160,7 @@ export function ExperiencePolicyPanel({
               {settings.frequency === 'weekly' && (
                 <label>
                   每周
-                  <select
+                  <SelectField
                     aria-label="每周"
                     disabled={busy}
                     value={settings.weekday}
@@ -177,7 +178,7 @@ export function ExperiencePolicyPanel({
                         </option>
                       ),
                     )}
-                  </select>
+                  </SelectField>
                 </label>
               )}
               {settings.frequency === 'monthly' && (

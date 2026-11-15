@@ -1,6 +1,7 @@
 'use client';
 
 import { useId, useRef, useState, type ReactNode } from 'react';
+import { SelectField } from '../../components/select-field';
 import {
   EmployeeInstanceProfileSchema,
   employeeColorPalette,
@@ -249,7 +250,7 @@ export function EmployeeProfileForm({
     setValues((before) => ({ ...before, [key]: value }));
   };
   const expressionSelect = (
-    <select
+    <SelectField
       id={`${id}-expression-style`}
       value={values.expressionStyle}
       onChange={(event) =>
@@ -262,7 +263,7 @@ export function EmployeeProfileForm({
       <option value="concise">简洁，结论优先</option>
       <option value="structured">结构清晰，分步说明</option>
       <option value="exploratory">比较方案与取舍</option>
-    </select>
+    </SelectField>
   );
   return (
     <form
@@ -411,11 +412,7 @@ export function EmployeeProfileForm({
             </div>
             <div className={css.field}>
               <label htmlFor={`${id}-expression-style`}>表达偏好</label>
-              {mode === 'create' ? (
-                <div className={css.expressionSelect}>{expressionSelect}</div>
-              ) : (
-                expressionSelect
-              )}
+              {expressionSelect}
             </div>
           </div>
         </div>
@@ -439,9 +436,6 @@ export function EmployeeProfileForm({
       </ProfileFields>
       {error || submitError ? <p role="alert">{error || submitError}</p> : null}
       <footer className={css.actions}>
-        {mode === 'create' && (
-          <p className={createCss.help}>名字和使命填好后才能创建</p>
-        )}
         {mode === 'edit' && reset && canResetEmployeePersona(reset.profile) && (
           <button
             type="button"

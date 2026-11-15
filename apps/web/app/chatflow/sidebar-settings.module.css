@@ -22,18 +22,26 @@
   color: var(--dsw-alias-label-secondary);
 }
 .section input,
-.section select,
 .section textarea {
   max-width: 100%;
   box-sizing: border-box;
 }
-.section input,
-.section select,
-.section textarea,
 .section button:not([role='switch']):not([data-computer-control]) {
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-bg-layer-2);
   border-color: var(--dsw-alias-border-primary, #d9dce2);
+}
+.section input:not([class], [type='checkbox'], [type='radio'], [type='file']),
+.section textarea {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-2);
+  border-color: var(--dsw-alias-border-primary, #d9dce2);
+}
+.section
+  input:not([class], [type='checkbox'], [type='radio'], [type='file']):focus,
+.section textarea:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
 }
 
 .preferenceRow {

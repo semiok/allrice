@@ -1,0 +1,60 @@
+/* The deliverables search field is the user-approved site-wide reference. */
+.field {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 9px;
+  background: var(--dsw-alias-bg-base);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
+  font-size: 13px;
+  font-weight: 400;
+}
+
+.field:focus-within {
+  /* Employee conversation accents must not recolor this shared control. */
+  border-color: light-dark(
+    var(--dsw-static-deepseek-500),
+    var(--dsw-static-deepseek-400)
+  );
+}
+
+.field > svg {
+  flex: none;
+  color: var(--dsw-alias-label-tertiary);
+}
+
+.field .input {
+  box-sizing: border-box;
+  flex: 1;
+  width: 80px;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.field .input:focus {
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+.field .input::placeholder {
+  color: var(--ar-text-placeholder);
+  opacity: 1;
+}

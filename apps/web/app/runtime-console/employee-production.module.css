@@ -57,40 +57,9 @@
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
 }
-.search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 10px;
-  min-height: var(--admin-control-height);
-  border: 1px solid var(--admin-control-border);
-  border-radius: var(--admin-control-radius);
-  color: var(--admin-muted);
-}
-.search:focus-within {
-  outline: 2px solid var(--admin-focus);
-  outline-offset: 2px;
-}
-.search input {
-  width: 100%;
-  min-width: 0;
-  padding: 6px 0;
-  border: 0;
-  background: transparent;
-  color: var(--admin-text);
-}
-.search input:focus-visible {
-  outline: 0;
-}
 .statusFilter {
   width: 100%;
-  min-height: var(--admin-control-height);
   margin-top: 8px;
-  padding: 6px 8px;
-  color: var(--admin-muted);
-  background: var(--admin-canvas);
-  border: 1px solid var(--admin-control-border);
-  border-radius: var(--admin-control-radius);
 }
 .employeeList {
   display: grid;
@@ -248,14 +217,14 @@
 .fieldWide {
   grid-column: 1 / -1;
 }
-.field > span {
+.field > span:not([data-select-field]) {
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
   font-weight: 400;
 }
 .field input,
 .field textarea,
-.field select {
+.field select[multiple] {
   width: 100%;
   min-width: 0;
   min-height: var(--admin-control-height);
@@ -728,4 +697,21 @@
   .audit span {
     text-align: left;
   }
+}
+
+.field
+  :is(
+    input:not(
+      [type='checkbox'],
+      [type='radio'],
+      [type='file'],
+      [type='range'],
+      [type='color']
+    ),
+    select[multiple],
+    textarea
+  ):focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+  box-shadow: none;
 }

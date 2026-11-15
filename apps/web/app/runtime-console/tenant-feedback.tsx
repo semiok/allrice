@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { AdminButton } from '../../components/admin/admin-ui';
 import { useEffect, useState } from 'react';
 import { FeedbackCategorySchema } from '@allrice/contracts';
@@ -129,7 +130,7 @@ export function TenantFeedback({
       <div className={css.filters}>
         <label>
           租户
-          <select
+          <SelectField
             aria-label="筛选租户"
             value={filters.organizationId ?? ''}
             onChange={(e) => changeFilter('organizationId', e.target.value)}
@@ -140,11 +141,11 @@ export function TenantFeedback({
                 {o.name}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label>
           员工
-          <select
+          <SelectField
             aria-label="筛选员工"
             value={filters.employeeId ?? ''}
             onChange={(e) => changeFilter('employeeId', e.target.value)}
@@ -155,11 +156,11 @@ export function TenantFeedback({
                 {e.name}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label>
           评价
-          <select
+          <SelectField
             aria-label="筛选评价"
             value={filters.rating ?? ''}
             onChange={(e) => changeFilter('rating', e.target.value)}
@@ -167,11 +168,11 @@ export function TenantFeedback({
             <option value="">全部评价</option>
             <option value="positive">好的回答</option>
             <option value="negative">有问题的回答</option>
-          </select>
+          </SelectField>
         </label>
         <label>
           分类
-          <select
+          <SelectField
             aria-label="筛选反馈分类"
             value={filters.category ?? ''}
             onChange={(e) => changeFilter('category', e.target.value)}
@@ -182,11 +183,11 @@ export function TenantFeedback({
                 {t(`category.${c}`)}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label>
           处理状态
-          <select
+          <SelectField
             aria-label="筛选处理状态"
             value={filters.status ?? ''}
             onChange={(e) => changeFilter('status', e.target.value)}
@@ -197,7 +198,7 @@ export function TenantFeedback({
                 {v}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
       </div>
       <p className={css.summary} aria-live="polite">
@@ -320,7 +321,7 @@ export function TenantFeedback({
                 <h3>处理记录</h3>
                 <label>
                   状态
-                  <select
+                  <SelectField
                     aria-label="反馈处理状态"
                     value={status}
                     onChange={(e) => setStatus(e.target.value)}
@@ -330,7 +331,7 @@ export function TenantFeedback({
                         {v}
                       </option>
                     ))}
-                  </select>
+                  </SelectField>
                 </label>
                 <label>
                   处理备注

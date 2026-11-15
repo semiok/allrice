@@ -1,5 +1,7 @@
 'use client';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { SelectField } from '../../components/select-field';
+import { SearchField } from '../../components/search-field';
 import {
   EmployeeDetailsSchema,
   ExperienceDraftBatchSchema,
@@ -157,7 +159,7 @@ function ExperienceBrowser(props: Props & { memoryWrites: MemoryWriteStore }) {
   return (
     <section className={css.panel} aria-label="经验管理">
       <div className={css.toolbar}>
-        <select
+        <SelectField
           aria-label="经验所属 AllRice 助手"
           value={currentEmployee}
           onChange={(event) => setEmployee(event.target.value)}
@@ -168,8 +170,8 @@ function ExperienceBrowser(props: Props & { memoryWrites: MemoryWriteStore }) {
               {item.name}
             </option>
           ))}
-        </select>
-        <select
+        </SelectField>
+        <SelectField
           aria-label="经验范围"
           disabled={tab !== 'effective'}
           value={scope}
@@ -180,7 +182,7 @@ function ExperienceBrowser(props: Props & { memoryWrites: MemoryWriteStore }) {
           <option value="department">部门经验</option>
           <option value="company">公司经验</option>
           <option value="platform">平台经验</option>
-        </select>
+        </SelectField>
         <button type="button" onClick={() => setRevision((n) => n + 1)}>
           刷新
         </button>
@@ -213,9 +215,8 @@ function ExperienceBrowser(props: Props & { memoryWrites: MemoryWriteStore }) {
       <div className={css.body}>
         {tab === 'effective' ? (
           <>
-            <input
+            <SearchField
               className={css.search}
-              type="search"
               aria-label="查找经验"
               placeholder="查找经验"
               value={query}

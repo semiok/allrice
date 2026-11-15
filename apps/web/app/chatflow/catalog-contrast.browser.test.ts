@@ -160,7 +160,7 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
           await open('references');
           await readable(
             'D06 查找资料',
-            page.getByRole('textbox', { name: '查找参考资料' }),
+            page.getByRole('searchbox', { name: '查找参考资料' }),
             '::placeholder',
           );
           await fits('references');
@@ -187,6 +187,105 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
     pseudo?: '::placeholder',
   ) => Promise<void>;
 
+  for (const theme of ['light', 'dark'])
+    it(`shares deliverables search chrome under a green employee accent (${theme})`, async () => {
+      const page = await browser.newPage({
+        viewport: { width: 1100, height: 900 },
+      });
+      try {
+        await page.goto(`${origin}/?case=search-parity&theme=${theme}`);
+        const automation = page.getByRole('region', {
+          name: '绿色员工的自动化任务',
+        });
+        const tasks = automation.getByRole('searchbox', {
+          name: '搜索自动化任务',
+        });
+        const files = page
+          .getByRole('region', { name: '交付成果搜索基准' })
+          .getByRole('searchbox', { name: '查找文件' });
+        const paint = (field: Locator) =>
+          field.evaluate((node) => {
+            const frame = node.closest('[data-search-field]')!;
+            const css = getComputedStyle(frame),
+              input = getComputedStyle(node);
+            const icon = frame.querySelector('svg')!.getBoundingClientRect();
+            const probe = document.createElement('span');
+            frame.append(probe);
+            probe.style.color =
+              'light-dark(var(--dsw-static-deepseek-500), var(--dsw-static-deepseek-400))';
+            const platform = getComputedStyle(probe).color;
+            probe.style.color = 'var(--dsw-alias-state-business-primary)';
+            const business = getComputedStyle(probe).color;
+            probe.remove();
+            return {
+              height: frame.getBoundingClientRect().height,
+              radius: css.borderRadius,
+              border: css.borderWidth,
+              color: css.borderColor,
+              background: css.backgroundColor,
+              shadow: css.boxShadow,
+              placeholder: getComputedStyle(node, '::placeholder').color,
+              icon: [icon.width, icon.height],
+              innerOutline: input.outlineStyle,
+              innerBorder: input.borderWidth,
+              innerShadow: input.boxShadow,
+              keyboard:
+                node === document.activeElement &&
+                node.matches(':focus-visible'),
+              platform,
+              business,
+            };
+          });
+        await tasks.waitFor();
+        const baseline = await paint(tasks),
+          reference = await paint(files);
+        for (const key of [
+          'height',
+          'radius',
+          'border',
+          'color',
+          'background',
+          'shadow',
+          'placeholder',
+          'icon',
+        ] as const)
+          expect(baseline[key]).toEqual(reference[key]);
+        expect(Math.abs(baseline.height - 38)).toBeLessThanOrEqual(0.5);
+        expect(baseline.radius).toBe('9px');
+        expect(baseline.icon).toEqual([18, 18]);
+        expect(baseline.business).not.toBe(baseline.platform);
+        for (const field of [tasks, files]) {
+          const before = await paint(field);
+          await field.focus();
+          await page.keyboard.press('Shift+Tab');
+          await page.keyboard.press('Tab');
+          const focused = await paint(field);
+          expect(focused.keyboard).toBe(true);
+          expect(focused.innerOutline).toBe('none');
+          expect(focused.innerBorder).toBe('0px');
+          expect(focused.innerShadow).toBe('none');
+          expect(focused.color).toBe(focused.platform);
+          expect(focused.background).toBe(before.background);
+          expect(focused.shadow).toBe(before.shadow);
+        }
+        await tasks.fill('不存在的任务');
+        await automation
+          .getByText('没有匹配的自动化任务', { exact: true })
+          .waitFor();
+        expect(await tasks.inputValue()).toBe('不存在的任务');
+        await tasks.fill('');
+        await automation
+          .getByRole('button')
+          .filter({ hasText: '每日工作提醒 40' })
+          .waitFor();
+        await files.fill('不存在的文件');
+        await page.getByText('未找到相关文件', { exact: true }).waitFor();
+        expect(await files.inputValue()).toBe('不存在的文件');
+      } finally {
+        await page.close();
+      }
+    });
+
   async function automation(page: Page, open: Open, readable: Readable) {
     await open('automation');
     const row = page.getByRole('button', { name: /每日工作提醒 40/ });
@@ -195,7 +294,7 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
     });
     await readable(
       'D04 搜索框',
-      page.getByRole('textbox', { name: '搜索自动化任务' }),
+      page.getByRole('searchbox', { name: '搜索自动化任务' }),
       '::placeholder',
     );
     await readable(
@@ -355,7 +454,7 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
     // Its platform reference library is portaled to <body>, outside that
     // palette, so the shared rule paints it.
     await page.getByRole('button', { name: '管理平台参考资料' }).click();
-    const field = page.getByRole('textbox', { name: '查找参考资料' });
+    const field = page.getByRole('searchbox', { name: '查找参考资料' });
     await readable('后台平台参考资料', field, '::placeholder');
     expect(
       await field.evaluate((element) => !element.closest('[data-admin-theme]')),

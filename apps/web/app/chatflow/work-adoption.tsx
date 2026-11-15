@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState } from 'react';
+import { SelectField } from '../../components/select-field';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { InvestmentRevision, InvestmentWork } from '@allrice/contracts';
 import { DshDialog } from './dsh-upstream/Dialog';
@@ -72,7 +73,7 @@ function AdoptionEditor(props: Parameters<typeof WorkAdoption>[0]) {
         <p role="alert">{list.error || linked.error}</p>
       )}
       <Field label="业务工作">
-        <select
+        <SelectField
           value={selected}
           disabled={!!linked.data?.entries.length}
           onChange={(e) => {
@@ -88,7 +89,7 @@ function AdoptionEditor(props: Parameters<typeof WorkAdoption>[0]) {
                 {r.content.title} · {(r.content as InvestmentWork).key}
               </option>
             ))}
-        </select>
+        </SelectField>
       </Field>
       {list.data?.nextCursor && (
         <Button
@@ -224,7 +225,10 @@ function WorkForm({
         />
       </Field>
       <Field label="人工处理基准（固定版本）">
-        <select value={baseline} onChange={(e) => setBaseline(e.target.value)}>
+        <SelectField
+          value={baseline}
+          onChange={(e) => setBaseline(e.target.value)}
+        >
           <option value="">未选择，节省工时暂未知</option>
           {baseline && !baselines.some((b) => b.id === baseline) && (
             <option value={baseline}>已保存的历史基准（保持原版本）</option>
@@ -237,7 +241,7 @@ function WorkForm({
                 : ''}
             </option>
           ))}
-        </select>
+        </SelectField>
       </Field>
       <Field label="实际人工投入（分钟；留空为未知，0 表示确认无人工投入）">
         <input
@@ -249,7 +253,7 @@ function WorkForm({
         />
       </Field>
       <Field label="投入覆盖">
-        <select
+        <SelectField
           value={scope}
           onChange={(e) =>
             setScope(e.target.value as 'complete' | 'review_only')
@@ -259,16 +263,16 @@ function WorkForm({
             完整流程：准备、复核、返工等全部人工投入
           </option>
           <option value="review_only">仅复核耗时（不计完整收益）</option>
-        </select>
+        </SelectField>
       </Field>
       <Field label="业务采用">
-        <select
+        <SelectField
           value={adopted ? 'yes' : 'no'}
           onChange={(e) => setAdopted(e.target.value === 'yes')}
         >
           <option value="no">尚未确认采用</option>
           <option value="yes">确认已采用这个成果版本</option>
-        </select>
+        </SelectField>
       </Field>
       {adopted && (
         <Field label="采用时间">

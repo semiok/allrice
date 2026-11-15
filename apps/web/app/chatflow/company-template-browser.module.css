@@ -58,8 +58,7 @@
   min-width: 0;
 }
 .editor textarea,
-.editor input,
-.detail select {
+.editor label > input:not([type='search']) {
   width: 100%;
   box-sizing: border-box;
   padding: 10px;
@@ -68,6 +67,11 @@
   background: var(--dsw-specific-input-major, #202630);
   color: inherit;
   font: inherit;
+}
+.editor textarea:focus,
+.editor label > input:not([type='search']):not([type='file']):focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
 }
 .editor fieldset {
   border: 1px solid var(--dsw-alias-border-l2, #394452);
@@ -128,4 +132,9 @@
 .button:focus-visible {
   outline: 2px solid currentColor;
   outline-offset: 2px;
+}
+.searchGroup {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
 }

@@ -24,6 +24,18 @@
   ],
   "adaptations": [
     {
+      "source": "packages/client/ui-sidebar-files/src/client/FilesBody.tsx (Entry file branch); FilesBody.module.css (body/row/fileIcon/name/tool)",
+      "target": "apps/web/app/chatflow/dsh-upstream/files/FileRow.tsx; apps/web/app/chatflow/file-row.module.css",
+      "reuse": "Reuse the pinned rc.2 Entry file branch and the already-synced unmodified FilesBody stylesheet: native source icon is 16px, with native spacing, name ellipsis and 28px tools.",
+      "productChanges": "User approved 28px FileTypeIcon for the double-line host rows on 2026-11-15, without a private icon box. Shared deliverables/materials row has sibling open/action buttons and favorite, audience, subtitle and search-excerpt slots. Keep permissions, callbacks and purpose/publication contracts unchanged."
+    },
+    {
+      "source": "packages/client/ui-settings-general/src/client/SettingsRoot.tsx",
+      "target": "apps/web/app/chatflow/dsh-upstream/settings/SettingsRoot.tsx",
+      "reuse": "Keep the native settings Modal, navigation buttons, focus trap and restoration.",
+      "productChanges": "The existing host-added mobile section dropdown uses shared SelectField, like all ordinary host selects. Native rc.2 exposes no general Select; browser options, values and keyboard behavior remain native."
+    },
+    {
       "source": "packages/client/ui-layout/src/client/AppFrame.tsx",
       "target": "apps/web/app/chatflow/workbench-splitter.tsx",
       "reuse": "DragHandle pointer capture, animation-frame throttling, frozen drag origin and frame ResizeObserver; native AppFrame handle/detailsCol CSS",
@@ -401,6 +413,14 @@
           "patchSha256": "f58bab15bdce591de89d88af4eab25d21fe95311f69bf96b5ddd8229c8818e64"
         },
         {
+          "source": "packages/client/ui-sidebar-files/src/client/FilesBody.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/files/FileRow.tsx",
+          "upstreamSha256": "52ac73a7a921b9702096331c29dd4a8b7f559da6e9d92ea3a225a62f826f52ee",
+          "sha256": "8753a1a836e418c95de9d19447b03008fa6db246ecadfaaada10a641aaa02457",
+          "patch": "scripts/dsh-ui-patches/native-files-FileRow.tsx.patch",
+          "patchSha256": "92f4e1249934ad9fb7ddfbbf4a20367e71500efc3ba4b9336f48c8ae4f81802a"
+        },
+        {
           "source": "packages/client/ui-sidebar-files/src/client/FilesBody.module.css",
           "target": "apps/web/app/chatflow/dsh-upstream/files/FilesBody.module.css",
           "upstreamSha256": "7ac1f0f136195ad639128394edb4355133071b9ff510b7d2caefed51773a8522",
@@ -707,9 +727,9 @@
           "source": "packages/client/ui-settings-general/src/client/SettingsRoot.tsx",
           "target": "apps/web/app/chatflow/dsh-upstream/settings/SettingsRoot.tsx",
           "upstreamSha256": "01966a7299b66d16b2f80106c72dd1f37c541bbfe2d3a0397ca9edd96c21f466",
-          "sha256": "73ce9ca4265f9148f6c1f82b83c5372b0d44a4581515d36563cec839006a1583",
+          "sha256": "e26e48a23e486b6bbdf533d60de4a876490da0c6dad1b935a06f89a49b8b9527",
           "patch": "scripts/dsh-ui-patches/native-settings-SettingsRoot.tsx.patch",
-          "patchSha256": "cc6a4f6655128b188fc744b0ee32b9c10f98aa1458208164eccb31cfc056c900"
+          "patchSha256": "9f4a4745431036c504167d08186bb72ad702f3fcbd0edd1a176b561070afb6d4"
         },
         {
           "source": "packages/client/ui-settings-general/src/client/SettingsRoot.module.css",

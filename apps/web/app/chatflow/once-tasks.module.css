@@ -67,9 +67,7 @@
   opacity: 0.5;
 }
 .trigger:focus-visible,
-.panel button:focus-visible,
-.panel input:focus-visible,
-.panel textarea:focus-visible {
+.panel button:focus-visible {
   outline: 2px solid #4678e9;
   outline-offset: 2px;
 }
@@ -126,6 +124,11 @@
   border: 1px solid var(--dsw-alias-border-l2, #d5d9df);
   border-radius: 6px;
   background: #fff;
+}
+.form input:focus,
+.form textarea:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
 }
 .form textarea {
   resize: vertical;

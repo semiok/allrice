@@ -1,5 +1,6 @@
 'use client';
 
+import { SelectField } from '../../components/select-field';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   AdminTenant,
@@ -126,7 +127,7 @@ export function TenantAdministration() {
       <div className={styles.selectors}>
         <label>
           租户
-          <select
+          <SelectField
             aria-label="管理租户"
             value={organizationId}
             disabled={loading || busy}
@@ -147,11 +148,11 @@ export function TenantAdministration() {
                 {t.name} · {t.slug}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label>
           工作区
-          <select
+          <SelectField
             aria-label="管理工作区"
             value={workspaceId}
             disabled={!selected || busy}
@@ -169,7 +170,7 @@ export function TenantAdministration() {
                 {w.name}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <button disabled={loading || busy || dirty} onClick={() => void load()}>
           刷新租户

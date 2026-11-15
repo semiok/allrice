@@ -72,7 +72,7 @@ details.record {
   gap: 6px;
   color: var(--admin-muted);
 }
-.root :where(input, select, textarea) {
+.root :where(input, textarea) {
   min-width: 0;
   max-width: 100%;
   font: inherit;
@@ -86,7 +86,7 @@ details.record {
   min-width: 280px;
   flex: 1;
 }
-.controls select {
+.controls [data-select-field] {
   max-width: 280px;
 }
 .controls input[type='time'] {
@@ -165,4 +165,20 @@ details.record {
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.root
+  :is(
+    input:not(
+      [type='checkbox'],
+      [type='radio'],
+      [type='file'],
+      [type='range'],
+      [type='color']
+    ),
+    textarea
+  ):focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+  box-shadow: none;
 }

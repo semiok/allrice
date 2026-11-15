@@ -1,5 +1,6 @@
 'use client';
 
+import { SelectField } from '../../components/select-field';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type {
@@ -22,9 +23,9 @@ import styles from './employee-production.module.css';
 import {
   AdminButton,
   AdminDialog,
-  AdminIcon,
   AdminStatus,
 } from '../../components/admin/admin-ui';
+import { SearchField } from '../../components/search-field';
 import { EmployeeSkills } from './employee-skills';
 import { PlatformReferenceLibrary } from './platform-reference-library';
 import { EmployeeTaskSuggestions } from './employee-task-suggestions';
@@ -1404,7 +1405,7 @@ function EmployeeTemplateEditor({
         </p>
         <label className={`${styles.field} ${styles.fieldWide}`}>
           <span>测试环境</span>
-          <select
+          <SelectField
             aria-label="测试环境"
             value={previewEnvironment}
             onChange={(event) => {
@@ -1417,7 +1418,7 @@ function EmployeeTemplateEditor({
           >
             <option value="platform">平台测试（默认）</option>
             <option value="company">指定公司环境</option>
-          </select>
+          </SelectField>
           <small>
             {previewEnvironment === 'platform'
               ? '使用平台模型和独立测试工作区，不读取公司资料，测试记录不会写入任何公司。'
@@ -1428,7 +1429,7 @@ function EmployeeTemplateEditor({
           <>
             <label className={`${styles.field} ${styles.fieldWide}`}>
               <span>公司工作区</span>
-              <select
+              <SelectField
                 aria-label="公司工作区"
                 value={previewWorkspaceId}
                 onChange={(event) => {
@@ -1442,11 +1443,11 @@ function EmployeeTemplateEditor({
                     {workspace.organizationName} · {workspace.name}
                   </option>
                 ))}
-              </select>
+              </SelectField>
             </label>
             <label className={`${styles.field} ${styles.fieldWide}`}>
               <span>测试使用的员工</span>
-              <select
+              <SelectField
                 aria-label="测试使用的员工"
                 value={previewOwnerId}
                 disabled={!previewWorkspaceId || previewPeopleLoading}
@@ -1460,7 +1461,7 @@ function EmployeeTemplateEditor({
                     {person.displayName}
                   </option>
                 ))}
-              </select>
+              </SelectField>
             </label>
           </>
         )}
@@ -1880,17 +1881,13 @@ function EmployeeTemplateEditor({
             <strong>员工目录</strong>
             <span>{directory.employees.length} 位</span>
           </div>
-          <label className={styles.search}>
-            <AdminIcon name="search" />
-            <input
-              type="search"
-              aria-label="查找 AI 员工"
-              placeholder="搜索名称或 Key"
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-          </label>
-          <select
+          <SearchField
+            aria-label="查找 AI 员工"
+            placeholder="搜索名称或 Key"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+          <SelectField
             className={styles.statusFilter}
             aria-label="员工发布状态"
             value={statusFilter}
@@ -1902,7 +1899,7 @@ function EmployeeTemplateEditor({
                 {label}
               </option>
             ))}
-          </select>
+          </SelectField>
           <div className={styles.employeeList}>
             {visibleEmployees.map((employee) => {
               const definition =

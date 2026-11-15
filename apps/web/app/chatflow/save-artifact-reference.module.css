@@ -41,8 +41,7 @@
   font-size: 12px;
   color: var(--dsw-alias-label-secondary);
 }
-.upload input,
-.upload select {
+.upload input {
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
@@ -54,6 +53,10 @@
   background: var(--dsw-alias-bg-base);
   font: inherit;
   font-size: 13px;
+}
+.upload input:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
 }
 .actions {
   display: flex;

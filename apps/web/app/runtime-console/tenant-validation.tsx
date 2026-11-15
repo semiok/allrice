@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { AdminButton } from '../../components/admin/admin-ui';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
@@ -198,7 +199,7 @@ export function TenantValidation(
           </p>
           <label>
             观察设备（不修改执行绑定）
-            <select
+            <SelectField
               aria-label="验收观察设备"
               value={deviceId}
               disabled={loading}
@@ -211,7 +212,7 @@ export function TenantValidation(
                   {d.status === 'online' ? '最近心跳在线' : '离线'}
                 </option>
               ))}
-            </select>
+            </SelectField>
           </label>
           <p>
             策略版本：{data.policyVersion ?? '未配置'}
@@ -337,7 +338,7 @@ export function TenantValidation(
           >
             <label>
               Run ID
-              <select
+              <SelectField
                 aria-label="选择验收 Run"
                 value={data.runs.some((r) => r.id === runId) ? runId : ''}
                 disabled={loading}
@@ -351,7 +352,7 @@ export function TenantValidation(
                     {r.id.slice(0, 8)} · {r.status} · {r.title}
                   </option>
                 ))}
-              </select>
+              </SelectField>
               <input
                 aria-label="完整验收 Run ID"
                 value={runId}
