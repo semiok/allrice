@@ -1,6 +1,7 @@
-import type {
-  ChatFlowEventEnvelope,
-  RuntimeOperationSnapshot,
+import {
+  UserQuestionRequestSchema,
+  type ChatFlowEventEnvelope,
+  type RuntimeOperationSnapshot,
 } from '@allrice/contracts';
 
 /** Already-authorized display facts; never an approval or execution authority. */
@@ -19,6 +20,7 @@ export interface WorkProcessReference {
   status: string;
   failed?: boolean;
   elapsedMs?: number;
+  requiresAttention?: boolean;
 }
 
 export type NativeExperienceKind =
@@ -31,6 +33,8 @@ export interface NativeExperienceItem {
   title: string;
   detail?: string;
   activityDetail?: string;
+  skillName?: string;
+  stopped?: boolean;
   modelWait?: boolean;
   sequence: number;
   lastSequence?: number;
@@ -42,6 +46,16 @@ export interface NativeExperienceItem {
 
 function text(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function interrupted(payload?: Record<string, unknown>) {
+  const error = payload?.error;
+  return (
+    !!error &&
+    typeof error === 'object' &&
+    'code' in error &&
+    error.code === 'interrupted'
+  );
 }
 
 function nativeKey(event: ChatFlowEventEnvelope, kind: NativeExperienceKind) {
@@ -101,6 +115,25 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
         }
       }
     }
+    if (event.sourceEvent?.type === 'session/user-question') {
+      const request = UserQuestionRequestSchema.safeParse(
+        event.sourceEvent.payload,
+      );
+      if (request.success && request.data.durable && request.data.callId) {
+        const id = `tool:${request.data.callId}`;
+        // The durable native request itself proves call ownership, even when
+        // its start event has not arrived. Never infer ownership from wording.
+        if (!items.has(id))
+          items.set(id, {
+            id,
+            kind: 'tool',
+            toolName: 'ask_user_question',
+            status: 'info',
+            title: '提问',
+            sequence: event.sequence,
+          });
+      }
+    }
     if (event.type === 'harness.native') {
       // DSH Chat excludes internal pruning from visible process nodes.
       // Filter the view only: durable events remain available for replay/audit.
@@ -147,6 +180,9 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
         sequence: previous?.sequence ?? event.sequence,
         lastSequence: event.sequence,
         toolName: text(event.sourceEvent?.payload.name) ?? previous?.toolName,
+        skillName:
+          text(event.sourceEvent?.payload.skillName) ?? previous?.skillName,
+        stopped: interrupted(event.sourceEvent?.payload) || previous?.stopped,
         activityDetail:
           text(event.sourceEvent?.payload.activityDetail) ??
           previous?.activityDetail,
@@ -200,6 +236,8 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
         sequence: previous?.sequence ?? event.sequence,
         lastSequence: event.sequence,
         toolName: name ?? previous?.toolName,
+        skillName: text(native.skillName) ?? previous?.skillName,
+        stopped: interrupted(native) || previous?.stopped,
         activityDetail:
           text(native.activityDetail) ??
           previous?.activityDetail ??

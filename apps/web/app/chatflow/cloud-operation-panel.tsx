@@ -373,6 +373,7 @@ export function CloudOperationCard({
   onAct,
   projectServiceContext,
   interactionOnly = false,
+  embedded = false,
 }: {
   op: CloudOperationView;
   projectServiceContext?: {
@@ -386,6 +387,7 @@ export function CloudOperationCard({
   laterSuccessId?: string;
   onAct: (op: CloudOperationView, decision: Decision) => void;
   interactionOnly?: boolean;
+  embedded?: boolean;
 }) {
   const [, revealMaterial] = useProcessMaterialReveal();
   const request = op.approval?.request,
@@ -913,85 +915,88 @@ export function CloudOperationCard({
     return null;
   return (
     <article
-      className={styles.card}
+      className={embedded ? undefined : styles.card}
       id={`operation-${op.snapshot.binding.attempt.operationId}`}
       data-process-operation={op.snapshot.binding.attempt.operationId}
       data-status={op.snapshot.status}
     >
-      {op.projectService && projectServiceContext && (
+      {!embedded && op.projectService && projectServiceContext && (
         <ProjectServiceCard
           service={op.projectService}
           {...projectServiceContext}
         />
       )}
-      <header className={styles.cloudHeader}>
-        <strong className={styles.title}>
-          <span className={styles.icon} aria-hidden="true">
-            <svg
-              width="17"
-              height="17"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.7"
-            >
-              {isMcp ? (
-                <>
-                  <rect x="3" y="8" width="8" height="13" rx="1.5" />
-                  <rect x="14" y="3" width="7" height="7" rx="1.5" />
-                  <path d="M3 14h14a1.5 1.5 0 0 1 1.5 1.5v4A1.5 1.5 0 0 1 17 21h-7" />
-                </>
-              ) : (
-                <path d="M6 18h12a4 4 0 0 0 .5-8A6.5 6.5 0 0 0 6 8a5 5 0 0 0 0 10Z" />
-              )}
-            </svg>
-          </span>
-          {proposal.kind === 'mcp'
-            ? '应用工具'
-            : proposal.kind === 'project'
-              ? '云端项目'
-              : proposal.dependencyResolution
-                ? '依赖准备'
-                : '云端计算'}
-        </strong>
-        <p className={styles.cloudScope}>
-          {proposal.kind === 'mcp' ? (
-            <>
-              <span className={styles.serviceHost} title={proposal.endpoint}>
-                {serviceHost(proposal.endpoint)}
-              </span>
-              <span>{mcpRiskLabel(proposal.risk)}</span>
-            </>
-          ) : (
-            <>
-              <span>
-                {proposal.kind === 'cloud' && proposal.dependencyResolution
-                  ? `${proposal.dependencyResolution.packages.length} 个依赖包`
-                  : `${
-                      proposal.kind === 'project'
-                        ? proposal.files.length
-                        : proposal.inputs.length
-                    } 个输入文件`}
-              </span>
-              <span className={styles.cloudLocation}>仅在云端执行</span>
-              <span>{proposal.network ? '按授权联网' : '不联网'}</span>
-            </>
-          )}
-        </p>
-        <div className={styles.cloudControls}>
-          <Tooltip label={fullStatus} side="top" align="end">
-            <span
-              className={styles.status}
-              role="status"
-              aria-label={cloudOperationCompactStatus(op)}
-            >
-              {cloudOperationCompactStatus(op)}
+      {!embedded && (
+        <header className={styles.cloudHeader}>
+          <strong className={styles.title}>
+            <span className={styles.icon} aria-hidden="true">
+              <svg
+                width="17"
+                height="17"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.7"
+              >
+                {isMcp ? (
+                  <>
+                    <rect x="3" y="8" width="8" height="13" rx="1.5" />
+                    <rect x="14" y="3" width="7" height="7" rx="1.5" />
+                    <path d="M3 14h14a1.5 1.5 0 0 1 1.5 1.5v4A1.5 1.5 0 0 1 17 21h-7" />
+                  </>
+                ) : (
+                  <path d="M6 18h12a4 4 0 0 0 .5-8A6.5 6.5 0 0 0 6 8a5 5 0 0 0 0 10Z" />
+                )}
+              </svg>
             </span>
-          </Tooltip>
-          {!interactionOnly && detailsToggle}
-          {stopButton}
-        </div>
-      </header>
+            {proposal.kind === 'mcp'
+              ? '应用工具'
+              : proposal.kind === 'project'
+                ? '云端项目'
+                : proposal.dependencyResolution
+                  ? '依赖准备'
+                  : '云端计算'}
+          </strong>
+          <p className={styles.cloudScope}>
+            {proposal.kind === 'mcp' ? (
+              <>
+                <span className={styles.serviceHost} title={proposal.endpoint}>
+                  {serviceHost(proposal.endpoint)}
+                </span>
+                <span>{mcpRiskLabel(proposal.risk)}</span>
+              </>
+            ) : (
+              <>
+                <span>
+                  {proposal.kind === 'cloud' && proposal.dependencyResolution
+                    ? `${proposal.dependencyResolution.packages.length} 个依赖包`
+                    : `${
+                        proposal.kind === 'project'
+                          ? proposal.files.length
+                          : proposal.inputs.length
+                      } 个输入文件`}
+                </span>
+                <span className={styles.cloudLocation}>仅在云端执行</span>
+                <span>{proposal.network ? '按授权联网' : '不联网'}</span>
+              </>
+            )}
+          </p>
+          <div className={styles.cloudControls}>
+            <Tooltip label={fullStatus} side="top" align="end">
+              <span
+                className={styles.status}
+                role="status"
+                aria-label={cloudOperationCompactStatus(op)}
+              >
+                {cloudOperationCompactStatus(op)}
+              </span>
+            </Tooltip>
+            {!interactionOnly && detailsToggle}
+            {stopButton}
+          </div>
+        </header>
+      )}
+      {embedded && stopButton}
       {!isMcp && notices}
       {isMcp && interactionOnly && (
         <div className={styles.receiptNotes}>
@@ -1259,6 +1264,7 @@ export function CloudOperationPanel({
           key={op.snapshot.binding.attempt.operationId}
           op={op}
           interactionOnly={interactionOnly}
+          embedded={!!children && op.proposal.kind === 'cloud'}
           runActive={runActive}
           laterSuccessId={laterSuccessfulMcpCall(op, operations)}
           busy={busy}
@@ -1276,9 +1282,30 @@ export function CloudOperationPanel({
       operations,
       renderOperation,
       feedback,
-      history: operations.map(cloudOperationMaterial),
+      history: operations.map((op) => ({
+        ...cloudOperationMaterial(op),
+        ...(op.proposal.kind === 'cloud'
+          ? {
+              requiresAttention: op.snapshot.status === 'waiting_user',
+              interaction: renderOperation(
+                op.snapshot.binding.attempt.operationId,
+                true,
+              ),
+            }
+          : {}),
+      })),
       interaction: operations.map((op) =>
-        renderOperation(op.snapshot.binding.attempt.operationId, true),
+        op.proposal.kind !== 'cloud' ? (
+          renderOperation(op.snapshot.binding.attempt.operationId, true)
+        ) : op.projectService ? (
+          <ProjectServiceCard
+            key={op.projectService.id}
+            service={op.projectService}
+            workspaceId={workspaceId}
+            tenantHeaders={tenantHeaders}
+            onChanged={() => setRevision((value) => value + 1)}
+          />
+        ) : null,
       ),
     });
   if (!operations.length && !loadError && !actionError && !readFeedback)

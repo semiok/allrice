@@ -36,10 +36,10 @@
       "productChanges": "PostgreSQL authoritative inbox instead of local runtime store; edit returns text and attachments to composer; tenant-scoped remove/steer; no browser scheduler"
     },
     {
-      "source": "packages/client/ui-primitives/src/DisclosureRow.tsx; packages/client/ui-conversation/src/client/chat/ReasoningRow.tsx",
-      "target": "apps/web/app/chatflow/dsh-upstream/DisclosureRow.tsx; apps/web/app/chatflow/work-process.tsx",
-      "reuse": "Native DisclosureRow and styles for the group and non-expandable step rows; category icons imported from the installed official ui-primitives 0.2.1-rc.2 package; keyboard expansion and running pulse.",
-      "productChanges": "Chronological Chinese activity descriptions from public lifecycle facts and known tool display fields; no raw reasoning, command bodies or argument JSON. Server wall time appears once in the header, including while expanded. Employee identity and conversation accents follow the selected assignment."
+      "source": "packages/client/ui-primitives/src/DisclosureRow.tsx; packages/client/ui-primitives/src/TextShimmer.tsx; packages/client/ui-tool/src/client/tool/components/ToolRow.tsx",
+      "target": "apps/web/app/chatflow/work-process.tsx; apps/web/app/chatflow/work-process-step.tsx",
+      "reuse": "Direct public DisclosureRow and TextShimmer from 0.2.1-rc.2; existing pinned native process grouping and presentation policy. No new private component copy: ToolRow cannot host authorized SaaS material/approval React nodes or shared reading-state aliases, so its public disclosure primitive remains the host seam.",
+      "productChanges": "Approved preview revisions 02–05: 12px/400 gray rows/details, 24px rows, shallow scrollport, total time outside, reliable per-step seconds without success tails; native failure/stopped colors and reduced motion. Only executing header follows employee accent; wider/lighter native shimmer. Frozen skill name only; exact durable question receipts inline; cloud computation actions inside original step, including when material precedes trace. MET-225 U02."
     },
     {
       "source": "packages/client/ui-sidebar-right/src/client/shell/SidebarRight.module.css",

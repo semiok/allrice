@@ -38,6 +38,44 @@ function event(
 }
 
 describe('projectNativeExperience', () => {
+  it('retains frozen skill names across completion and replay without raw arguments', () => {
+    const events = [
+      event(
+        1,
+        'tool.started',
+        { toolCallId: 'skill', name: 'skill' },
+        { skillName: 'spreadsheets' },
+      ),
+      event(2, 'tool.completed', { toolCallId: 'skill', name: 'skill' }),
+    ];
+    for (const input of [events, structuredClone(events).reverse()]) {
+      const items = projectNativeExperience(input);
+      expect(items).toHaveLength(1);
+      expect(items[0]?.skillName).toBe('spreadsheets');
+      expect(summarizeWorkProcess(items).steps[0]?.title).toBe(
+        '加载技能 · spreadsheets',
+      );
+    }
+  });
+  it('only uses the native interrupted error code for a stopped step', () => {
+    const rows = projectNativeExperience([
+      event(
+        1,
+        'tool.failed',
+        { toolCallId: 'a', name: 'read' },
+        { error: { code: 'interrupted' } },
+      ),
+      event(
+        2,
+        'tool.failed',
+        { toolCallId: 'b', name: 'read' },
+        { error: { code: 'timeout' } },
+      ),
+    ]);
+    expect(rows[0]?.stopped).toBe(true);
+    expect(rows[1]?.stopped).not.toBe(true);
+    expect(rows.map((row) => row.status)).toEqual(['failed', 'failed']);
+  });
   it('shows only the memory operation for five native prune events, including historical replay', () => {
     const events = Array.from({ length: 5 }, (_, i) => {
       const row = event(i + 1, 'harness.native', {

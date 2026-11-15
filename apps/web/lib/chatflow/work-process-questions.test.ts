@@ -128,7 +128,7 @@ describe('native question ownership in the process', () => {
     ).toBe(0);
   });
 
-  it('requires a schema-valid native session/call pair and the exact tool call', () => {
+  it('requires a schema-valid native session/call pair, including a durable request before its call trace', () => {
     const mismatched = events();
     mismatched[1]!.sourceEvent!.payload.nativeSessionId = `${session}-other`;
     expect(
@@ -140,7 +140,11 @@ describe('native question ownership in the process', () => {
     expect(
       workProcessQuestions([{ id: 'owner', events: missing }], [answer])
         .embeddedAnswerIds.size,
-    ).toBe(0);
+    ).toBe(1);
+    expect(
+      workProcessQuestions([{ id: 'owner', events: [events()[1]!] }], [answer])
+        .embeddedAnswerIds.size,
+    ).toBe(1);
     expect(
       workProcessQuestions([{ id: 'owner', events: [] }], [answer])
         .embeddedAnswerIds.size,

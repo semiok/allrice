@@ -1523,7 +1523,7 @@ suite('native subagent directory and employee sidebar', () => {
           expect(boxes[0]!.className).toBe(boxes[1]!.className);
           for (const box of boxes) {
             expect(box.stacked).toBe(width === 180);
-            if (width === 260) expect(box.gap).toBeCloseTo(12, 0);
+            if (width === 260) expect(box.gap).toBeCloseTo(8, 0);
           }
         }
         const focused = view
