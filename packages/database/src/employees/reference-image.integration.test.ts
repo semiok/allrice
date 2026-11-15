@@ -10,6 +10,7 @@ import {
 } from 'vitest';
 import { ReferenceReadsSchema } from '@allrice/contracts';
 import * as contracts from '@allrice/contracts';
+import * as imageFacts from '../reference-image.ts';
 import * as database from '../core/client.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -389,6 +390,55 @@ suite('v1.8 publication image reads at real Run and lease boundaries', () => {
       retryable: true,
     });
     expect(await receipts(run)).toEqual([]);
+  });
+  it('finds legacy unknown-image metadata and verifies its exact pin on demand', async () => {
+    const inspect = vi
+      .spyOn(imageFacts, 'inspectReferenceImage')
+      .mockReturnValue(null);
+    let saved: Awaited<ReturnType<typeof publish>>;
+    try {
+      saved = await publish(
+        png,
+        'application/octet-stream',
+        'legacy-r4a-fixture',
+      );
+    } finally {
+      inspect.mockRestore();
+    }
+    expect(saved.listed.canReference).toBe(false);
+    await expect(
+      readReferenceInputSelection(
+        x.context,
+        x.context.workspaceId!,
+        saved.revisionId,
+      ),
+    ).rejects.toBeInstanceOf(Error);
+    const run = await x.run();
+    const search = await executeEmployeeReferenceTool(
+      run.scope,
+      run.runtime.generationId,
+      run.worker,
+      'workspace.reference.search',
+      { query: 'legacy-r4a-fixture' },
+    );
+    const [metadata] = JSON.parse(search.modelContent).results;
+    expect(metadata).toMatchObject({
+      ...saved.pin,
+      readCapabilities: { text: false, image: false, archive: false },
+    });
+    expect(await receipts(run)).toEqual([]);
+    const pin = contracts.ReferenceReadImageInputSchema.parse(
+      Object.fromEntries(
+        ['sourceId', 'revisionId', 'digest', 'checksum'].map((key) => [
+          key,
+          metadata[key],
+        ]),
+      ),
+    );
+    expect(await invoke(run, pin)).toMatchObject({
+      referenceImage: { kind: 'image' },
+    });
+    expect(await receipts(run)).toHaveLength(1);
   });
   it('concurrent final receipt slot commits one result and refuses the other', async () => {
     const saved = await publish();

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   inspectReferenceImage,
   referenceReadCapabilities,
@@ -8,6 +9,24 @@ const png = Buffer.from(
   'base64',
 );
 describe('server-owned image eligibility facts', () => {
+  it('recognizes complete JPEG bytes and rejects truncated, concatenated and multi-picture containers', () => {
+    const jpeg = readFileSync(
+      new URL('./fixtures/reference-image.jpg', import.meta.url),
+    );
+    expect(inspectReferenceImage(jpeg)).toMatchObject({
+      mediaType: 'image/jpeg',
+      width: 1,
+      height: 1,
+      static: true,
+    });
+    const mpo = Buffer.from('ffe200064d504600', 'hex');
+    for (const bytes of [
+      jpeg.subarray(0, jpeg.length - 1),
+      Buffer.concat([jpeg, jpeg]),
+      Buffer.concat([jpeg.subarray(0, 2), mpo, jpeg.subarray(2)]),
+    ])
+      expect(inspectReferenceImage(bytes)).toBeNull();
+  });
   it('requires complete static container metadata within dimensions, pixels and bytes', () => {
     const fact = inspectReferenceImage(png);
     expect(fact).toMatchObject({

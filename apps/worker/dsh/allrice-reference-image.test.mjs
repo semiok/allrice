@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { URL } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import { Context } from '@deepseek-ai/cordis';
 import LocalAttachmentStore from '@deepseek-ai/dsh-attachment-local';
 import {
@@ -129,45 +131,61 @@ test('native save remains joined past the deadline before returning the business
     settled = true;
   });
   await started;
-  await new Promise((resolve) => setTimeout(resolve, 75));
+  await delay(75);
   assert.equal(settled, false);
   release();
   assert.equal((await result).error.code, 'REFERENCE_READ_TIMEOUT');
 });
-test('native persistence and image render retain a real attachment across store recreation', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'reference-image-'));
-  const ctx = new Context();
-  try {
-    const store = new LocalAttachmentStore(ctx, { dshHome: home });
-    const s = server(store, { inputModalities: ['image'] });
-    const result = await referenceImageOperation(s, 'save', params());
-    assert.ok(result.image);
-    const blocks = referenceImageOutput.render(
-      {},
-      { content: 'source R1', image: result.image },
-    );
-    assert.deepEqual(blocks, [
-      { type: 'text', text: 'source R1' },
-      { type: 'image', attachment: result.image },
-    ]);
-    await ctx.root.fiber.dispose();
-    const restoredContext = new Context();
+test.each(['png', 'jpeg'])(
+  'native %s persistence and render retain a real attachment across store recreation',
+  async (format) => {
+    const home = await mkdtemp(join(tmpdir(), 'reference-image-'));
+    const ctx = new Context();
     try {
-      const restored = new LocalAttachmentStore(restoredContext, {
-        dshHome: home,
-      });
-      const loaded = await restored.readImage(result.image);
-      assert.equal(loaded.data.byteLength, result.image.bytes);
+      const store = new LocalAttachmentStore(ctx, { dshHome: home });
+      const s = server(store, { inputModalities: ['image'] });
+      const input = params();
+      if (format === 'jpeg') {
+        input.data = (
+          await readFile(
+            new URL(
+              '../../../packages/database/src/fixtures/reference-image.jpg',
+              import.meta.url,
+            ),
+          )
+        ).toString('base64');
+        input.mediaType = 'image/jpeg';
+        input.name = 'diagram.jpg';
+      }
+      const result = await referenceImageOperation(s, 'save', input);
+      assert.ok(result.image);
+      const blocks = referenceImageOutput.render(
+        {},
+        { content: 'source R1', image: result.image },
+      );
+      assert.deepEqual(blocks, [
+        { type: 'text', text: 'source R1' },
+        { type: 'image', attachment: result.image },
+      ]);
+      await ctx.root.fiber.dispose();
+      const restoredContext = new Context();
+      try {
+        const restored = new LocalAttachmentStore(restoredContext, {
+          dshHome: home,
+        });
+        const loaded = await restored.readImage(result.image);
+        assert.equal(loaded.data.byteLength, result.image.bytes);
+      } finally {
+        await restoredContext.root.fiber.dispose();
+      }
+      assert.equal(result.image.width, 1);
+      assert.match(result.image.attachmentId, /^sha256:[a-f0-9]{64}$/);
     } finally {
-      await restoredContext.root.fiber.dispose();
+      await ctx.root.fiber.dispose();
+      await rm(home, { recursive: true, force: true });
     }
-    assert.equal(result.image.width, 1);
-    assert.match(result.image.attachmentId, /^sha256:[a-f0-9]{64}$/);
-  } finally {
-    await ctx.root.fiber.dispose();
-    await rm(home, { recursive: true, force: true });
-  }
-});
+  },
+);
 test('structured native error codes map without parsing text; storage faults stay failures', async () => {
   for (const [native, code, reason] of [
     ['INVALID_IMAGE', 'REFERENCE_READ_INVALID', 'image_decode'],
