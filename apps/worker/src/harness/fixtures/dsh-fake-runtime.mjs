@@ -611,9 +611,9 @@ lines.on('line', (line) => {
       },
     });
     text = 'skill task complete';
-  } else if (prompt.startsWith('native-reference-failure:')) {
+  } else if (prompt.includes('native-reference-failure:')) {
     const scenario = JSON.parse(
-      prompt.slice('native-reference-failure:'.length),
+      prompt.split('native-reference-failure:')[1].split('\n')[0],
     );
     event(sessionId, 'tool/call', {
       turn,

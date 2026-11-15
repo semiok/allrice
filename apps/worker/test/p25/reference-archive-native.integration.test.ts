@@ -370,7 +370,7 @@ suite('R4b real native directory/text/image results and cold history', () => {
         threadId: sessionId,
         turnId: null,
         sessionId: run.scope.sessionId,
-        messageId: null,
+        messageId: run.sent.assistantMessage.id,
         toolCallId: calls[3],
         name: 'workspace.reference.archive_read',
         label: 'workspace.reference.archive_read',
