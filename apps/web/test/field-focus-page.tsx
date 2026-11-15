@@ -27,7 +27,6 @@ import { ReferencePublicationDialog } from '../app/chatflow/reference-publicatio
 import { ReferenceLibrary } from '../app/chatflow/reference-library';
 import { SessionReferencePicker } from '../app/chatflow/session-reference-picker';
 import { CompanyTemplateBrowser } from '../app/chatflow/company-template-browser';
-import { WorkbenchExperiencePanel } from '../app/chatflow/workbench-experience-panel';
 import { SidebarSettings } from '../app/chatflow/sidebar-settings';
 import { AutomationTaskList } from '../app/chatflow/automation-tasks';
 import { WorkspaceFilePreview } from '../app/chatflow/workspace-file-preview';
@@ -270,7 +269,6 @@ const controls: Record<string, FocusControl[]> = {
   'legacy-references': [search('search', '查找参考资料')],
   'session-picker': [search('search', '搜索会话')],
   templates: [search('search', '查找范本'), select('category', '范本分类')],
-  experience: [search('search', '查找经验')],
 };
 const requiredRead: Record<string, string[]> = {
   deliverables: ['/api/v1/workbench/files'],
@@ -279,9 +277,6 @@ const requiredRead: Record<string, string[]> = {
   'legacy-references': ['/api/v1/references'],
   'session-picker': ['/api/v1/sessions'],
   templates: ['/api/v1/company-assets'],
-  experience: employees.map(
-    (item) => `/api/v1/employee-instances/${item.id}/content`,
-  ),
 };
 const reads: string[] = [];
 const writes: string[] = [];
@@ -597,18 +592,6 @@ function Fixture() {
         workspaceId={workspaceId}
         headers={headers}
         onClose={noop}
-      />
-    );
-  else if (caseName === 'experience')
-    content = (
-      <WorkbenchExperiencePanel
-        scopeId="preview-fixture"
-        workspaceId={workspaceId}
-        employees={employees}
-        headers={headers}
-        active
-        automatic={false}
-        onCorrect={noop}
       />
     );
   else if (caseName.startsWith('canvas-')) content = <CanvasPreview />;
