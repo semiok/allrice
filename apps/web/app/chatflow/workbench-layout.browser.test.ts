@@ -4892,15 +4892,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ).toBeUndefined();
           }
           expect(reads).toEqual([]);
-        } catch (error) {
-          await f.page.screenshot({
-            path: `${screenshots}/failure-${width}-${appearance}-${scenario.scene}.png`,
-          });
-          await writeFile(
-            `${screenshots}/failure-${width}-${appearance}-${scenario.scene}.txt`,
-            await f.page.locator('body').innerText(),
-          );
-          throw error;
         } finally {
           await f.close();
         }
