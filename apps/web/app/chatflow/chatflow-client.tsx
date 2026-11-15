@@ -106,7 +106,6 @@ import { projectPendingUserQuestion } from '../../lib/chatflow/user-question-sta
 import { projectNativeExperience } from '../../lib/chatflow/native-experience';
 
 import { type ReferenceDraft } from './reference-chips';
-import { SessionReferencePicker } from './session-reference-picker';
 import { DraftChatComposer } from './chat-composer';
 import { createComposerDraftStore } from '../../lib/chatflow/composer-draft-store';
 import { type CompanyDraftReference } from './company-template-use';
@@ -262,7 +261,6 @@ export function ChatFlowClient({
   const [sessionReferences, setSessionReferences] = useState<
     SessionReference[]
   >([]);
-  const [referencePickerOpen, setReferencePickerOpen] = useState(false);
   const [referenceSelections, setReferenceSelections] = useState<
     ReferenceDraft[]
   >([]);
@@ -508,7 +506,6 @@ export function ChatFlowClient({
     setSessionReferences([]);
     setReferenceSelections([]);
     setReferenceFailure(null);
-    setReferencePickerOpen(false);
     setReferenceLibraryOpen(false);
     setReferenceToView(null);
     setCompanyReferences([]);
@@ -1080,7 +1077,6 @@ export function ChatFlowClient({
     fileInput,
     filePickerOpen,
     openVersionHistory,
-    openWorkspaceFiles,
     pendingAttachments,
     persistPendingAttachment,
     removePendingAttachment,
@@ -1657,7 +1653,6 @@ export function ChatFlowClient({
       setSessionReferences([]);
       setReferenceSelections([]);
       setCompanyReferences([]);
-      setReferencePickerOpen(false);
       setDraft('');
     }
     if (layout.compact) setSidebarCollapsed(true);
@@ -1720,7 +1715,6 @@ export function ChatFlowClient({
     setSessionReferences([]);
     setReferenceSelections([]);
     setCompanyReferences([]);
-    setReferencePickerOpen(false);
     clearPendingAttachments();
     setEmployeeCreateOpen(false);
     requestAnimationFrame(() => composerInput.current?.focus());
@@ -2400,7 +2394,6 @@ export function ChatFlowClient({
         )
       }
       sessionReferences={sessionReferences}
-      onOpenSessionReferences={() => setReferencePickerOpen(true)}
       referenceSelections={referenceSelections}
       unavailableReferenceRevisionIds={unavailableReferenceRevisionIds}
       onRemoveReference={(id) => {
@@ -2415,11 +2408,6 @@ export function ChatFlowClient({
             current ? { ...current, revisionIds: remaining } : null,
           );
         }
-      }}
-      onOpenReferenceLibrary={() => {
-        setRecommendedTemplates(false);
-        setReferenceToView(null);
-        setReferenceLibraryOpen(true);
       }}
       onRemoveSessionReference={(id) =>
         setSessionReferences((current) =>
@@ -2451,7 +2439,12 @@ export function ChatFlowClient({
       onCancelRun={cancelRun}
       onLoadBridgeDevices={openBridgeSettings}
       onOpenAttachment={setAttachmentPreview}
-      onOpenWorkspaceFiles={openWorkspaceFiles}
+      onOpenDeliverables={
+        workbenchEnabled ? () => requestWorkbenchModule('files') : undefined
+      }
+      onOpenMaterials={
+        workbenchEnabled ? () => requestWorkbenchModule('materials') : undefined
+      }
       onRemoveAttachment={removePendingAttachment}
       onRetryAttachment={(target) => {
         setPendingAttachments((current) =>
@@ -2749,7 +2742,6 @@ export function ChatFlowClient({
             setSessionReferences([]);
             setReferenceSelections([]);
             setCompanyReferences([]);
-            setReferencePickerOpen(false);
             setDraft('');
           }
           selectSession(sessionId);
@@ -3286,7 +3278,6 @@ export function ChatFlowClient({
               setSessionReferences([]);
               setReferenceSelections([]);
               setCompanyReferences([]);
-              setReferencePickerOpen(false);
               setDraft('');
             }
             selectSession(sessionId);
@@ -3650,7 +3641,6 @@ export function ChatFlowClient({
               setSessionReferences([]);
               setReferenceSelections([]);
               setCompanyReferences([]);
-              setReferencePickerOpen(false);
               setDraft('');
             }
             selectSession(sessionId);
@@ -3741,19 +3731,6 @@ export function ChatFlowClient({
         <div className={publicationUi.toast} role="status">
           {publicationNotice.text}
         </div>
-      )}
-      {referencePickerOpen && (
-        <SessionReferencePicker
-          workspaceId={workspace.workspaceId}
-          activeId={activeId}
-          headers={tenantHeaders}
-          selected={sessionReferences}
-          onChange={setSessionReferences}
-          onClose={() => {
-            setReferencePickerOpen(false);
-            composerInput.current?.focus();
-          }}
-        />
       )}
       <WorkspaceFilePickerDialog
         key={`${workspace.workspaceId}:${activeId ?? 'draft'}`}

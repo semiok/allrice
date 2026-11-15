@@ -7308,7 +7308,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   it.each([390, 1440])(
     'keeps one shared reference surface across parent refreshes, closes it and quotes the exact revision at %ipx',
     async (width) => {
-      const f = await fixture({ width });
+      const f = await fixture({ width, disabled: true });
       try {
         const shared = {
           ...fileReference(
@@ -7342,10 +7342,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
         for (let cycle = 0; cycle < 2; cycle++) {
           await f.page
-            .getByRole('button', { name: '添加文件', exact: true })
-            .click();
-          await f.page
-            .getByRole('menuitem', { name: '参考资料', exact: true })
+            .getByRole('button', { name: '参考资料', exact: true })
             .click();
           await dialog
             .getByRole('textbox', { name: '查找参考资料', exact: true })
@@ -7377,10 +7374,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ).not.toBe('hidden');
         }
         await f.page
-          .getByRole('button', { name: '添加文件', exact: true })
-          .click();
-        await f.page
-          .getByRole('menuitem', { name: '参考资料', exact: true })
+          .getByRole('button', { name: '参考资料', exact: true })
           .click();
         await dialog
           .getByRole('button', { name: '引用 v1', exact: true })
@@ -7414,7 +7408,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   ])(
     'prepares exact company template parameters without submitting, then preserves them in the original send at $width px (recommended=$recommended)',
     async ({ width, recommended }) => {
-      const f = await fixture({ width, taskSuggestions: recommended });
+      const f = await fixture({
+        width,
+        taskSuggestions: recommended,
+        disabled: !recommended,
+      });
       const revisionId = id(8401),
         assetId = id(8402);
       const asset = CompanyAssetSchema.parse({
@@ -7570,10 +7568,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         if (recommended) await openQuickDirectory();
         else {
           await f.page
-            .getByRole('button', { name: '添加文件', exact: true })
-            .click();
-          await f.page
-            .getByRole('menuitem', { name: '参考资料', exact: true })
+            .getByRole('button', { name: '参考资料', exact: true })
             .click();
         }
         if (!recommended)
@@ -7794,7 +7789,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '创建员工', exact: true })
           .click();
         const picker = f.page.getByRole('dialog', {
-          name: '创建一位 AI 员工',
+          name: '创建 AI 员工',
           exact: true,
         });
         await picker.waitFor();
@@ -8177,7 +8172,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.page.getByRole('dialog', { name: '选择 AI 员工' }).count(),
         ).toBe(0);
         const picker = f.page.getByRole('dialog', {
-          name: '创建一位 AI 员工',
+          name: '创建 AI 员工',
         });
         await picker.getByRole('combobox', { name: '表达偏好' }).waitFor();
         expect(
@@ -8878,7 +8873,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
           await createTrigger.click();
           const dialog = f.page.getByRole('dialog', {
-            name: '创建一位 AI 员工',
+            name: '创建 AI 员工',
             exact: true,
           });
           const name = dialog.getByRole('textbox', {
@@ -10584,7 +10579,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page
         .getByRole('button', { name: '创建员工', exact: true })
         .click();
-      const create = f.page.getByRole('dialog', { name: '创建一位 AI 员工' });
+      const create = f.page.getByRole('dialog', { name: '创建 AI 员工' });
       await create.waitFor();
       const nameInput = create.getByRole('textbox', {
         name: '员工名字',
@@ -10703,13 +10698,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByRole('button', { name: '创建员工', exact: true })
           .click();
         if (employeeCount)
-          await f.page
-            .getByRole('dialog', { name: '创建一位 AI 员工' })
-            .waitFor();
+          await f.page.getByRole('dialog', { name: '创建 AI 员工' }).waitFor();
         expect(
-          await f.page
-            .getByRole('dialog', { name: '创建一位 AI 员工' })
-            .count(),
+          await f.page.getByRole('dialog', { name: '创建 AI 员工' }).count(),
         ).toBe(employeeCount ? 1 : 0);
         if (!employeeCount)
           expect(
@@ -14019,6 +14010,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         material(9710, '写作习惯.md'),
         material(9720, '待处理资料.md', { processing: 'failed' }),
       ],
+      departments: [] as Array<{ id: string; name: string }>,
       denied: new Set<string>(),
       catalogStatus: 200,
       catalogViewer: user,
@@ -14116,7 +14108,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               maintenanceLevel: 'personal',
               writable: true,
               departmentId: null,
-              departments: [],
+              departments: state.departments,
             },
           },
           state.catalogStatus,
@@ -14236,6 +14228,414 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .click();
     }
   }
+
+  for (const theme of ['light', 'dark'] as const)
+    for (const width of [1440, 390])
+      it(`composer add menu opens existing file sidebars at ${width}px ${theme}`, async () => {
+        const f = await materialFixture({ width, appearance: theme });
+        try {
+          const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+          await input.fill('打开资料目录时保留当前草稿');
+          const add = f.page.getByRole('button', {
+            name: '添加文件',
+            exact: true,
+          });
+          await add.click();
+          const menu = f.page.getByRole('menu');
+          expect(await menu.getByRole('menuitem').allTextContents()).toEqual([
+            '交付成果',
+            '企业资料',
+            '本地上传',
+          ]);
+          expect(
+            await menu.getByText('添加到本轮', { exact: true }).count(),
+          ).toBe(0);
+          await f.page.keyboard.press('Escape');
+          await menu.waitFor({ state: 'hidden' });
+          expect(
+            await add.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          for (const name of ['交付成果', '企业资料']) {
+            await add.click();
+            await menu.getByRole('menuitem', { name, exact: true }).click();
+            await f.panel.getByRole('region', { name, exact: true }).waitFor();
+            await menu.waitFor({ state: 'hidden' });
+            // The existing mobile workbench is itself a modal; opening a
+            // directory must not add any separate picker dialog.
+            expect(
+              await f.page
+                .getByRole('dialog')
+                .evaluateAll((nodes) => nodes.map((node) => node.id)),
+            ).toEqual(width === 390 ? ['artifact-workbench'] : []);
+            expect(await input.inputValue()).toBe('打开资料目录时保留当前草稿');
+            expect(f.state.messageInputs).toEqual([]);
+            const box = (await f.panel.boundingBox())!;
+            expect(box.x).toBeGreaterThanOrEqual(-0.5);
+            expect(box.x + box.width).toBeLessThanOrEqual(width + 0.5);
+            await f.panel
+              .getByRole('button', { name: '关闭工作台', exact: true })
+              .click();
+            await f.panel.waitFor({ state: 'hidden' });
+          }
+          await add.click();
+          const chooser = f.page.waitForEvent('filechooser');
+          await menu
+            .getByRole('menuitem', { name: '本地上传', exact: true })
+            .click();
+          expect((await chooser).isMultiple()).toBe(true);
+          await menu.waitFor({ state: 'hidden' });
+          expect(await input.inputValue()).toBe('打开资料目录时保留当前草稿');
+          expect(f.state.messageInputs).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      });
+
+  for (const width of [1440, 390])
+    it(`composer add menu respects the workbench switch at ${width}px`, async () => {
+      const f = await fixture({ width, disabled: true });
+      try {
+        await f.page
+          .getByRole('button', { name: '添加文件', exact: true })
+          .click();
+        const menu = f.page.getByRole('menu');
+        for (const name of ['交付成果', '企业资料'])
+          expect(
+            await menu
+              .getByRole('menuitem', { name, exact: true })
+              .isDisabled(),
+          ).toBe(true);
+        expect(
+          await menu
+            .getByRole('menuitem', { name: '本地上传', exact: true })
+            .isEnabled(),
+        ).toBe(true);
+        expect(await f.panel.count()).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
+
+  for (const theme of ['light', 'dark'] as const)
+    for (const width of [1440, 390, 320])
+      it(`MET247 native file rows keep shared geometry, dates and independent actions at ${width}px ${theme}`, async () => {
+        const f = await materialFixture({ width, appearance: theme });
+        try {
+          const composer = f.page.getByRole('textbox', {
+            name: /给 .* 的消息/,
+          });
+          const waitForReferenceFocus = () =>
+            expect
+              .poll(() =>
+                composer.evaluate((node) => document.activeElement === node),
+              )
+              .toBe(true);
+          const dates = await f.page.evaluate(() => {
+            const today = new Date();
+            today.setHours(10, 30, 0, 0);
+            const other = new Date(today);
+            other.setDate(other.getDate() - 1);
+            other.setHours(22, 45);
+            return {
+              today: today.toISOString(),
+              other: other.toISOString(),
+              otherLabel: `${other.getMonth() + 1}/${other.getDate()}`,
+            };
+          });
+          const name =
+            '很长的中英文文件名称-QuarterlyFinancialReview-'.repeat(6) + '.md';
+          const purpose = '只在这份已发布资料展示的超长用途说明。'.repeat(20);
+          const department = '财务与跨境业务复核部门'.repeat(10);
+          const first = f.materials.references[0]!,
+            second = f.materials.references[1]!;
+          first.fileName = name;
+          first.purpose = purpose;
+          first.createdAt = dates.today;
+          first.publication!.audience = {
+            scope: 'departments',
+            departmentIds: [id(60)],
+          };
+          second.createdAt = dates.other;
+          f.materials.references.splice(2);
+          f.materials.departments.push({ id: id(60), name: department });
+          const delivery = catalogFile(9860, {
+            fileName: name,
+            category: 'artifact',
+            createdAt: dates.today,
+          });
+          const earlier = catalogFile(9861, {
+            fileName: '以前的交付.md',
+            category: 'artifact',
+            createdAt: dates.other,
+          });
+          f.state.workbenchFiles.splice(
+            0,
+            f.state.workbenchFiles.length,
+            delivery,
+            earlier,
+          );
+          f.state.favoriteIds.add(`${user}/${workspace}/${delivery.objectId}`);
+          const dimensions = (row: Locator) =>
+            row.evaluate((node) => {
+              const box = node.getBoundingClientRect(),
+                style = getComputedStyle(node);
+              const open = node.querySelector('[data-file-row-open]')!;
+              const icon = open.querySelector('svg')!.getBoundingClientRect();
+              const name = node.querySelector('[data-file-row-name]')!,
+                text = getComputedStyle(name);
+              const subtitle = node.querySelector('[data-file-row-subtitle]')!;
+              const actions = node.querySelector('[data-file-row-actions]')!,
+                tools = [...actions.querySelectorAll('button')];
+              const list = node.parentElement!,
+                listStyle = getComputedStyle(list);
+              const line = getComputedStyle(node, '::after');
+              const rows = list.querySelectorAll(
+                ':scope > [data-native-file-row]',
+              );
+              const lastLine = getComputedStyle(
+                rows[rows.length - 1]!,
+                '::after',
+              );
+              const probe = document.createElement('span');
+              probe.style.color = 'var(--dsw-alias-border-l3)';
+              list.append(probe);
+              const separatorColor = getComputedStyle(probe).color;
+              probe.remove();
+              return {
+                height: box.height,
+                padding: [
+                  style.paddingTop,
+                  style.paddingRight,
+                  style.paddingBottom,
+                  style.paddingLeft,
+                ],
+                gap: style.gap,
+                border: style.borderBottomWidth,
+                separator: {
+                  content: line.content,
+                  position: line.position,
+                  height: line.height,
+                  bottom: line.bottom,
+                  left: line.left,
+                  right: line.right,
+                  color: line.backgroundColor,
+                  pointerEvents: line.pointerEvents,
+                  expectedColor: separatorColor,
+                  lastContent: lastLine.content,
+                },
+                font: [text.fontSize, text.fontWeight, text.lineHeight],
+                ellipsis: text.textOverflow,
+                icon: [icon.width, icon.height],
+                actions: tools.map((tool) => {
+                  const at = tool.getBoundingClientRect();
+                  return [at.width, at.height];
+                }),
+                actionWidth: actions.getBoundingClientRect().width,
+                actionInset: box.right - actions.getBoundingClientRect().right,
+                subtitleStyle: [
+                  getComputedStyle(subtitle).fontSize,
+                  getComputedStyle(subtitle).lineHeight,
+                  getComputedStyle(subtitle).textOverflow,
+                ],
+                subtitleTitle: subtitle.getAttribute('title'),
+                subtitleText: subtitle.textContent,
+                nameClipped: name.scrollWidth > name.clientWidth,
+                noNestedButtons: node.querySelector('button button') === null,
+                inside:
+                  box.x >= 0 &&
+                  box.right <= innerWidth &&
+                  node.scrollWidth <= node.clientWidth,
+                list: [
+                  listStyle.paddingTop,
+                  listStyle.paddingRight,
+                  listStyle.paddingBottom,
+                  listStyle.paddingLeft,
+                  listStyle.marginRight,
+                  listStyle.scrollbarGutter,
+                ],
+              };
+            });
+          const measure = async (row: Locator) => {
+            const seen = await dimensions(row);
+            expect(Math.abs(seen.height - 49.5)).toBeLessThanOrEqual(0.5);
+            expect(seen.padding).toEqual(['5px', '10px', '5px', '10px']);
+            expect(seen.gap).toBe('6px');
+            expect(seen.border).toBe('0px');
+            expect(seen.separator).toEqual({
+              content: '""',
+              position: 'absolute',
+              height: '0.5px',
+              bottom: '0px',
+              left: '10px',
+              right: '10px',
+              color: seen.separator.expectedColor,
+              pointerEvents: 'none',
+              expectedColor: seen.separator.expectedColor,
+              lastContent: 'none',
+            });
+            expect(seen.font).toEqual(['13px', '400', '19.5px']);
+            expect(seen.ellipsis).toBe('ellipsis');
+            expect(seen.icon).toEqual([28, 28]);
+            expect(seen.actions).toEqual([
+              [28, 28],
+              [28, 28],
+            ]);
+            expect(Math.abs(seen.actionWidth - 56)).toBeLessThanOrEqual(0.5);
+            expect(Math.abs(seen.actionInset - 10)).toBeLessThanOrEqual(0.5);
+            expect(seen.subtitleStyle).toEqual(['12px', '18px', 'ellipsis']);
+            expect(seen.nameClipped).toBe(true);
+            expect(seen.inside).toBe(true);
+            expect(seen.noNestedButtons).toBe(true);
+            expect(seen.list).toEqual([
+              '8px',
+              '0px',
+              '8px',
+              '8px',
+              '2px',
+              'stable',
+            ]);
+            return seen;
+          };
+          const filesEntry = f.page
+            .locator('header')
+            .getByRole('button', { name: '交付成果', exact: true });
+          await filesEntry.click();
+          const files = f.panel.getByRole('region', {
+            name: '交付成果',
+            exact: true,
+          });
+          const deliveryRow = files.locator(
+            `[data-file-id="${delivery.objectId}"]`,
+          );
+          await deliveryRow.waitFor();
+          const delivered = await measure(deliveryRow);
+          expect(delivered.subtitleTitle).toBe('今日 10:30');
+          expect(delivered.subtitleText?.trim()).toBe('今日 10:30');
+          expect(
+            await files
+              .locator(
+                `[data-file-id="${earlier.objectId}"] [data-file-row-subtitle]`,
+              )
+              .textContent(),
+          ).toBe(dates.otherLabel);
+          await deliveryRow.getByLabel('已收藏', { exact: true }).waitFor();
+          await deliveryRow
+            .getByRole('button', { name: `文件选项 ${name}`, exact: true })
+            .click();
+          expect(
+            await f.page
+              .getByRole('menu')
+              .evaluate((node) => !node.closest('[data-native-file-row]')),
+          ).toBe(true);
+          expect(
+            await f.panel.locator('header[aria-label="文件操作"]').count(),
+          ).toBe(0);
+          await f.page.keyboard.press('Escape');
+          await deliveryRow
+            .getByRole('button', { name: `引用到对话 ${name}`, exact: true })
+            .click();
+          await f.page
+            .getByRole('button', { name: `移除资料 ${name} v1`, exact: true })
+            .waitFor();
+          // The reference callback focuses the composer on the next frame.
+          // Wait before issuing a key to a file row so it cannot steal Enter.
+          await waitForReferenceFocus();
+          if (!(await files.isVisible())) await filesEntry.click();
+          await deliveryRow.waitFor();
+          expect(
+            await f.panel.locator('header[aria-label="文件操作"]').count(),
+          ).toBe(0);
+          await deliveryRow
+            .getByRole('button', { name, exact: true })
+            .press('Enter');
+          await f.panel
+            .getByRole('button', { name: '‹ 交付成果', exact: true })
+            .waitFor();
+
+          // The fullscreen mobile workbench covers the outer header. Use its
+          // existing close action before switching to another directory.
+          if ((await f.panel.getAttribute('data-fullscreen')) === 'true') {
+            await f.panel
+              .getByRole('button', { name: '关闭工作台', exact: true })
+              .click();
+            await f.panel.waitFor({ state: 'hidden' });
+          }
+          const materialsEntry = f.page
+            .locator('header')
+            .getByRole('button', { name: '企业资料', exact: true });
+          await materialsEntry.click();
+          const materials = f.panel.getByRole('region', {
+            name: '企业资料',
+            exact: true,
+          });
+          const materialRow = materials.locator(
+            `[data-file-id="${first.revisionId}"]`,
+          );
+          await materialRow.waitFor();
+          const published = await measure(materialRow);
+          expect(published.height).toBe(delivered.height);
+          expect(published.subtitleTitle).toBe(`${purpose} · 我 · 今日 10:30`);
+          expect(published.subtitleText).toBe(published.subtitleTitle);
+          expect(
+            await materials
+              .locator(
+                `[data-file-id="${second.revisionId}"] [data-file-row-subtitle]`,
+              )
+              .textContent(),
+          ).toContain(dates.otherLabel);
+          const scope = materialRow.locator('[data-file-row-scope]');
+          expect(await scope.getAttribute('title')).toBe(department);
+          expect(
+            await scope.evaluate((node) => node.scrollWidth > node.clientWidth),
+          ).toBe(true);
+          await materialRow
+            .getByRole('button', { name: `资料选项 ${name}`, exact: true })
+            .click();
+          expect(f.materials.reads).toEqual([]);
+          expect(
+            await f.page
+              .getByRole('menu')
+              .evaluate((node) => !node.closest('[data-native-file-row]')),
+          ).toBe(true);
+          await f.page.keyboard.press('Escape');
+          await materialRow
+            .getByRole('button', { name: '引用到对话', exact: true })
+            .click();
+          await expect
+            .poll(() => f.materials.selections)
+            .toEqual([first.revisionId]);
+          await f.page
+            .getByRole('button', { name: `移除资料 ${name}`, exact: true })
+            .waitFor();
+          // A received request is not a completed selection. Mobile closes the
+          // panel and returns focus before it can be reopened for searching.
+          await waitForReferenceFocus();
+          expect(f.materials.reads).toEqual([]);
+          if (!(await materials.isVisible())) await materialsEntry.click();
+          const search = materials.getByRole('searchbox', {
+            name: '查找资料（文件名、用途、正文）',
+          });
+          await search.fill('配色');
+          await materialRow.locator('mark').waitFor();
+          expect(await materialRow.locator('mark').innerText()).toBe('配色');
+          expect((await materialRow.boundingBox())!.height).toBeGreaterThan(
+            published.height,
+          );
+          expect(await materialRow.locator('script').count()).toBe(0);
+          await search.fill('');
+          await materialRow
+            .getByRole('button', { name, exact: true })
+            .press('Space');
+          await materials
+            .getByRole('heading', { name: '资料原文', exact: true })
+            .waitFor();
+          expect(f.materials.reads).toContain(first.revisionId);
+        } finally {
+          await f.close();
+        }
+      }, 30000);
 
   for (const theme of ['light', 'dark'] as const)
     for (const width of [1440, 390]) {
@@ -15691,7 +16091,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               .getByRole('searchbox', { name: '查找文件' })
               .locator('..')
               .boundingBox())!;
-            expect(Math.abs(filterBox.y - searchBox.y)).toBeLessThan(1);
+            expect(
+              Math.abs(
+                filterBox.y +
+                  filterBox.height / 2 -
+                  searchBox.y -
+                  searchBox.height / 2,
+              ),
+            ).toBeLessThanOrEqual(0.5);
           }
           expect(
             await employee
@@ -16482,12 +16889,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
 
   for (const theme of ['light', 'dark'] as const)
     for (const width of [1440, 390])
-      it.each(['md', 'docx', 'pdf', 'xlsx', 'image'] as const)(
+      it.each(['md', 'docx', 'pptx', 'pdf', 'xlsx', 'image'] as const)(
         `MET247 v7 full reading area and reachable ordinary footer for %s at ${width}px ${theme}`,
         async (kind) => {
           const f = await fixture({ width, appearance: theme });
           const capture = async (state: string) => {
-            const dir = process.env.ALLRICE_DELIVERABLES_REVIEW_DIR;
+            const batch = process.env.ALLRICE_CI_COLLECTION_BATCH;
+            const dir =
+              process.env.ALLRICE_DELIVERABLES_REVIEW_DIR ??
+              (state === 'page' && batch
+                ? join(
+                    dirname(resolve(batch)),
+                    'test-failure-evidence',
+                    'met247-canvas-review',
+                  )
+                : undefined);
             if (!dir) return;
             await mkdir(dir, { recursive: true });
             await f.page.screenshot({
@@ -16501,6 +16917,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               height: width === 1440 ? 1000 : 844,
             });
             const pdfPageCount = 8;
+            const pdfKind = ['pdf', 'docx', 'pptx'].includes(kind);
             const file = catalogFile(9590, {
               fileName: `阅读验收.${kind === 'image' ? 'png' : kind}`,
               category: 'artifact',
@@ -16518,7 +16935,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                       `## 第 ${n + 1} 节\n\n保留原生 Markdown 阅读、文件身份与对话引用；两行来源信息和普通操作在本显示页正文之后。\n\n`,
                   ).join(''),
               };
-            else if (kind === 'pdf' || kind === 'docx')
+            else if (pdfKind)
               f.state.filePreview = deliverablePdf(
                 kind === 'docx' ? ['Noto Sans CJK SC'] : [],
                 pdfPageCount,
@@ -16589,7 +17006,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               await detail
                 .getByRole('heading', { name: '交付成果阅读验收', exact: true })
                 .waitFor();
-            else if (kind === 'pdf' || kind === 'docx')
+            else if (pdfKind)
               await detail
                 .getByText('Delivery original preview', { exact: true })
                 .waitFor();
@@ -16612,13 +17029,22 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     ),
                 )
                 .toBe(480);
-            if (kind === 'md' || kind === 'image' || kind === 'xlsx') {
+            {
+              const canvas = pdfKind
+                ? preview.locator('[data-pdf-preview]')
+                : preview;
               expect(
-                await preview.evaluate(
+                await canvas.evaluate(
                   (n) => getComputedStyle(n).backgroundColor,
                 ),
               ).toBe(
-                theme === 'dark' ? 'rgb(15, 15, 15)' : 'rgb(245, 245, 245)',
+                pdfKind
+                  ? theme === 'dark'
+                    ? 'rgb(21, 21, 23)'
+                    : 'rgb(235, 238, 242)'
+                  : theme === 'dark'
+                    ? 'rgb(15, 15, 15)'
+                    : 'rgb(245, 245, 245)',
               );
               const paper =
                 kind === 'md'
@@ -16626,23 +17052,85 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                       name: '文件正文',
                       exact: true,
                     })
-                  : preview.locator(
-                      kind === 'image'
-                        ? '[data-document-zoom-surface]'
-                        : '[data-excel-preview]',
-                    );
-              expect(
-                await paper.evaluate(
-                  (n) => getComputedStyle(n).backgroundColor,
-                ),
-              ).toBe('rgb(255, 255, 255)');
+                  : preview
+                      .locator(
+                        kind === 'xlsx'
+                          ? '[data-excel-preview]'
+                          : '[data-document-zoom-surface]',
+                      )
+                      .first();
+              if (!pdfKind)
+                expect(
+                  await paper.evaluate(
+                    (n) => getComputedStyle(n).backgroundColor,
+                  ),
+                ).toBe('rgb(255, 255, 255)');
+              const topInset = width === 390 ? 8 : 12;
+              const inset = pdfKind ? 6 : topInset;
+              const geometry = await paper.evaluate((node, image) => {
+                const host = image
+                  ? node.closest('[data-image-preview]')!
+                  : (node.closest('[data-pdf-preview]') ?? node.parentElement!);
+                const style = getComputedStyle(host);
+                const box = host.getBoundingClientRect();
+                const paper = node.getBoundingClientRect();
+                const left = parseFloat(style.paddingLeft);
+                const right = parseFloat(style.paddingRight);
+                const top = parseFloat(style.paddingTop);
+                const bottom = parseFloat(style.paddingBottom);
+                return {
+                  padding: [top, right, bottom, left],
+                  sideError:
+                    paper.left -
+                    box.left -
+                    left -
+                    Math.max(
+                      0,
+                      (host.clientWidth - left - right - paper.width) / 2,
+                    ),
+                  rightError:
+                    box.left +
+                    host.clientWidth -
+                    paper.right -
+                    right -
+                    Math.max(
+                      0,
+                      (host.clientWidth - left - right - paper.width) / 2,
+                    ),
+                  topError:
+                    paper.top -
+                    box.top -
+                    top -
+                    (image
+                      ? Math.max(
+                          0,
+                          (host.clientHeight - top - bottom - paper.height) / 2,
+                        )
+                      : 0),
+                };
+              }, kind === 'image');
+              expect(geometry.padding).toEqual(
+                kind === 'image'
+                  ? [inset, 8, inset, 8]
+                  : [topInset, inset, inset, inset],
+              );
+              expect(Math.abs(geometry.sideError)).toBeLessThanOrEqual(0.5);
+              expect(Math.abs(geometry.rightError)).toBeLessThanOrEqual(0.5);
+              expect(Math.abs(geometry.topError)).toBeLessThanOrEqual(0.5);
+              if (kind === 'image') {
+                const outerInset = await preview
+                  .locator(':scope > div')
+                  .evaluate((node) =>
+                    parseFloat(getComputedStyle(node).paddingLeft),
+                  );
+                expect(outerInset + geometry.padding[3]!).toBe(inset);
+              }
               if (kind === 'xlsx') {
                 const card = (await paper.boundingBox())!;
                 const canvas = (await preview.boundingBox())!;
-                const inset = width === 390 ? 16 : 24;
                 expect(
                   Math.abs(card.width - (canvas.width - inset * 2)),
-                ).toBeLessThan(1);
+                ).toBeLessThanOrEqual(0.5);
               }
               if (kind === 'image') {
                 const image = preview.locator('[data-image-preview] img');
@@ -16661,7 +17149,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               `[data-pdf-page="${pdfPageCount}"]`,
             );
             const lastPageText = `Delivery original preview page ${pdfPageCount}`;
-            if (kind === 'pdf' || kind === 'docx') {
+            if (pdfKind) {
               // A distant final page starts as the native lazy placeholder.
               await lastPage.waitFor({ state: 'attached' });
               expect(
@@ -16811,14 +17299,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             const originalFrame = (await nativeFrame.count())
               ? await nativeFrame.elementHandle()
               : null;
-            const scroll =
-              kind === 'pdf' || kind === 'docx'
-                ? nativeFrame.locator('[data-document-zoom-scrollport]')
-                : reading;
+            const scroll = pdfKind
+              ? nativeFrame.locator('[data-document-zoom-scrollport]')
+              : reading;
             await scroll.evaluate((node) => {
               node.scrollTop = node.scrollHeight;
             });
-            if (kind === 'pdf' || kind === 'docx') {
+            if (pdfKind) {
               await lastPage.getByText(lastPageText, { exact: true }).waitFor();
               // Native ready is committed after drawImage; CSS visibility alone
               // does not prove the initially hidden surface has finished painting.
@@ -16870,7 +17357,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             expect(parseFloat(buttonStyles[0]!.border)).toBeGreaterThan(0);
             await capture('footer');
             let nativeZoom: string | undefined;
-            if (kind === 'pdf' || kind === 'docx') {
+            if (pdfKind) {
               const quoteHeight = (await actions.first().boundingBox())!.height;
               const zoom = nativeFrame.getByRole('button', {
                 name: '选择缩放比例',
@@ -19126,6 +19613,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(await preview.locator('summary').count()).toBe(0);
         const scroll = preview.locator('[data-document-zoom-scrollport]');
         const paper = preview.locator('[data-document-zoom-surface]').first();
+        const topInset = await paper.evaluate((el) => {
+          const canvas = el.parentElement!;
+          return (
+            el.getBoundingClientRect().top - canvas.getBoundingClientRect().top
+          );
+        });
+        expect(
+          Math.abs(topInset - (width === 390 ? 8 : 12)),
+        ).toBeLessThanOrEqual(0.5);
         await expect
           .poll(() =>
             scroll.evaluate((el) => el.scrollHeight > el.clientHeight),
@@ -21371,43 +21867,31 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   });
 
   for (const width of [1440, 390])
-    it(`selects, removes and sends authorized session references at ${width}px`, async () => {
-      const f = await fixture({ width });
+    it(`restores, removes and resends persisted session references at ${width}px`, async () => {
+      const f = await fixture({ width, running: true, queue: true });
       try {
-        const sources = [
-          session(A),
-          { ...session(B), title: '历史财报' },
-          { ...session(id(801)), title: '市场研究' },
-          { ...session(id(802)), title: '上次汇报' },
-          { ...session(id(803)), title: '竞争对手' },
-        ];
-        await f.page.route('**/api/v1/sessions?**', (route) =>
-          route.fulfill({
-            status: 200,
-            contentType: 'application/json',
-            body: JSON.stringify({ sessions: sources, nextCursor: null }),
-          }),
-        );
+        // The custom picker entry was removed. References already persisted
+        // in queued messages must still survive edit, removal and resend.
+        f.state.queue.push({
+          id: id(804),
+          runId: id(805),
+          text: '请根据引用整理汇报',
+          sessionReferences: [
+            { sessionId: B, label: '历史财报' },
+            { sessionId: id(801), label: '市场研究' },
+            { sessionId: id(802), label: '上次汇报' },
+          ],
+          attachments: [],
+          createdAt: now,
+        });
+        await f.page.reload();
         await f.page
-          .getByRole('button', { name: '添加文件', exact: true })
+          .locator('[data-queue-dock]')
+          .getByRole('button', { name: '重新编辑', exact: true })
           .click();
-        await f.page.getByRole('menuitem', { name: '引用会话' }).click();
-        const picker = f.page.getByRole('dialog', { name: '引用会话' });
-        await picker.getByRole('button', { name: /历史财报/ }).click();
-        await picker.getByRole('button', { name: /市场研究/ }).click();
-        await picker.getByRole('button', { name: /上次汇报/ }).click();
-        expect(
-          await picker.getByRole('button', { name: /竞争对手/ }).isDisabled(),
-        ).toBe(true);
-        expect(
-          await picker.getByRole('button', { name: /研究任务 A/ }).count(),
-        ).toBe(0);
-        if (process.env.ALLRICE_SESSION_REFERENCE_SCREENSHOT) {
-          await f.page.screenshot({
-            path: `${process.env.ALLRICE_SESSION_REFERENCE_SCREENSHOT}-${width}.png`,
-          });
-        }
-        await picker.getByRole('button', { name: '完成', exact: true }).click();
+        await f.page
+          .getByRole('button', { name: '移除引用：历史财报' })
+          .waitFor();
         await f.page
           .getByRole('button', { name: '移除引用：市场研究' })
           .click();
@@ -22248,6 +22732,186 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.close();
         }
       }, 30_000);
+  it.each([
+    ['xlsx', 'long', 1440],
+    ['csv', 'long', 1440],
+    ['xlsx', 'fit', 1440],
+    ['csv', 'fit', 1440],
+    ['xlsx', 'long', 390],
+    ['csv', 'long', 390],
+  ] as const)(
+    'MET247 ExcelBody private scroll contract chains %s %s at %ipx to delivery actions',
+    async (format, length, width) => {
+      const f = await fixture({ width });
+      const evidence = createFailureEvidence({
+        file: import.meta.url,
+        test: `MET247 ExcelBody private scroll contract chains ${format} ${length} at ${width}px to delivery actions`,
+      });
+      evidence.observePage(f.page);
+      try {
+        const rows = Array.from(
+          { length: length === 'long' ? 120 : 2 },
+          (_, row) =>
+            Array.from(
+              { length: length === 'long' ? 12 : 2 },
+              (_, col) => `R${row + 1}C${col + 1}`,
+            ),
+        );
+        let base64: string;
+        if (format === 'xlsx') {
+          const ExcelJS = createRequire(resolve('apps/worker/package.json'))(
+            'exceljs',
+          );
+          const book = new ExcelJS.Workbook();
+          book.addWorksheet('滚动验收').addRows(rows);
+          base64 = Buffer.from(await book.xlsx.writeBuffer()).toString(
+            'base64',
+          );
+        } else {
+          base64 = Buffer.from(
+            rows.map((row) => row.join(',')).join('\n'),
+          ).toString('base64');
+        }
+        const file = catalogFile(9691, { fileName: `滚动验收.${format}` });
+        f.state.workbenchFiles.push(file);
+        f.state.filePreview = { kind: 'spreadsheet', format, base64 };
+        await f.page
+          .locator('header')
+          .getByRole('button', { name: '交付成果', exact: true })
+          .click();
+        await f.panel
+          .getByRole('region', { name: '交付成果', exact: true })
+          .getByRole('button', { name: file.fileName, exact: true })
+          .click();
+        const detail = f.panel.locator(
+          `[data-document-id="${file.objectId}"]:visible`,
+        );
+        const reading = detail.locator('[class*="deliveryReadingArea"]');
+        const footer = detail.locator('footer');
+        const preview = detail.locator('[data-excel-preview]');
+        const grid = preview.locator('.fortune-sheet-container');
+        const hit = grid.locator('.fortune-cell-area');
+        await hit.waitFor();
+        // Deliberately independent of the adapter's selector constants: DSH
+        // DOM drift must fail this mounted contract, never silently skip it.
+        expect(await preview.count()).toBe(1);
+        expect(await grid.count()).toBe(1);
+        const x = grid.locator('.luckysheet-scrollbar-x');
+        const y = grid.locator('.luckysheet-scrollbar-y');
+        expect(await x.count()).toBe(1);
+        expect(await y.count()).toBe(1);
+        const remaining = () =>
+          y.evaluate(
+            (node) => node.scrollHeight - node.clientHeight - node.scrollTop,
+          );
+        if (length === 'long')
+          await expect.poll(remaining).toBeGreaterThan(100);
+        else await expect.poll(remaining).toBe(0);
+        const pointAtTable = async () => {
+          const a = (await hit.boundingBox())!,
+            b = (await reading.boundingBox())!;
+          const top = Math.max(a.y, b.y),
+            bottom = Math.min(a.y + a.height, b.y + b.height);
+          expect(bottom - top).toBeGreaterThan(20);
+          await f.page.mouse.move(
+            a.x + Math.min(100, a.width / 2),
+            top + Math.min(80, (bottom - top) / 2),
+          );
+        };
+        const initialOuter = await reading.evaluate((node) => node.scrollTop);
+        await pointAtTable();
+        await f.page.mouse.wheel(0, 180);
+        if (length === 'long') {
+          await expect
+            .poll(() => y.evaluate((node) => node.scrollTop))
+            .toBeGreaterThan(0);
+          expect(await reading.evaluate((node) => node.scrollTop)).toBe(
+            initialOuter,
+          );
+          await f.page.mouse.wheel(0, 100_000);
+          await expect.poll(remaining).toBeLessThanOrEqual(0.5);
+          expect(await reading.evaluate((node) => node.scrollTop)).toBe(
+            initialOuter,
+          );
+        } else {
+          await expect
+            .poll(() => reading.evaluate((node) => node.scrollTop))
+            .toBeGreaterThan(initialOuter);
+          expect(await y.evaluate((node) => node.scrollTop)).toBe(0);
+        }
+        // The next real wheel stays over the table. No click/scrollIntoView or
+        // programmatic outer scrolling is allowed to make the footer visible.
+        await pointAtTable();
+        await f.page.mouse.wheel(0, 1000);
+        await expect
+          .poll(async () => {
+            const a = (await reading.boundingBox())!,
+              b = (await footer.boundingBox())!;
+            return b.y >= a.y - 0.5 && b.y + b.height <= a.y + a.height + 0.5;
+          })
+          .toBe(true);
+        for (const name of ['引用到对话', '下载']) {
+          expect(
+            await footer
+              .getByRole('button', { name, exact: true })
+              .evaluate((node) => {
+                const r = node.getBoundingClientRect();
+                return node.contains(
+                  document.elementFromPoint(
+                    r.x + r.width / 2,
+                    r.y + r.height / 2,
+                  ),
+                );
+              }),
+          ).toBe(true);
+        }
+        const bottomOuter = await reading.evaluate((node) => node.scrollTop);
+        expect(bottomOuter).toBeGreaterThan(initialOuter);
+        await pointAtTable();
+        if (length === 'long') {
+          await f.page.mouse.wheel(0, -100_000);
+          await expect.poll(() => y.evaluate((node) => node.scrollTop)).toBe(0);
+          expect(await reading.evaluate((node) => node.scrollTop)).toBe(
+            bottomOuter,
+          );
+        }
+        await f.page.mouse.wheel(0, -1000);
+        await expect
+          .poll(() => reading.evaluate((node) => node.scrollTop))
+          .toBe(0);
+        await pointAtTable();
+        // This exception must leave modified wheels at the original grid
+        // handler. Excel's existing buttons remain the zoom entry point.
+        const zoom = preview.locator('.fortune-zoom-ratio');
+        const scale = await zoom.innerText();
+        for (const modifier of ['Control', 'Meta']) {
+          await f.page.keyboard.down(modifier);
+          await f.page.mouse.wheel(0, -120);
+          await f.page.keyboard.up(modifier);
+          expect(await zoom.innerText()).toBe(scale);
+        }
+        expect(await f.page.evaluate(() => window.visualViewport!.scale)).toBe(
+          1,
+        );
+        await preview
+          .getByRole('button', { name: '放大', exact: true })
+          .click();
+        await expect.poll(() => zoom.innerText()).not.toBe(scale);
+        await preview
+          .getByRole('button', { name: '缩小', exact: true })
+          .click();
+        await expect.poll(() => zoom.innerText()).toBe(scale);
+        expect(f.errors).toEqual([]);
+      } catch (error) {
+        await evidence.capture(error);
+        throw error;
+      } finally {
+        evidence.dispose();
+        await f.close();
+      }
+    },
+    30_000,
+  );
   it.each([
     ['image-fit', 1440],
     ['image-tall', 1440],

@@ -28,14 +28,18 @@
   align-items: end;
   margin: 18px 0;
 }
-.filters label {
+.filters > label,
+.searchFilter {
   display: grid;
   gap: 6px;
   min-width: 0;
   font-size: var(--admin-font-meta);
 }
-.filters input,
-.filters select {
+.searchFilter {
+  width: 240px;
+  max-width: 100%;
+}
+.filters > label > input {
   min-width: 0;
   width: 240px;
   max-width: 100%;
@@ -45,6 +49,10 @@
   color: var(--admin-text);
   background: var(--admin-canvas);
   font: inherit;
+}
+.filters > label > [data-select-field] {
+  width: 240px;
+  max-width: 100%;
 }
 .summary {
   display: flex;
@@ -147,11 +155,27 @@
   .heading {
     flex-wrap: wrap;
   }
-  .filters label {
+  .filters > label,
+  .searchFilter {
     flex: 1 1 160px;
   }
-  .filters input,
-  .filters select {
+  .filters > label > input,
+  .filters > label > [data-select-field],
+  .searchFilter {
     width: 100%;
   }
+}
+
+.filters
+  > label
+  > input:not(
+    [type='checkbox'],
+    [type='radio'],
+    [type='file'],
+    [type='range'],
+    [type='color']
+  ):focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+  box-shadow: none;
 }

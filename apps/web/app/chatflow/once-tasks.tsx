@@ -32,6 +32,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from 'react';
+import { SelectField } from '../../components/select-field';
 import { createPortal } from 'react-dom';
 import {
   IconClockOutlineRegular,
@@ -908,7 +909,7 @@ function OnceTasksMenu({
                       </p>
                       <div className={css.field}>
                         <label htmlFor={`${id}-conversation`}>执行会话</label>
-                        <select
+                        <SelectField
                           id={`${id}-conversation`}
                           value={conversationMode}
                           disabled={busy || pending !== null}
@@ -922,7 +923,7 @@ function OnceTasksMenu({
                         >
                           <option value="reuse">沿用来源聊天</option>
                           <option value="new_each_run">每次新建聊天</option>
-                        </select>
+                        </SelectField>
                       </div>
                       <button
                         type="submit"

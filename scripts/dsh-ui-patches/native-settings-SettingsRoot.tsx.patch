@@ -1,6 +1,6 @@
 --- a/packages/client/ui-settings-general/src/client/SettingsRoot.tsx
 +++ b/packages/client/ui-settings-general/src/client/SettingsRoot.tsx
-@@ -1,35 +1,23 @@
+@@ -1,35 +1,24 @@
 -/**
 - * Settings shell root: the sidebar-foot trigger row plus the centered modal
 - * panel (figma 2552:26025, 760x500) with the section nav rail. The shell is
@@ -35,6 +35,7 @@
 -/** Minimum visible time for the connecting pill; shorter attempts read as flicker. */
 -const CONNECTING_MIN_VISIBLE_MS = 800
 +import design from '../../settings-design.module.css'
++import { SelectField } from '../../../../components/select-field'
  
  /** Nav glyph by section id; unknown ids fall back to the settings gear. */
  function navIcon(id: string) {
@@ -47,7 +48,7 @@
    if (id === 'account') return <IconUserOutlineMedium className={css.navIcon} size={16} />
    if (id === 'models') return <IconDataOutlineMedium className={css.navIcon} size={16} />
    if (id === 'agent-presets') return <IconAgentPresetOutlineMedium className={css.navIcon} size={16} />
-@@ -38,39 +26,61 @@
+@@ -38,39 +27,61 @@
    return <IconSettingsOutlineMedium className={css.navIcon} size={16} />
  }
  
@@ -121,11 +122,11 @@
 -          <div className={css.navTitle} id={titleId} tabIndex={-1}
 -            data-modal-autofocus={active === undefined ? '' : undefined}>{renderSlot('settings.header', {})}</div>
 +          <div className={css.navTitle} id={titleId}>{renderSlot('settings.header', {})}</div>
-+          <select className={design.mobileNav} aria-label="设置页面" value={active} onChange={event => onSelect(event.target.value)}>{rows.map(row => <option key={row.id} value={row.id}>{row.label}</option>)}</select>
++          <SelectField className={design.mobileNav} aria-label="设置页面" value={active} onChange={event => onSelect(event.target.value)}>{rows.map(row => <option key={row.id} value={row.id}>{row.label}</option>)}</SelectField>
            <div className={css.navList}>
              {rows.map(row => (
                <button
-@@ -78,7 +88,6 @@
+@@ -78,7 +89,6 @@
                  type="button"
                  className={clsx(css.navCell, row.id === active && css.active)}
                  aria-current={row.id === active ? 'true' : undefined}
@@ -133,7 +134,7 @@
                  onClick={() => { onSelect(row.id) }}
                >
                  {navIcon(row.id)}
-@@ -90,7 +99,7 @@
+@@ -90,7 +100,7 @@
          <div className={css.content}>
            <div className={css.header}>
              <div className={css.actions}>{renderSlot('settings.action', {})}</div>
@@ -142,7 +143,7 @@
                <IconCloseOutlineRegular size={14} />
                <span className={css.hiddenLabel}>{renderSlot('settings.close', {})}</span>
              </button>
-@@ -99,168 +108,6 @@
+@@ -99,168 +109,6 @@
              {active !== undefined && renderSlot('settings.section', { close: onClose }, { only: active })}
            </div>
          </div>

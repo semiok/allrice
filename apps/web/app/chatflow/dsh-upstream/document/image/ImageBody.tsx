@@ -31,6 +31,7 @@ export type ImageBodyProps = {
   actions: { zoom: (id: string, value: ZoomPreference) => void }
   retainTab: (id: string, signal: AbortSignal) => void
   scrollportRef: (element: HTMLElement | null) => void
+  horizontalInset?: number
 }
 
 type ImageSource =
@@ -101,11 +102,11 @@ export function ImageBody(props: ImageBodyProps): ReactNode {
   }
   return <LoadedImage key={source.url} url={source.url} name={name} preference={preference}
     onPreference={setPreference} labels={labels} signal={tab.signal}
-    scrollportRef={props.scrollportRef} t={t} />
+    scrollportRef={props.scrollportRef} horizontalInset={props.horizontalInset} t={t} />
 }
 
 /** SVG stays in the browser's static image mode because its bytes only reach an img Blob URL. */
-function LoadedImage({ url, name, preference, onPreference, labels, signal, scrollportRef, t }: {
+function LoadedImage({ url, name, preference, onPreference, labels, signal, scrollportRef, horizontalInset = 24, t }: {
   readonly url: string
   readonly name: string
   readonly preference: ZoomPreference
@@ -113,11 +114,12 @@ function LoadedImage({ url, name, preference, onPreference, labels, signal, scro
   readonly labels: ZoomLabels
   readonly signal: AbortSignal
   readonly scrollportRef: ImageBodyProps['scrollportRef']
+  readonly horizontalInset?: number
   readonly t: ImageBodyProps['t']
 }): ReactNode {
   const [state, setState] = useState<'loading' | 'ready' | 'failed'>('loading')
   const [width, setWidth] = useState<number>()
-  return <ZoomViewport preference={preference} intrinsicWidth={width} horizontalInset={24}
+  return <ZoomViewport preference={preference} intrinsicWidth={width} horizontalInset={horizontalInset}
     labels={labels} signal={signal} scrollportRef={scrollportRef} onPreference={onPreference}>
     <div className={css.frame} data-image-preview>
       {state === 'loading' && <LoadingIndicator label={t('loading')} />}

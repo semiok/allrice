@@ -1,0 +1,73 @@
+/* Only the approved host slots around native FilesBody.Entry / row / tool. */
+.row {
+  position: relative;
+  box-sizing: border-box;
+  flex: none;
+  font-size: var(--dsh-content-font-size-secondary, 13px);
+  font-weight: 400;
+  line-height: 1.5;
+}
+/* Adjacent file rows share a hairline; it does not participate in layout. */
+.row:has(+ .row)::after {
+  content: '';
+  position: absolute;
+  inset-inline: 10px;
+  bottom: 0;
+  height: 0.5px;
+  background: var(--dsw-alias-border-l3);
+  pointer-events: none;
+}
+.row .open {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.row .open:disabled {
+  cursor: default;
+}
+.row button:focus-visible {
+  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline-offset: -2px;
+}
+.details {
+  flex: 1;
+  min-width: 0;
+}
+.title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.title > [data-file-row-name] {
+  flex: 0 1 auto;
+}
+.subtitle {
+  display: block;
+  margin-top: 2px;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 0;
+}
+.actions > span {
+  display: inline-flex;
+}

@@ -41,8 +41,7 @@
   scrollbar-gutter: stable;
 }
 .panel button:focus-visible,
-.panel summary:focus-visible,
-.panel select:focus-visible {
+.panel summary:focus-visible {
   outline: 2px solid #3b82f6;
   outline-offset: 3px;
 }
@@ -72,14 +71,6 @@
   .mobileNav {
     display: block;
     width: 100%;
-    height: 40px;
-    padding: 0 10px;
-    border: 1px solid var(--dsw-alias-border-primary);
-    border-radius: 9px;
-    background: var(--dsw-alias-bg-layer-2);
-    color: inherit;
-    font: inherit;
-    font-size: 14px;
   }
   .panel > div > div:first-child {
     height: 0;

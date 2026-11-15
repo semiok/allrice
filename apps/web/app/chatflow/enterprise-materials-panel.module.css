@@ -62,7 +62,7 @@
 .tools button {
   margin-left: auto;
 }
-.tools input {
+.tools input:not([type='search']) {
   flex: 1;
   min-width: 0;
   padding: 8px 10px;
@@ -71,21 +71,6 @@
   background: transparent;
   color: inherit;
   font: inherit;
-}
-.search {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  min-width: 0;
-  gap: 6px;
-  padding: 0 10px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 8px;
-  color: var(--dsw-alias-label-secondary);
-}
-.search input {
-  border: 0;
-  padding-left: 0;
 }
 .tools button {
   display: inline-flex;
@@ -105,72 +90,6 @@
   color: inherit;
   background: light-dark(#fff0b9, #8b70293d);
 }
-.list {
-  min-height: 0;
-  overflow: auto;
-  padding: 6px 16px 16px;
-}
-.row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 13px 0;
-  border-bottom: 1px solid light-dark(#0000000a, #ffffff0d);
-}
-.row:hover {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-.panel .open {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  gap: 10px;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: inherit;
-  text-align: left;
-  font: inherit;
-  cursor: pointer;
-}
-.open > svg {
-  flex: none;
-}
-.open > span {
-  min-width: 0;
-}
-.open strong {
-  display: block;
-  font-weight: 500;
-  overflow-wrap: anywhere;
-}
-.open small {
-  display: block;
-  margin-top: 4px;
-  color: var(--dsw-alias-label-secondary);
-  font-size: 11px;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-.open .scope {
-  display: inline;
-  margin-left: 7px;
-  padding: 2px 5px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 4px;
-  font-weight: 400;
-  white-space: normal;
-}
-.open:disabled {
-  cursor: default;
-}
-.actions {
-  display: flex;
-  flex: none;
-}
-.actions button,
 .menuButton {
   display: inline-grid;
   place-items: center;
@@ -183,13 +102,8 @@
   background: transparent;
   cursor: pointer;
 }
-.actions button:hover,
 .menuButton:hover {
   background: var(--dsw-alias-interactive-bg-hover);
-}
-.actions button:disabled {
-  opacity: 0.45;
-  cursor: default;
 }
 .failure {
   flex: none;
@@ -226,4 +140,22 @@
 }
 .management .destructive {
   color: light-dark(#b53549, #f79bae);
+}
+.search {
+  flex: 1;
+  min-width: 0;
+}
+.scope {
+  flex: 0 0 auto;
+  max-width: 34%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  box-sizing: border-box;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--dsw-alias-label-secondary);
 }

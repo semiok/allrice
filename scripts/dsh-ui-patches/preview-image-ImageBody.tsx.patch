@@ -1,7 +1,6 @@
 --- a/packages/client/ui-sidebar-documentpreview/src/client/image/ImageBody.tsx
 +++ b/packages/client/ui-sidebar-documentpreview/src/client/image/ImageBody.tsx
-@@ -1,12 +1,9 @@
- /** Complete image bytes rendered in a shared zoom viewport. */
+@@ -2,9 +2,6 @@
  import { useCallback, useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 -import type { PropsLocale, PropsStore } from '@deepseek-ai/dsh-client-ui-slots'
  import { pathPartsOf } from '@deepseek-ai/dsh-util-workspace-path'
@@ -12,11 +11,7 @@
 -import { DEFAULT_ZOOM, type ZoomInjected, type ZoomStore } from '../zoom/store.ts'
 +import { FIT_WIDTH as DEFAULT_ZOOM } from '../zoom/types.ts'
  import type { ZoomLabels, ZoomPreference } from '../zoom/types.ts'
- import type {} from './locales.ts'
- import css from './ImageBody.module.css'
-@@ -25,7 +22,16 @@
- type ImageMediaType = typeof IMAGE_MEDIA_TYPES[keyof typeof IMAGE_MEDIA_TYPES]
- 
+@@ -27,3 +24,13 @@
  /** Standard document props plus the image renderer's dictionary. */
 -export type ImageBodyProps = DocumentPreviewProps & PropsLocale<'sidebarImage'> & PropsStore<ZoomStore> & ZoomInjected
 +export type ImageBodyProps = {
@@ -28,16 +23,30 @@
 +  actions: { zoom: (id: string, value: ZoomPreference) => void }
 +  retainTab: (id: string, signal: AbortSignal) => void
 +  scrollportRef: (element: HTMLElement | null) => void
++  horizontalInset?: number
 +}
- 
- type ImageSource =
-   | {
-@@ -57,7 +63,7 @@
-   const { content, resourceAddress, t } = props
-   const { tab } = props.useTabInfo()
+
+@@ -59,3 +66,3 @@
    const preference = props.useStore(state => state.byTab[tab.id] ?? DEFAULT_ZOOM)
 -  const path = useMemo(() => hostFileOf(resourceAddress).path, [resourceAddress])
 +  const path = useMemo(() => resourceAddress, [resourceAddress])
    const mediaType = imageMediaType(path)
-   const data = content.kind === 'bytes' ? content.data : undefined
-   const [source, setSource] = useState<ImageSource>()
+@@ -97,3 +104,3 @@
+     onPreference={setPreference} labels={labels} signal={tab.signal}
+-    scrollportRef={props.scrollportRef} t={t} />
++    scrollportRef={props.scrollportRef} horizontalInset={props.horizontalInset} t={t} />
+ }
+@@ -101,3 +108,3 @@
+ /** SVG stays in the browser's static image mode because its bytes only reach an img Blob URL. */
+-function LoadedImage({ url, name, preference, onPreference, labels, signal, scrollportRef, t }: {
++function LoadedImage({ url, name, preference, onPreference, labels, signal, scrollportRef, horizontalInset = 24, t }: {
+   readonly url: string
+@@ -109,2 +116,3 @@
+   readonly scrollportRef: ImageBodyProps['scrollportRef']
++  readonly horizontalInset?: number
+   readonly t: ImageBodyProps['t']
+@@ -113,3 +121,3 @@
+   const [width, setWidth] = useState<number>()
+-  return <ZoomViewport preference={preference} intrinsicWidth={width} horizontalInset={24}
++  return <ZoomViewport preference={preference} intrinsicWidth={width} horizontalInset={horizontalInset}
+     labels={labels} signal={signal} scrollportRef={scrollportRef} onPreference={onPreference}>

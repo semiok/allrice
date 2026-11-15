@@ -9,7 +9,12 @@ import {
   EmployeeInstanceSchema,
 } from '@allrice/contracts';
 import { NativeSubagentFixtureFeed } from '../../test/native-subagent-fixture-feed';
-import type { Attachment, Session, WorkspaceFile } from './chatflow-types';
+import type {
+  Attachment,
+  QueuedMessage,
+  Session,
+  WorkspaceFile,
+} from './chatflow-types';
 import { createRequire } from 'node:module';
 import { createServer, type ServerResponse } from 'node:http';
 import { execFileSync } from 'node:child_process';
@@ -129,6 +134,8 @@ suite(
     let browser: Browser;
     let javascript: Uint8Array;
     let css: Uint8Array;
+    let pickerJavascript: Uint8Array;
+    let pickerCss: Uint8Array;
     const recommendationTimings: {
       chrome: string;
       platform: string;
@@ -192,6 +199,132 @@ suite(
       css = result.outputFiles.find((f: { path: string }) =>
         f.path.endsWith('.css'),
       ).contents;
+      // The + menu no longer opens the legacy batch picker. Keep its existing
+      // guarantees at the real component/hook boundary, never a ChatFlow route
+      // or a test-only entrance in product code. Only host callbacks live here.
+      const pickerResult = await build({
+        absWorkingDir: root,
+        stdin: {
+          sourcefile: 'legacy-workspace-picker-component-fixture.tsx',
+          resolveDir: resolve(root, 'apps/web/test'),
+          loader: 'tsx',
+          contents: `
+import { StrictMode, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { WorkspaceFilePickerDialog } from '../app/chatflow/workspace-file-picker-dialog';
+import { DeliverableVersionHistoryDialog } from '../app/chatflow/deliverable-version-history-dialog';
+import { useAttachments } from '../app/chatflow/use-attachments';
+import { createSessionSelection } from '../app/chatflow/session-selection';
+import { createSessionActions } from '../app/chatflow/session-actions';
+import { readJson } from '../app/chatflow/chatflow-utils';
+import '../app/dsh-upstream/design-platform.css';
+import '../app/dsh-upstream/base.css';
+import '../app/dsh-upstream/scrollbar.css';
+import '@allrice/ui/tokens.css';
+import '../app/styles/base.css';
+import '@allrice/ui/styles.css';
+
+function LegacyPickerFixture() {
+  const [selection] = useState(() => {
+    const value = createSessionSelection();
+    value.select('${A}');
+    return value;
+  });
+  const [actions] = useState(() => createSessionActions(selection.capture));
+  const [activeId, setActiveId] = useState<string | null>('${A}');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [draft, setDraft] = useState('');
+  const attachments = useAttachments({
+    activeId, busy, captureSelection: selection.capture,
+    sessionActions: actions, setBusy, setError,
+    tenantHeaders: {}, workspace: { workspaceId: '${B}' },
+    createSession: async () => {
+      const { session } = await readJson<{ session: { id: string } }>(await fetch('/api/v1/sessions', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      }));
+      selection.select(session.id);
+      setActiveId(session.id);
+      return session.id;
+    },
+  });
+  const choose = (id: string | null) => {
+    selection.select(id);
+    setActiveId(id);
+    attachments.clearPendingAttachments();
+    attachments.setFilePickerOpen(false);
+    setBusy(false);
+    setError('');
+    setDraft('');
+  };
+  // A controlled sibling operation holds the real controller's composer
+  // channel. This tests hook/controller ownership, not ChatFlow's send flow.
+  const holdComposerOwner = async () => {
+    const action = actions.begin('composer');
+    if (!action) return;
+    setBusy(true);
+    try {
+      await readJson(await fetch('/api/v1/sessions/' + activeId + '/messages', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text: draft }),
+      }));
+    } catch (cause) {
+      if (action.current()) setError(cause instanceof Error ? cause.message : 'failed');
+    } finally {
+      if (action.finish()) setBusy(false);
+    }
+  };
+  return <main data-legacy-picker-component-fixture>
+    <h1>{activeId === '${A}' ? 'Session A' : activeId === '${B}' ? 'Session B' : 'Created Session'}</h1>
+    <div role="tree">
+      <button role="treeitem" onClick={() => choose('${A}')}>Session A</button>
+      <button role="treeitem" onClick={() => choose('${B}')}>Session B</button>
+    </div>
+    <button onClick={() => choose(null)}>和 Rice 开新会话</button>
+    <button onClick={attachments.openWorkspaceFiles}>打开旧文件选择组件</button>
+    <textarea aria-label="给 Rice 的消息" disabled={busy} value={draft}
+      onChange={(event) => setDraft(event.target.value)} />
+    <button onClick={holdComposerOwner} disabled={busy}>发送</button>
+    {error && <p role="status">{error}</p>}
+    {attachments.pendingAttachments.map((file) => <span key={file.id}>{file.fileName}</span>)}
+    <WorkspaceFilePickerDialog
+      key={activeId ?? 'draft'} files={attachments.workspaceFiles}
+      employeeName="Rice" accentStyle={{}}
+      attachedFileIds={attachments.pendingAttachments.map((file) => file.persistedId ?? file.id)}
+      onAddFiles={attachments.addWorkspaceFiles}
+      onClose={() => attachments.setFilePickerOpen(false)}
+      onOpenVersionHistory={attachments.openVersionHistory}
+      open={attachments.filePickerOpen} />
+    <DeliverableVersionHistoryDialog file={attachments.versionHistoryFile}
+      loading={attachments.versionHistoryLoading} versions={attachments.deliverableVersions}
+      onClose={() => {
+        attachments.setVersionHistoryFile(null);
+        attachments.setFilePickerOpen(true);
+      }} />
+  </main>;
+}
+createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFixture /></StrictMode>);
+`,
+        },
+        bundle: true,
+        format: 'iife',
+        platform: 'browser',
+        write: false,
+        outdir: '/unused-legacy-picker-output',
+        jsx: 'automatic',
+        loader: { '.woff2': 'dataurl', '.woff': 'dataurl', '.ttf': 'dataurl' },
+        define: {
+          'process.env.NODE_ENV': '"development"',
+          'process.env': '{}',
+        },
+      });
+      pickerJavascript = pickerResult.outputFiles.find((f: { path: string }) =>
+        f.path.endsWith('.js'),
+      ).contents;
+      pickerCss = pickerResult.outputFiles.find((f: { path: string }) =>
+        f.path.endsWith('.css'),
+      ).contents;
       const { chromium } = createRequire(
         resolve(root, 'apps/worker/package.json'),
       )('playwright-core');
@@ -251,6 +384,9 @@ suite(
         nativeStartupPage?: (page: Page) => void;
         beforeSidebarReady?: (page: Page) => Promise<void>;
         workspaceFiles?: WorkspaceFile[];
+        /** Component coverage only: this does not mount ChatFlow. */
+        legacyPicker?: boolean;
+        queuedMessages?: QueuedMessage[];
         taskSuggestions?: TaskSuggestionDisplay[];
         taskSuggestionsEnabled?: boolean;
         nextSteps?: TaskNextSteps;
@@ -270,6 +406,8 @@ suite(
       } = {},
     ) {
       const pending: Pending[] = [];
+      const queuedMessages = [...(options.queuedMessages ?? [])];
+      const queueActions: Record<string, unknown>[] = [];
       // Read on every poll, so a test can change an answer's live status.
       const liveInputs = () =>
         (options.answers ?? []).flatMap((item) =>
@@ -491,7 +629,15 @@ suite(
               ? 'application/javascript'
               : 'text/css',
           });
-          response.end(path.endsWith('.js') ? javascript : css);
+          response.end(
+            options.legacyPicker
+              ? path.endsWith('.js')
+                ? pickerJavascript
+                : pickerCss
+              : path.endsWith('.js')
+                ? javascript
+                : css,
+          );
           return;
         }
         if (path === '/favicon.ico') {
@@ -504,6 +650,15 @@ suite(
           for await (const chunk of request) chunks.push(Buffer.from(chunk));
           const body = JSON.parse(Buffer.concat(chunks).toString() || '{}');
           writes.push(path);
+          if (path.includes('/queued-messages/')) {
+            queueActions.push(body);
+            const index = queuedMessages.findIndex(
+              (item) => item.id === path.split('/').at(-1),
+            );
+            if (index !== -1) queuedMessages.splice(index, 1);
+            answer(response, { ok: true });
+            return;
+          }
           if (path.endsWith('/attachments') && !options.uploadPending) {
             answer(response, {
               attachment: {
@@ -804,6 +959,7 @@ suite(
             history: {
               session: fixtureSession(id),
               messages: messages[id],
+              queuedMessages: id === A ? queuedMessages : [],
               contextStatus: {
                 percentage: 0,
                 pressureTokens: 0,
@@ -856,7 +1012,9 @@ suite(
       // Real Dev HTML/JS/CSS with only this page's API requests routed to the
       // fixture. No company messages, file uploads, or model runs are created.
       const liveOrigin =
-        !options.nativeParents && process.env.ALLRICE_TEST_DEV_ORIGIN;
+        !options.nativeParents &&
+        !options.legacyPicker &&
+        process.env.ALLRICE_TEST_DEV_ORIGIN;
       if (liveOrigin) {
         await page.route(`${liveOrigin}/api/v1/**`, async (route) => {
           const url = new URL(route.request().url());
@@ -903,7 +1061,11 @@ suite(
         }
         // Sidebar readiness precedes History: uploading into the temporary
         // empty-state composer can race its replacement by the active composer.
-        if (options.emptyA) {
+        if (options.legacyPicker) {
+          await page
+            .locator('[data-legacy-picker-component-fixture]')
+            .waitFor();
+        } else if (options.emptyA) {
           await page
             .getByRole('heading', { name: 'Session A', exact: true })
             .waitFor();
@@ -928,6 +1090,7 @@ suite(
         page,
         context,
         pending,
+        queueActions,
         reads,
         writes,
         releaseNextStepsA,
@@ -2671,10 +2834,13 @@ suite(
             }
             if (touch) await add.tap();
             else await add.click();
-            await f.page
-              .getByRole('menu')
-              .getByText('添加到本轮', { exact: true })
-              .waitFor();
+            const menu = f.page.getByRole('menu');
+            await menu.waitFor();
+            expect(await menu.getByRole('menuitem').allTextContents()).toEqual([
+              '交付成果',
+              '企业资料',
+              '本地上传',
+            ]);
             await f.page.keyboard.press('Escape');
             await card
               .locator('..')
@@ -3657,7 +3823,7 @@ suite(
     it.each([1440, 390])(
       'fixed reference selection survives a failed send and remains task-local at %ipx',
       async (width) => {
-        const f = await fixture({ width });
+        const f = await fixture({ width, workbenchOff: true });
         const reference = {
           sourceId: C,
           revisionId: runId,
@@ -3693,11 +3859,10 @@ suite(
           );
           const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
           await input.fill('打开共享参考资料期间保留草稿');
+          // The legacy library remains reachable from the real fallback
+          // header when the workbench is disabled, rather than the + menu.
           await f.page
-            .getByRole('button', { name: '添加文件', exact: true })
-            .click();
-          await f.page
-            .getByRole('menuitem', { name: '参考资料', exact: true })
+            .getByRole('button', { name: '参考资料', exact: true })
             .click();
           const library = f.page.getByRole('dialog', {
             name: '参考资料',
@@ -4358,23 +4523,37 @@ suite(
     );
 
     it('recommendation appends while preserving a real attachment and session reference, including during a running turn', async () => {
-      const f = await fixture({ running: true, taskSuggestions: [weeklyTask] });
+      const f = await fixture({
+        running: true,
+        taskSuggestions: [weeklyTask],
+        queuedMessages: [
+          {
+            id: childId,
+            runId,
+            text: '历史待编辑稿',
+            sessionReferences: [{ sessionId: B, label: 'Session B' }],
+            attachments: [],
+            createdAt: now,
+          },
+        ],
+      });
       try {
+        // New references are no longer added by a custom + picker. The real
+        // queue edit path must still restore references persisted by the server.
+        await f.page
+          .locator('[data-queue-dock]')
+          .getByRole('button', { name: '重新编辑', exact: true })
+          .click();
+        await f.page
+          .getByRole('button', { name: '移除引用：Session B' })
+          .waitFor();
+        expect(f.queueActions).toEqual([{ action: 'edit' }]);
         await f.page.locator('input[type=file]').setInputFiles({
           name: 'research.txt',
           mimeType: 'text/plain',
           buffer: Buffer.from('Synthetic input'),
         });
         await f.page.getByText('research.txt', { exact: true }).waitFor();
-        await f.page
-          .getByRole('button', { name: '添加文件', exact: true })
-          .click();
-        await f.page
-          .getByRole('menuitem', { name: '引用会话', exact: true })
-          .click();
-        const picker = f.page.getByRole('dialog', { name: '引用会话' });
-        await picker.getByRole('button', { name: /Session B/ }).click();
-        await picker.getByRole('button', { name: '完成', exact: true }).click();
         const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
         const original = '[原文] {{保留}}\n\n已有草稿 🚀';
         await input.fill(original);
@@ -4575,7 +4754,7 @@ suite(
             .inputValue(),
         ).toBe(`${task.template}\n\n补充要求：只看 src 目录`);
         await f.page
-          .getByRole('menuitem', { name: '从工作区添加', exact: true })
+          .getByRole('menuitem', { name: '交付成果', exact: true })
           .waitFor();
         await expect
           .poll(() =>
@@ -4743,7 +4922,7 @@ suite(
         await add.click();
         const menu = f.page.getByRole('menu');
         const item = menu.getByRole('menuitem', {
-          name: '从工作区添加',
+          name: '交付成果',
           exact: true,
         });
         const styles = await item.evaluate((el) => ({
@@ -4752,10 +4931,9 @@ suite(
         }));
         expect(styles).toEqual({ size: '15px', height: 44 });
         expect(await menu.getByRole('menuitem').allTextContents()).toEqual([
-          '参考资料',
-          '引用会话',
-          '从工作区添加',
-          '从本地上传',
+          '交付成果',
+          '企业资料',
+          '本地上传',
         ]);
         expect(await f.page.locator('[data-compact=mode]').count()).toBe(0);
         expect(await f.page.locator('[data-compact=visibility]').count()).toBe(
@@ -4802,9 +4980,8 @@ suite(
       }),
     );
     const openPicker = async (page: Page) => {
-      await page.getByRole('button', { name: '添加文件', exact: true }).click();
       await page
-        .getByRole('menuitem', { name: '从工作区添加', exact: true })
+        .getByRole('button', { name: '打开旧文件选择组件', exact: true })
         .click();
       const dialog = page.getByRole('dialog', {
         name: '从工作区添加文件',
@@ -4815,9 +4992,13 @@ suite(
     };
 
     it.each([1440, 390, 320])(
-      'workspace picker keeps selection while searching and its footer visible at %i px',
+      'legacy picker component keeps selection while searching and its footer visible at %i px',
       async (width) => {
-        const f = await fixture({ width, workspaceFiles: pickerFiles });
+        const f = await fixture({
+          width,
+          workspaceFiles: pickerFiles,
+          legacyPicker: true,
+        });
         try {
           const dialog = await openPicker(f.page);
           const search = dialog.getByRole('searchbox', { name: '搜索文件名' });
@@ -4902,10 +5083,11 @@ suite(
       20000,
     );
 
-    it('batch workspace attachments retain successes and retry only the failed selection', async () => {
+    it('legacy picker/hook retains batch successes and retries only the failed selection', async () => {
       const f = await fixture({
         uploadPending: true,
         workspaceFiles: pickerFiles.slice(0, 2),
+        legacyPicker: true,
       });
       try {
         const dialog = await openPicker(f.page);
@@ -4956,10 +5138,11 @@ suite(
       }
     }, 20000);
 
-    it('a new workspace-file batch creates only one session and preserves the selected files', async () => {
+    it('legacy picker/hook creates only one session and preserves a new batch', async () => {
       const f = await fixture({
         uploadPending: true,
         workspaceFiles: pickerFiles.slice(0, 2),
+        legacyPicker: true,
       });
       try {
         await startNewWork(f.page);
@@ -4986,8 +5169,11 @@ suite(
       }
     }, 20000);
 
-    it('workspace file selection survives version history and rejects an oversized batch before writes', async () => {
-      const f = await fixture({ workspaceFiles: pickerFiles });
+    it('legacy picker/hook preserves selection across version history and rejects oversized batches before writes', async () => {
+      const f = await fixture({
+        workspaceFiles: pickerFiles,
+        legacyPicker: true,
+      });
       try {
         await f.page.route('**/files/*/versions?*', (route) =>
           route.fulfill({ json: { versions: [] } }),
@@ -5300,16 +5486,14 @@ suite(
         await f.close();
       }
     }, 15_000);
-    it('a late workspace-file attachment cannot enter the next session or clear its sending owner', async () => {
+    it('a late legacy picker/hook attachment cannot enter another scope or release its newer composer owner', async () => {
       const f = await fixture({
         uploadPending: true,
         workspaceFiles: pickerFiles.slice(0, 2),
+        legacyPicker: true,
       });
       try {
-        await f.page
-          .getByRole('button', { name: '添加文件', exact: true })
-          .click();
-        await f.page.getByRole('menuitem', { name: /从工作区添加/ }).click();
+        await openPicker(f.page);
         await f.page.getByRole('checkbox').nth(0).check();
         await f.page.getByRole('checkbox').nth(1).check();
         await f.page

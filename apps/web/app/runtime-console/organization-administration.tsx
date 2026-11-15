@@ -1,5 +1,6 @@
 'use client';
 
+import { SelectField } from '../../components/select-field';
 import {
   useCallback,
   useEffect,
@@ -37,6 +38,7 @@ import {
   AdminMenu,
   AdminStatus,
 } from '../../components/admin/admin-ui';
+import { SearchField } from '../../components/search-field';
 import legacyStyles from './tenant-administration.module.css';
 import styles from './organization-administration.module.css';
 
@@ -215,7 +217,7 @@ export function OrganizationAdministration({
           >
             <label className={styles.companyPicker}>
               <span className={styles.srOnly}>管理公司</span>
-              <select
+              <SelectField
                 aria-label="管理公司"
                 value={selectedId}
                 disabled={busy || !!editor}
@@ -233,8 +235,7 @@ export function OrganizationAdministration({
                     {o.name}
                   </option>
                 ))}
-              </select>
-              <AdminIcon name="chevron" />
+              </SelectField>
             </label>
           </h2>
           {selected && (
@@ -604,23 +605,24 @@ export function OrganizationPeople({
       </div>
       <div className={styles.toolbar}>
         <form
-          className={styles.search}
+          className={styles.searchForm}
           onSubmit={(event) => {
             event.preventDefault();
             setQuery(searchText.trim());
             setSelectedPeople([]);
           }}
         >
-          <AdminIcon name="search" />
-          <input
-            name="search"
-            aria-label="查找员工"
-            placeholder="姓名、账号或岗位"
-            maxLength={160}
-            value={searchText}
-            onChange={(event) => setSearchText(event.target.value)}
-            disabled={busy || editing}
-          />
+          <div className={styles.searchControl}>
+            <SearchField
+              name="search"
+              aria-label="查找员工"
+              placeholder="姓名、账号或岗位"
+              maxLength={160}
+              value={searchText}
+              onChange={(event) => setSearchText(event.target.value)}
+              disabled={busy || editing}
+            />
+          </div>
           {searchText && (
             <AdminButton
               variant="icon"
@@ -824,7 +826,7 @@ export function OrganizationPeople({
                 </div>
                 <label>
                   主部门
-                  <select
+                  <SelectField
                     aria-label="主部门"
                     name="departmentId"
                     defaultValue={edited?.departmentId ?? ''}
@@ -846,11 +848,11 @@ export function OrganizationPeople({
                           {edited.departmentName ?? '原部门'}（已停用）
                         </option>
                       )}
-                  </select>
+                  </SelectField>
                 </label>
                 <label>
                   内容维护级别
-                  <select
+                  <SelectField
                     aria-label="内容维护级别"
                     name="contentMaintenanceLevel"
                     defaultValue={edited?.contentMaintenanceLevel ?? 'personal'}
@@ -858,7 +860,7 @@ export function OrganizationPeople({
                     <option value="personal">个人</option>
                     <option value="department">部门</option>
                     <option value="company">公司</option>
-                  </select>
+                  </SelectField>
                   <small>
                     部门包含自己的个人内容；公司再包含本公司及各部门共享内容。不会获得他人私人内容或账号管理权限。
                   </small>
@@ -1265,7 +1267,7 @@ function CompanyConfiguration({
       {organization.workspaces.length > 1 && (
         <label className={styles.workspaceSelector}>
           历史工作区
-          <select
+          <SelectField
             aria-label="历史工作区"
             value={workspaceId}
             disabled={busy}
@@ -1281,7 +1283,7 @@ function CompanyConfiguration({
                 {workspace.name}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
       )}
       {workspaceId ? (

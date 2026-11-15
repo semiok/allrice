@@ -162,8 +162,9 @@
 }
 
 .auth-form input:focus {
-  border-color: var(--auth-green);
-  box-shadow: 0 1px 0 var(--auth-green);
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+  box-shadow: none;
 }
 
 .auth-form button {
@@ -383,8 +384,8 @@
   color: #7b8491;
 }
 .auth-workspace .auth-form input:focus {
-  outline: 2px solid #3b82f6;
-  outline-offset: 2px;
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
   box-shadow: none;
 }
 .auth-password {

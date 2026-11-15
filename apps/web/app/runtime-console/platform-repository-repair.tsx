@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   RepositoryCatalogSchema,
@@ -233,7 +234,7 @@ export function PlatformRepositoryRepair({
       <div className={css.controls}>
         <label>
           源码基线{' '}
-          <select
+          <SelectField
             value={baselineId}
             onChange={(e) => setBaselineId(e.target.value)}
             disabled={readOnly || writing || !!pending}
@@ -245,7 +246,7 @@ export function PlatformRepositoryRepair({
                 {b.sourceSha.slice(0, 10)} · {b.fileCount} 个文件
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <AdminButton
           disabled={

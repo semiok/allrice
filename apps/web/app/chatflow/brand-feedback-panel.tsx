@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, type FormEvent } from 'react';
+import { SelectField } from '../../components/select-field';
 import type { BrandContentBoard } from '@allrice/contracts';
 import css from './brand-content-panel.module.css';
 
@@ -149,7 +150,7 @@ export function BrandFeedbackPanel({
         <form onSubmit={submit} className={css.stack}>
           <label className={css.field}>
             记录来源
-            <select
+            <SelectField
               aria-label="记录来源"
               value={draft.receiptId}
               disabled={disabled}
@@ -177,7 +178,7 @@ export function BrandFeedbackPanel({
                   {r.platform} · {r.publishedUrl}
                 </option>
               ))}
-            </select>
+            </SelectField>
           </label>
           {fields.map((field) => (
             <label className={css.field} key={field.key}>
@@ -203,7 +204,7 @@ export function BrandFeedbackPanel({
           ))}
           <label className={css.field}>
             指标来源
-            <select
+            <SelectField
               aria-label="指标来源"
               value={draft.sourceType}
               disabled={disabled}
@@ -212,7 +213,7 @@ export function BrandFeedbackPanel({
               <option value="public_page">公开页面</option>
               <option value="platform_export">平台导出记录</option>
               <option value="manual_report">人工提供记录</option>
-            </select>
+            </SelectField>
           </label>
           <div className={css.formGrid}>
             {Object.entries(metricLabels).map(([key, label]) => (

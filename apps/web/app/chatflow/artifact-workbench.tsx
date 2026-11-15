@@ -9,6 +9,7 @@ import {
   findPaneContentTab,
   findTabPane,
 } from '@deepseek-ai/dsh-client-ui-dockkit';
+import { SelectField } from '../../components/select-field';
 import {
   FileTypeIcon,
   classifyFileType,
@@ -1739,7 +1740,7 @@ function ArtifactReview({
             preview.changeset.comparisonScope !== 'file_organization' ? (
               <label>
                 提案文件
-                <select
+                <SelectField
                   aria-label="提案文件"
                   className={styles.selector}
                   value={path}
@@ -1750,7 +1751,7 @@ function ArtifactReview({
                   {preview.changeset.files.map((f) => (
                     <option key={f.path}>{f.path}</option>
                   ))}
-                </select>
+                </SelectField>
               </label>
             ) : null}
             {view === 'diff' &&
@@ -1766,7 +1767,7 @@ function ArtifactReview({
                 <div className={styles.row}>
                   <label>
                     对比方式
-                    <select
+                    <SelectField
                       aria-label="对比方式"
                       value={mode}
                       onChange={(e) =>
@@ -1775,7 +1776,7 @@ function ArtifactReview({
                     >
                       <option value="split">并排</option>
                       <option value="unified">统一</option>
-                    </select>
+                    </SelectField>
                   </label>
                 </div>
                 <div className={styles.preview}>
@@ -1815,7 +1816,7 @@ function ArtifactReview({
                 <summary>查看完整前后文本（分页）</summary>
                 <label>
                   文本侧
-                  <select
+                  <SelectField
                     aria-label="文本侧"
                     value={rawSide}
                     onChange={(e) =>
@@ -1824,7 +1825,7 @@ function ArtifactReview({
                   >
                     <option value="before">修改前</option>
                     <option value="after">修改后</option>
-                  </select>
+                  </SelectField>
                 </label>
                 <TextPage
                   key={`${path}/${rawSide}`}

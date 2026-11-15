@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { TechnicalFailureDetails } from './technical-failure-details';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -399,7 +400,7 @@ export function TechnicalAssistant() {
           保存现有记录的引用。同一引用只记录一次；可将相关证据归入已有问题。
         </p>
         <div className={css.controls}>
-          <select
+          <SelectField
             aria-label="问题来源"
             value={sourceKind}
             disabled={busy}
@@ -412,7 +413,7 @@ export function TechnicalAssistant() {
                 {label}
               </option>
             ))}
-          </select>
+          </SelectField>
           <input
             aria-label="来源记录 ID"
             placeholder="完整 Run、操作或反馈 ID"
@@ -421,7 +422,7 @@ export function TechnicalAssistant() {
             disabled={busy}
             onChange={(e) => setSourceId(e.target.value)}
           />
-          <select
+          <SelectField
             aria-label="归入问题"
             value={linkIssueId}
             disabled={busy}
@@ -433,7 +434,7 @@ export function TechnicalAssistant() {
                 {item.title}
               </option>
             ))}
-          </select>
+          </SelectField>
           <AdminButton
             variant="primary"
             disabled={busy || !sourceId}
@@ -516,7 +517,7 @@ function IssueDetail({
       <div className={css.controls}>
         <label>
           状态
-          <select
+          <SelectField
             aria-label="技术问题状态"
             value={status}
             disabled={busy}
@@ -529,11 +530,11 @@ function IssueDetail({
                 {label}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label>
           原因
-          <select
+          <SelectField
             aria-label="技术问题原因"
             value={category}
             disabled={busy}
@@ -546,11 +547,11 @@ function IssueDetail({
                 {label}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label>
           严重程度
-          <select
+          <SelectField
             aria-label="技术问题严重程度"
             value={severity}
             disabled={busy}
@@ -563,7 +564,7 @@ function IssueDetail({
                 {label}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <AdminButton
           disabled={busy}

@@ -1,5 +1,6 @@
 'use client';
 
+import { SelectField } from '../../components/select-field';
 import { useEffect, useState } from 'react';
 import { z } from 'zod';
 import {
@@ -134,7 +135,7 @@ export function EmployeeInstanceDirectory({
       <div className={css.filters}>
         <label>
           公司
-          <select
+          <SelectField
             aria-label="AI 实例公司"
             value={companyId}
             onChange={(e) => setCompany(e.target.value)}
@@ -149,11 +150,11 @@ export function EmployeeInstanceDirectory({
                 {c.name}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label>
           类型
-          <select
+          <SelectField
             aria-label="AI 实例类型"
             value={kind}
             onChange={(e) => setKind(e.target.value as typeof kind)}
@@ -161,11 +162,11 @@ export function EmployeeInstanceDirectory({
             <option value="">全部实例</option>
             <option value="general">通用 AI 员工</option>
             <option value="custom">小白定制 AI 员工</option>
-          </select>
+          </SelectField>
         </label>
         <label>
           来源
-          <select
+          <SelectField
             aria-label="AI 实例来源"
             value={source}
             onChange={(e) => setSource(e.target.value)}
@@ -182,7 +183,7 @@ export function EmployeeInstanceDirectory({
                 {t.name}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
       </div>
       <OptionsState value={companies} label="公司" />
@@ -383,7 +384,7 @@ export function EmployeeTemplateHistory({
       </p>
       <label className={css.historySelect}>
         来源模板
-        <select
+        <SelectField
           aria-label="历史来源模板"
           value={employeeId}
           onChange={(e) => setSelected(e.target.value)}
@@ -403,7 +404,7 @@ export function EmployeeTemplateHistory({
               {t.name}
             </option>
           ))}
-        </select>
+        </SelectField>
       </label>
       <OptionsState value={templates} label="模板" />
       {employeeId && (

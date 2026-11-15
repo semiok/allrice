@@ -221,7 +221,7 @@
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
 }
-.quotaForm :where(input, select) {
+.quotaForm input {
   min-height: var(--admin-control-height);
   width: 100%;
   min-width: 0;
@@ -336,4 +336,28 @@
   .subscriptionAccount {
     padding: 16px;
   }
+}
+
+.quotaForm
+  input:not(
+    [type='checkbox'],
+    [type='radio'],
+    [type='file'],
+    [type='range'],
+    [type='color']
+  ):focus,
+.usageReview
+  :is(
+    input:not(
+      [type='checkbox'],
+      [type='radio'],
+      [type='file'],
+      [type='range'],
+      [type='color']
+    ),
+    textarea
+  ):focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+  box-shadow: none;
 }

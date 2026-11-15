@@ -130,6 +130,10 @@
   padding: 10px 12px;
   font: inherit;
 }
+.field textarea:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+}
 .hint {
   margin: 0;
   color: var(--dsw-alias-label-secondary);

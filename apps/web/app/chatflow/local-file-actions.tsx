@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { SelectField } from '../../components/select-field';
 import type {
   LocalFileResult,
   LocalFileVersion,
@@ -237,7 +238,7 @@ export function LocalArtifactFileDialog({
         </p>
         <label>
           电脑
-          <select
+          <SelectField
             disabled={busy}
             value={deviceId}
             onChange={(e) => {
@@ -256,11 +257,11 @@ export function LocalArtifactFileDialog({
                 {bridgeDeviceName(d.name)}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label>
           已授权目录
-          <select
+          <SelectField
             disabled={busy}
             value={grantId}
             onChange={(e) => {
@@ -274,7 +275,7 @@ export function LocalArtifactFileDialog({
                 {g.label}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         {!devices.length && (
           <p>请在“我的电脑”连接新版 AllRice 助手并选择目录。</p>

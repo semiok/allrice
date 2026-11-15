@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useEffect, useState } from 'react';
 import {
   runtimeGovernedActions,
@@ -170,7 +171,7 @@ export function TenantPolicyEditor({
             </label>
             <label>
               执行模式
-              <select
+              <SelectField
                 aria-label="策略执行模式"
                 value={draft.mode}
                 disabled={busy}
@@ -183,7 +184,7 @@ export function TenantPolicyEditor({
               >
                 <option value="execute">按动作规则执行</option>
                 <option value="plan_only">仅规划（读操作仍按规则）</option>
-              </select>
+              </SelectField>
             </label>
           </div>
           <div className={styles.table}>
@@ -219,7 +220,7 @@ export function TenantPolicyEditor({
                         <code>{action}</code>
                       </td>
                       <td>
-                        <select
+                        <SelectField
                           aria-label={`${action} 规则`}
                           disabled={busy}
                           value={effect}
@@ -257,7 +258,7 @@ export function TenantPolicyEditor({
                             </option>
                           ) : null}
                           <option value="allow">授权范围内允许</option>
-                        </select>
+                        </SelectField>
                       </td>
                       <td>
                         {action === 'assistant.delegate'

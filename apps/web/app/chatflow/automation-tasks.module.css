@@ -8,37 +8,9 @@
   line-height: 1.6;
   overflow-wrap: anywhere;
 }
-.search {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border: 0.5px solid var(--dsw-alias-border-l3);
-  border-radius: 12px;
-  margin-bottom: 16px;
-}
-.search input {
-  min-width: 0;
-  width: 100%;
-  border: 0;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  outline: 0;
-}
-.search:focus-within {
-  border-color: var(--dsw-alias-state-business-primary);
-}
 .employeeFilter {
   margin-left: auto;
   max-width: 180px;
-  min-height: 30px;
-  border: 0.5px solid var(--dsw-alias-border-l3);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-base);
-  color: inherit;
-  font: inherit;
-  font-size: 13px;
 }
 .row {
   border: 0;
@@ -135,8 +107,7 @@
   font-size: 13px;
   min-width: 0;
 }
-.form input,
-.form select {
+.form input {
   box-sizing: border-box;
   max-width: 100%;
   min-width: 0;
@@ -149,9 +120,9 @@
   color: var(--dsw-alias-label-primary);
   font: inherit;
 }
-.form input:focus,
-.form select:focus {
-  outline: 1px solid var(--dsw-alias-state-business-primary);
+.form input:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
 }
 .rules {
   border: 0.5px solid var(--dsw-alias-border-l3);
@@ -169,8 +140,7 @@
 .rules label + label {
   border-top: 0.5px solid var(--dsw-alias-border-l4);
 }
-.rules input,
-.rules select {
+.rules input {
   width: auto;
   max-width: 220px;
 }
@@ -246,4 +216,14 @@
 
 .createdOnceReceipt p {
   margin: 4px 0;
+}
+
+.search {
+  flex: none;
+  margin-bottom: 16px;
+}
+
+.rules [data-select-field] {
+  width: auto;
+  max-width: 220px;
 }

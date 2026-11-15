@@ -1,6 +1,7 @@
 'use client';
 
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { SelectField } from '../../components/select-field';
+import { useEffect, useId, useMemo, useState, type FormEvent } from 'react';
 import {
   OrganizationAiDirectorySchema,
   OrganizationPersonAiInstancesSchema,
@@ -11,6 +12,7 @@ import {
   type OrganizationAiDirectoryQuery,
 } from '@allrice/contracts';
 import { AdminButton } from '../../components/admin/admin-ui';
+import { SearchField } from '../../components/search-field';
 import { organizationErrorMessage } from './organization-api';
 import { useAdminRead as useRead } from './admin-read';
 import { loadOrganizationDepartmentOptions } from './organization-departments';
@@ -41,6 +43,7 @@ export function OrganizationAiDirectory({
   organizationId: string;
   filters?: Pick<OrganizationAiDirectoryQuery, 'kind' | 'sourceTemplate'>;
 }) {
+  const searchLabelId = useId();
   const [departments, setDepartments] = useState<OrganizationDepartment[]>([]);
   const [departmentError, setDepartmentError] = useState('');
   const [departmentId, setDepartmentId] = useState('');
@@ -102,7 +105,7 @@ export function OrganizationAiDirectory({
       <form className={css.filters} onSubmit={submit}>
         <label>
           部门
-          <select
+          <SelectField
             aria-label="工作沉淀部门"
             value={departmentId}
             onChange={(event) => {
@@ -118,17 +121,18 @@ export function OrganizationAiDirectory({
                 {department.active ? '' : '（已停用）'}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
-        <label>
-          查找员工
-          <input
+        <div className={css.searchFilter}>
+          <span id={searchLabelId}>查找员工</span>
+          <SearchField
+            aria-labelledby={searchLabelId}
             value={input}
             maxLength={160}
             placeholder="姓名、账号或岗位"
             onChange={(event) => setInput(event.target.value)}
           />
-        </label>
+        </div>
         <AdminButton type="submit">查询</AdminButton>
       </form>
       {departmentError && <p role="alert">部门读取失败：{departmentError}</p>}

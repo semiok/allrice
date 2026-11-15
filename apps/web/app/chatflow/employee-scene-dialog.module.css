@@ -535,10 +535,13 @@
 .iconButton:focus-visible,
 .link:focus-visible,
 .sceneRow:focus-visible,
-.tabs button:focus-visible,
-.input:focus-visible {
+.tabs button:focus-visible {
   outline: 2px solid var(--ar-text);
   outline-offset: 2px;
+}
+.input:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
 }
 @media (prefers-reduced-motion: reduce) {
   .spinner {

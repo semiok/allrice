@@ -257,6 +257,17 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         const statistics = page.getByLabel('当前筛选统计');
         await expect.poll(() => statistics.innerText()).toContain('通用 3');
         expect(await statistics.innerText()).toContain('定制 1');
+        const employeeSearch = page.getByRole('searchbox', {
+          name: '查找员工',
+          exact: true,
+        });
+        await employeeSearch.fill('研究员甲');
+        expect(await statistics.innerText()).toContain('通用 3');
+        await employeeSearch.press('Enter');
+        await expect.poll(() => statistics.innerText()).toContain('1 名员工');
+        await employeeSearch.fill('');
+        await page.getByRole('button', { name: '查询', exact: true }).click();
+        await expect.poll(() => statistics.innerText()).toContain('通用 3');
         await page.getByLabel('工作沉淀部门').selectOption(s.research.id);
         await expect.poll(() => statistics.innerText()).toContain('1 名员工');
         await page
@@ -1298,9 +1309,64 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         const departments: Record<string, string> = Object.fromEntries(
           departmentRows.map((item) => [String(item.name), String(item.id)]),
         );
-        await page
-          .getByLabel('主部门', { exact: true })
-          .selectOption(departments['财务部']!);
+        const department = page.getByLabel('主部门', { exact: true });
+        const selectLook = () =>
+          department.evaluate((node) => {
+            const frame = node.closest('[data-select-field]')!;
+            const outer = getComputedStyle(frame);
+            const inner = getComputedStyle(node);
+            return {
+              width: frame.getBoundingClientRect().width,
+              height: frame.getBoundingClientRect().height,
+              insetLeft:
+                parseFloat(outer.paddingLeft) +
+                parseFloat(inner.borderLeftWidth),
+              insetRight:
+                parseFloat(outer.paddingRight) +
+                parseFloat(inner.borderRightWidth),
+              background: outer.backgroundColor,
+              border: outer.borderColor,
+              colorScheme: outer.colorScheme,
+              // The real admin wrapper forces dark controls, independently
+              // of the light DSH alias inherited from the document root.
+              focusColor: outer
+                .getPropertyValue('--dsw-static-deepseek-400')
+                .trim(),
+              innerBorder: inner.borderWidth,
+              innerBorderColors: [
+                inner.borderLeftColor,
+                inner.borderRightColor,
+              ],
+              innerOutline: inner.outlineStyle,
+              innerShadow: inner.boxShadow,
+              appearance: inner.appearance,
+              keyboard: node.matches(':focus-visible'),
+            };
+          });
+        const idleSelect = await selectLook();
+        expect(idleSelect.height).toBe(width > 700 ? 40 : 44);
+        expect(Math.abs(idleSelect.insetLeft - 12)).toBeLessThanOrEqual(0.5);
+        expect(Math.abs(idleSelect.insetRight - 12)).toBeLessThanOrEqual(0.5);
+        expect(idleSelect.appearance).not.toBe('none');
+        await department.focus();
+        await department.press('Tab');
+        await page.keyboard.press('Shift+Tab');
+        const focusedSelect = await selectLook();
+        expect(focusedSelect.colorScheme).toBe('dark');
+        expect(focusedSelect.focusColor).toMatch(/^rgb/);
+        expect(focusedSelect.border).not.toBe(idleSelect.border);
+        expect(focusedSelect).toMatchObject({
+          width: idleSelect.width,
+          height: idleSelect.height,
+          background: idleSelect.background,
+          border: focusedSelect.focusColor,
+          innerBorder: '0px 12px',
+          innerBorderColors: ['rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, 0)'],
+          innerOutline: 'none',
+          innerShadow: 'none',
+          keyboard: true,
+        });
+        await department.selectOption(departments['财务部']!);
         expect(
           await page.getByLabel('内容维护级别', { exact: true }).inputValue(),
         ).toBe('personal');
@@ -1391,7 +1457,43 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
     try {
       await page.goto(origin);
       await page.getByRole('button', { name: '新建公司', exact: true }).click();
-      await page.getByLabel('公司名称', { exact: true }).fill('星米科技');
+      const companyName = page.getByLabel('公司名称', { exact: true });
+      const fieldLook = () =>
+        companyName.evaluate((node) => {
+          const style = getComputedStyle(node);
+          const box = node.getBoundingClientRect();
+          return {
+            width: box.width,
+            height: box.height,
+            background: style.backgroundColor,
+            borderWidth: style.borderWidth,
+            border: style.borderColor,
+            primary: style
+              .getPropertyValue('--dsw-alias-state-business-primary')
+              .trim(),
+            outline: style.outlineStyle,
+            shadow: style.boxShadow,
+            keyboard: node.matches(':focus-visible'),
+          };
+        });
+      const idle = await fieldLook();
+      await companyName.click();
+      const pointer = await fieldLook();
+      expect(pointer.primary).toMatch(/^rgb/);
+      expect(pointer.border).toBe(pointer.primary);
+      expect(pointer.border).not.toBe(idle.border);
+      expect(pointer).toMatchObject({
+        width: idle.width,
+        height: idle.height,
+        background: idle.background,
+        borderWidth: idle.borderWidth,
+        outline: 'none',
+        shadow: 'none',
+      });
+      await companyName.press('Tab');
+      await page.keyboard.press('Shift+Tab');
+      expect(await fieldLook()).toEqual({ ...pointer, keyboard: true });
+      await companyName.fill('星米科技');
       await page.getByLabel('公司业务背景').fill('企业服务与文创产品');
       await page.getByRole('button', { name: '保存公司', exact: true }).click();
       await page
@@ -1632,7 +1734,59 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
           );
         });
       expect(companyNameFits).toBe(true);
-      await page.getByLabel('查找员工', { exact: true }).fill('运营');
+      const search = page.getByLabel('查找员工', { exact: true });
+      const searchLook = () =>
+        search.evaluate((node) => {
+          const frame = node.closest('[data-search-field]')!;
+          const outer = getComputedStyle(frame);
+          const inner = getComputedStyle(node);
+          const box = frame.getBoundingClientRect();
+          return {
+            width: box.width,
+            height: box.height,
+            background: outer.backgroundColor,
+            borderWidth: outer.borderWidth,
+            border: outer.borderColor,
+            colorScheme: outer.colorScheme,
+            // SearchField follows the same local dark control scheme.
+            focusColor: outer
+              .getPropertyValue('--dsw-static-deepseek-400')
+              .trim(),
+            outline: outer.outlineStyle,
+            shadow: outer.boxShadow,
+            innerBackground: inner.backgroundColor,
+            innerBorder: inner.borderWidth,
+            innerOutline: inner.outlineStyle,
+            innerShadow: inner.boxShadow,
+            keyboard: node.matches(':focus-visible'),
+          };
+        });
+      const idle = await searchLook();
+      await search.click();
+      const pointer = await searchLook();
+      expect(pointer.colorScheme).toBe('dark');
+      expect(pointer.focusColor).toMatch(/^rgb/);
+      expect(pointer.border).toBe(pointer.focusColor);
+      expect(pointer.border).not.toBe(idle.border);
+      expect(pointer).toMatchObject({
+        width: idle.width,
+        height: idle.height,
+        background: idle.background,
+        borderWidth: idle.borderWidth,
+        outline: 'none',
+        shadow: 'none',
+        innerBackground: idle.innerBackground,
+        innerBorder: '0px',
+        innerOutline: 'none',
+        innerShadow: 'none',
+      });
+      await search.press('Tab');
+      await page.keyboard.press('Shift+Tab');
+      expect(await searchLook()).toEqual({ ...pointer, keyboard: true });
+      await search.fill('运营');
+      expect(
+        await page.getByLabel('选择 配发小雪', { exact: true }).count(),
+      ).toBe(1);
       await page.getByRole('button', { name: '查找', exact: true }).click();
       await page.getByLabel('选择 配发小李', { exact: true }).check();
       await page.getByLabel('查找员工', { exact: true }).fill('财务');

@@ -1,0 +1,68 @@
+.field {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  height: 44px;
+  padding: 0;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: var(--dsw-radius-sm);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font-family: var(--dsw-font-family);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.field:hover:not(:focus-within):not(:has(select:disabled)) {
+  border-color: var(--dsw-alias-border-l4);
+}
+
+.field:focus-within {
+  border-color: light-dark(
+    var(--dsw-static-deepseek-500),
+    var(--dsw-static-deepseek-400)
+  );
+}
+
+.field:has(select:disabled) {
+  opacity: 0.5;
+}
+
+.field > select.control {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  /* Native border remains clickable and keeps the approved arrow inset. */
+  border-inline: 12px solid transparent;
+  border-radius: 0;
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+.field > select.control:focus {
+  outline: none;
+  box-shadow: none;
+  background: transparent;
+}
+
+@media (max-width: 700px), (pointer: coarse) {
+  .field {
+    font-size: 16px;
+  }
+}
+
+@media (min-width: 701px) and (pointer: fine) {
+  .field {
+    height: 40px;
+  }
+}

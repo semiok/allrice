@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useEffect, useState } from 'react';
 import { AdminButton as Button } from '../../components/admin/admin-ui';
 import type {
@@ -134,7 +135,7 @@ export function CompanyDashboard({
       <div className={styles.selectors}>
         <label>
           员工
-          <select
+          <SelectField
             aria-label="员工"
             value={selectedUserId}
             onChange={(e) => onUser(e.target.value)}
@@ -152,7 +153,7 @@ export function CompanyDashboard({
                   : ''}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         {people.data?.nextCursor && (
           <Button
@@ -164,7 +165,7 @@ export function CompanyDashboard({
         )}
         <label>
           AI 员工
-          <select
+          <SelectField
             value={employeeId}
             onChange={(e) => setEmployeeId(e.target.value)}
           >
@@ -178,11 +179,11 @@ export function CompanyDashboard({
                 {e.name}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label>
           岗位
-          <select
+          <SelectField
             value={jobTitle}
             onChange={(e) => setJobTitle(e.target.value)}
           >
@@ -192,18 +193,18 @@ export function CompanyDashboard({
                 {title}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label>
           时间范围
-          <select
+          <SelectField
             value={rangeChoice}
             onChange={(e) => applyRange(e.target.value)}
           >
             <option value="7d">最近 7 天</option>
             <option value="30d">最近 30 天</option>
             <option value="custom">自定义</option>
-          </select>
+          </SelectField>
         </label>
         <Button
           icon="refresh"

@@ -39,6 +39,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
   active = true,
   onReadFailure,
   footer,
+  imageHorizontalInset,
 }: {
   preview: ArtifactPreview;
   fileName: string;
@@ -50,6 +51,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
   active?: boolean;
   onReadFailure?: () => void;
   footer?: ReactNode;
+  imageHorizontalInset?: number;
 }) {
   const [sourcePage, setSourcePage] = useState<TextPreview>();
   const [error, setError] = useState('');
@@ -126,6 +128,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
       <NativeImagePreview
         src={`data:${preview.mediaType};base64,${preview.base64}`}
         alt={fileName}
+        horizontalInset={imageHorizontalInset}
       />
     );
   if (preview.kind === 'office') return <OfficePreview preview={preview} />;

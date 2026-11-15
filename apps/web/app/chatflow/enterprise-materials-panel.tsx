@@ -6,6 +6,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { SearchField } from '../../components/search-field';
 import type { z } from 'zod';
 import {
   ReferencePublicationQuerySchema,
@@ -18,14 +19,12 @@ import {
   type ReferenceRevision,
 } from '@allrice/contracts';
 import {
-  FileTypeIcon,
   IconPlusOutlineRegular,
   IconLinkOutlineRegular,
   IconEllipsisOutlineRegular,
   IconEditOutlineRegular,
   IconTrashOutlineRegular,
   IconDownloadOutlineRegular,
-  IconSearchOutlineRegular,
   Menu,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
@@ -46,6 +45,9 @@ import {
 import reader from './document-reader.module.css';
 import files from './workbench-files-panel.module.css';
 import css from './enterprise-materials-panel.module.css';
+import nativeFiles from './dsh-upstream/files/FilesBody.module.css';
+import { FileRow } from './dsh-upstream/files/FileRow';
+import { formatFileListDate } from '../../lib/chatflow/file-list-date';
 
 const catalogSchema = ReferencePublicationQueryResultSchema.extend({
   viewerId: UuidSchema,
@@ -428,12 +430,13 @@ export function EnterpriseMaterialsPanel(props: {
     icon: ReactNode,
     onClick: () => void,
     disabled = false,
+    className = reader.iconButton,
   ) => (
     <Tooltip label={label} side="bottom" portal>
       <span>
         <button
           type="button"
-          className={reader.iconButton}
+          className={className}
           aria-label={label}
           onClick={onClick}
           disabled={disabled}
@@ -598,20 +601,17 @@ export function EnterpriseMaterialsPanel(props: {
       ) : (
         <>
           <div className={css.tools}>
-            <label className={css.search}>
-              <IconSearchOutlineRegular size={18} />
-              <input
-                type="search"
-                aria-label="查找资料（文件名、用途、正文）"
-                placeholder="查找资料（文件名、用途、正文）"
-                maxLength={referenceSearchPolicy.maximumQueryCharacters}
-                value={query}
-                onChange={(event) => {
-                  setQuery(event.target.value);
-                  setPage(null);
-                }}
-              />
-            </label>
+            <SearchField
+              className={css.search}
+              aria-label="查找资料（文件名、用途、正文）"
+              placeholder="查找资料（文件名、用途、正文）"
+              maxLength={referenceSearchPolicy.maximumQueryCharacters}
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setPage(null);
+              }}
+            />
             {props.onUpload && catalog?.options.writable && (
               <button
                 type="button"
@@ -648,7 +648,7 @@ export function EnterpriseMaterialsPanel(props: {
             <MaterialLoading />
           ) : (
             <div
-              className={css.list}
+              className={nativeFiles.body}
               ref={list}
               aria-busy={visibleStatus?.loading}
               onScroll={() => {
@@ -665,73 +665,76 @@ export function EnterpriseMaterialsPanel(props: {
             >
               {catalog.references
                 .filter((r) => r.publication)
-                .map((r) => (
-                  <article className={css.row} key={r.revisionId}>
-                    <button
-                      type="button"
-                      className={css.open}
-                      aria-label={r.fileName}
+                .map((r) => {
+                  const subtitle = `${r.purpose} · ${r.publication!.publisherId === props.viewerId ? '我' : r.publication!.publisherName} · ${formatFileListDate(r.createdAt)}`;
+                  return (
+                    <FileRow
+                      key={r.revisionId}
+                      fileId={r.revisionId}
+                      fileName={r.fileName}
                       disabled={deniedRevisions.includes(r.revisionId)}
-                      onClick={() =>
+                      onOpen={() =>
                         setSelected({
                           sourceId: r.sourceId,
                           revisionId: r.revisionId,
                         })
                       }
-                    >
-                      <FileTypeIcon path={r.fileName} size={28} />
-                      <span>
-                        <strong>
-                          {r.fileName}
-                          <small className={css.scope}>
-                            {audienceLabel(r)}
-                          </small>
-                        </strong>
-                        <small>
-                          {r.purpose} ·{' '}
-                          {r.publication!.publisherId === props.viewerId
-                            ? '我'
-                            : r.publication!.publisherName}{' '}
-                          · {new Date(r.createdAt).toLocaleDateString('zh-CN')}
-                        </small>
-                        {query.trim() &&
-                          catalog.matches
-                            .filter(
-                              (match) => match.revisionId === r.revisionId,
-                            )
-                            .map((match) => (
-                              <span
-                                className={css.excerpt}
-                                key={match.revisionId}
-                              >
-                                <MarkedExcerpt
-                                  content={match.content}
-                                  query={query.trim()}
-                                />
-                              </span>
-                            ))}
-                      </span>
-                    </button>
-                    <div className={css.actions}>
-                      {iconAction(
-                        '引用到对话',
-                        <IconPlusOutlineRegular size={20} />,
-                        () => void quote(r),
-                        quoteDisabled(r),
-                      )}
-                      <MaterialMenu
-                        reference={r}
-                        downloadUrl={downloadUrl(r)}
-                        onCopy={() => void copy(r)}
-                        onManage={
-                          canManage(r) && props.onManage
-                            ? (kind) => manage(r, kind)
-                            : undefined
-                        }
-                      />
-                    </div>
-                  </article>
-                ))}
+                      titleTrailing={
+                        <span
+                          className={css.scope}
+                          title={audienceLabel(r)}
+                          data-file-row-scope
+                        >
+                          {audienceLabel(r)}
+                        </span>
+                      }
+                      subtitle={subtitle}
+                      subtitleTitle={subtitle}
+                      supplement={
+                        query.trim()
+                          ? catalog.matches
+                              .filter(
+                                (match) => match.revisionId === r.revisionId,
+                              )
+                              .map((match) => (
+                                <span
+                                  className={css.excerpt}
+                                  key={match.revisionId}
+                                >
+                                  <MarkedExcerpt
+                                    content={match.content}
+                                    query={query.trim()}
+                                  />
+                                </span>
+                              ))
+                          : undefined
+                      }
+                      actions={
+                        <>
+                          {iconAction(
+                            '引用到对话',
+                            <IconPlusOutlineRegular size={15} />,
+                            () => void quote(r),
+                            quoteDisabled(r),
+                            nativeFiles.tool,
+                          )}
+                          <MaterialMenu
+                            reference={r}
+                            downloadUrl={downloadUrl(r)}
+                            onCopy={() => void copy(r)}
+                            onManage={
+                              canManage(r) && props.onManage
+                                ? (kind) => manage(r, kind)
+                                : undefined
+                            }
+                            className={nativeFiles.tool}
+                            iconSize={15}
+                          />
+                        </>
+                      }
+                    />
+                  );
+                })}
               {!catalog.references.length && (
                 <div className={files.empty}>
                   <WorkbenchIcon kind="materials" size={36} />
@@ -779,6 +782,8 @@ function MaterialMenu(props: {
   reference: ReferenceRevision;
   downloadUrl: string;
   onCopy: () => void;
+  className?: string;
+  iconSize?: number;
   onManage?: (action: ReferencePublicationManagementAction) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -791,13 +796,13 @@ function MaterialMenu(props: {
         <Tooltip label="更多操作" side="bottom" disabled={open} portal>
           <button
             type="button"
-            className={css.menuButton}
+            className={props.className ?? css.menuButton}
             aria-label={`资料选项 ${props.reference.fileName}`}
             aria-haspopup="menu"
             aria-expanded={open}
             onClick={() => setOpen(!open)}
           >
-            <IconEllipsisOutlineRegular size={20} />
+            <IconEllipsisOutlineRegular size={props.iconSize ?? 20} />
           </button>
         </Tooltip>
       }

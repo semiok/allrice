@@ -86,8 +86,7 @@
   font-weight: 500;
 }
 .nameField input,
-.field textarea,
-.field select {
+.field textarea {
   box-sizing: border-box;
   display: block;
   width: 100%;
@@ -109,10 +108,6 @@
   min-height: 60px;
   line-height: 1.6;
   resize: vertical;
-}
-.field select {
-  height: 36px;
-  padding: 5px 9px;
 }
 .colors {
   margin-top: 16px;
@@ -217,10 +212,7 @@
   cursor: default;
 }
 .dialog > header button:focus-visible,
-.actions button:focus-visible,
-.nameField input:focus-visible,
-.field textarea:focus-visible,
-.field select:focus-visible {
+.actions button:focus-visible {
   outline: 2px solid #4678e9;
   outline-offset: 2px;
 }
@@ -246,13 +238,9 @@
 }
 @media (max-width: 560px), (pointer: coarse) {
   .nameField input,
-  .field textarea,
-  .field select {
+  .field textarea {
     min-height: 44px;
     font-size: 16px;
-  }
-  .field select {
-    height: 44px;
   }
   .avatar {
     width: 40px;
@@ -380,8 +368,7 @@
   min-width: 0;
 }
 .editForm .nameField input,
-.editForm .field textarea,
-.editForm .field select {
+.editForm .field textarea {
   min-height: 44px;
   padding: 10px 12px;
   border-color: var(--ar-border);
@@ -393,21 +380,14 @@
 .editForm .field textarea {
   min-height: 88px;
 }
-.editForm .field select {
-  height: auto;
-}
 .editForm .nameField input:hover,
-.editForm .field textarea:hover,
-.editForm .field select:hover {
+.editForm .field textarea:hover {
   border-color: var(--ar-border-strong);
 }
 .editForm .nameField input:focus,
-.editForm .field textarea:focus,
-.editForm .field select:focus {
-  border-color: var(--ar-focus-ring);
-  outline: 2px solid var(--ar-focus-ring);
-  outline-offset: 2px;
-  background: var(--dsw-specific-input-major);
+.editForm .field textarea:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
 }
 .editForm > [role='alert'] {
   flex: none;
@@ -494,8 +474,7 @@
     font-size: 18px;
   }
   .editForm .nameField input,
-  .editForm .field textarea,
-  .editForm .field select {
+  .editForm .field textarea {
     font-size: 16px;
     line-height: 24px;
   }
@@ -556,8 +535,7 @@
   margin: 0;
 }
 .createForm .nameField input,
-.createForm .field textarea,
-.createForm .field select {
+.createForm .field textarea {
   min-height: 44px;
   padding: 10px 12px;
   border-color: var(--ar-border);
@@ -569,27 +547,14 @@
 .createForm .field textarea {
   min-height: 64px;
 }
-.createForm .field select {
-  height: auto;
-  padding-right: 24px;
-}
-@media (min-width: 701px) and (pointer: fine) {
-  .createForm .field select {
-    min-height: 40px;
-    height: 40px;
-  }
-}
 .createForm .nameField input:hover,
-.createForm .field textarea:hover,
-.createForm .field select:hover {
+.createForm .field textarea:hover {
   border-color: var(--ar-border-strong);
 }
 .createForm .nameField input:focus,
-.createForm .field textarea:focus,
-.createForm .field select:focus {
-  outline: 2px solid var(--ar-focus-ring);
-  outline-offset: 2px;
-  background: var(--dsw-specific-input-major);
+.createForm .field textarea:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
 }
 .createForm > [role='alert'] {
   flex: none;
@@ -642,8 +607,7 @@
     min-height: 65px;
   }
   .createForm .nameField input,
-  .createForm .field textarea,
-  .createForm .field select {
+  .createForm .field textarea {
     font-size: 16px;
     line-height: 24px;
   }

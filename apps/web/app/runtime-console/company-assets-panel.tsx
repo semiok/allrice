@@ -1,5 +1,6 @@
 'use client';
 
+import { SelectField } from '../../components/select-field';
 import { useEffect, useRef, useState } from 'react';
 import {
   AdminButton as Button,
@@ -282,7 +283,7 @@ function CompanyRuleEditor({
       </fieldset>
       <label>
         可选记忆摘录
-        <select
+        <SelectField
           aria-label="可选记忆摘录"
           disabled={disabled || !sources}
           value={content.sourceMemoryRevisionId ?? ''}
@@ -323,7 +324,7 @@ function CompanyRuleEditor({
               摘录 {index + 1}：{source.content.slice(0, 70)}
             </option>
           ))}
-        </select>
+        </SelectField>
       </label>
       <p>
         选择摘录会填入正文；请编辑并核对最终规矩。只有最终保存、发布的内容会共享。
@@ -395,7 +396,7 @@ function Panel({ organizationId }: { organizationId: string }) {
       <div className={common.actions}>
         <label>
           内容类型
-          <select
+          <SelectField
             aria-label="公司资料类型"
             value={kind}
             onChange={(e) => setKind(e.target.value as typeof kind)}
@@ -403,7 +404,7 @@ function Panel({ organizationId }: { organizationId: string }) {
             <option value="all">全部</option>
             <option value="rule">公司规矩</option>
             <option value="template">公司范本</option>
-          </select>
+          </SelectField>
         </label>
         <Button
           icon="refresh"

@@ -131,6 +131,11 @@
   color: var(--dsw-alias-label-primary);
   font: inherit;
 }
+.element input[type='text']:focus,
+.element input[type='password']:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+}
 .element input[type='file'] {
   /* A file input's intrinsic width overflows the 390px transcript column. */
   min-width: 0;

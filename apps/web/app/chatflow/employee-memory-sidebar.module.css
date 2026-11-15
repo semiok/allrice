@@ -384,10 +384,8 @@
 }
 .field input:focus,
 .field textarea:focus {
-  border-color: var(--memory-focus);
-  outline: 2px solid var(--memory-focus);
-  outline-offset: 2px;
-  background: var(--ar-surface);
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
 }
 .field textarea {
   height: 144px;
