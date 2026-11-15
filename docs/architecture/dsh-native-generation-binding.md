@@ -37,9 +37,9 @@ chat root. Launch preserves only that exact registered layout, the same test ID
 and tenant/owner suffix; neither arbitrary execution subdirectories nor chat
 pins gain this exception. Missing original journals fail closed.
 
-Platform diagnostics and experience consolidation use the same persistent
-runtime root and the original tenant/owner/context namespace. Their business
-`workDirectory` and the diagnostic Broker's `storageRoot` remain the disposable
+Platform diagnostics use the persistent runtime root and the original
+tenant/owner/context namespace. The business `workDirectory` and the
+diagnostic Broker's `storageRoot` remain the disposable
 attempt directory; attempt cleanup never removes the journal or changes the pin.
 
 ## Release check

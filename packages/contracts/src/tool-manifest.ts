@@ -65,18 +65,6 @@ export function withEmployeeCustomizationTools(
   ];
 }
 
-/** Derive source authority from an existing memory-read grant. Use while
- * freezing a new Run or checking declarations; never augment an old allowlist. */
-export function withEmployeeMemorySourceTool(
-  toolNames: readonly string[],
-  capabilities: readonly SkillCapability[],
-) {
-  return capabilities.includes('storage:read') &&
-    toolNames.includes('workspace.memory.search')
-    ? [...new Set([...toolNames, 'workspace.experience.read'])]
-    : [...toolNames];
-}
-
 /**
  * Metadata-only single source of truth for the governed AllRice tool surface.
  *
@@ -215,13 +203,6 @@ export const allRiceToolManifest = [
     dshWireName: 'workspace_document_read',
   },
   {
-    canonicalName: 'workspace.memory.search',
-    capability: 'storage:read',
-    risk: 'read_only',
-    transport: 'dsh_broker_native',
-    dshWireName: 'workspace_memory_search',
-  },
-  {
     canonicalName: 'workspace.reference.search',
     capability: 'storage:read',
     risk: 'read_only',
@@ -234,13 +215,6 @@ export const allRiceToolManifest = [
     risk: 'read_only',
     transport: 'dsh_broker_native',
     dshWireName: 'workspace_reference_read',
-  },
-  {
-    canonicalName: 'workspace.experience.read',
-    capability: 'storage:read',
-    risk: 'read_only',
-    transport: 'dsh_broker_native',
-    dshWireName: 'workspace_experience_read',
   },
   {
     canonicalName: 'workspace.memory.read',

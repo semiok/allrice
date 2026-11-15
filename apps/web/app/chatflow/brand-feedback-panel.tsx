@@ -29,7 +29,6 @@ const empty = {
   saves: '',
 };
 type Draft = typeof empty;
-type Experience = NonNullable<BrandContentBoard['experiences']>[number];
 type Mutate = (
   input: Record<string, unknown>,
   success: string,
@@ -57,14 +56,12 @@ export function BrandFeedbackPanel({
   draftKey,
   onMutate,
   onOpenSession,
-  onForget,
 }: {
   board: BrandContentBoard;
   disabled: boolean;
   draftKey: string;
   onMutate: Mutate;
   onOpenSession: (id: string) => void;
-  onForget: (id: string) => Promise<void>;
 }) {
   const [draft, setDraft] = useState<Draft>(() => saved(draftKey));
   const [error, setError] = useState('');
@@ -75,8 +72,7 @@ export function BrandFeedbackPanel({
       /* optional persistence */
     }
   }, [draft, draftKey]);
-  const feedback = board.feedback ?? [],
-    experiences = board.experiences ?? [];
+  const feedback = board.feedback ?? [];
   const patch = (key: keyof Draft, value: string) =>
     setDraft((old) => ({ ...old, [key]: value }));
   const fields: Array<{ key: keyof Draft; label: string; type?: string }> = [
@@ -140,12 +136,12 @@ export function BrandFeedbackPanel({
     <div className={css.stack}>
       <h3>发布反馈与复盘</h3>
       <p className={css.muted}>
-        记录已发布内容的实际数据，再复盘可复用的经验。外部样本独立标注；留空表示未知，填
+        记录已发布内容的实际数据，再复盘内容表现。外部样本独立标注；留空表示未知，填
         0 表示明确观测为零。
       </p>
       {board.unavailableFeedbackSources && (
         <p role="status" className={css.notice}>
-          部分历史反馈的附件已不可用，相关反馈、复盘和经验已隐藏。仍可使用其他有效资料。
+          部分历史反馈的附件已不可用，相关反馈和复盘已隐藏。仍可使用其他有效资料。
         </p>
       )}
       <details className={css.details}>
@@ -298,158 +294,38 @@ export function BrandFeedbackPanel({
           <p className={css.muted}>局限：{sample.limitations}</p>
         </article>
       ))}
-      {(board.retrospectives ?? []).map((report) => {
-        const experience = experiences.find(
-          (row) => row.retrospectiveId === report.id,
-        );
-        return (
-          <article className={css.card} key={report.id}>
-            <h4>发布复盘 · {report.platform}</h4>
-            <p className={css.prose}>{report.output.summary}</p>
-            <p className={css.prose}>建议：{report.output.rule}</p>
-            <p>适用范围：{report.output.applicability}</p>
-            <p>局限：{report.output.limitations}</p>
-            <details className={css.details}>
-              <summary>本次来源（{report.feedbackIds.length}）</summary>
-              {report.feedbackIds.map((id) => {
-                const f = feedback.find((x) => x.id === id);
-                return (
-                  <p key={id}>
-                    {f ? (
-                      <a href={f.sourceUrl} target="_blank" rel="noreferrer">
-                        {f.title}
-                      </a>
-                    ) : (
-                      id
-                    )}
-                  </p>
-                );
-              })}
-            </details>
-            <button
-              className={css.button}
-              type="button"
-              onClick={() => onOpenSession(report.sessionId)}
-            >
-              查看复盘会话
-            </button>
-            {!experience ? (
-              <button
-                className={css.button}
-                type="button"
-                disabled={disabled}
-                onClick={() =>
-                  void onMutate(
-                    {
-                      operation: 'experience.propose',
-                      brandId: board.brand.id,
-                      retrospectiveId: report.id,
-                    },
-                    '已提交经验候选，请核对后确认。',
-                  )
-                }
-              >
-                提交为经验候选
-              </button>
-            ) : (
-              <ReviewExperience
-                entry={experience}
-                brandId={board.brand.id}
-                disabled={disabled}
-                onMutate={onMutate}
-                onForget={onForget}
-              />
-            )}
-          </article>
-        );
-      })}
-      {!!board.experienceUses?.length && (
-        <section>
-          <h4>后续任务实际引用</h4>
-          {board.experienceUses.map((use) => (
-            <p key={`${use.entityId}/${use.memoryId}`}>
-              经验 {use.memoryId.slice(0, 8)} · v{use.revision}：{use.reason}
-              （业务记录 {use.entityId.slice(0, 8)}）
-            </p>
-          ))}
-        </section>
-      )}
-    </div>
-  );
-}
-function ReviewExperience({
-  entry,
-  brandId,
-  disabled,
-  onMutate,
-  onForget,
-}: {
-  entry: Experience;
-  brandId: string;
-  disabled: boolean;
-  onMutate: Mutate;
-  onForget: (id: string) => Promise<void>;
-}) {
-  const [reason, setReason] = useState('');
-  if (entry.archived || entry.status !== 'pending')
-    return (
-      <p>
-        {entry.status === 'rejected'
-          ? '已拒绝'
-          : entry.archived
-            ? '已撤回，不再使用'
-            : '已确认：仅供相同品牌、活动和平台后续任务使用'}{' '}
-        · 经验 {entry.id.slice(0, 8)} v{entry.revision}
-        {!entry.archived && entry.status === 'approved' && (
+      {(board.retrospectives ?? []).map((report) => (
+        <article className={css.card} key={report.id}>
+          <h4>发布复盘 · {report.platform}</h4>
+          <p className={css.prose}>{report.output.summary}</p>
+          <p className={css.prose}>建议：{report.output.rule}</p>
+          <p>适用范围：{report.output.applicability}</p>
+          <p>局限：{report.output.limitations}</p>
+          <details className={css.details}>
+            <summary>本次来源（{report.feedbackIds.length}）</summary>
+            {report.feedbackIds.map((id) => {
+              const f = feedback.find((x) => x.id === id);
+              return (
+                <p key={id}>
+                  {f ? (
+                    <a href={f.sourceUrl} target="_blank" rel="noreferrer">
+                      {f.title}
+                    </a>
+                  ) : (
+                    id
+                  )}
+                </p>
+              );
+            })}
+          </details>
           <button
             className={css.button}
             type="button"
-            disabled={disabled}
-            onClick={() => void onForget(entry.id)}
+            onClick={() => onOpenSession(report.sessionId)}
           >
-            撤回经验
+            查看复盘会话
           </button>
-        )}
-      </p>
-    );
-  return (
-    <div>
-      <p>待确认的经验候选。确认只影响后续任务，不改写品牌正式方法。</p>
-      <label className={css.field}>
-        确认 / 拒绝理由
-        <input
-          aria-label="确认 / 拒绝理由"
-          value={reason}
-          maxLength={500}
-          disabled={disabled}
-          onChange={(e) => setReason(e.target.value)}
-        />
-      </label>
-      {(['approve', 'reject'] as const).map((decision) => (
-        <button
-          className={css.button}
-          key={decision}
-          type="button"
-          disabled={disabled || !reason.trim()}
-          onClick={() =>
-            void onMutate(
-              {
-                operation: 'experience.review',
-                brandId,
-                memoryId: entry.id,
-                decision,
-                expectedRevision: entry.revision,
-                expectedDigest: entry.digest,
-                reason,
-              },
-              decision === 'approve'
-                ? '经验已确认，后续匹配范围的任务可以引用。'
-                : '经验已拒绝，保留来源记录。',
-            )
-          }
-        >
-          {decision === 'approve' ? '确认采用' : '拒绝'}
-        </button>
+        </article>
       ))}
     </div>
   );

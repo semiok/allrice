@@ -103,36 +103,6 @@ export const BrandRetrospectiveSchema = z
     createdAt: TimestampSchema,
   })
   .strict();
-export const BrandExperiencePinSchema = z
-  .object({
-    id: UuidSchema,
-    revision: z.number().int().positive(),
-    digest: ChecksumSchema,
-    content: text(4000),
-    retrospectiveId: UuidSchema,
-    platform: text(80),
-    campaignKey: z.string().nullable(),
-  })
-  .strict();
-export type BrandExperiencePin = z.infer<typeof BrandExperiencePinSchema>;
-export const BrandExperienceSchema = BrandExperiencePinSchema.extend({
-  status: z.enum(['pending', 'approved', 'rejected']),
-  archived: z.boolean(),
-}).strict();
-export const BrandExperienceUseSchema = z
-  .object({
-    id: UuidSchema,
-    reason: text(600),
-  })
-  .strict();
-export const BrandExperienceUsesSchema = z
-  .array(BrandExperienceUseSchema)
-  .max(20)
-  .superRefine((v, ctx) => {
-    if (new Set(v.map((x) => x.id)).size !== v.length)
-      ctx.addIssue({ code: 'custom', message: '经验引用不可重复。' });
-  });
-
 /** Unknown metrics remain null; no summed "engagement" or causal uplift. */
 export function summarizeBrandFeedback(samples: BrandFeedback[]) {
   return samples.map((sample) => ({

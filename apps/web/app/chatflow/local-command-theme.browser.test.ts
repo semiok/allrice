@@ -16,30 +16,24 @@ const suite =
     ? describe.sequential
     : describe.skip;
 
-type View = 'page' | 'workbench' | 'employee' | 'admin' | 'commands' | 'mcp';
+type View = 'commands' | 'mcp';
 type Theme = 'light' | 'dark';
 type Reading = { text: string; ratio: number; need: number; dark: boolean };
 
 // Where each view lives: the theme runtime picks the default by path.
 const paths: Record<View, string> = {
-  page: '/workspace/experience',
-  workbench: '/chatflow',
-  employee: '/chatflow',
-  admin: '/runtime-console',
   commands: '/chatflow',
   mcp: '/chatflow',
 };
 
-// MET-214 dark audit D01, D02 and S01: the experience page, its cards in
-// the workbench, employee details and the admin console, and the local
-// command and local app cards that share one stylesheet.
-suite('experience and local command cards read in both themes', () => {
+// Current local-command and MCP cards share one stylesheet.
+suite('local command and MCP cards read in both themes', () => {
   let browser: Browser, server: Server, origin: string;
   beforeAll(async () => {
     const require = createRequire(import.meta.url);
     const { build } = createRequire(require.resolve('tsx'))('esbuild');
     const result = await build({
-      entryPoints: ['apps/web/test/experience-command-theme-page.tsx'],
+      entryPoints: ['apps/web/test/local-command-theme-page.tsx'],
       bundle: true,
       format: 'iife',
       platform: 'browser',
@@ -122,53 +116,19 @@ suite('experience and local command cards read in both themes', () => {
   const read = (target: Locator, disabled = false) =>
     target.evaluate(readContrast, disabled) as Promise<Reading[]>;
   const ratio = async (target: Locator) => (await read(target))[0]!.ratio;
-  /** Shows the sources of the adopted experience, as a person would. */
-  async function showSources(page: Page, root: string) {
-    await page
-      .locator(root)
-      .getByRole('button', { name: '查看来源与版本' })
-      .click();
-    await page
-      .locator(root)
-      .getByText('以下是形成这条经验的原始反馈，仅本人可见。')
-      .waitFor();
-  }
-
   /** Renders a view in a theme and returns the element whose text must all
    * pass. The surface default comes from the pre-paint theme script; the
    * other theme is applied with the runtime's applyTheme. */
   async function open(view: View, width: number, theme: Theme) {
     const page = await browser.newPage({ viewport: { width, height: 900 } });
-    const surfaceDefault = view === 'admin' ? 'dark' : 'light';
+    const surfaceDefault = 'light';
     await page.goto(
       `${origin}${paths[view]}?view=${view}${theme === surfaceDefault ? '' : `&theme=${theme}`}`,
     );
-    let root = '#root';
-    if (view === 'page') {
-      await page.getByText('暂无反馈与历史记录。').waitFor();
-      await page.getByText('读取或撤回未完成，请稍后重试。').waitFor();
-      await page.getByText('整理频率', { exact: true }).waitFor();
-      await showSources(page, root);
-    } else if (view === 'workbench') {
-      root = 'article[data-experience-batch]';
-      await page.locator(root).waitFor();
-      await showSources(page, root);
-    } else if (view === 'employee') {
-      await page.getByRole('tab', { name: '经验积累' }).click();
-      root = '[role="tabpanel"] > section';
-      await page.locator(root).getByText('整理频率').waitFor();
-      await showSources(page, root);
-    } else if (view === 'admin') {
-      await page.getByRole('button', { name: '查看王芳的 AI 员工' }).click();
-      await page.getByRole('button', { name: '查看共享详情' }).click();
-      await page.getByRole('tab', { name: '经验积累' }).click();
-      root = '[role="tabpanel"] > section';
-      await page.locator(root).getByText('整理频率').waitFor();
-    } else {
-      await expect
-        .poll(() => page.locator('#root article').count())
-        .toBe(view === 'commands' ? 5 : 3);
-    }
+    const root = '#root';
+    await expect
+      .poll(() => page.locator('#root article').count())
+      .toBe(view === 'commands' ? 5 : 3);
     await page
       .locator(root)
       .first()
@@ -249,30 +209,6 @@ suite('experience and local command cards read in both themes', () => {
   }
 
   const probes: Record<View, [string, (page: Page) => Locator][]> = {
-    page: [
-      ['title', (p) => p.getByRole('heading', { name: '经验积累' }).first()],
-      ['intro', (p) => p.getByText('根据有依据的工作反馈').first()],
-      ['label', (p) => p.getByText('整理频率', { exact: true })],
-      ['empty', (p) => p.getByText('暂无反馈与历史记录。')],
-      ['error', (p) => p.getByText('读取或撤回未完成，请稍后重试。')],
-      ['button', (p) => p.getByRole('button', { name: '重新读取' }).first()],
-      ['source', (p) => p.locator('blockquote')],
-    ],
-    workbench: [
-      ['title', (p) => p.getByText('私人经验 · 已采用')],
-      ['button', (p) => p.getByRole('button', { name: '收起来源与版本' })],
-      ['source', (p) => p.locator('blockquote')],
-    ],
-    employee: [
-      ['label', (p) => p.getByText('整理频率', { exact: true })],
-      ['button', (p) => p.getByRole('button', { name: '重新读取' })],
-      ['source', (p) => p.locator('blockquote')],
-    ],
-    admin: [
-      ['label', (p) => p.getByText('整理频率', { exact: true })],
-      ['value', (p) => p.getByText('公司设置 · v4')],
-      ['note', (p) => p.getByText('仅显示整理配置和汇总')],
-    ],
     commands: [
       ['title', (p) => p.getByText('本地命令 · 操作授权').first()],
       ['note', (p) => p.getByText('此授权仅适用于上面显示的操作')],
@@ -290,28 +226,16 @@ suite('experience and local command cards read in both themes', () => {
   };
   // Buttons for focus and hover; the shared summary has none.
   const control: Record<View, ((page: Page) => Locator) | null> = {
-    page: (p) => p.getByRole('button', { name: '重新读取' }).first(),
-    workbench: (p) => p.getByRole('button', { name: '收起来源与版本' }),
-    employee: (p) => p.getByRole('button', { name: '重新读取' }),
-    admin: null,
     commands: (p) => p.getByRole('button', { name: '拒绝' }),
     mcp: (p) => p.getByRole('button', { name: '拒绝' }),
   };
   // A write left pending shows each card's busy, disabled state.
   const busy: Partial<Record<View, [string, string]>> = {
-    page: ['忘掉这条反馈', '正在撤回…'],
     commands: ['批准这一次执行', '批准这一次执行'],
     mcp: ['批准这一次调用', '批准这一次调用'],
   };
 
-  const views: View[] = [
-    'page',
-    'workbench',
-    'employee',
-    'admin',
-    'commands',
-    'mcp',
-  ];
+  const views: View[] = ['commands', 'mcp'];
   for (const view of views)
     for (const width of [1440, 390])
       for (const theme of ['light', 'dark'] as const)

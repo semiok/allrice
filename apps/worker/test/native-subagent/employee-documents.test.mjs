@@ -25,9 +25,9 @@ const runtimeContexts = (request) =>
         )),
   );
 const currentContext = (request) => runtimeContexts(request).at(-1);
-const memoryTools = ['workspace.memory.search', 'workspace.experience.read'];
+const memoryTools = ['workspace.memory.read', 'workspace.memory.remember'];
 const memoryDeclarations = (request) =>
-  ['workspace_memory_search', 'workspace_experience_read'].flatMap((name) =>
+  ['workspace_memory_read', 'workspace_memory_remember'].flatMap((name) =>
     request.tools.filter((tool) => tool.name === name),
   );
 
@@ -87,7 +87,7 @@ it.each(
     const h = await host({
       runId: randomUUID(),
       rootSystemInstructions: system,
-      nativeTools: memoryTools,
+      nativeTools: [],
       employeeDocuments: { persona, user: '', memory: '' },
       bridge: async (method) => {
         if (method === 'allrice/run-authorize') return { allowed: true };
@@ -100,14 +100,7 @@ it.each(
       (request) => request.sessionId === h.root.id,
     );
     const current = JSON.stringify(currentContext(rootRequest));
-    expect(
-      memoryDeclarations(rootRequest).map((tool) => tool.description),
-    ).toEqual([
-      expect.stringContaining(
-        'Search complete, currently authorized memories.',
-      ),
-      expect.stringContaining('Read exact original feedback'),
-    ]);
+    expect(memoryDeclarations(rootRequest)).toEqual([]);
     expect(current).toContain('PREVIEW_LITERAL {{missing}}');
     expect(current).toContain('# IDENTITY.md - free literal');
     expect(current).toContain(label);
@@ -175,12 +168,15 @@ it('native first child and nested child receive literal PERSONA only; root docum
     depth: 2,
     rootSystemInstructions: 'ROOT_STABLE_PERSONA',
     employeeDocuments: {
+      schemaVersion: 2,
       persona: '# PERSONA.md\nPERSONA_A {{missing}}',
       user: '# USER.md\nPERSON {{missing}}',
-      memory: '# MEMORY.md\nCONFIRMED_A',
+      memory: renderMemoryIndexV2([
+        { summary: 'CONFIRMED_A', hasDetails: true },
+      ]),
     },
     prepare: async () => {
-      vi.stubEnv('DSH_SYSTEM_PROMPT', 'LEGACY_CHILD_PERSONA');
+      vi.stubEnv('DSH_SYSTEM_PROMPT', 'NATIVE_CHILD_PERSONA');
       vi.stubEnv('ALLRICE_NATIVE_SUBAGENTS', undefined);
     },
     bridge: async (method) => {
@@ -194,12 +190,12 @@ it('native first child and nested child receive literal PERSONA only; root docum
   const declarations = memoryDeclarations(rootRequest);
   expect(declarations).toHaveLength(2);
   expect(declarations.map((tool) => tool.description)).toEqual([
-    expect.stringContaining('personally confirmed memories'),
-    expect.stringContaining('Read a personally confirmed memory version'),
+    expect.stringContaining('Read one complete confirmed memory'),
+    expect.stringContaining('Save a fact personally stated'),
   ]);
   expect(JSON.stringify(rootRequest.messages)).toContain('ROOT_STABLE_PERSONA');
   expect(JSON.stringify(rootRequest.messages)).not.toContain(
-    'LEGACY_CHILD_PERSONA',
+    'NATIVE_CHILD_PERSONA',
   );
   expect(JSON.stringify(rootRequest.messages)).toContain('PERSON {{missing}}');
   const requiredContext = rootRequest.messages.find(
@@ -218,7 +214,7 @@ it('native first child and nested child receive literal PERSONA only; root docum
   const childRequest = h.calls.find((r) => r.sessionId === child.childId);
   expect(memoryDeclarations(childRequest)).toEqual(declarations);
   expect(JSON.stringify(childRequest.messages)).toContain(
-    'LEGACY_CHILD_PERSONA',
+    'NATIVE_CHILD_PERSONA',
   );
   expect(JSON.stringify(childRequest.messages)).not.toContain('CONFIRMED_A');
   expect(JSON.stringify(childRequest.messages)).not.toContain(
@@ -262,11 +258,12 @@ it('native first child and nested child receive literal PERSONA only; root docum
     JSON.stringify(
       forkRequest.messages.filter((m) => m.role === 'system').at(-1),
     ),
-  ).toContain('LEGACY_CHILD_PERSONA');
+  ).toContain('NATIVE_CHILD_PERSONA');
   // Native cold continuation keeps this child Session's system/tools.
   h.server.employeeDocuments.bind(h.root.id, {
+    schemaVersion: 2,
     user: '',
-    memory: '# MEMORY.md\nCONFIRMED_B',
+    memory: renderMemoryIndexV2([{ summary: 'CONFIRMED_B', hasDetails: true }]),
   });
   await h.ctx.subagents.sendMessage(h.root, child.childId, text('继续'), {
     signal: new AbortController().signal,
@@ -288,6 +285,7 @@ it('native first child and nested child receive literal PERSONA only; root docum
   await expect(
     Promise.resolve().then(() =>
       h.server.employeeDocuments.bind(child.childId, {
+        schemaVersion: 2,
         user: '',
         memory: '',
       }),
@@ -315,9 +313,12 @@ it('real beginRun updates resident children and fork current PERSONA while nativ
     },
     rootSystemInstructions: 'ROOT_STABLE',
     employeeDocuments: {
+      schemaVersion: 2,
       persona: '# PERSONA.md\nRUN_A_PERSONA',
       user: '# USER.md\nRUN_A_USER',
-      memory: '# MEMORY.md\nRUN_A_MEMORY',
+      memory: renderMemoryIndexV2([
+        { summary: 'RUN_A_MEMORY', hasDetails: true },
+      ]),
     },
     bridge: async () => ({ allowed: true }),
   });
@@ -378,9 +379,12 @@ it('real beginRun updates resident children and fork current PERSONA while nativ
     return request;
   };
   await begin({
+    schemaVersion: 2,
     persona: '# PERSONA.md\nRUN_B_PERSONA {{missing}}',
     user: '# USER.md\nRUN_B_USER',
-    memory: '# MEMORY.md\nRUN_B_MEMORY',
+    memory: renderMemoryIndexV2([
+      { summary: 'RUN_B_MEMORY', hasDetails: true },
+    ]),
   });
   // Parent has no completed B turn: native fork seed still contains A.
   const forked = await h.spawn(h.root, '在 B 分叉', { provider: 'fork' });
@@ -412,8 +416,11 @@ it('real beginRun updates resident children and fork current PERSONA while nativ
   );
   for (const persona of [undefined, '']) {
     await begin({
+      schemaVersion: 2,
       user: '# USER.md\nCURRENT_USER_ONLY',
-      memory: '# MEMORY.md\nCURRENT_MEMORY_ONLY',
+      memory: renderMemoryIndexV2([
+        { summary: 'CURRENT_MEMORY_ONLY', hasDetails: true },
+      ]),
       ...(persona === undefined ? {} : { persona }),
     });
     const cleared = await resume();
@@ -446,9 +453,12 @@ it('native cold child recreation reads the current Run PERSONA without replay or
     runId,
     rootSystemInstructions: 'ROOT_STABLE',
     employeeDocuments: {
+      schemaVersion: 2,
       persona: 'COLD_A_PERSONA',
       user: 'COLD_A_USER',
-      memory: 'COLD_A_MEMORY',
+      memory: renderMemoryIndexV2([
+        { summary: 'COLD_A_MEMORY', hasDetails: true },
+      ]),
     },
     bridge: async () => ({ allowed: true }),
   });
@@ -473,9 +483,12 @@ it('native cold child recreation reads the current Run PERSONA without replay or
     sessionId: root.id,
     runId: randomUUID(),
     employeeDocuments: {
+      schemaVersion: 2,
       persona: 'COLD_B_PERSONA {{missing}}',
       user: 'COLD_B_USER',
-      memory: 'COLD_B_MEMORY',
+      memory: renderMemoryIndexV2([
+        { summary: 'COLD_B_MEMORY', hasDetails: true },
+      ]),
     },
   });
   expect(h.calls).toHaveLength(count);
@@ -509,9 +522,12 @@ it('an independently selected native preset keeps its system persona ahead of em
     runId: randomUUID(),
     rootSystemInstructions: 'ROOT_STABLE',
     employeeDocuments: {
+      schemaVersion: 2,
       persona: 'EMPLOYEE_PERSONA {{missing}}',
       user: 'ROOT_ONLY_USER',
-      memory: 'ROOT_ONLY_MEMORY',
+      memory: renderMemoryIndexV2([
+        { summary: 'ROOT_ONLY_MEMORY', hasDetails: true },
+      ]),
     },
     bridge: async () => ({ allowed: true }),
   });
@@ -578,9 +594,12 @@ it('uses native context supersession for nonempty to empty without rewriting his
     runId,
     rootSystemInstructions: 'ROOT_STABLE',
     employeeDocuments: {
+      schemaVersion: 2,
       persona: '# PERSONA.md\nINITIAL_PERSONA',
       user: '',
-      memory: '# MEMORY.md\nOLD_SNAPSHOT',
+      memory: renderMemoryIndexV2([
+        { summary: 'OLD_SNAPSHOT', hasDetails: true },
+      ]),
     },
     bridge: async () => ({ allowed: true }),
   });
@@ -590,6 +609,7 @@ it('uses native context supersession for nonempty to empty without rewriting his
     .snapshotEvents()
     .filter((e) => e.type === 'user/message');
   h.server.employeeDocuments.bind(h.root.id, {
+    schemaVersion: 2,
     persona: '# PERSONA.md\nUPDATED_PERSONA',
     user: '',
     memory: '',
@@ -609,7 +629,11 @@ it('uses native context supersession for nonempty to empty without rewriting his
   // Other native runtime contexts may keep the full snapshot nonempty; the
   // updated snapshot, rather than a fabricated deletion, removes this section.
   expect(updates.length).toBeGreaterThan(1);
-  h.server.employeeDocuments.bind(h.root.id, { user: '', memory: '' });
+  h.server.employeeDocuments.bind(h.root.id, {
+    schemaVersion: 2,
+    user: '',
+    memory: '',
+  });
   await h.prompt('清空人设后的任务');
   await h.wait();
   const current = currentContext(h.calls.at(-1));
@@ -625,9 +649,12 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
     nativeTools: memoryTools,
     rootSystemInstructions: 'ROOT_STABLE',
     employeeDocuments: {
+      schemaVersion: 2,
       persona: '# PERSONA.md\nOLD_PERSONA',
       user: '# USER.md\nOLD_ROLE',
-      memory: '# MEMORY.md\nWITHDRAWN_MEMORY',
+      memory: renderMemoryIndexV2([
+        { summary: 'WITHDRAWN_MEMORY', hasDetails: true },
+      ]),
     },
     bridge: async (method) => {
       if (method === 'allrice/run-authorize') return { allowed: true };
@@ -638,12 +665,12 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
   await h.wait();
   const declarations = memoryDeclarations(h.calls[0]);
   expect(declarations).toHaveLength(2);
-  expect(declarations[1].description).toContain(
-    'Read a personally confirmed memory version',
+  expect(declarations[0].description).toContain(
+    'Read one complete confirmed memory',
   );
   await h.server.handleRequest('run/end', { runId });
   const nextRun = randomUUID();
-  const empty = { user: '', memory: '' };
+  const empty = { schemaVersion: 2, user: '', memory: '' };
   await h.server.handleRequest('run/begin', {
     sessionId: h.root.id,
     runId: nextRun,
@@ -696,21 +723,18 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
   expect(JSON.stringify(request.messages)).toContain('OLD_PERSONA');
 }, 30000);
 
-const documents = (version, memory, user = '') =>
-  version === 2
-    ? {
-        schemaVersion: 2,
-        user,
-        memory: memory
-          ? renderMemoryIndexV2(
-              Array.from({ length: 100 }, (_, i) => ({
-                summary: i === 0 ? memory : `合成规则 ${i + 1}`,
-                hasDetails: true,
-              })),
-            )
-          : '',
-      }
-    : { user, memory: memory ? `# MEMORY.md\n${memory}` : '' };
+const documents = (version, memory, user = '') => ({
+  schemaVersion: 2,
+  user,
+  memory: memory
+    ? renderMemoryIndexV2(
+        Array.from({ length: 100 }, (_, i) => ({
+          summary: i === 0 ? memory : `合成规则 ${i + 1}`,
+          hasDetails: true,
+        })),
+      )
+    : '',
+});
 
 it('keeps maximum V2 memory and PERSONA independent through native child, nested child, fork, next Run and cold recovery', async () => {
   const heading = '# PERSONA.md\nPERSONA_CURRENT {{missing}}\n';
@@ -879,7 +903,7 @@ it('keeps maximum V2 memory and PERSONA independent through native child, nested
   expect(JSON.stringify(h.calls.at(-1).messages)).toContain('MEMORY_INDEX_V2');
 }, 30000);
 
-it.each([1, 2])(
+it.each([2])(
   'v%s: only the admitted root gets required literal documents; child current prompt/tools/approval stay unchanged and fork inherits completed history',
   async (version) => {
     const runId = randomUUID();
@@ -900,7 +924,7 @@ it.each([1, 2])(
         '# USER.md\nPERSON {{missing}}',
       ),
       prepare: async () =>
-        vi.stubEnv('DSH_SYSTEM_PROMPT', 'LEGACY_CHILD_PERSONA'),
+        vi.stubEnv('DSH_SYSTEM_PROMPT', 'NATIVE_CHILD_PERSONA'),
       bridge: async (method) => {
         if (method === 'allrice/run-authorize') return { allowed: true };
         throw Error(`unexpected ${method}`);
@@ -916,7 +940,7 @@ it.each([1, 2])(
       'ROOT_STABLE_PERSONA',
     );
     expect(JSON.stringify(rootRequest.messages)).not.toContain(
-      'LEGACY_CHILD_PERSONA',
+      'NATIVE_CHILD_PERSONA',
     );
     expect(JSON.stringify(rootRequest.messages)).toContain(
       'PERSON {{missing}}',
@@ -930,7 +954,7 @@ it.each([1, 2])(
     await h.wait();
     const childRequest = h.calls.find((r) => r.sessionId === child.childId);
     expect(JSON.stringify(childRequest.messages)).toContain(
-      'LEGACY_CHILD_PERSONA',
+      'NATIVE_CHILD_PERSONA',
     );
     expect(JSON.stringify(childRequest.messages)).not.toContain('CONFIRMED_A');
     const childAgent = observedAgents.get(child.childId);
@@ -947,7 +971,7 @@ it.each([1, 2])(
       JSON.stringify(
         forkRequest.messages.filter((m) => m.role === 'system').at(-1),
       ),
-    ).toContain('LEGACY_CHILD_PERSONA');
+    ).toContain('NATIVE_CHILD_PERSONA');
     // The same child continues with its own unchanged current system/tools.
     h.server.employeeDocuments.bind(
       h.root.id,
@@ -978,7 +1002,7 @@ it.each([1, 2])(
   30000,
 );
 
-it.each([1, 2])(
+it.each([2])(
   'v%s: uses native context supersession for nonempty to empty without rewriting history',
   async (version) => {
     const runId = randomUUID();
@@ -1011,7 +1035,7 @@ it.each([1, 2])(
   30000,
 );
 
-it.each([1, 2])(
+it.each([2])(
   'v%s: cold root recovery keeps native history unchanged and the latest cleared snapshot current, without replay',
   async (version) => {
     const runId = randomUUID();

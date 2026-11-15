@@ -1,6 +1,7 @@
 import { legacyRuntimePackageFixture as buildEmployeeRuntimePackage } from '../platform-employees/legacy-runtime-package.fixture.ts';
 const oldGeneration = 'dsh-0.1.5-rc.3-a4c74a9' as const;
 import { randomUUID } from 'node:crypto';
+import { ZodError } from 'zod';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   localCommandToolchainImageV1,
@@ -273,10 +274,7 @@ function reverseObjectKeys(value: unknown): unknown {
 describe('platform test source compatibility through the actual package builder', () => {
   for (const generation of [newNativeGeneration] as const)
     for (const format of ['empty', 'plain', 'bundled'] as const)
-      for (const purpose of [
-        'platform_preview',
-        'experience_validation',
-      ] as const)
+      for (const purpose of ['platform_preview'] as const)
         it(`${generation}/${format}/${purpose} keeps its original source and independently binds current execution`, () => {
           const s = source(generation, format, purpose),
             original = JSON.stringify(s);
@@ -549,16 +547,19 @@ describe('independent test birth and immutable readback', () => {
       ).toThrow('CURRENT_PLATFORM_TEST_ORIGIN_SOURCE_MISMATCH');
     },
   );
-  it('cannot relabel a method test as an experience proof', () => {
+  it('rejects a retired experience purpose in raw preview input', () => {
     const input = frozen(
       source(newNativeGeneration, 'plain', 'platform_preview'),
     );
     expect(() =>
       freezePlatformTestExecutionBinding({
         ...input,
-        source: { ...input.source, purpose: 'experience_validation' },
+        source: {
+          ...input.source,
+          purpose: 'experience_validation' as PlatformTestPurpose,
+        },
       }),
-    ).toThrow('CURRENT_PLATFORM_TEST_ORIGIN_SOURCE_MISMATCH');
+    ).toThrow(ZodError);
   });
   it('has no fake Run, Session or lease authority in the durable test binding', () => {
     const binding = freezePlatformTestExecutionBinding(frozen());

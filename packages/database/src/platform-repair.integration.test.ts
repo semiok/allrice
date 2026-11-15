@@ -23,7 +23,7 @@ import {
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import { ensureBootstrapPortalPrincipal } from './identity.ts';
 import {
   savePlatformEmployeeDraft,
@@ -105,7 +105,7 @@ const suite =
     : describe.skip;
 suite('MET167 private repository repair normal Employee Run authority', () => {
   let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
-    company: Awaited<ReturnType<typeof createExperienceFixture>>,
+    company: Awaited<ReturnType<typeof createCompletedRunFixture>>,
     admin: RequestContext,
     adminEmail: string,
     catalogRoot: string,
@@ -165,7 +165,7 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       text: '仅核对冻结人设，不调用修复工具。',
     }));
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
-    company = await createExperienceFixture(fixture.db);
+    company = await createCompletedRunFixture(fixture.db);
     const account = await ensureBootstrapPortalPrincipal({
       organizationSlug: 'allrice-platform',
       organizationName: 'Internal',

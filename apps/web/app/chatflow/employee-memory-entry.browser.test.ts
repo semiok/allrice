@@ -596,7 +596,7 @@ suite('U1 employee details personal-memory entry', () => {
       if (path === '/api/v1/connections')
         return route.fulfill(json({ connections: [] }));
       if (path === '/api/v1/workbench/updates')
-        return route.fulfill(json({ fileIds: [], experienceIds: [] }));
+        return route.fulfill(json({ fileIds: [] }));
       if (path === '/api/v1/workbench/files')
         return route.fulfill(
           json({

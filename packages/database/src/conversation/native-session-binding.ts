@@ -33,8 +33,6 @@ import {
   isPlatformTechnicalJobAuthorized,
   platformTechnicalJobType,
 } from '../platform-technical-tasks.ts';
-import { getExperienceExecutionInTransaction } from '../experience-consolidation.ts';
-import { experienceConsolidationJobType } from '../experience-consolidation-contracts.ts';
 import { bindConversationThreadInTransaction } from './conversation-runtime.ts';
 import { nativeContextExecutionRetired } from './native-context-retirement.ts';
 
@@ -69,11 +67,7 @@ const subject = z.discriminatedUnion('kind', [
     .strict(),
   z
     .object({
-      kind: z.enum([
-        'platform_technical',
-        'experience_consolidation',
-        'platform_employee_test',
-      ]),
+      kind: z.enum(['platform_technical', 'platform_employee_test']),
       id: UuidSchema,
     })
     .strict(),
@@ -359,21 +353,6 @@ async function readNativeRootOrigin(
     const recipe = { ...row.frozen_configuration };
     delete recipe.question;
     identity = { kind: 'internal_recipe', checksum: nativeRootDigest(recipe) };
-  } else if (s.kind === 'experience_consolidation') {
-    [row] =
-      await tx`select r.native_root_origin,r.experience_occurrence from allrice_automation_runs r
-      join allrice_automations a on a.id=r.automation_id
-      where r.id=${s.id} and r.organization_id=${job.organization_id} and r.workspace_id=${job.workspace_id}
-        and a.owner_id=${job.owner_id} and r.run_id=${job.run_id}`;
-    if (!row) return deny();
-    if (row.native_root_origin == null) return null;
-    identity = {
-      kind: 'internal_recipe',
-      checksum: nativeRootDigest({
-        recipe: 'allrice-experience-consolidation/v1',
-        occurrence: row.experience_occurrence,
-      }),
-    };
   } else {
     [row] = await tx`select t.* from allrice_platform_employee_test_runs t
       join allrice_runs r on r.id=${job.run_id} and r.execution_spec->>'platformEmployeeTestRunId'=t.id::text
@@ -510,7 +489,7 @@ export async function bindLeasedNativeSession(
   };
   const key = d.storageContextKey;
   if (
-    !UuidSchema.safeParse(key.replace(/^experience-/, '')).success ||
+    !UuidSchema.safeParse(key).success ||
     !d.nativeSessionId.startsWith('dsh-' + key) ||
     (d.nativeSessionId !== 'dsh-' + key &&
       !d.nativeSessionId.startsWith('dsh-' + key + '-')) ||
@@ -565,25 +544,6 @@ export async function bindLeasedNativeSession(
       !(await isPlatformTechnicalJobAuthorized(tx, job))
     )
       deny();
-  } else if (s.kind === 'experience_consolidation') {
-    if (
-      payload.type !== experienceConsolidationJobType ||
-      payload.input?.occurrenceId !== s.id ||
-      d.profileId !== 'restricted'
-    )
-      deny();
-    const { occurrence } = await getExperienceExecutionInTransaction(
-      tx,
-      job.run_id,
-    );
-    if (
-      occurrence.id !== s.id ||
-      occurrence.organizationId !== job.organization_id ||
-      occurrence.workspaceId !== job.workspace_id ||
-      occurrence.ownerId !== job.owner_id ||
-      key !== `experience-${s.id}`
-    )
-      deny();
   } else {
     // Plain SELECT is intentional, including its Run join: neither explicit
     // nor FK-implied Run/test locks may reverse the finalizer's lock order.
@@ -600,7 +560,7 @@ export async function bindLeasedNativeSession(
       test.status !== 'running' ||
       test.worker_id !== input.workerId ||
       !test.timeout_at ||
-      !['platform_preview', 'experience_validation'].includes(test.purpose) ||
+      test.purpose !== 'platform_preview' ||
       test.revision_id !== spec.employeeRevisionId ||
       d.profileId !== 'restricted'
     )

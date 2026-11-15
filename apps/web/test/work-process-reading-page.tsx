@@ -35,11 +35,7 @@ import {
   cloudOperations,
   ids,
 } from './technical-details-fixtures';
-import {
-  id,
-  operations,
-  mcpOperations,
-} from './experience-command-theme-fixtures';
+import { id, operations, mcpOperations } from './local-command-theme-fixtures';
 
 type Stage = 'initial' | 'prefix' | 'split' | 'merge' | 'append';
 const at = new Date().toISOString();

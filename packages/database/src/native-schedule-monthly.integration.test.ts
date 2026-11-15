@@ -1416,6 +1416,76 @@ suite(
       },
     );
 
+    it.each(['pause', 'delete'] as const)(
+      '%s during creating retires a later legal Task binding before applying the operation',
+      async (action) => {
+        const t = await publicTask(),
+          operationId = randomUUID();
+        const bound = await sqlBinding(t.id, async () => {
+          const creating = (
+            await calendar().loadCalendarState(writer)
+          ).bindings.find((b) => b.period.automationId === t.id)!;
+          expect(creating.arm).toMatchObject({
+            status: 'creating',
+            nativeTaskId: null,
+          });
+          expect(
+            await changeRecurringTask(f.context, t.sessionId, t.id, {
+              action,
+              operationId,
+              expectedRevision: 1,
+            }),
+          ).toMatchObject({ status: 'pending' });
+          const closed = (
+            await calendar().loadCalendarState(writer)
+          ).bindings.find((b) => b.period.automationId === t.id)!;
+          expect(closed).toMatchObject({
+            closed: true,
+            arm: { status: 'creating', nativeTaskId: null },
+            retirement: null,
+          });
+        });
+        // sqlBinding completed its original authorized put_task after pause/delete.
+        const closed = (
+          await calendar().loadCalendarState(writer)
+        ).bindings.find((b) => b.period.periodId === bound.periodId)!;
+        expect(closed.closed).toBe(true);
+        expect(closed.arm.nativeTaskId).not.toBeNull();
+        expect(closed.retirement).toBeNull();
+        expect(await operation(t, operationId)).toMatchObject({
+          status: 'pending',
+        });
+        expect(Object.keys(await store.loadTaskRecords(writer))).toHaveLength(
+          1,
+        );
+        expect(
+          await materializeNativeCalendar(calendar(), writer, reference),
+        ).toBe(true);
+        const prepared = (
+          await calendar().loadCalendarState(writer)
+        ).bindings.find((b) => b.period.periodId === bound.periodId)!;
+        expect(prepared.retirement).not.toBeNull();
+        expect(await operation(t, operationId)).toMatchObject({
+          status: 'pending',
+        });
+        await retireSqlTasks(t.id);
+        expect(Object.keys(await store.loadTaskRecords(writer))).toHaveLength(
+          0,
+        );
+        expect(
+          await materializeNativeCalendar(calendar(), writer, reference),
+        ).toBe(true);
+        expect(await operation(t, operationId)).toMatchObject({
+          status: 'applied',
+          task: { status: action === 'delete' ? 'deleted' : 'paused' },
+        });
+        expect(await stateCounts(t.id)).toMatchObject({ open_plans: 0 });
+        expect(
+          await f.db`select occurrence_id from allrice_native_recurring_occurrences where automation_id=${t.id}`,
+        ).toHaveLength(0);
+      },
+    );
+
     it('applies paused edits without a P/Task, then resumes and proves delete despite a later rejected stale operation', async () => {
       const t = await publicTask();
       const first = await sqlBinding(t.id);

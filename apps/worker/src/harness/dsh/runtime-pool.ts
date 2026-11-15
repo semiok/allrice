@@ -11,7 +11,6 @@ import {
   QuestionWaitSchema,
   SubagentPreferencesSchema,
   type DshExecutionSnapshot,
-  type InternalKernelRequest,
   type OnlineQuestionExecution,
 } from '@allrice/contracts';
 import type {
@@ -72,7 +71,6 @@ export interface DshRuntime {
   organizationId: string;
   workspaceId: string;
   productSessionId: string | null;
-  internalTask?: InternalKernelRequest['internalTask'];
   ownerId: string;
   providerRoute: string;
   model: string;
@@ -638,7 +636,7 @@ export class DshRuntimePool {
       origin.frozenIdentity.kind === 'internal_recipe'
         ? origin.distributionGeneration
         : pin?.bindingBasis === 'business_root_origin' &&
-            ('internalTask' in input.kernel || profileId === 'technical')
+            profileId === 'technical'
           ? pin.distributionGeneration
           : undefined);
     if (
@@ -816,12 +814,6 @@ export class DshRuntimePool {
         resident.workspaceId !== workspaceId ||
         resident.ownerId !== ownerId ||
         resident.productSessionId !== input.input.kernel.sessionId ||
-        JSON.stringify(resident.internalTask ?? null) !==
-          JSON.stringify(
-            'internalTask' in input.input.kernel
-              ? input.input.kernel.internalTask
-              : null,
-          ) ||
         (input.nativePin &&
           JSON.stringify(resident.nativePin) !==
             JSON.stringify(input.nativePin)))
@@ -947,8 +939,7 @@ export class DshRuntimePool {
       (!input.input.nativeRunAuthority ||
         !input.input.modelPreflight ||
         !input.input.nativeAccounting ||
-        !input.input.executionEnvironment.ALLRICE_RUN_ID ||
-        'internalTask' in input.input.kernel)
+        !input.input.executionEnvironment.ALLRICE_RUN_ID)
     )
       throw new HandlerError(
         'DSH_NATIVE_DELEGATION_AUTHORITY_REQUIRED',
@@ -1201,9 +1192,6 @@ export class DshRuntimePool {
           organizationId,
           workspaceId,
           productSessionId: input.input.kernel.sessionId,
-          ...('internalTask' in input.input.kernel
-            ? { internalTask: input.input.kernel.internalTask }
-            : {}),
           ownerId,
           providerRoute: input.snapshot.route,
           model: input.snapshot.model,
@@ -1367,7 +1355,6 @@ export class DshRuntimePool {
         organizationId: runtime.organizationId,
         workspaceId: runtime.workspaceId,
         sessionId: runtime.productSessionId,
-        ...(runtime.internalTask ? { internalTask: runtime.internalTask } : {}),
         ownerId: runtime.ownerId,
         threadId: runtime.sessionId,
         providerRoute: runtime.providerRoute,

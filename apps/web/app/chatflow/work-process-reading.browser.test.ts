@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ids, partnerArguments } from '../../test/technical-details-fixtures';
-import { id } from '../../test/experience-command-theme-fixtures';
+import { id } from '../../test/local-command-theme-fixtures';
 import type {
   Browser,
   Locator,

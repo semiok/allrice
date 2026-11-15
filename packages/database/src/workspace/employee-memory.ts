@@ -2,9 +2,6 @@ import { createHash } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import {
   UuidSchema,
-  WorkspaceMemorySchema,
-  PersonalMemoryPairSchema,
-  type PersonalMemoryPair,
   type RequestContext,
   type MemoryConflictDetails,
 } from '@allrice/contracts';
@@ -75,13 +72,6 @@ export class EmployeeMemoryCapacityError extends Error {
 
 export const memoryContentDigest = (content: string) =>
   `sha256:${createHash('sha256').update(content).digest('hex')}`;
-
-export function legacyPersonalMemoryPair(content: string): PersonalMemoryPair {
-  return PersonalMemoryPairSchema.parse({
-    summary: Array.from(content).slice(0, 40).join(''),
-    details: Array.from(content).length > 40 ? content : null,
-  });
-}
 
 export function assertMemoryPairRevision(
   current: { revision: number; summary: string | null; details: string | null },
@@ -205,17 +195,6 @@ export async function memoryScopeForRun(
     : null;
 }
 
-export function assertMemoryRevision(
-  current: { revision: number; content: string },
-  expected: { expectedRevision: number; contentDigest: string },
-) {
-  if (
-    current.revision !== expected.expectedRevision ||
-    memoryContentDigest(current.content) !== expected.contentDigest
-  )
-    throw new EmployeeMemoryConflict();
-}
-
 /** Serialize source-bound mutations; deletion applies to identities, not new proposals. */
 export async function lockMemorySource(
   tx: TransactionSql,
@@ -239,7 +218,7 @@ export async function memoryOperation<
   key: string,
   request: unknown,
   mutate: () => Promise<T>,
-  responseSchema: z.ZodType<T> = WorkspaceMemorySchema as unknown as z.ZodType<T>,
+  responseSchema: z.ZodType<T>,
 ) {
   const digest = memoryContentDigest(JSON.stringify({ operation, request }));
   const lockKey = `employee-memory:${scope.organizationId}:${scope.workspaceId}:${scope.ownerId}:${scope.instanceId}:${key}`;

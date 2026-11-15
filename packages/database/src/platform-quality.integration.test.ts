@@ -14,7 +14,7 @@ import {
   createRuntimeFixtureDatabase,
   runtimeFixtureStorage,
 } from './runtime.fixture.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import { ensureBootstrapPortalPrincipal } from './identity.ts';
 import { executionRequestConstraints } from './browser-execution-choice.ts';
 import {
@@ -73,7 +73,7 @@ suite(
   'MET167 fixed project checks: private real employee Run and current authority',
   () => {
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>,
-      company: Awaited<ReturnType<typeof createExperienceFixture>>,
+      company: Awaited<ReturnType<typeof createCompletedRunFixture>>,
       admin: RequestContext,
       adminEmail: string,
       scheduleRoot: string;
@@ -87,7 +87,7 @@ suite(
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
       fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
-      company = await createExperienceFixture(fixture.db);
+      company = await createCompletedRunFixture(fixture.db);
       const account = await ensureBootstrapPortalPrincipal({
         organizationSlug: 'allrice-platform',
         organizationName: 'Internal',

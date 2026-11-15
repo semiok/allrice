@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type * as Client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import { sendChatMessage } from './workspace/service.ts';
 import {
   getUserPreferences,
@@ -19,7 +19,7 @@ const suite =
     ? describe.sequential
     : describe.skip;
 
-type Fixture = Awaited<ReturnType<typeof createExperienceFixture>>;
+type Fixture = Awaited<ReturnType<typeof createCompletedRunFixture>>;
 // What a member types in the chat; the Run is frozen when it is queued.
 async function send(f: Fixture) {
   const sent = await sendChatMessage(f.owner, f.workspace, f.session.id, {
@@ -57,7 +57,7 @@ suite('MET-210 agent preferences frozen into each Run', () => {
   });
 
   it('freezes default preferences with delegation closed when no policy is stored', async () => {
-    const f = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
     expect(await frozen(f)).toEqual({
       version: 1,
       questionWait: { mode: 'default' },
@@ -66,7 +66,7 @@ suite('MET-210 agent preferences frozen into each Run', () => {
   });
 
   it('freezes null overrides when the tenant allows delegation and the member never chose', async () => {
-    const f = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
     await policy(f, controls('allow'));
     expect(await frozen(f)).toEqual({
       version: 1,
@@ -76,7 +76,7 @@ suite('MET-210 agent preferences frozen into each Run', () => {
   });
 
   it('freezes the saved choice at the next message, and an earlier Run keeps its own', async () => {
-    const f = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
     await policy(f, controls('allow'));
     await updateUserPreferences(f.owner, {
       questionWait: { mode: 'timed', seconds: 300 },
@@ -115,7 +115,7 @@ suite('MET-210 agent preferences frozen into each Run', () => {
   ] as const)(
     'a tenant assistant.delegate %s rule freezes subagent depth %i',
     async (effect, maxDepth) => {
-      const f = await createExperienceFixture(isolated.db);
+      const f = await createCompletedRunFixture(isolated.db);
       await updateUserPreferences(f.owner, {
         subagents: { maxDepth: 4, maxActive: 2 },
       });
@@ -130,7 +130,7 @@ suite('MET-210 agent preferences frozen into each Run', () => {
   );
 
   it('changes only newly queued Runs when the delegation policy changes', async () => {
-    const f = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
     await policy(f, controls('deny'));
     const oldRun = await send(f);
     await policy(f, controls());
@@ -156,7 +156,7 @@ suite('MET-210 agent preferences frozen into each Run', () => {
       },
     ],
   ])('closes delegation for a %s policy even with allow', async (_, value) => {
-    const f = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
     await updateUserPreferences(f.owner, {
       subagents: { maxDepth: 4, maxActive: 2 },
     });
@@ -167,7 +167,7 @@ suite('MET-210 agent preferences frozen into each Run', () => {
   });
 
   it('a stored policy that does not parse closes delegation', async () => {
-    const f = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
     await policy(f, { version: 1, rules: 'not a policy' });
     expect(await frozen(f)).toMatchObject({
       subagents: { maxDepth: 0, maxActive: null },
@@ -175,7 +175,7 @@ suite('MET-210 agent preferences frozen into each Run', () => {
   });
 
   it('closes delegation for a policy version mismatch without overwriting the saved choice', async () => {
-    const f = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
     await updateUserPreferences(f.owner, {
       subagents: { maxDepth: 4, maxActive: null },
     });

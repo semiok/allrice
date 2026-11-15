@@ -37,9 +37,10 @@ function fixture() {
     sessionState: 'ready',
     nativeTaskId: null,
     dispatch: {
-      consumer: 'experience-consolidation-v1',
+      consumer: 'ordinary-monthly-v1',
       employeeAssignmentId: id(6),
       employeeInstanceId: id(7),
+      businessSessionId: id(8),
     },
   };
   const at = new Date(Date.now() + 60_000).toISOString();

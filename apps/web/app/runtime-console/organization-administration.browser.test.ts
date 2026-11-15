@@ -1,7 +1,3 @@
-import {
-  GET as getExperiencePolicyHttp,
-  PUT as putExperiencePolicyHttp,
-} from '../api/v1/admin/organizations/[organizationId]/experience-policy/route';
 import { investmentHttp } from '../../lib/organization-administration/investment-http';
 import { listInvestmentEntries, saveInvestmentEntry } from '@allrice/database';
 import { GET as runtimeInventoryHttp } from '../api/v1/admin/runtime-console/route';
@@ -27,14 +23,9 @@ import {
   importOrganizationPeople,
   getEmployeeWorkspace,
   inspectCompanyDeliverable,
-  createTraceableMemory,
   createPersonalEmployeeMemory,
   correctPersonalEmployeeMemory,
 } from '@allrice/database';
-import {
-  memoryPairDigest,
-  legacyPersonalMemoryPair,
-} from '../../../../packages/database/src/workspace/employee-memory.ts';
 import {
   CompanyAssetDirectorySchema,
   CompanyAssetRevisionSchema,
@@ -72,7 +63,6 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
     adminToken: string;
   const failures: string[] = [];
   beforeAll(async () => {
-    vi.stubEnv('ALLRICE_EXPERIENCE_REVIEW_ENABLED', '1');
     vi.stubEnv('ALLRICE_NATIVE_RECURRING_ENABLED', '1');
     vi.stubEnv('ALLRICE_NATIVE_CALENDAR_ENABLED', '1');
     fixture = await createRuntimeFixtureDatabase();
@@ -144,57 +134,49 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
                       ? 'people'
                       : undefined;
           const response =
-            parts[6] === 'experience-policy'
-              ? await (
-                  request.method === 'PUT'
-                    ? putExperiencePolicyHttp
-                    : getExperiencePolicyHttp
-                )(request, {
-                  params: Promise.resolve({ organizationId: parts[5]! }),
-                })
-              : parts[6] === 'ai-directory' || parts[8] === 'ai-instances'
-                ? await organizationAiDirectoryHttp(
-                    request,
-                    parts[5]!,
-                    parts[7],
-                    parts[9],
-                    parts[10] === 'references'
-                      ? {
-                          revisionId: parts[11]!,
-                          action:
-                            parts[12] === 'download' ? 'download' : 'preview',
-                        }
-                      : undefined,
-                  )
-                : parts[3] === 'investment'
-                  ? await investmentHttp(request)
-                  : parts[6] === 'investment'
-                    ? await investmentHttp(request, parts[5]!)
-                    : parts[4] === 'runtime-console'
-                      ? parts[6] === 'events'
-                        ? await runtimeEventsHttp(request, {
-                            params: Promise.resolve({ sessionId: parts[5]! }),
-                          })
-                        : await runtimeInventoryHttp(request)
-                      : parts[4] === 'activity'
-                        ? await organizationActivityHttp(request)
-                        : parts[4] === 'tenants' && parts[6] === 'validation'
-                          ? await tenantValidationHttp(request, parts[5]!)
-                          : parts[6] === 'deliverables'
-                            ? await companyDeliverablesHttp(request, parts[5]!)
-                            : parts[6] === 'assets'
-                              ? await companyAssetsHttp(request, parts[5]!)
-                              : parts[6] === 'ai-employees'
-                                ? await organizationAssignmentsHttp(
-                                    request,
-                                    parts[5]!,
-                                  )
-                                : await organizationAdministrationHttp(
-                                    request,
-                                    parts[5],
-                                    parts[7],
-                                    action,
-                                  );
+            parts[6] === 'ai-directory' || parts[8] === 'ai-instances'
+              ? await organizationAiDirectoryHttp(
+                  request,
+                  parts[5]!,
+                  parts[7],
+                  parts[9],
+                  parts[10] === 'references'
+                    ? {
+                        revisionId: parts[11]!,
+                        action:
+                          parts[12] === 'download' ? 'download' : 'preview',
+                      }
+                    : undefined,
+                )
+              : parts[3] === 'investment'
+                ? await investmentHttp(request)
+                : parts[6] === 'investment'
+                  ? await investmentHttp(request, parts[5]!)
+                  : parts[4] === 'runtime-console'
+                    ? parts[6] === 'events'
+                      ? await runtimeEventsHttp(request, {
+                          params: Promise.resolve({ sessionId: parts[5]! }),
+                        })
+                      : await runtimeInventoryHttp(request)
+                    : parts[4] === 'activity'
+                      ? await organizationActivityHttp(request)
+                      : parts[4] === 'tenants' && parts[6] === 'validation'
+                        ? await tenantValidationHttp(request, parts[5]!)
+                        : parts[6] === 'deliverables'
+                          ? await companyDeliverablesHttp(request, parts[5]!)
+                          : parts[6] === 'assets'
+                            ? await companyAssetsHttp(request, parts[5]!)
+                            : parts[6] === 'ai-employees'
+                              ? await organizationAssignmentsHttp(
+                                  request,
+                                  parts[5]!,
+                                )
+                              : await organizationAdministrationHttp(
+                                  request,
+                                  parts[5],
+                                  parts[7],
+                                  action,
+                                );
           res.writeHead(response.status, Object.fromEntries(response.headers));
           res.end(Buffer.from(await response.arrayBuffer()));
           return;
@@ -244,306 +226,6 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
     vi.unstubAllEnvs();
     if (fixture) await fixture.close();
   }, 30000);
-
-  it('reads historical experience opt-ins but rejects re-enabling the retired writer without changing the saved revision', async () => {
-    const admin = (await authenticateSession(adminToken))!;
-    const company = await createManagedOrganization(admin, {
-      name: '经验整理设置测试',
-    });
-    const context = await browser.newContext({
-      viewport: { width: 1440, height: 900 },
-    });
-    await context.addCookies([
-      { name: 'fixture_session', value: adminToken, url: origin },
-    ]);
-    const page = await context.newPage();
-    const url = `${origin}/api/v1/admin/organizations/${company.organizationId}/experience-policy`;
-    const original = (await (await context.request.get(url)).json()).policy;
-    // Historical policy predates retirement; do not reopen the production writer
-    // just to establish readable settings in this isolated database fixture.
-    const historical = {
-      ...original,
-      schemaVersion: 4,
-      revision: 2,
-      adoptionMode: 'supported_private',
-      adoptionAuthorizedBy: admin.actor.id,
-      frequency: 'monthly',
-      validationMode: 'supported_cases',
-      timezone: 'Asia/Shanghai',
-      weekday: 1,
-      monthDay: 31,
-      time: '04:15',
-    };
-    await fixture.db`insert into allrice_settings(scope_type,scope_id,key,value)
-      values('organization',${company.organizationId},'employee_experience_policy',${fixture.db.json(historical)})`;
-    const state = async () => ({
-      settings:
-        await fixture.db`select value from allrice_settings where scope_type='organization'
-          and scope_id=${company.organizationId} and key='employee_experience_policy'`,
-      rules:
-        await fixture.db`select id,revision,status from allrice_automations where organization_id=${company.organizationId} order by id`,
-      policyAudit:
-        await fixture.db`select id from allrice_audit_events where organization_id=${company.organizationId}
-          and action='experience.policy.update' order by id`,
-    });
-    const before = await state();
-    try {
-      await page.goto(`${origin}/?organizationId=${company.organizationId}`);
-      await page
-        .getByRole('tab', { name: 'AI 员工与工作沉淀', exact: true })
-        .click();
-      const loaded = page
-        .waitForResponse(
-          (r) =>
-            r.url().includes('/experience-policy') &&
-            r.request().method() === 'GET',
-          { timeout: 5000 },
-        )
-        .catch(async (e) => {
-          throw Error(
-            String(e) + ' ' + (await page.locator('details').allTextContents()),
-          );
-        });
-      await page.getByText('经验自动整理设置', { exact: true }).click();
-      const loadedResponse = await loaded;
-      expect(loadedResponse.status(), await loadedResponse.text()).toBe(200);
-      expect((await loadedResponse.json()).policy).toEqual(historical);
-      await expect
-        .poll(() => page.getByLabel('整理频率', { exact: true }).count(), {
-          timeout: 3000,
-          message: await page
-            .locator('details')
-            .allTextContents()
-            .then((x) => x.join(' ')),
-        })
-        .toBe(1);
-      await expect
-        .poll(() => page.getByLabel('整理频率', { exact: true }).inputValue())
-        .toBe('monthly');
-      await page.getByLabel('每月日期', { exact: true }).fill('30');
-      await page.getByLabel('整理时间', { exact: true }).fill('05:30');
-      const validation = page.getByRole('checkbox', {
-        name: '自动专项验证',
-        exact: true,
-      });
-      expect(await validation.isChecked()).toBe(true);
-      const adoption = page.getByRole('checkbox', {
-        name: '自动采用已验证的私人经验',
-        exact: true,
-      });
-      expect(await adoption.isChecked()).toBe(true);
-      // All legacy feature flags remain on: retirement itself must reject this.
-      const rejected = page.waitForResponse(
-        (r) => r.url() === url && r.request().method() === 'PUT',
-      );
-      await page
-        .getByRole('button', { name: '保存整理设置', exact: true })
-        .click();
-      const response = await rejected;
-      expect(response.status()).toBe(503);
-      expect(response.headers()['cache-control']).toBe('private, no-store');
-      expect(await response.json()).toMatchObject({
-        code: 'EXPERIENCE_SCHEDULING_UNAVAILABLE',
-      });
-      await page
-        .getByText('经验自动整理暂不可用，本次设置未保存；仍可关闭整理。', {
-          exact: true,
-        })
-        .waitFor();
-      expect(await state()).toEqual(before);
-      await page.reload();
-      await page
-        .getByRole('tab', { name: 'AI 员工与工作沉淀', exact: true })
-        .click();
-      await page.getByText('经验自动整理设置', { exact: true }).click();
-      await expect
-        .poll(() => page.getByLabel('整理频率', { exact: true }).inputValue())
-        .toBe('monthly');
-      expect(
-        await page.getByLabel('每月日期', { exact: true }).inputValue(),
-      ).toBe('31');
-      expect(
-        await page.getByLabel('整理时间', { exact: true }).inputValue(),
-      ).toBe('04:15');
-      expect(await validation.isChecked()).toBe(true);
-      expect(await adoption.isChecked()).toBe(true);
-      const [saved] =
-        await fixture.db`select value from allrice_settings where scope_type='organization' and scope_id=${company.organizationId} and key='employee_experience_policy'`;
-      expect(saved!.value).toEqual(historical);
-      expect((await (await context.request.get(url)).json()).policy).toEqual(
-        historical,
-      );
-      const anonymous = await browser.newContext();
-      try {
-        expect(
-          (
-            await anonymous.request.get(
-              `${origin}/api/v1/admin/organizations/${company.organizationId}/experience-policy`,
-            )
-          ).status(),
-        ).toBe(401);
-      } finally {
-        await anonymous.close();
-      }
-    } finally {
-      await context.close();
-    }
-  }, 45000);
-
-  it.each([
-    'ALLRICE_EXPERIENCE_REVIEW_ENABLED',
-    'ALLRICE_NATIVE_RECURRING_ENABLED',
-    'ALLRICE_NATIVE_CALENDAR_ENABLED',
-  ])(
-    'refuses enabling with %s off without saving, while all-off still allows closing',
-    async (disabledFlag) => {
-      const admin = (await authenticateSession(adminToken))!;
-      const company = await createManagedOrganization(admin, {
-        name: '不可用整理设置',
-      });
-      const context = await browser.newContext();
-      await context.addCookies([
-        { name: 'fixture_session', value: adminToken, url: origin },
-      ]);
-      const page = await context.newPage();
-      const url = `${origin}/api/v1/admin/organizations/${company.organizationId}/experience-policy`;
-      const original = (await (await context.request.get(url)).json()).policy;
-      const state = async () => ({
-        settings:
-          await fixture.db`select value from allrice_settings where scope_type='organization'
-        and scope_id=${company.organizationId} and key='employee_experience_policy'`,
-        rules:
-          await fixture.db`select id,revision,status from allrice_automations where organization_id=${company.organizationId}`,
-      });
-      const before = await state();
-      try {
-        await page.goto(`${origin}/?organizationId=${company.organizationId}`);
-        await page
-          .getByRole('tab', { name: 'AI 员工与工作沉淀', exact: true })
-          .click();
-        await page.getByText('经验自动整理设置', { exact: true }).click();
-        const frequency = page.getByLabel('整理频率', { exact: true });
-        await frequency.waitFor();
-        await frequency.selectOption('weekly');
-        vi.stubEnv(disabledFlag, '0');
-        const rejected = page.waitForResponse(
-          (r) => r.url() === url && r.request().method() === 'PUT',
-        );
-        await page
-          .getByRole('button', { name: '保存整理设置', exact: true })
-          .click();
-        const response = await rejected;
-        expect(response.status()).toBe(503);
-        expect(response.headers()['cache-control']).toBe('private, no-store');
-        expect(await response.json()).toMatchObject({
-          code: 'EXPERIENCE_SCHEDULING_UNAVAILABLE',
-        });
-        await page
-          .getByText('经验自动整理暂不可用，本次设置未保存；仍可关闭整理。', {
-            exact: true,
-          })
-          .waitFor();
-        expect((await (await context.request.get(url)).json()).policy).toEqual(
-          original,
-        );
-        expect(await state()).toEqual(before);
-        for (const flag of [
-          'ALLRICE_EXPERIENCE_REVIEW_ENABLED',
-          'ALLRICE_NATIVE_RECURRING_ENABLED',
-          'ALLRICE_NATIVE_CALENDAR_ENABLED',
-        ])
-          vi.stubEnv(flag, '0');
-        await frequency.selectOption('off');
-        const closed = page.waitForResponse(
-          (r) => r.url() === url && r.request().method() === 'PUT',
-        );
-        await page
-          .getByRole('button', { name: '保存整理设置', exact: true })
-          .click();
-        expect((await closed).status()).toBe(200);
-        await page
-          .getByText('已关闭自动整理。已生成的草稿和历史记录保留。', {
-            exact: true,
-          })
-          .waitFor();
-        expect(
-          (await (await context.request.get(url)).json()).policy,
-        ).toMatchObject({ frequency: 'off', revision: original.revision + 1 });
-      } finally {
-        for (const flag of [
-          'ALLRICE_EXPERIENCE_REVIEW_ENABLED',
-          'ALLRICE_NATIVE_RECURRING_ENABLED',
-          'ALLRICE_NATIVE_CALENDAR_ENABLED',
-        ])
-          vi.stubEnv(flag, '1');
-        await context.close();
-      }
-    },
-    30000,
-  );
-
-  it.each(['json', 'html'])(
-    'does not claim a generic %s 503 was a rejected save or resend it',
-    async (format) => {
-      const admin = (await authenticateSession(adminToken))!;
-      const company = await createManagedOrganization(admin, {
-        name: '未知保存结果',
-      });
-      const context = await browser.newContext();
-      await context.addCookies([
-        { name: 'fixture_session', value: adminToken, url: origin },
-      ]);
-      const page = await context.newPage();
-      const url = `${origin}/api/v1/admin/organizations/${company.organizationId}/experience-policy`;
-      const before =
-        await fixture.db`select value from allrice_settings where scope_type='organization'
-      and scope_id=${company.organizationId} and key='employee_experience_policy'`;
-      let writes = 0;
-      await page.route(url, async (route) => {
-        if (route.request().method() !== 'PUT') return route.continue();
-        writes++;
-        return route.fulfill({
-          status: 503,
-          contentType: format === 'json' ? 'application/json' : 'text/html',
-          body:
-            format === 'json'
-              ? JSON.stringify({ code: 'GATEWAY_UNAVAILABLE' })
-              : '<html>Gateway unavailable</html>',
-        });
-      });
-      try {
-        await page.goto(`${origin}/?organizationId=${company.organizationId}`);
-        await page
-          .getByRole('tab', { name: 'AI 员工与工作沉淀', exact: true })
-          .click();
-        await page.getByText('经验自动整理设置', { exact: true }).click();
-        const frequency = page.getByLabel('整理频率', { exact: true });
-        await frequency.waitFor();
-        await frequency.selectOption('weekly');
-        await page
-          .getByRole('button', { name: '保存整理设置', exact: true })
-          .click();
-        await page
-          .getByText('未确认保存结果，请重新读取后核对。', { exact: true })
-          .waitFor();
-        expect(writes).toBe(1);
-        expect(
-          await page
-            .getByText('经验自动整理暂不可用，本次设置未保存；仍可关闭整理。', {
-              exact: true,
-            })
-            .count(),
-        ).toBe(0);
-        expect(
-          await fixture.db`select value from allrice_settings where scope_type='organization'
-        and scope_id=${company.organizationId} and key='employee_experience_policy'`,
-        ).toEqual(before);
-      } finally {
-        await context.close();
-      }
-    },
-    30000,
-  );
 
   it.each([1440, 390])(
     'shows organization AI instances and exact shared detail/file boundaries (%i)',
@@ -1267,12 +949,12 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       await fixture.db`update allrice_organizations set name=${companyName} where id=${a.target.organizationId}`;
       const [memoryAssignment] =
         await fixture.db`select id from allrice_employee_assignments where organization_id=${owner.organizationId} and workspace_id=${owner.workspaceId!} and user_id=${owner.actor.id} and active`;
-      const memory = await createTraceableMemory(owner, {
+      const memory = await createPersonalEmployeeMemory(owner, {
         instanceId: memoryAssignment!.id,
         idempotencyKey: randomUUID(),
         workspaceId: owner.workspaceId,
-        content: excerpt,
-        sourceType: 'user',
+        summary: excerpt,
+        details: null,
       });
       const pair = {
         summary: '月报可以发送',
@@ -1369,9 +1051,7 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
           {
             instanceId: memory.instanceId!,
             expectedRevision: memory.revision,
-            pairDigest: memoryPairDigest(
-              legacyPersonalMemoryPair(memory.content),
-            ),
+            pairDigest: memory.pairDigest,
             idempotencyKey: randomUUID(),
             summary: '后续记忆修订：此内容不是所选择的原摘录。',
             details: null,

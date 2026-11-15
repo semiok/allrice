@@ -39,8 +39,6 @@ export const completedToolWorkMethods: Readonly<Record<string, WorkMethod>> = {
   'wechat.article.read': 'cloud_search',
   'market.quote': 'cloud_search',
   'market.history': 'cloud_search',
-  'workspace.memory.search': 'cloud_search',
-  'workspace.experience.read': 'cloud_search',
   'workspace.memory.read': 'cloud_search',
   'workspace.session.search': 'cloud_search',
   'workspace.file.list': 'cloud_files',

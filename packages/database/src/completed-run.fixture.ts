@@ -1,6 +1,6 @@
 import { createEmployeeAdministrationFixture } from './employee-administration.fixture.ts';
 import { assignPublishedPlatformEmployeeToWorkspace } from './employees/platform-employees.ts';
-/** Synthetic P20 evidence only; callers must provide their dedicated schema. */
+/** Synthetic completed Run; callers must provide their dedicated schema. */
 import { authorizeFixturePlatformAdministrator } from './platform-authority.fixture.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { ensureGeneralEmployeeInstance } from './employees/employee-instances.ts';
@@ -11,9 +11,13 @@ import {
   getChatSessionHistory,
 } from './workspace/service.ts';
 
-export async function createExperienceFixture(
+export async function createCompletedRunFixture(
   db: ReturnType<typeof postgres>,
-  options: { published?: boolean; authenticated?: boolean } = {},
+  options: {
+    published?: boolean;
+    authenticated?: boolean;
+    promptSnapshot?: postgres.JSONValue;
+  } = {},
 ) {
   const org = randomUUID(),
     workspace = randomUUID(),
@@ -88,7 +92,7 @@ export async function createExperienceFixture(
     (${assistant},${org},${workspace},${session.id},${user},'assistant','{"text":"Synthetic task delivered","citations":[]}','completed')`;
   await db`insert into allrice_runs(id,organization_id,workspace_id,owner_id,state,execution_spec,input) values(${run},${org},${workspace},${user},'succeeded','{}','{}')`;
   await db`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,status,completed_at,provider_snapshot,prompt_snapshot)
-    values(${run},${org},${workspace},${user},${assignment!.id},${assignment!.employee_version_id},${session.id},${message},${assistant},'succeeded',now(),'{}','{}')`;
+    values(${run},${org},${workspace},${user},${assignment!.id},${assignment!.employee_version_id},${session.id},${message},${assistant},'succeeded',now(),'{}',${db.json(options.promptSnapshot ?? {})})`;
   const input = {
     clientRequestId: randomUUID(),
     runId: run,

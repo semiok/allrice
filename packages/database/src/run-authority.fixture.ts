@@ -405,7 +405,7 @@ export async function createRunAuthorityFixture(
         })
       : {};
     await tx`insert into allrice_employee_runs(run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot,native_skills,execution_snapshot,memory_context_state)
-    values(${rootRunId},${org},${workspace},${user},${assignment},${version},${session},${um},${am},${tx.json(manifest.provider)},${tx.json(prompt)},'[]',${tx.json(JSON.parse(JSON.stringify(options.snapshot ? options.snapshot(snapshot, { sessionId: session }) : snapshot)))},${tx.json(options.memoryContextStateV2?.() ?? { schemaVersion: 1, pending: true })})`;
+    values(${rootRunId},${org},${workspace},${user},${assignment},${version},${session},${um},${am},${tx.json(manifest.provider)},${tx.json(prompt)},'[]',${tx.json(JSON.parse(JSON.stringify(options.snapshot ? options.snapshot(snapshot, { sessionId: session }) : snapshot)))},${options.memoryContextStateV2 ? tx.json(options.memoryContextStateV2()) : null})`;
     const controls =
       options.controls === undefined ? defaultControls() : options.controls;
     if (controls)

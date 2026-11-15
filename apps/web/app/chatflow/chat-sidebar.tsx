@@ -29,7 +29,6 @@ import sidebarUi from './dsh-upstream/SidebarRoot.module.css';
 import styles from './dsh-saas.module.css';
 
 interface ChatSidebarProps {
-  experienceEnabled?: boolean;
   capabilities: (section: 'work' | 'computer') => ReactNode;
   archive?: ReturnType<typeof useSessionArchive>;
   activeId: string | null;
@@ -64,7 +63,6 @@ interface ChatSidebarProps {
 }
 
 export function ChatSidebar({
-  experienceEnabled = false,
   capabilities,
   archive,
   activeId,
@@ -321,7 +319,6 @@ export function ChatSidebar({
 
         <div className={sidebarUi.footArea}>
           <SidebarSettings
-            experienceEnabled={experienceEnabled}
             sessionId={activeId ?? undefined}
             capabilities={capabilities}
             key={

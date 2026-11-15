@@ -299,7 +299,7 @@ export function employeeManifest(input: {
         'workspace.file.read',
         'workspace.document.read',
         'workspace.project',
-        'workspace.memory.search',
+        'workspace.memory.read',
         'workspace.memory.remember',
         'workspace.session.search',
         'web.search',

@@ -115,17 +115,4 @@ describe('employee detail prompts keep source text separate from the requested e
     expect(excerpt).toBe(body.slice(0, 1600));
     expect(prompt).not.toContain('不要把未展示的尾部当成完整正文');
   });
-
-  it('keeps experience changes on the existing experience lifecycle instead of claiming a method save', () => {
-    const prompt = adjustEmployeeContentPrompt({
-      employeeName: '科研助手',
-      sceneName: '报告：复盘',
-      source: personalSource('experience'),
-    });
-    expect(prompt).toContain('请调整我的个人经验：');
-    expect(prompt).toContain('范围："报告：复盘" · 经验积累');
-    expect(prompt).toContain('沿用当前经验的整理、验证和采用规则');
-    expect(prompt).toContain('不将草稿视为已采用经验');
-    expect(prompt).not.toContain('已保存并生效');
-  });
 });

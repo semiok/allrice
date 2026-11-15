@@ -14,7 +14,7 @@ import {
   completeJob,
   startClaimedJob,
 } from './execution/queue.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import { createChatSession, sendChatMessage } from './workspace/service.ts';
 import { getSessionRunTimings } from './conversation/interaction-status.ts';
 import { createTaskProgressRuntime } from './task-progress.ts';
@@ -288,7 +288,7 @@ suite(
 // No claim is made about PR4b/4c answer routing or enabling timed in the UI.
 suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
   let isolated: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
-  type Conversation = Awaited<ReturnType<typeof createExperienceFixture>>;
+  type Conversation = Awaited<ReturnType<typeof createCompletedRunFixture>>;
   type Turn = Awaited<ReturnType<typeof startTurn>>;
   type Active = NativeQuestionProjection['questions']['active'];
   type Settled = NativeQuestionProjection['questions']['settled'];
@@ -447,7 +447,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
     'PR4 rollback changes every live session Run and budget in one transaction: %s',
     async (outcome) => {
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', `sha256:${'a'.repeat(64)}`);
-      const f = await createExperienceFixture(isolated.db);
+      const f = await createCompletedRunFixture(isolated.db);
       await updateNativeQuestionMode(f.reviewer, 'timed');
       const terminal = await startTurn(f);
       const old = {
@@ -634,7 +634,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
   it.each(['append-first', 'answer-first', 'rollback-first'] as const)(
     'PR4 mode fence serializes the real input/event entry: %s',
     async (order) => {
-      const f = await createExperienceFixture(isolated.db);
+      const f = await createCompletedRunFixture(isolated.db);
       await updateNativeQuestionMode(f.reviewer, 'timed');
       const turn = await startTurn(f);
       const current = question('fenced-input');
@@ -754,7 +754,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
   it.each(['append', 'stop'] as const)(
     'mode rollback atomically refreshes clocks while a competing %s waits on explicit locks',
     async (boundary) => {
-      const f = await createExperienceFixture(isolated.db);
+      const f = await createCompletedRunFixture(isolated.db);
       await updateNativeQuestionMode(f.reviewer, 'timed');
       const turn = await startTurn(f);
       const current = question('rollback-race');
@@ -845,7 +845,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
         import.meta.url,
       ).href
     );
-    const f = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
     await updateNativeQuestionMode(f.reviewer, 'timed');
     const turn = await startTurn(f, '请先问我优先采用哪个方案。');
     const current = question('long:call:'.repeat(50));
@@ -1038,7 +1038,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
   }, 120000);
 
   it('user stops only this turn while a previous turn in the same chat still has an answerable question', async () => {
-    const f = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
     await updateNativeQuestionMode(f.reviewer, 'timed');
     const previous = await startTurn(
       f,
@@ -1133,7 +1133,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
   });
 
   it('newer snapshots cannot rewrite the original question text or source Run', async () => {
-    const f = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
     await updateNativeQuestionMode(f.reviewer, 'timed');
     const previous = await startTurn(f);
     const original = question('immutable:call', '原问题：是否采用方案 A？');
@@ -1189,8 +1189,8 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
 
   it('rejects cross-session and cross-owner/tenant snapshots and unauthorized user reads, stops and mode changes', async () => {
     vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', `sha256:${'a'.repeat(64)}`);
-    const f = await createExperienceFixture(isolated.db);
-    const foreign = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
+    const foreign = await createCompletedRunFixture(isolated.db);
     await updateNativeQuestionMode(f.reviewer, 'timed');
     const target = await startTurn(f);
     await sendView(target, 10, [question('shared-call')]);
@@ -1260,7 +1260,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
   });
 
   it('same-sequence replay and expired/wrong Worker leases cannot change the view, cursor or persisted clock', async () => {
-    const f = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
     await updateNativeQuestionMode(f.reviewer, 'timed');
     const turn = await startTurn(f);
     await sendView(turn, 10, [question('owned-call')]);
@@ -1295,8 +1295,8 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
   });
 
   it('platform rollback revokes both tenants and in-flight notices, preserves settled answers, and allows only new IDs after re-enable', async () => {
-    const f = await createExperienceFixture(isolated.db);
-    const other = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
+    const other = await createCompletedRunFixture(isolated.db);
     await updateNativeQuestionMode(f.reviewer, 'timed');
     const a = await startTurn(f),
       b = await startTurn(other);
@@ -1361,7 +1361,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
   });
 
   it('isolates approved native generations, reused call IDs, empty-snapshot watermarks and retired authority', async () => {
-    const f = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
     await updateNativeQuestionMode(f.reviewer, 'timed');
     const turn = await startTurn(f, '先问我方案，换一轮后仍按新问题回答。');
     const q = question('same-call');
@@ -1467,7 +1467,7 @@ suite('MET-210 PR4a chat boundaries and populated-schema upgrade', () => {
   });
 
   it('a removed revoked identity cannot regain authority or acquire a new source Run when it reappears', async () => {
-    const f = await createExperienceFixture(isolated.db);
+    const f = await createCompletedRunFixture(isolated.db);
     await updateNativeQuestionMode(f.reviewer, 'timed');
     const first = await startTurn(f);
     const old = question('revoked:identity');

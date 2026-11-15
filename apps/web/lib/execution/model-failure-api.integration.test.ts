@@ -11,7 +11,7 @@ import {
   createRuntimeFixtureDatabase,
   runFixture,
 } from '../../../../packages/database/src/runtime.fixture.ts';
-import { createExperienceFixture } from '../../../../packages/database/src/experience.fixture.ts';
+import { createCompletedRunFixture } from '../../../../packages/database/src/completed-run.fixture.ts';
 import {
   readTerminalModelFailure,
   readRootModelFailures,
@@ -44,7 +44,7 @@ const suite =
     : describe.skip;
 suite('real model-failure API boundaries, isolated database / no model', () => {
   let db: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
-  type Fixture = Awaited<ReturnType<typeof createExperienceFixture>> & {
+  type Fixture = Awaited<ReturnType<typeof createCompletedRunFixture>> & {
     idempotencyKey: string;
   };
   let legacy: Fixture;
@@ -76,7 +76,7 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
   const secret = 'sk-synthetic-private';
   const overload = 'Our servers are currently overloaded';
   async function seed(code: string | null, message: string, receipt = false) {
-    const f = await createExperienceFixture(db.db);
+    const f = await createCompletedRunFixture(db.db);
     const idempotencyKey = randomUUID();
     await db.db`insert into allrice_jobs(id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,timeout_at,payload,last_error_code,last_error_message)
       values(${randomUUID()},${f.org},${f.workspace},${f.user},${f.run},${code ? 'failed' : 'succeeded'},${idempotencyKey},now()+interval '1 hour',
@@ -565,6 +565,7 @@ suite('real model-failure API boundaries, isolated database / no model', () => {
   });
   it('review regression: internal task events never become main-chat model receipts', async () => {
     const f = await seed(null, 'Synthetic internal original', true);
+    // Historical internal event remains read-only and must never enter ordinary chat receipts.
     await db.db`update allrice_run_events set payload=payload||${json({ internalTask: { kind: 'experience_consolidation', occurrenceId: randomUUID() }, conversationId: null, messageId: null })} where run_id=${f.run}`;
     expect(
       await readRootModelFailures(db.db, {

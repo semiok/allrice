@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext, WorkerOperations } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
-import { createExperienceFixture } from './experience.fixture.ts';
+import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import { recordWorkerOperations } from './operations-resources.ts';
 import {
   readPlatformTechnicalDiagnostics,
@@ -22,7 +22,7 @@ suite(
   () => {
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let admin: RequestContext;
-    let customer: Awaited<ReturnType<typeof createExperienceFixture>>;
+    let customer: Awaited<ReturnType<typeof createCompletedRunFixture>>;
     const workerId = randomUUID();
     const worker: WorkerOperations = {
       workerId,
@@ -43,7 +43,7 @@ suite(
     beforeAll(async () => {
       fixture = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
-      customer = await createExperienceFixture(fixture.db);
+      customer = await createCompletedRunFixture(fixture.db);
       const actorId = randomUUID();
       await fixture.db`insert into allrice_users(id,email,display_name,password_hash) values(${actorId},${`${actorId}@example.test`},'Independent platform admin','not-login')`;
       vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', `${actorId}@example.test`);
@@ -152,7 +152,7 @@ suite(
       );
     });
     it('keeps database microseconds in the shared diagnostics window and excludes rows outside it', async () => {
-      const sample = await createExperienceFixture(fixture.db);
+      const sample = await createCompletedRunFixture(fixture.db);
       const end = '2030-01-02T12:00:00.123900Z';
       const start = '2030-01-01T12:00:00.123900Z';
       const cases = [

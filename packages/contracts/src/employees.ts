@@ -1,7 +1,6 @@
 import {
   EmployeeDocumentsSchema,
   EmployeePersonaPinSchema,
-  isMemoryIndexDocuments,
 } from './employee-documents.ts';
 import { EmployeePersonaFoundationSchema } from './employee-persona-foundation.ts';
 import { SessionReferenceSnapshotsSchema } from './session-reference.ts';
@@ -31,11 +30,6 @@ import { ChecksumSchema } from './runs.ts';
 import { ManagedPythonPurposeSchema } from './runtime-v2/local-python.ts';
 import { SandboxExecutionPolicySchema } from './runtime-v2/sandbox-execution.ts';
 import { OfficeFirstDeliveryPolicySchema } from './office-quality.ts';
-import {
-  MemoryClassSchema,
-  MemoryLifecycleStateSchema,
-  MemoryTrustSchema,
-} from './operations.ts';
 import { PromptImageAttachmentSchema } from './storage.ts';
 import {
   CodexExecutionSnapshotSchema,
@@ -893,37 +887,12 @@ export const EmployeePromptSnapshotSchema = z
           .strict(),
       )
       .max(1_000),
-    memories: z
-      .array(
-        z
-          .object({
-            id: UuidSchema,
-            revision: z.number().int().positive().optional(),
-            content: z.string().max(100_000),
-            lifecycleState: MemoryLifecycleStateSchema.optional(),
-            memoryClass: MemoryClassSchema.optional(),
-            sourceLabel: z.string().max(240).optional(),
-            trust: MemoryTrustSchema.optional(),
-            confidence: z.number().min(0).max(1).optional(),
-            capturedAt: TimestampSchema.optional(),
-            sourceHandle: z
-              .string()
-              .regex(/^experience:sha256:[a-f0-9]{64}$/)
-              .optional(),
-          })
-          .strict(),
-      )
-      .max(20),
+    memories: z.array(z.never()).max(0),
     userRequest: z.string().min(1).max(100_000),
     imageAttachments: z.array(PromptImageAttachmentSchema).max(20).default([]),
     sessionReferences: SessionReferenceSnapshotsSchema.optional(),
   })
-  .strict()
-  .refine(
-    (snapshot) =>
-      !isMemoryIndexDocuments(snapshot.employeeDocuments) ||
-      snapshot.memories.length === 0,
-  );
+  .strict();
 
 export const EmployeeRunSchema = z
   .object({

@@ -1626,8 +1626,8 @@ ADMISSION = "(select state from allrice_dev_maintenance where environment_id = :
 WINDOW = "now() - make_interval(mins => :'window_minutes'::int)"
 
 # Root runs of real users: every root run has its job (assistant child runs have none and
-# never set completed_at); platform runs, smoke/test accounts, previews,
-# experience checks and the consolidation job are left out. Shared by both failure queries.
+# never set completed_at); platform runs, smoke/test accounts and previews
+# are left out. Shared by both failure queries.
 USER_RUNS = """
   from allrice_runs r
   join allrice_jobs j on j.run_id = r.id
@@ -1635,9 +1635,7 @@ USER_RUNS = """
   join allrice_users u on u.id = r.owner_id
   where o.slug <> 'allrice-platform'
     and not (coalesce(u.username, '') = any (string_to_array(:'test_usernames', ',')))
-    and coalesce(r.execution_spec->>'handler', '') <> 'platform_employee_preview'
-    and coalesce(j.payload->>'type', '') <> 'allrice.experience.consolidate'
-    and not exists (select 1 from allrice_platform_employee_test_runs v where v.experience_run_id = r.id)"""
+    and coalesce(r.execution_spec->>'handler', '') <> 'platform_employee_preview'"""
 
 SQL_FAILED_RUNS = """
 with w as (
@@ -1771,7 +1769,6 @@ from allrice_jobs j
 where j.status in ('queued', 'retry_wait')
   and j.available_at < now() - make_interval(mins => :'queue_warn_minutes'::int)
   and coalesce(j.payload->>'type', '') not like 'allrice.platform.dev.%'
-  and coalesce(j.payload->>'type', '') <> 'allrice.experience.consolidate'
   and not exists (select 1 from allrice_conversation_followups f where f.run_id = j.run_id and f.mode = 'steer_only')"""
 
 # native_once proves it fired with an occurrence row for the current revision; native

@@ -2,7 +2,6 @@ import { createHash } from 'node:crypto';
 import {
   EmployeeKernelRequestSchema,
   isBaseRiceInstanceDefinition,
-  renderMemoryContext,
   type ContextCheckpoint,
   type BootstrapContext,
   type EmployeeKernelRequest,
@@ -174,16 +173,10 @@ export function assembleEmployeeKernel(input: {
         source.reference.sourceKind === 'company_rule' &&
         r.assetId === source.reference.contentId,
     );
-    const memory = input.resolved.promptSnapshot.memories.find(
-      (m) =>
-        source.reference.sourceKind === 'experience' &&
-        m.id === source.reference.contentId,
-    );
     if (
-      (rule &&
-        (rule.revision.id !== source.reference.revisionId ||
-          rule.revision.digest !== source.reference.digest)) ||
-      (memory && memory.content !== source.body)
+      rule &&
+      (rule.revision.id !== source.reference.revisionId ||
+        rule.revision.digest !== source.reference.digest)
     )
       throw new HandlerError(
         'EMPLOYEE_CONTENT_UNAVAILABLE',
@@ -211,17 +204,6 @@ export function assembleEmployeeKernel(input: {
     };
     bootstrapContext.assistantMessageId = input.assistantMessageId;
   }
-  const memories = renderMemoryContext(
-    input.resolved.promptSnapshot.memories.filter(
-      (memory) =>
-        !input.commonContent?.some(
-          (source) =>
-            source.reference.sourceKind === 'experience' &&
-            source.reference.contentId === memory.id &&
-            source.body === memory.content,
-        ),
-    ),
-  );
   // Durable v1/v2 snapshots may still say `codex`, but new execution has one
   // production harness only. Codex subscription access is a DSH Provider.
   const runtimeHarness = 'dsh';
@@ -237,12 +219,6 @@ export function assembleEmployeeKernel(input: {
     input.resolved.executionSnapshot?.schemaVersion === 2 &&
     input.resolved.executionSnapshot.persona;
   const taskPersona = !!(persona && persona.source.task);
-  const commonContent = (documents: boolean) =>
-    documents
-      ? input.commonContent?.filter(
-          (source) => source.reference.sourceKind !== 'experience',
-        )
-      : input.commonContent;
   const systemInstructions = (documents: boolean) =>
     [
       input.resolved.promptSnapshot.systemPrompt,
@@ -280,11 +256,11 @@ export function assembleEmployeeKernel(input: {
             "Published work scenes appear in the native Skill directory under allrice-scene- names. Select at most one scene for this Run. Prioritize the user's explicit choice; load its exact native name through skill before following its scene-specific requirements. If multiple scenes plausibly match or a display name is ambiguous, ask the user using the existing ask_user_question tool before loading one. An ordinary task may use no scene. Do not preload scenes, combine unrelated scenes, or carry scene rules from previous Runs. The common working requirements always apply. Scene descriptions and file/workflow references are not proof of task execution or successful delivery.",
           ]
         : []),
-      ...(commonContent(documents)?.length
+      ...(input.commonContent?.length
         ? [
             'Frozen common working requirements for this Run, assembled from authorized company, department and personal publications. Apply these together with platform requirements. References do not grant tools or data permissions. A knowledge/workflow description below is a reference directory, not evidence of reading its files or executing its workflow.',
             JSON.stringify(
-              commonContent(documents)!.map(
+              input.commonContent!.map(
                 ({ reference, ownership, title, body }) => ({
                   reference,
                   scope: ownership?.scope ?? 'authorized_reference',
@@ -424,9 +400,7 @@ export function assembleEmployeeKernel(input: {
     ].join('\n\n'),
     bootstrapConversation,
     ...(bootstrapContext ? { bootstrapContext } : {}),
-    authorizedMemoryContext: input.resolved.promptSnapshot.employeeDocuments
-      ? ''
-      : memories,
+    authorizedMemoryContext: '',
     grantedCapabilities: input.resolved.grantedCapabilities,
     skillVersionIds: input.resolved.nativeSkills.map((skill) => skill.id),
     runtimePackageChecksum:

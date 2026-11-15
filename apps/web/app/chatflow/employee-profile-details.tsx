@@ -48,7 +48,6 @@ const sectionNames = {
   requirements: '执行要求',
   procedures: '执行流程',
   references: '参考资料',
-  experience: '经验积累',
 };
 type Section = keyof typeof sectionNames;
 const sectionFor = (kind: EmployeeContentReference['sourceKind']): Section =>
@@ -56,9 +55,7 @@ const sectionFor = (kind: EmployeeContentReference['sourceKind']): Section =>
     ? 'requirements'
     : kind === 'procedure' || kind === 'workflow'
       ? 'procedures'
-      : kind === 'knowledge'
-        ? 'references'
-        : 'experience';
+      : 'references';
 const exactKey = (ref: EmployeeContentReference) =>
   `${ref.sourceKind}/${ref.contentId}/${ref.revisionId}/${ref.digest}`;
 const scopeNames = {
@@ -129,7 +126,7 @@ export function EmployeeProfileSkeleton() {
         </div>
         <div className={css.workMain}>
           <div className={css.skeletonTabs}>
-            {Array.from({ length: 4 }, (_, index) => (
+            {Array.from({ length: 3 }, (_, index) => (
               <span key={index} />
             ))}
           </div>
@@ -148,7 +145,6 @@ export function EmployeeProfileDetails({
   details,
   onPreview,
   view = 'personal',
-  experienceContent,
   workflowContent,
   workflowReadContent,
   memoryEntry,
@@ -159,7 +155,6 @@ export function EmployeeProfileDetails({
   details: EmployeeDetails;
   onPreview: (reference: ReferenceSelection) => void;
   view?: 'personal' | 'shared';
-  experienceContent?: ReactNode;
   workflowContent?: ReactNode;
   workflowReadContent?: ReactNode;
   memoryEntry?: ReactNode;
@@ -332,12 +327,6 @@ export function EmployeeProfileDetails({
             {scene?.appliesWhen && (
               <p className={css.hint}>{scene.appliesWhen}</p>
             )}
-            {section === 'experience' &&
-              (experienceContent ?? (
-                <p className={css.notice}>
-                  经验整理按生效策略执行；当前未读取到整理状态。
-                </p>
-              ))}
             {section === 'requirements' && publishedRules.length > 0 && (
               <article className={css.item}>
                 <header>
@@ -420,7 +409,6 @@ export function EmployeeProfileDetails({
                       requirements: '暂无已生效的执行要求。',
                       procedures: '暂无已生效的执行流程。',
                       references: '暂无已引用的参考资料。',
-                      experience: '暂无已引用经验。',
                     }[section]
                   }
                 </p>

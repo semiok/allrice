@@ -11,7 +11,6 @@ import type {
 import type { FinalDeliveryPort } from '../final-delivery/guard.js';
 import type {
   EmployeeKernelRequest,
-  InternalKernelRequest,
   DshNativeSkillSnapshot,
   EmployeeBaseSkillCatalog,
   EmployeeRuntimeScene,
@@ -144,7 +143,7 @@ export interface HarnessExecutionInput {
   progress?: (
     request: Record<string, unknown>,
   ) => Promise<Record<string, unknown>>;
-  kernel: EmployeeKernelRequest | InternalKernelRequest;
+  kernel: EmployeeKernelRequest;
   providerSnapshot: HarnessExecutionSnapshot;
   storageObjects: StorageObject[];
   images?: readonly HarnessImageInput[];
@@ -160,13 +159,10 @@ export interface HarnessExecutionInput {
       list: () => Promise<Record<string, unknown>>;
       load: (sceneId: string) => Promise<Record<string, unknown>>;
     };
-    loadScene?: (
-      selection: {
-        sceneId: string;
-        sceneDigest: string;
-      },
-      employeeDocuments?: boolean,
-    ) => Promise<Record<string, unknown>>;
+    loadScene?: (selection: {
+      sceneId: string;
+      sceneDigest: string;
+    }) => Promise<Record<string, unknown>>;
     adoptScene?: (evidence: {
       sceneId: string;
       sceneDigest: string;
@@ -279,7 +275,6 @@ export interface HarnessRuntimeProcessSnapshot {
   organizationId: string;
   workspaceId: string;
   sessionId: string | null;
-  internalTask?: InternalKernelRequest['internalTask'];
   ownerId: string;
   threadId: string;
   providerRoute: string;

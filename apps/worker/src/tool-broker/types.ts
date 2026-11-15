@@ -1,5 +1,4 @@
 import type {
-  createTraceableMemory,
   createRememberedMemoryCandidate,
   isManagedBrowserTaskCancelRequested,
   TechnicalTaskLease,
@@ -99,7 +98,6 @@ export interface RiceToolExecutionInput {
   managedBrowserCancelPollIntervalMs?: number;
   managedBrowserJobAttempt?: number;
   managedBrowserJobLeaseToken?: string;
-  memoryCreate?: typeof createTraceableMemory;
   memoryCandidateCreate?: typeof createRememberedMemoryCandidate;
 }
 
