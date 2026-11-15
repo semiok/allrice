@@ -4914,6 +4914,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const toggle = header.getByRole('button');
         await toggle.waitFor();
         diagnostics = await observeScrollDiagnostics(header);
+        // Finish the frame's layout motion before recording the reading baseline.
+        await f.page.locator('main').evaluate(async (frame) => {
+          await Promise.all(
+            frame.getAnimations().map((animation) => animation.finished),
+          );
+        });
         await scroll.evaluate((node) => {
           node.scrollTop = node.scrollHeight;
           node.dispatchEvent(new Event('scroll'));
