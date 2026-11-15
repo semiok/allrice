@@ -163,7 +163,16 @@ async function observeScrollDiagnostics(target: Locator) {
         result.push(current);
       return result;
     };
-    const records: unknown[] = [];
+    const records: {
+      phase: string;
+      at: number;
+      details?: unknown;
+      point: { x: number; y: number };
+      activeElement: ReturnType<typeof identify>;
+      targetChain: ReturnType<typeof geometry>[];
+      hitChain: ReturnType<typeof geometry>[];
+      deliveryFooters: ReturnType<typeof geometry>[];
+    }[] = [];
     let lastPoint: { x: number; y: number } | undefined;
     const mark = (phase: string, details?: unknown) => {
       const rect = node.getBoundingClientRect();
@@ -251,6 +260,40 @@ async function observeScrollDiagnostics(target: Locator) {
         state.mark('failure-capture');
         return state.records;
       }),
+    summary: () =>
+      handle.evaluate((state) =>
+        state.records
+          .filter(
+            (record) =>
+              record.phase.includes('expand') ||
+              [
+                'pointerdown-capture',
+                'mousedown-capture',
+                'click-capture',
+                'click-bubble',
+                'keydown-capture',
+                'keydown-bubble',
+              ].includes(record.phase),
+          )
+          .map((record) => ({
+            phase: record.phase,
+            at: record.at,
+            details: record.details,
+            point: record.point,
+            activeElement: record.activeElement,
+            target: record.targetChain[0],
+            hit: record.hitChain[0],
+            scrollports: record.targetChain
+              .filter((node) => ['auto', 'scroll'].includes(node.overflowY))
+              .map((node) => ({
+                className: node.className,
+                rect: node.rect,
+                scrollTop: node.scrollTop,
+                scrollHeight: node.scrollHeight,
+                clientHeight: node.clientHeight,
+              })),
+          })),
+      ),
   };
 }
 
@@ -5018,6 +5061,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               .count(),
           ).toBe(1);
         }
+        // Retain successful observations in the original complete-file log too;
+        // one passing run cannot explain the earlier 34px displacement.
+        console.info(
+          'MET247_DISCLOSURE_GEOMETRY',
+          JSON.stringify({ width, observations: await diagnostics.summary() }),
+        );
       } catch (error) {
         await evidence.capture(error);
         throw error;
@@ -21944,6 +21993,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           )
           .toBeLessThanOrEqual(1);
         await diagnostics.mark('after-wheel-100000-inner-bottom');
+        if (kind === 'image-tall') {
+          // Separate physical gestures: Chromium latches unphased wheel input
+          // for 500ms; 550ms includes a small dispatch margin. A settled scroll
+          // position alone does not end that input transaction.
+          // https://chromium.googlesource.com/chromium/src/+/HEAD/content/browser/renderer_host/input/mouse_wheel_phase_handler.h
+          await f.page.waitForTimeout(550);
+          await diagnostics.mark('after-native-wheel-gesture-interval');
+        }
         await diagnostics.mark('before-wheel-1000');
         await f.page.mouse.wheel(0, 1000);
         await diagnostics.mark('after-wheel-1000-dispatched');

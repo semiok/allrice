@@ -108,10 +108,23 @@ suite('MET247 native nested scrolling', () => {
           top = Math.max(top, box.top);
           bottom = Math.min(bottom, box.bottom);
         }
+        // The dialog's viewport-fixed portal is visible beyond the short body
+        // box; body overflow locks the page, rather than clipping the portal.
+        if (
+          style.position === 'fixed' &&
+          box.left <= 0 &&
+          box.top <= 0 &&
+          box.right >= innerWidth &&
+          box.bottom >= innerHeight
+        )
+          break;
       }
       if (right <= left || bottom <= top)
         throw Error('Wheel target is outside its visible reading panel');
-      return { x: (left + right) / 2, y: (top + bottom) / 2 };
+      const point = { x: (left + right) / 2, y: (top + bottom) / 2 };
+      if (!node.contains(document.elementFromPoint(point.x, point.y)))
+        throw Error('Wheel point does not hit its visible reading panel');
+      return point;
     });
     await page.mouse.move(point.x, point.y);
     await page.mouse.wheel(x, y);
