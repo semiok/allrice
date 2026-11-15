@@ -9576,22 +9576,23 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .first();
       await selected.waitFor();
       await other.hover();
+      // DSH uses the same native interactive fill for hover and selection.
       await expect
         .poll(() =>
           other.evaluate((node) => getComputedStyle(node).backgroundColor),
         )
-        .toBe('rgb(233, 236, 241)');
+        .toBe('rgba(38, 49, 72, 0.06)');
       expect(
         await selected.evaluate(
           (node) => getComputedStyle(node).backgroundColor,
         ),
-      ).toBe('rgb(225, 230, 237)');
+      ).toBe('rgba(38, 49, 72, 0.06)');
       await selected.hover();
       await expect
         .poll(() =>
           selected.evaluate((node) => getComputedStyle(node).backgroundColor),
         )
-        .toBe('rgb(216, 223, 232)');
+        .toBe('rgba(38, 49, 72, 0.06)');
       await f.page.mouse.move(1000, 900);
       if (process.env.ALLRICE_EMPLOYEE_SCREENSHOT) {
         await f.page.locator('#chat-sidebar').screenshot({
