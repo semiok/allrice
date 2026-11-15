@@ -2,7 +2,10 @@
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
 import { runtimeTaskFixture } from './runtime.fixture.ts';
-export async function tenantValidationFixture(db: ReturnType<typeof postgres>) {
+export async function tenantValidationFixture(
+  db: ReturnType<typeof postgres>,
+  options: { artifactImmutable?: boolean } = {},
+) {
   const a = await runtimeTaskFixture(db),
     { organizationId: org, workspaceId: workspace } = a.task.scope,
     owner = a.context.actor.id,
@@ -18,6 +21,8 @@ export async function tenantValidationFixture(db: ReturnType<typeof postgres>) {
   const artifact = await a.artifact(
     run,
     '# Synthetic report\n\nIsolated fixture, not a real model answer.',
+    undefined,
+    { immutable: options.artifactImmutable },
   );
   const targetId = randomUUID(),
     operation = randomUUID();

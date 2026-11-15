@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { resourcePrincipal } from './resource-principal.ts';
 import type { TransactionSql } from 'postgres';
 import {
   BridgeDeviceSchema,
@@ -888,7 +889,9 @@ export async function readLocalPdfInput(
       'download',
       db,
     ),
-    file = a.companyMaterial ?? (await getStoredFile(a.context, objectId, db));
+    file =
+      a.companyMaterial ??
+      (await getStoredFile(resourcePrincipal(a.context), objectId, db));
   if (
     file.object.checksum !== a.input.checksum ||
     file.object.sizeBytes !== a.input.sizeBytes ||

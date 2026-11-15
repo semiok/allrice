@@ -321,9 +321,9 @@ export const ChatTranscript = memo(function ChatTranscript({
   const eventsForMessage = (message: Message) => {
     const view = runViews[message.runId ?? ''];
     const trace = runTraces[message.runId ?? ''];
-    return !isMessageRunActive(message, view) && trace?.status === 'loaded'
-      ? mergeChatFlowEvents(trace.events, view?.events ?? [])
-      : (view?.events ?? trace?.events ?? []);
+    // Reconnected live views can contain only the tail. Join the authorized
+    // trace for durable question ownership as well as for settled history.
+    return mergeChatFlowEvents(trace?.events ?? [], view?.events ?? []);
   };
   const questions = workProcessQuestions(
     messages

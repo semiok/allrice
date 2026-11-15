@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { legacyReferenceFixture } from './legacy-reference.fixture.ts';
 import { allocateWorkbenchFileName } from './workbench-file-name.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
@@ -25,7 +26,6 @@ import {
   readWorkbenchFileCatalog,
   readWorkbenchDeliverables,
   listWorkbenchFileVersions,
-  updateWorkbenchFile,
   uploadWorkbenchFile,
   setWorkbenchFileFavorite,
 } from './workbench-files.ts';
@@ -33,6 +33,8 @@ import {
   getReferenceFile,
   prepareReferenceUpload,
   listReferenceRevisions,
+  publishReference,
+  referenceSourceAccess,
 } from './reference-library.ts';
 import { readReferenceSelection } from './reference-runtime.ts';
 import { listWorkspaceFiles } from './workspace/service.ts';
@@ -144,10 +146,7 @@ suite(
         company,
       };
     }
-    function uploadInput(
-      context: RequestContext,
-      sharing?: WorkbenchFileSharing,
-    ) {
+    function uploadInput(context: RequestContext) {
       return {
         workspaceId: context.workspaceId!,
         requestId: randomUUID(),
@@ -155,10 +154,18 @@ suite(
         mediaType: 'text/plain',
         contentBase64:
           Buffer.from('按已经确认的回款统计收入。').toString('base64'),
-        ...(sharing ? { sharing } : {}),
       };
     }
     const storage = () => runtimeFixtureStorage(fixture.db);
+    async function seedLegacySharing(
+      objectId: string,
+      sharing: WorkbenchFileSharing,
+    ) {
+      // Historical data only: the public sharing/update write API is retired.
+      await fixture.db`update allrice_workbench_file_policies
+        set scope=${sharing.scope},department_ids=${sharing.departmentIds}
+        where object_id=${objectId}`;
+    }
     it('lists my actual uploads and every business object, filters before paging, and keeps cursor authority private', async () => {
       const synthetic = await runtimeTaskFixture(fixture.db);
       const owner = {
@@ -313,7 +320,7 @@ suite(
           name: 'Second Fixture',
         });
       }
-      // Its existing shared-directory consumer still collapses a series.
+      // The legacy catalog still collapses a series.
       const acrossEmployees = await fixture.db.begin(async (tx) => {
         await lockWorkspaceStorageQuota(
           tx,
@@ -416,20 +423,16 @@ suite(
     }, 30000);
     it('favorites use the current owner and live authority, never shared maintenance or a stored preference as access', async () => {
       const t = await setup();
-      // Create a genuinely authorized shared original, then exercise favorite
-      // writes after its owner returns to personal maintenance authority.
-      await fixture.db`update allrice_organization_people set content_maintenance_level='company' where organization_id=${t.a.organizationId} and user_id=${t.a.actor.id}`;
-      const file = await uploadWorkbenchFile(
-        t.a,
-        uploadInput(t.a, { scope: 'company', departmentIds: [] }),
-        storage(),
-      );
+      const file = await uploadWorkbenchFile(t.a, uploadInput(t.a), storage());
+      await seedLegacySharing(file.objectId, {
+        scope: 'company',
+        departmentIds: [],
+      });
       const duplicate = await uploadWorkbenchFile(
         t.a,
         uploadInput(t.a),
         storage(),
       );
-      await fixture.db`update allrice_organization_people set content_maintenance_level='personal' where organization_id=${t.a.organizationId} and user_id=${t.a.actor.id}`;
       const [stored, duplicateStored] = await Promise.all(
         [file, duplicate].map(({ objectId }) =>
           readWorkbenchFile(t.a, objectId),
@@ -474,9 +477,9 @@ suite(
           .map((row) => row.objectId)
           .sort(),
       ).toEqual([file.objectId, duplicate.objectId].sort());
-      expect(
-        (await readWorkbenchFile(t.maintainer, file.objectId)).canMaintain,
-      ).toBe(true);
+      await expect(
+        readWorkbenchFile(t.maintainer, file.objectId),
+      ).rejects.toMatchObject({ code: 'not_found' });
       const foreign = await setup();
       for (const current of [
         t.maintainer,
@@ -539,16 +542,20 @@ suite(
       },
       30000,
     );
-    it('never treats shared maintenance access or worker intermediate bytes as my uploads', async () => {
+    it('never treats legacy company sharing or worker intermediate bytes as my uploads', async () => {
       const t = await setup();
       const shared = await uploadWorkbenchFile(
         t.owner,
-        uploadInput(t.owner, { scope: 'company', departmentIds: [] }),
+        uploadInput(t.owner),
         storage(),
       );
-      expect(
-        (await readWorkbenchFile(t.maintainer, shared.objectId)).canMaintain,
-      ).toBe(true);
+      await seedLegacySharing(shared.objectId, {
+        scope: 'company',
+        departmentIds: [],
+      });
+      await expect(
+        readWorkbenchFile(t.maintainer, shared.objectId),
+      ).rejects.toMatchObject({ code: 'not_found' });
       const directory = await readWorkbenchDeliverables(t.maintainer, {
         workspaceId: t.maintainer.workspaceId,
       });
@@ -654,26 +661,7 @@ suite(
         ).files.map((file) => file.objectId),
       ).toEqual([uploaded.objectId]);
     }, 30000);
-    function change(
-      context: RequestContext,
-      id: string,
-      expectedRevision: number,
-      extra: Record<string, unknown>,
-      requestId = randomUUID(),
-    ) {
-      return updateWorkbenchFile(
-        context,
-        id,
-        {
-          workspaceId: context.workspaceId,
-          requestId,
-          expectedRevision,
-          ...extra,
-        },
-        storage(),
-      );
-    }
-    it('defaults uploads to private; a company role cannot discover, preview or privatize others files', async () => {
+    it('defaults uploads to personal; a company role cannot discover or read another original', async () => {
       const t = await setup(),
         input = uploadInput(t.owner),
         file = await uploadWorkbenchFile(t.owner, input, storage());
@@ -696,10 +684,8 @@ suite(
         ).files,
       ).toEqual([]);
       await expect(
-        change(t.maintainer, file.objectId, 1, {
-          sharing: { scope: 'personal', departmentIds: [] },
-        }),
-      ).rejects.toMatchObject({ code: 'not_found' });
+        getStoredFile(t.maintainer, file.objectId),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
       expect(
         (await uploadWorkbenchFile(t.owner, input, storage())).objectId,
       ).toBe(file.objectId);
@@ -711,99 +697,219 @@ suite(
         ),
       ).rejects.toMatchObject({ code: 'request_conflict' });
     });
-    it('shares with multiple selected departments, keeps ownership in My files, and denies unrelated departments', async () => {
+    it.each(['departments', 'company'] as const)(
+      'keeps a legacy %s original owner-only without migrating its policy',
+      async (scope) => {
+        const t = await setup(),
+          file = await uploadWorkbenchFile(
+            t.owner,
+            uploadInput(t.owner),
+            storage(),
+          );
+        const sharing = {
+          scope,
+          departmentIds:
+            scope === 'departments' ? t.departments.slice(0, 2) : [],
+        };
+        await seedLegacySharing(file.objectId, sharing);
+        expect(
+          (await readWorkbenchFile(t.owner, file.objectId)).canMaintain,
+        ).toBe(true);
+        const own = await getStoredFile(t.owner, file.objectId);
+        expect(await new Response(await storage().get(own.object)).text()).toBe(
+          '按已经确认的回款统计收入。',
+        );
+        const catalog = await readWorkbenchFileCatalog(t.owner, {
+          workspaceId: t.owner.workspaceId!,
+          scope: 'my',
+        });
+        expect(catalog.files.map((file) => file.objectId)).toEqual([
+          file.objectId,
+        ]);
+        expect(catalog.files[0]!.sharing).toMatchObject(sharing);
+        expect(catalog.files[0]!.sharing.departmentNames).toHaveLength(
+          sharing.departmentIds.length,
+        );
+        for (const reader of [t.a, t.b, t.maintainer, t.excluded]) {
+          await expect(
+            readWorkbenchFile(reader, file.objectId),
+          ).rejects.toMatchObject({ code: 'not_found' });
+          await expect(
+            getStoredFile(reader, file.objectId),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
+          expect(
+            (
+              await readWorkbenchFileCatalog(reader, {
+                workspaceId: reader.workspaceId!,
+              })
+            ).files,
+          ).toEqual([]);
+        }
+        const [legacy] =
+          await fixture.db`select scope,department_ids,revision from allrice_workbench_file_policies where object_id=${file.objectId}`;
+        expect(legacy).toMatchObject({
+          scope,
+          department_ids: sharing.departmentIds,
+          revision: 1,
+        });
+      },
+    );
+    it.each(['workspace', 'organization'] as const)(
+      'filters no-policy legacy %s originals before catalog pagination and denies borrowed cursors',
+      async (visibility) => {
+        const t = await setup(),
+          legacy = await uploadWorkbenchFile(
+            t.owner,
+            uploadInput(t.owner),
+            storage(),
+          ),
+          mine = await uploadWorkbenchFile(t.a, uploadInput(t.a), storage());
+        await fixture.db`delete from allrice_workbench_file_policies where object_id=${legacy.objectId}`;
+        await fixture.db`update allrice_storage_objects set visibility=${visibility} where id=${legacy.objectId}`;
+        // Old ready metadata is enough to exercise the pre-ACL 201-row limit.
+        // None of these other-owner candidates may reach a byte read.
+        await fixture.db`insert into allrice_storage_objects
+          (id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,visibility,immutable,state,created_at)
+          select ids.id,o.organization_id,o.workspace_id,o.owner_id,
+            'organizations/'||o.organization_id::text||'/workspaces/'||o.workspace_id::text||'/owners/'||o.owner_id::text||'/uploads/'||ids.id::text,
+            o.category,o.media_type,o.size_bytes,o.checksum,o.visibility,o.immutable,'ready','2030-01-01T00:00:00Z'
+          from allrice_storage_objects o cross join (select gen_random_uuid() as id from generate_series(1,201)) ids
+          where o.id=${legacy.objectId}`;
+        expect(
+          (await readWorkbenchFile(t.owner, legacy.objectId)).object.id,
+        ).toBe(legacy.objectId);
+        const own = await getStoredFile(t.owner, legacy.objectId);
+        expect(await new Response(await storage().get(own.object)).text()).toBe(
+          '按已经确认的回款统计收入。',
+        );
+        await expect(
+          readWorkbenchFile(t.a, legacy.objectId),
+        ).rejects.toMatchObject({ code: 'not_found' });
+        await expect(getStoredFile(t.a, legacy.objectId)).rejects.toMatchObject(
+          { code: 'authorization_denied' },
+        );
+        const catalog = await readWorkbenchFileCatalog(t.a, {
+          workspaceId: t.a.workspaceId!,
+        });
+        expect(catalog.files.map((file) => file.objectId)).toEqual([
+          mine.objectId,
+        ]);
+        expect(catalog.truncated).toBe(false);
+        const personal = await readWorkbenchDeliverables(t.a, {
+          workspaceId: t.a.workspaceId!,
+        });
+        expect(personal.files.map((file) => file.objectId)).toEqual([
+          mine.objectId,
+        ]);
+        expect(personal.nextCursor).toBeNull();
+        for (const locator of [
+          { objectId: legacy.objectId },
+          { cursor: legacy.objectId },
+        ])
+          await expect(
+            readWorkbenchDeliverables(t.a, {
+              workspaceId: t.a.workspaceId!,
+              ...locator,
+            }),
+          ).rejects.toMatchObject({ code: 'not_found' });
+        expect(
+          await fixture.db`select 1 from allrice_workbench_file_policies where object_id=${legacy.objectId}`,
+        ).toHaveLength(0);
+      },
+    );
+    it('rejects retired upload sharing/reference mutations without changing legacy policy or receipts', async () => {
       const t = await setup(),
         file = await uploadWorkbenchFile(
           t.owner,
           uploadInput(t.owner),
           storage(),
-        );
-      await change(t.owner, file.objectId, 1, {
-        sharing: {
-          scope: 'departments',
-          departmentIds: t.departments.slice(0, 2),
-        },
-      });
-      for (const reader of [t.a, t.b, t.maintainer])
-        expect((await readWorkbenchFile(reader, file.objectId)).object.id).toBe(
-          file.objectId,
-        );
-      await expect(
-        readWorkbenchFile(t.excluded, file.objectId),
-      ).rejects.toMatchObject({ code: 'not_found' });
-      const catalog = await readWorkbenchFileCatalog(t.owner, {
-        workspaceId: t.owner.workspaceId!,
-        scope: 'my',
-      });
-      expect(catalog.files.map((f) => f.objectId)).toContain(file.objectId);
-      expect(catalog.files[0]?.sharing.departmentNames).toHaveLength(2);
-      await expect(
-        change(t.b, file.objectId, 2, {
-          sharing: { scope: 'departments', departmentIds: [t.departments[1]!] },
-        }),
-      ).rejects.toMatchObject({ code: 'authorization_denied' });
-      await change(t.owner, file.objectId, 2, {
-        sharing: { scope: 'company', departmentIds: [] },
-      });
-      expect(
-        (await readWorkbenchFile(t.excluded, file.objectId)).canMaintain,
-      ).toBe(false);
-      await expect(
-        change(t.maintainer, file.objectId, 3, {
-          sharing: { scope: 'personal', departmentIds: [] },
-        }),
-      ).rejects.toMatchObject({ code: 'authorization_denied' });
-    });
-    it('uses compare-and-swap and exact request receipts for concurrent sharing changes', async () => {
-      const t = await setup(),
-        file = await uploadWorkbenchFile(
-          t.owner,
-          uploadInput(t.owner),
-          storage(),
-        );
-      const requestId = randomUUID(),
-        input = { sharing: { scope: 'company', departmentIds: [] } };
-      expect(
-        (await change(t.owner, file.objectId, 1, input, requestId)).revision,
-      ).toBe(2);
-      expect(
-        (await change(t.owner, file.objectId, 1, input, requestId)).revision,
-      ).toBe(2);
-      await expect(
-        change(
-          t.owner,
-          file.objectId,
-          1,
-          { sharing: { scope: 'personal', departmentIds: [] } },
-          requestId,
         ),
-      ).rejects.toMatchObject({ code: 'request_conflict' });
-      const attempts = await Promise.allSettled([
-        change(t.owner, file.objectId, 2, {
-          sharing: { scope: 'personal', departmentIds: [] },
-        }),
-        change(t.owner, file.objectId, 2, {
-          sharing: { scope: 'departments', departmentIds: [t.departments[0]!] },
-        }),
-      ]);
-      expect(attempts.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+        requestId = randomUUID(),
+        inputDigest = `sha256:${'a'.repeat(64)}`;
+      await seedLegacySharing(file.objectId, {
+        scope: 'company',
+        departmentIds: [],
+      });
+      await fixture.db`update allrice_workbench_file_policies set revision=7 where object_id=${file.objectId}`;
+      await fixture.db`insert into allrice_workbench_file_mutations
+        (organization_id,actor_id,request_id,object_id,input_digest,result_revision)
+        values(${t.owner.organizationId},${t.owner.actor.id},${requestId},${file.objectId},${inputDigest},7)`;
+      const before =
+        await fixture.db`select id from allrice_storage_objects where organization_id=${t.owner.organizationId} order by id`;
+      const put = vi.spyOn(storage(), 'put');
+      try {
+        const attempts = await Promise.allSettled(
+          [
+            { sharing: { scope: 'personal', departmentIds: [] } },
+            { sharing: { scope: 'company', departmentIds: [] } },
+            {
+              sharing: {
+                scope: 'departments',
+                departmentIds: [t.departments[0]!],
+              },
+            },
+            { isReference: true },
+            { isReference: false },
+            { expectedRevision: 7, role: 'admin' },
+            { ownerId: t.maintainer.actor.id },
+          ].map((retired) =>
+            uploadWorkbenchFile(
+              t.owner,
+              { ...uploadInput(t.owner), requestId, ...retired },
+              storage(),
+            ),
+          ),
+        );
+        expect(
+          attempts.every(
+            (result) =>
+              result.status === 'rejected' && result.reason.name === 'ZodError',
+          ),
+        ).toBe(true);
+        expect(put).not.toHaveBeenCalled();
+      } finally {
+        put.mockRestore();
+      }
       expect(
-        attempts
-          .filter((r) => r.status === 'rejected')
-          .map((r) => (r.status === 'rejected' ? r.reason.code : null)),
-      ).toEqual(['version_conflict']);
+        await fixture.db`select id from allrice_storage_objects where organization_id=${t.owner.organizationId} order by id`,
+      ).toEqual(before);
+      expect(
+        await fixture.db`select scope,revision,reference_enabled from allrice_workbench_file_policies where object_id=${file.objectId}`,
+      ).toEqual([{ scope: 'company', revision: 7, reference_enabled: false }]);
+      expect(
+        await fixture.db`select object_id,input_digest,result_revision from allrice_workbench_file_mutations where organization_id=${t.owner.organizationId} and actor_id=${t.owner.actor.id} and request_id=${requestId}`,
+      ).toEqual([
+        {
+          object_id: file.objectId,
+          input_digest: inputDigest,
+          result_revision: 7,
+        },
+      ]);
     });
-    it('allows a read-only recipient to create a fixed task reference, then revokes that copy with original file permissions', async () => {
+    it('keeps personal exact task references and revokes new reads when the original owner loses membership', async () => {
       const t = await setup(),
         file = await uploadWorkbenchFile(
           t.owner,
-          uploadInput(t.owner, { scope: 'company', departmentIds: [] }),
+          uploadInput(t.owner),
           storage(),
         );
+      await seedLegacySharing(file.objectId, {
+        scope: 'company',
+        departmentIds: [],
+      });
+      await expect(
+        captureWorkbenchFileReference(
+          t.a,
+          t.a.workspaceId!,
+          file.objectId,
+          randomUUID(),
+          storage(),
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
       const requestId = randomUUID();
       const ref = await captureWorkbenchFileReference(
-        t.a,
-        t.a.workspaceId!,
+        t.owner,
+        t.owner.workspaceId!,
         file.objectId,
         requestId,
         storage(),
@@ -814,13 +920,16 @@ suite(
       });
       const { getContentAccess } = await import('./content-maintenance.ts');
       expect(
+        (await getContentAccess(t.owner, ref.ownership, fixture.db)).canRead,
+      ).toBe(true);
+      expect(
         (await getContentAccess(t.a, ref.ownership, fixture.db)).canRead,
       ).toBe(false);
       expect(
         (
           await captureWorkbenchFileReference(
-            t.a,
-            t.a.workspaceId!,
+            t.owner,
+            t.owner.workspaceId!,
             file.objectId,
             requestId,
             storage(),
@@ -828,8 +937,8 @@ suite(
         ).revisionId,
       ).toBe(ref.revisionId);
       const bytes = await getReferenceFile(
-        t.a,
-        t.a.workspaceId!,
+        t.owner,
+        t.owner.workspaceId!,
         ref.revisionId,
       );
       expect(bytes.object.id).not.toBe(file.objectId);
@@ -837,7 +946,7 @@ suite(
         '按已经确认的回款统计收入。',
       );
       expect(
-        (await listReferenceRevisions(t.a, t.a.workspaceId!)).some(
+        (await listReferenceRevisions(t.owner, t.owner.workspaceId!)).some(
           (r) => r.sourceId === ref.sourceId,
         ),
       ).toBe(false);
@@ -845,55 +954,98 @@ suite(
       expect(
         (
           await fixture.db.begin((tx) =>
-            readReferenceSelection(t.a, ref.revisionId, tx, true),
+            readReferenceSelection(t.owner, ref.revisionId, tx, true),
           )
         ).selection.revisionId,
       ).toBe(ref.revisionId);
-      await change(t.owner, file.objectId, 1, {
-        sharing: { scope: 'personal', departmentIds: [] },
-      });
-      await expect(getStoredFile(t.a, file.objectId)).rejects.toMatchObject({
-        code: 'authorization_denied',
-      });
+      await fixture.db`update allrice_memberships set active=false where user_id=${t.owner.actor.id}`;
+      await expect(getStoredFile(t.owner, file.objectId)).rejects.toMatchObject(
+        { code: 'authorization_denied' },
+      );
       await expect(
-        getReferenceFile(t.a, t.a.workspaceId!, ref.revisionId),
+        getReferenceFile(t.owner, t.owner.workspaceId!, ref.revisionId),
       ).rejects.toMatchObject({ code: 'not_found' });
       await expect(
         fixture.db.begin((tx) =>
-          readReferenceSelection(t.a, ref.revisionId, tx, true),
+          readReferenceSelection(t.owner, ref.revisionId, tx, true),
         ),
       ).rejects.toMatchObject({ code: 'REFERENCE_UNAVAILABLE' });
       expect(await new Response(await storage().get(bytes.object)).text()).toBe(
         '按已经确认的回款统计收入。',
       );
     });
-    it('never turns a retained copy into an independently editable file or source, even for a company maintainer', async () => {
+    it('uses the original owner rather than a legacy retained-copy creator and never exposes an editable copy', async () => {
       const t = await setup(),
         file = await uploadWorkbenchFile(
           t.owner,
-          uploadInput(t.owner, { scope: 'company', departmentIds: [] }),
+          uploadInput(t.owner),
           storage(),
         );
-      const reference = await captureWorkbenchFileReference(
-        t.maintainer,
-        t.maintainer.workspaceId!,
-        file.objectId,
-        randomUUID(),
-        storage(),
+      await seedLegacySharing(file.objectId, {
+        scope: 'company',
+        departmentIds: [],
+      });
+      // Historical recipient ownership is fixed at first INSERT. The retained
+      // copy remains immutable; its exact origin binding decides current access.
+      const original = await readWorkbenchFile(t.owner, file.objectId);
+      const bytes = Buffer.from(
+        await new Response(await storage().get(original.object)).arrayBuffer(),
       );
-      const copy = await getReferenceFile(
+      const reference = await legacyReferenceFixture(
         t.maintainer,
-        t.maintainer.workspaceId!,
+        {
+          workspaceId: t.maintainer.workspaceId,
+          requestId: randomUUID(),
+          scope: 'personal',
+          fileName: original.row.file_name,
+          mediaType: original.object.mediaType,
+          contentBase64: bytes.toString('base64'),
+        },
+        fixture.db,
+      );
+      await storage().put(
+        reference.object,
+        new Blob([new Uint8Array(reference.bytes)]).stream(),
+      );
+      await fixture.db`update allrice_storage_objects set state='ready' where id=${reference.object.id}`;
+      await fixture.db`insert into allrice_workbench_reference_bindings(source_id,origin_object_id,organization_id)
+        values(${reference.sourceId},${file.objectId},${t.owner.organizationId})`;
+      const copy = await getReferenceFile(
+        t.owner,
+        t.owner.workspaceId!,
         reference.revisionId,
       );
       await expect(
-        readWorkbenchFile(t.maintainer, copy.object.id),
+        getReferenceFile(
+          t.maintainer,
+          t.maintainer.workspaceId!,
+          reference.revisionId,
+        ),
       ).rejects.toMatchObject({ code: 'not_found' });
-      await expect(
-        change(t.maintainer, copy.object.id, 0, {
-          sharing: { scope: 'personal', departmentIds: [] },
-        }),
-      ).rejects.toMatchObject({ code: 'not_found' });
+      expect(
+        (
+          await listReferenceRevisions(
+            t.owner,
+            t.owner.workspaceId!,
+            reference.sourceId,
+          )
+        ).map((r) => r.revisionId),
+      ).toEqual([reference.revisionId]);
+      expect(
+        await listReferenceRevisions(
+          t.maintainer,
+          t.maintainer.workspaceId!,
+          reference.sourceId,
+        ),
+      ).toEqual([]);
+      for (const current of [t.owner, t.maintainer]) {
+        await expect(
+          readWorkbenchFile(current, copy.object.id),
+        ).rejects.toMatchObject({ code: 'not_found' });
+        await expect(
+          getStoredFile(current, copy.object.id),
+        ).rejects.toMatchObject({ code: 'not_found' });
+      }
       await expect(
         prepareReferenceUpload(t.owner, {
           workspaceId: t.owner.workspaceId,
@@ -905,42 +1057,119 @@ suite(
           mediaType: 'text/plain',
           contentBase64: Buffer.from('different bytes').toString('base64'),
         }),
-      ).rejects.toMatchObject({ code: 'source_unavailable' });
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
       expect(
-        (await readWorkbenchFile(t.maintainer, file.objectId)).canMaintain,
+        (await readWorkbenchFile(t.owner, file.objectId)).canMaintain,
       ).toBe(true);
+      await expect(
+        readWorkbenchFile(t.maintainer, file.objectId),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect(await new Response(await storage().get(copy.object)).text()).toBe(
+        '按已经确认的回款统计收入。',
+      );
     });
-    it('revokes prior signed URLs and rechecks membership for newly issued grants', async () => {
+    it('invalidates old recipient grants and requires the current owner identity and membership for signed reads', async () => {
       const t = await setup(),
         file = await uploadWorkbenchFile(
           t.owner,
-          uploadInput(t.owner, { scope: 'company', departmentIds: [] }),
+          uploadInput(t.owner),
           storage(),
         );
-      const grant = {
+      await seedLegacySharing(file.objectId, {
+        scope: 'company',
+        departmentIds: [],
+      });
+      const legacy = {
         objectId: file.objectId,
         subjectId: t.a.actor.id,
         operation: 'read' as const,
         expiresAt: new Date(Date.now() + 60000).toISOString(),
         nonce: randomUUID(),
       };
-      await saveStorageGrant(t.a, grant);
-      expect((await resolveStorageGrant(grant)).object.id).toBe(file.objectId);
-      await change(t.owner, file.objectId, 1, {
-        sharing: { scope: 'personal', departmentIds: [] },
+      await fixture.db`insert into allrice_storage_access_grants(nonce,object_id,subject_id,operation,expires_at)
+        values(${legacy.nonce},${legacy.objectId},${legacy.subjectId},${legacy.operation},${legacy.expiresAt})`;
+      await expect(
+        resolveStorageGrant(legacy, async () => t.a),
+      ).rejects.toMatchObject({ code: 'grant_invalid' });
+      await expect(
+        saveStorageGrant(t.a, { ...legacy, nonce: randomUUID() }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await expect(
+        saveStorageGrant(t.owner, { ...legacy, nonce: randomUUID() }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      const grant = {
+        ...legacy,
+        subjectId: t.owner.actor.id,
+        nonce: randomUUID(),
+      };
+      await saveStorageGrant(t.owner, grant);
+      const currentOwner = vi.fn(async () => t.owner);
+      expect((await resolveStorageGrant(grant, currentOwner)).object.id).toBe(
+        file.objectId,
+      );
+      expect(currentOwner).toHaveBeenCalledWith({
+        organizationId: t.owner.organizationId,
+        workspaceId: t.owner.workspaceId,
       });
-      await expect(resolveStorageGrant(grant)).rejects.toMatchObject({
-        code: 'grant_invalid',
+      await expect(
+        resolveStorageGrant(grant, async () => t.a),
+      ).rejects.toMatchObject({ code: 'grant_invalid' });
+      await expect(
+        resolveStorageGrant(grant, async () => null),
+      ).rejects.toMatchObject({ code: 'authentication_required' });
+      await fixture.db`update allrice_memberships set active=false where user_id=${t.owner.actor.id}`;
+      await expect(
+        resolveStorageGrant(grant, currentOwner),
+      ).rejects.toMatchObject({ code: 'grant_invalid' });
+      await expect(
+        saveStorageGrant(t.owner, { ...grant, nonce: randomUUID() }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+    });
+    it('does not exempt legacy memory objects from owner-only storage and grant authority', async () => {
+      const t = await setup();
+      const bytes = Buffer.from('private memory bytes');
+      const { createHash } = await import('node:crypto');
+      const prepared = await createStorageMetadata(t.owner, {
+        id: randomUUID(),
+        workspaceId: t.owner.workspaceId,
+        category: 'memory',
+        mediaType: 'text/plain',
+        sizeBytes: bytes.length,
+        checksum: `sha256:${createHash('sha256').update(bytes).digest('hex')}`,
+        visibility: 'organization',
+        immutable: true,
+        retentionUntil: null,
       });
-      await change(t.owner, file.objectId, 2, {
-        sharing: { scope: 'company', departmentIds: [] },
-      });
-      const next = { ...grant, nonce: randomUUID() };
-      await saveStorageGrant(t.a, next);
-      await fixture.db`update allrice_memberships set active=false where user_id=${t.a.actor.id}`;
-      await expect(resolveStorageGrant(next)).rejects.toMatchObject({
-        code: 'grant_invalid',
-      });
+      await storage().put(
+        prepared.object,
+        new Blob([new Uint8Array(bytes)]).stream(),
+      );
+      await markStorageReady(t.owner, prepared.object.id);
+      const grant = {
+        objectId: prepared.object.id,
+        subjectId: t.owner.actor.id,
+        operation: 'read' as const,
+        expiresAt: new Date(Date.now() + 60000).toISOString(),
+        nonce: randomUUID(),
+      };
+      await saveStorageGrant(t.owner, grant);
+      const resolved = await resolveStorageGrant(grant, async () => t.owner);
+      expect(
+        await new Response(await storage().get(resolved.object)).text(),
+      ).toBe('private memory bytes');
+      await expect(
+        getStoredFile(t.maintainer, prepared.object.id),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await expect(
+        resolveStorageGrant(grant, async () => t.maintainer),
+      ).rejects.toMatchObject({ code: 'grant_invalid' });
+      await expect(
+        saveStorageGrant(t.maintainer, {
+          ...grant,
+          subjectId: t.maintainer.actor.id,
+          nonce: randomUUID(),
+        }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
     });
     it('holds no outer transaction during snapshot IO and rejects authority withdrawn before reservation', async () => {
       const t = await setup(),
@@ -969,15 +1198,11 @@ suite(
           return typeof value === 'function' ? value.bind(target) : value;
         },
       });
-      const saving = updateWorkbenchFile(
+      const saving = captureWorkbenchFileReference(
         t.owner,
+        t.owner.workspaceId!,
         file.objectId,
-        {
-          workspaceId: t.owner.workspaceId,
-          requestId: randomUUID(),
-          expectedRevision: 1,
-          isReference: true,
-        },
+        randomUUID(),
         delayed,
       );
       await started;
@@ -992,8 +1217,11 @@ suite(
       const [policy] =
         await fixture.db`select revision,reference_enabled from allrice_workbench_file_policies where object_id=${file.objectId}`;
       expect(policy).toMatchObject({ revision: 1, reference_enabled: false });
+      expect(
+        await fixture.db`select 1 from allrice_workbench_reference_bindings where origin_object_id=${file.objectId}`,
+      ).toHaveLength(0);
     });
-    it('shares a deliverable series without exposing its private chat and retains exact old reference bytes across replacement', async () => {
+    it('keeps read-only owner series history and exact old snapshot bytes without exposing its private chat', async () => {
       const synthetic = await runtimeTaskFixture(fixture.db),
         owner = {
           ...(await authenticateSession(
@@ -1002,7 +1230,7 @@ suite(
           workspaceId: synthetic.context.workspaceId!,
         };
       await fixture.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level)
-      values (${owner.organizationId},${owner.actor.id},'Owner','company')`;
+        values (${owner.organizationId},${owner.actor.id},'Owner','company')`;
       const readerId = randomUUID();
       await fixture.db`insert into allrice_users(id,email,display_name,password_hash) values (${readerId},${readerId + '@example.test'},'Reader','not-login')`;
       await fixture.db`insert into allrice_memberships(organization_id,workspace_id,user_id,role) values (${owner.organizationId},${owner.workspaceId},${readerId},'member')`;
@@ -1041,84 +1269,110 @@ suite(
         v1 = randomUUID(),
         v2 = randomUUID();
       await fixture.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
-      values (${v1},${owner.organizationId},${owner.workspaceId},${owner.actor.id},${files[0]!},${seriesId},1,${synthetic.task.chatSessionId},'Report.txt','text')`;
+        values (${v1},${owner.organizationId},${owner.workspaceId},${owner.actor.id},${files[0]!},${seriesId},1,${synthetic.task.chatSessionId},'Report.txt','text')`;
       await fixture.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,parent_version_id,session_id,file_name,format)
-      values (${v2},${owner.organizationId},${owner.workspaceId},${owner.actor.id},${files[1]!},${seriesId},2,${v1},${synthetic.task.chatSessionId},'Report.txt','text')`;
-      await change(owner, files[0]!, 0, {
-        sharing: { scope: 'company', departmentIds: [] },
-        isReference: true,
+        values (${v2},${owner.organizationId},${owner.workspaceId},${owner.actor.id},${files[1]!},${seriesId},2,${v1},${synthetic.task.chatSessionId},'Report.txt','text')`;
+      const originalRef = await captureWorkbenchFileReference(
+        owner,
+        owner.workspaceId,
+        files[0]!,
+        randomUUID(),
+        storage(),
+      );
+      await fixture.db`insert into allrice_workbench_file_policies
+        (object_id,organization_id,workspace_id,owner_id,series_id,file_name,scope,reference_source_id,reference_enabled)
+        values (${files[0]!},${owner.organizationId},${owner.workspaceId},${owner.actor.id},${seriesId},'Report.txt','company',${originalRef.sourceId},true)`;
+      const catalog = await readWorkbenchFileCatalog(owner, {
+        workspaceId: owner.workspaceId,
       });
-      const shared = await readWorkbenchFileCatalog(reader, {
-        workspaceId: reader.workspaceId,
-      });
-      expect(shared.files).toHaveLength(1);
-      expect(shared.files[0]).toMatchObject({
+      expect(catalog.files).toHaveLength(1);
+      expect(catalog.files[0]).toMatchObject({
         objectId: files[1],
-        artifact: null,
         sessionIds: [],
+        artifact: { id: v2 },
+        reference: { revisionId: originalRef.revisionId },
       });
-      const originalRef = shared.files[0]!.reference!;
-      expect(originalRef.checksum).not.toBe(shared.files[0]!.checksum);
-      const versions = await listWorkbenchFileVersions(reader, files[1]!);
+      expect(originalRef.checksum).not.toBe(catalog.files[0]!.checksum);
+      expect(
+        (
+          await readWorkbenchFileCatalog(reader, {
+            workspaceId: reader.workspaceId,
+          })
+        ).files,
+      ).toEqual([]);
+      const versions = await listWorkbenchFileVersions(owner, files[1]!);
       expect(versions.map((v) => v.objectId)).toEqual([files[1], files[0]]);
       expect(versions[0]).not.toHaveProperty('sessionId');
+      await expect(
+        listWorkbenchFileVersions(reader, files[1]!),
+      ).rejects.toMatchObject({ code: 'not_found' });
       await expect(
         readWorkbenchFileCatalog(reader, {
           workspaceId: reader.workspaceId,
           sessionId: synthetic.task.chatSessionId,
         }),
       ).rejects.toMatchObject({ code: 'artifact_not_found' });
-      await change(owner, files[1]!, 1, { isReference: true });
+      const replacement = await captureWorkbenchFileReference(
+        owner,
+        owner.workspaceId,
+        files[1]!,
+        randomUUID(),
+        storage(),
+      );
+      await fixture.db`update allrice_workbench_file_policies set reference_source_id=${replacement.sourceId},revision=2 where object_id=${files[0]!}`;
       const latest = (
-        await readWorkbenchFileCatalog(reader, {
-          workspaceId: reader.workspaceId,
+        await readWorkbenchFileCatalog(owner, {
+          workspaceId: owner.workspaceId,
         })
       ).files[0]!;
       expect(latest.reference!.checksum).toBe(latest.checksum);
       expect(latest.reference!.sourceId).not.toBe(originalRef.sourceId);
       const old = await getReferenceFile(
-        reader,
-        reader.workspaceId,
+        owner,
+        owner.workspaceId,
         originalRef.revisionId,
       );
       expect(await new Response(await storage().get(old.object)).text()).toBe(
         'Version one original bytes',
       );
+      const newest = await getReferenceFile(
+        owner,
+        owner.workspaceId,
+        replacement.revisionId,
+      );
       expect(
-        await listReferenceRevisions(reader, reader.workspaceId),
+        await new Response(await storage().get(newest.object)).text(),
+      ).toBe('Version two changed bytes');
+      await expect(
+        getReferenceFile(reader, reader.workspaceId, originalRef.revisionId),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      expect(
+        await listReferenceRevisions(owner, owner.workspaceId),
       ).toHaveLength(1);
-      const changes = await Promise.allSettled([
-        change(owner, files[0]!, 2, {
-          sharing: { scope: 'personal', departmentIds: [] },
-        }),
-        change(owner, files[1]!, 2, {
-          sharing: { scope: 'company', departmentIds: [] },
-        }),
-      ]);
       expect(
-        changes.filter((result) => result.status === 'fulfilled'),
-      ).toHaveLength(1);
-      expect(
-        changes
-          .filter((result) => result.status === 'rejected')
-          .map((result) =>
-            result.status === 'rejected' ? result.reason.code : null,
-          ),
-      ).toEqual(['version_conflict']);
+        await fixture.db`select id from allrice_deliverable_versions where series_id=${seriesId}`,
+      ).toHaveLength(2);
       const [session] =
         await fixture.db`select visibility from allrice_chat_sessions where id=${synthetic.task.chatSessionId}`;
       expect(session?.visibility).toBe('private');
     });
-    it('keeps one canonical long-term reference and stops library inclusion when unmarked', async () => {
+    it('keeps canonical personal snapshots and legacy library flags without granting colleagues original access', async () => {
       const t = await setup(),
         file = await uploadWorkbenchFile(
           t.owner,
-          uploadInput(t.owner, { scope: 'company', departmentIds: [] }),
+          uploadInput(t.owner),
           storage(),
         );
-      await change(t.owner, file.objectId, 1, { isReference: true });
-      const catalog = await readWorkbenchFileCatalog(t.a, {
-        workspaceId: t.a.workspaceId!,
+      const ref = await captureWorkbenchFileReference(
+        t.owner,
+        t.owner.workspaceId!,
+        file.objectId,
+        randomUUID(),
+        storage(),
+      );
+      await fixture.db`update allrice_workbench_file_policies set scope='company',reference_enabled=true,reference_source_id=${ref.sourceId},revision=2 where object_id=${file.objectId}`;
+      const catalog = await readWorkbenchFileCatalog(t.owner, {
+        workspaceId: t.owner.workspaceId!,
       });
       expect(catalog.files).toHaveLength(1);
       expect(catalog.files[0]).toMatchObject({
@@ -1126,27 +1380,57 @@ suite(
         isReference: true,
         reference: { revision: 1 },
       });
-      expect(await listReferenceRevisions(t.a, t.a.workspaceId!)).toHaveLength(
-        1,
-      );
-      await change(t.owner, file.objectId, 2, { isReference: false });
+      expect(
+        (
+          await captureWorkbenchFileReference(
+            t.owner,
+            t.owner.workspaceId!,
+            file.objectId,
+            randomUUID(),
+            storage(),
+          )
+        ).revisionId,
+      ).toBe(ref.revisionId);
+      expect(
+        await fixture.db`select id from allrice_knowledge_revisions where knowledge_source_id=${ref.sourceId}`,
+      ).toHaveLength(1);
+      expect(
+        await listReferenceRevisions(t.owner, t.owner.workspaceId!),
+      ).toHaveLength(1);
       expect(await listReferenceRevisions(t.a, t.a.workspaceId!)).toHaveLength(
         0,
       );
-      expect((await readWorkbenchFile(t.a, file.objectId)).object.id).toBe(
+      expect(
+        (await readWorkbenchFileCatalog(t.a, { workspaceId: t.a.workspaceId! }))
+          .files,
+      ).toEqual([]);
+      // This models historical unmarked rows; it is not an exposed write API.
+      await fixture.db`update allrice_workbench_file_policies set reference_enabled=false where object_id=${file.objectId}`;
+      expect(
+        await listReferenceRevisions(t.owner, t.owner.workspaceId!),
+      ).toHaveLength(0);
+      expect((await readWorkbenchFile(t.owner, file.objectId)).object.id).toBe(
         file.objectId,
       );
+      expect(
+        (await getReferenceFile(t.owner, t.owner.workspaceId!, ref.revisionId))
+          .object.id,
+      ).not.toBe(file.objectId);
+      await expect(readWorkbenchFile(t.a, file.objectId)).rejects.toMatchObject(
+        { code: 'not_found' },
+      );
     });
-    it('resolves revoked memberships and archived department targets from live rows, not browser memberships', async () => {
+    it('uses current owner membership while archived legacy department targets never authorize another reader', async () => {
       const t = await setup(),
         file = await uploadWorkbenchFile(
           t.owner,
-          uploadInput(t.owner, {
-            scope: 'departments',
-            departmentIds: [t.departments[0]!],
-          }),
+          uploadInput(t.owner),
           storage(),
         );
+      await seedLegacySharing(file.objectId, {
+        scope: 'departments',
+        departmentIds: [t.departments[0]!],
+      });
       await fixture.db`update allrice_memberships set active=false where user_id=${t.a.actor.id}`;
       await expect(readWorkbenchFile(t.a, file.objectId)).rejects.toMatchObject(
         { code: 'authorization_denied' },
@@ -1155,17 +1439,102 @@ suite(
       await expect(
         readWorkbenchFile(t.maintainer, file.objectId),
       ).rejects.toMatchObject({ code: 'not_found' });
+      expect((await readWorkbenchFile(t.owner, file.objectId)).object.id).toBe(
+        file.objectId,
+      );
+      await fixture.db`update allrice_memberships set active=false where user_id=${t.owner.actor.id}`;
       await expect(
-        change(t.owner, file.objectId, 1, {
-          sharing: { scope: 'departments', departmentIds: [t.departments[0]!] },
-        }),
+        readWorkbenchFile(t.owner, file.objectId),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
-      await change(t.owner, file.objectId, 1, {
-        sharing: { scope: 'company', departmentIds: [] },
-      });
-      expect(
-        (await readWorkbenchFile(t.maintainer, file.objectId)).object.id,
-      ).toBe(file.objectId);
     });
+    it.each(['company', 'departments'] as const)(
+      'preserves new retained publication %s audience while its original stays personal',
+      async (scope) => {
+        const t = await setup(),
+          file = await uploadWorkbenchFile(
+            t.owner,
+            uploadInput(t.owner),
+            storage(),
+          );
+        const publication = await publishReference(
+          t.owner,
+          {
+            workspaceId: t.owner.workspaceId,
+            requestId: randomUUID(),
+            origin: 'file',
+            objectId: file.objectId,
+            purpose: '确认后的收入统计口径',
+            audience: {
+              scope,
+              departmentIds: scope === 'departments' ? [t.departments[0]!] : [],
+            },
+          },
+          storage(),
+        );
+        const retained = await getReferenceFile(
+          t.a,
+          t.a.workspaceId!,
+          publication.revisionId,
+        );
+        expect(retained.object.id).not.toBe(file.objectId);
+        expect(
+          await new Response(await storage().get(retained.object)).text(),
+        ).toBe('按已经确认的回款统计收入。');
+        expect(
+          (await referenceSourceAccess(t.owner, publication.sourceId)).access
+            .canMaintain,
+        ).toBe(true);
+        expect(
+          (await referenceSourceAccess(t.a, publication.sourceId)).access
+            .canMaintain,
+        ).toBe(false);
+        if (scope === 'company') {
+          expect(
+            (
+              await getReferenceFile(
+                t.maintainer,
+                t.maintainer.workspaceId!,
+                publication.revisionId,
+              )
+            ).object.id,
+          ).toBe(retained.object.id);
+          expect(
+            (await referenceSourceAccess(t.maintainer, publication.sourceId))
+              .access.canMaintain,
+          ).toBe(false);
+        } else {
+          for (const excluded of [t.b, t.maintainer])
+            await expect(
+              getReferenceFile(
+                excluded,
+                excluded.workspaceId!,
+                publication.revisionId,
+              ),
+            ).rejects.toMatchObject({ code: 'not_found' });
+        }
+        await expect(
+          readWorkbenchFile(t.a, file.objectId),
+        ).rejects.toMatchObject({ code: 'not_found' });
+        await expect(getStoredFile(t.a, file.objectId)).rejects.toMatchObject({
+          code: 'authorization_denied',
+        });
+        await expect(
+          getStoredFile(t.owner, retained.object.id),
+        ).rejects.toMatchObject({ code: 'not_found' });
+        await fixture.db`update allrice_memberships set active=false where user_id=${t.a.actor.id}`;
+        await expect(
+          getReferenceFile(t.a, t.a.workspaceId!, publication.revisionId),
+        ).rejects.toMatchObject({ code: 'not_found' });
+        expect(
+          (
+            await getReferenceFile(
+              t.owner,
+              t.owner.workspaceId!,
+              publication.revisionId,
+            )
+          ).object.id,
+        ).toBe(retained.object.id);
+      },
+    );
   },
 );

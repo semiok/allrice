@@ -112,6 +112,7 @@ export async function runtimeTaskFixture(
       metadata: {
         kind?: WorkbenchArtifact['kind'];
         provenanceKind?: WorkbenchArtifact['provenance']['kind'];
+        immutable?: boolean;
       } = {},
     ) {
       const artifactId = randomUUID(),
@@ -130,12 +131,12 @@ export async function runtimeTaskFixture(
         mediaType: 'text/plain',
         retentionUntil: null,
         deletedAt: null,
-        immutable: true,
+        immutable: metadata.immutable ?? true,
       };
       const storage = runtimeFixtureStorage(db);
       if (!storage) throw Error('Isolated fixture storage required');
       await storage.put(object, new Blob([bytes]).stream());
-      await db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,immutable) values(${objectId},${org},${workspace},${artifactOwnerId},${key},'artifacts','text/plain',${bytes.length},${digest},'ready',true)`;
+      await db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,immutable) values(${objectId},${org},${workspace},${artifactOwnerId},${key},'artifacts','text/plain',${bytes.length},${digest},'ready',${object.immutable})`;
       await db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format) values(${artifactId},${org},${workspace},${artifactOwnerId},${objectId},${randomUUID()},1,${sessionId},'evidence.txt','text')`;
       await db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest) values(${artifactId},${org},${workspace},${artifactOwnerId},${childRunId},${metadata.kind ?? 'document'},${db.json({ kind: metadata.provenanceKind ?? 'tool_result', runId: childRunId, operationId: null, stepId: null })},${randomUUID()},${digest})`;
       return { artifactId, digest };

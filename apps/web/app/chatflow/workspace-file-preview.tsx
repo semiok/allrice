@@ -1,4 +1,5 @@
 'use client';
+import { documentPreviewPresentation } from './document-preview-presentation';
 import { useEffect, useRef, useState } from 'react';
 import type {
   WorkbenchDeliverable,
@@ -408,7 +409,7 @@ export function WorkspaceFilePreview(props: {
     !!props.deliverable && !error && preview?.kind === 'pdf' && !source;
   const content = (
     <div
-      className={`${reader.content} ${nativeViewport ? reader.officeContent : ''} ${props.deliverable ? detail.deliveryPreview : ''} ${props.deliverable && nativeViewport ? detail.deliveryViewport : ''}`}
+      className={`${reader.content} ${nativeViewport ? reader.officeContent : ''} ${props.deliverable ? detail.deliveryPreview : ''} ${props.deliverable && nativeViewport ? detail.deliveryViewport : ''} ${props.deliverable ? documentPreviewPresentation(preview, source) : ''}`}
     >
       {error ? (
         <p

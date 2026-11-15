@@ -1,4 +1,5 @@
 import { assertExplicitOutputParent } from './project-output-parent.ts';
+import { resourcePrincipal } from './resource-principal.ts';
 import { assertLocalSandboxExecutionBudget } from './local-sandbox-execution-budget.ts';
 import {
   resolveBridgeSandboxNetworkGrant,
@@ -902,7 +903,9 @@ export async function readLocalPythonInput(
       objectId,
       'download',
     ),
-    file = a.companyMaterial ?? (await getStoredFile(a.context, objectId));
+    file =
+      a.companyMaterial ??
+      (await getStoredFile(resourcePrincipal(a.context), objectId));
   if (
     !a.input ||
     file.object.checksum !== a.input.checksum ||
@@ -1065,7 +1068,11 @@ export async function storeLocalPythonArtifact(input: {
         if (existing.state !== 'ready')
           throw new DataAccessError('grant_invalid');
         return {
-          file: await getStoredFile(a.context, output.objectId, tx),
+          file: await getStoredFile(
+            resourcePrincipal(a.context),
+            output.objectId,
+            tx,
+          ),
           writer: false,
         };
       }
@@ -1284,7 +1291,11 @@ export async function publishLocalPythonArtifacts(
     );
     if (!artifact)
       throw new RuntimePolicyError('local_python_result_unconfirmed');
-    const { object } = await getStoredFile(requestContext, output.objectId, db);
+    const { object } = await getStoredFile(
+      resourcePrincipal(requestContext),
+      output.objectId,
+      db,
+    );
     if (
       object.checksum !== artifact.checksum ||
       object.sizeBytes !== artifact.sizeBytes ||

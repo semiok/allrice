@@ -18,11 +18,6 @@
     sans-serif;
   -webkit-font-smoothing: antialiased;
 }
-.dialog > header p {
-  margin: 0 0 3px;
-  color: var(--ar-text-secondary);
-  font: var(--ar-font-caption);
-}
 .dialog > header h2 {
   margin: 0;
   font-size: 20px;
@@ -62,15 +57,12 @@
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  overscroll-behavior: contain;
   scrollbar-gutter: stable;
   padding: 20px 24px;
 }
-.intro {
-  margin: 0 0 20px;
+.titleDescription {
   color: var(--ar-text-secondary);
-  font-size: 13px;
-  line-height: 22px;
+  font: var(--ar-font-caption);
 }
 .persona {
   padding: 16px;

@@ -2542,7 +2542,7 @@ suite(
     // MET-210: saving an answer is only a submission; the receipt says
     // "已回答" only once the run took it, and shows a rejected one as such.
     it.each([
-      ['adopted', 'confirmed', '提问 · 1/1 已回答', 'Rice 已收到你的回答'],
+      ['adopted', 'confirmed', '提问 · 1/1 已回答', ''],
       ['pending', 'waiting', '提问 · 已提交', '等待 Rice 接收这次回答'],
       ['rejected', 'rejected', '提问 · 未被采纳', '这次回答没有被 Rice 接收'],
       [
@@ -2566,14 +2566,19 @@ suite(
           await expect
             .poll(() => receipt.getAttribute('data-state'))
             .toBe(state);
-          expect(
-            await receipt.getByText(note, { exact: true }).isVisible(),
-          ).toBe(false);
+          if (note)
+            expect(
+              await receipt.getByText(note, { exact: true }).isVisible(),
+            ).toBe(false);
           await receipt
             .getByRole('button', { name: title, exact: true })
             .click();
           // Details only appear after opening the compact receipt.
-          await receipt.getByText(note, { exact: true }).waitFor();
+          if (note) await receipt.getByText(note, { exact: true }).waitFor();
+          else
+            expect(await receipt.getByText('Rice 已收到你的回答').count()).toBe(
+              0,
+            );
           expect(await receipt.getByText(title, { exact: true }).count()).toBe(
             1,
           );
@@ -2987,8 +2992,10 @@ suite(
           .waitFor();
         answers[0]!.live = 'adopted';
         await receipt
-          .getByText('Rice 已收到你的回答', { exact: true })
+          .getByRole('button', { name: '提问 · 1/1 已回答', exact: true })
           .waitFor();
+        expect(await receipt.getAttribute('data-state')).toBe('confirmed');
+        expect(await receipt.getByText('Rice 已收到你的回答').count()).toBe(0);
         expect(f.reads.some((url) => url.includes('/interactions'))).toBe(
           false,
         );
@@ -4141,18 +4148,50 @@ suite(
         try {
           const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
           await input.fill('保留原要求 🌾');
+          if (width === 1440) await waitForDesktopSidebarLayout(f.page);
           const taskButton = f.page.getByRole('button', {
             name: '常用任务',
             exact: true,
           });
-          const taskBox = (await taskButton.boundingBox())!;
-          const addBox = (await f.page
-            .getByRole('button', { name: '添加文件', exact: true })
-            .boundingBox())!;
-          const sendBox = (await f.page
-            .getByRole('button', { name: '发送', exact: true })
-            .boundingBox())!;
-          const cardBox = (await input.locator('..').boundingBox())!;
+          const { taskBox, addBox, sendBox, cardBox } = await f.page.evaluate(
+            (nodes) => {
+              const measure = () => {
+                const rect = (node: Element | null) => {
+                  if (!node?.isConnected)
+                    throw Error('Composer geometry node is disconnected');
+                  const { x, y, width, height } = node.getBoundingClientRect();
+                  return { x, y, width, height };
+                };
+                return {
+                  taskBox: rect(nodes[0]),
+                  addBox: rect(nodes[1]),
+                  sendBox: rect(nodes[2]),
+                  cardBox: rect(nodes[3]),
+                };
+              };
+              return new Promise<ReturnType<typeof measure>>(
+                (resolve, reject) => {
+                  requestAnimationFrame(() => {
+                    try {
+                      resolve(measure());
+                    } catch (error) {
+                      reject(error);
+                    }
+                  });
+                },
+              );
+            },
+            await Promise.all([
+              taskButton.elementHandle(),
+              f.page
+                .getByRole('button', { name: '添加文件', exact: true })
+                .elementHandle(),
+              f.page
+                .getByRole('button', { name: '发送', exact: true })
+                .elementHandle(),
+              input.locator('..').elementHandle(),
+            ]),
+          );
           expect(taskBox.x).toBeGreaterThanOrEqual(cardBox.x);
           expect(taskBox.x + taskBox.width).toBeLessThanOrEqual(sendBox.x);
           expect(

@@ -189,7 +189,9 @@ const signedResponse = await jsonRequest(`/api/v1/files/${fileId}/sign`, {
   body: JSON.stringify({ lifetimeSeconds: 300 }),
 });
 const signed = await signedResponse.json();
-const downloaded = await jsonRequest(signed.url);
+const downloaded = await jsonRequest(signed.url, {
+  headers: { cookie: inviteeCookie },
+});
 if ((await downloaded.text()) !== persistedContent) {
   throw new Error('signed download content mismatch');
 }

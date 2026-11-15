@@ -37,7 +37,6 @@ import {
   hasNativeViewport,
 } from './native-document-preview';
 import { DocumentToolbar } from './document-reader';
-import { SaveArtifactReference } from './save-artifact-reference';
 import { WorkbenchFileToolbarActions } from './workbench-file-toolbar-actions';
 import { clearWorkbenchFileLink } from './workbench-file-link';
 import type {
@@ -638,6 +637,7 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
               ? (tab) => (
                   <span
                     className={moduleUi.dockTitle}
+                    data-materials-tab={tab.kind === 'materials' || undefined}
                     data-native-subagent-tab={
                       tab.kind === 'nativeSubagent' || undefined
                     }
@@ -684,6 +684,8 @@ export const ArtifactWorkbench = memo(function ArtifactWorkbench(props: Props) {
                     <span data-native-subagent-tab>{tab.title}</span>
                   ) : tab.kind === GUIDE_KIND ? (
                     '交付成果'
+                  ) : tab.kind === 'materials' ? (
+                    <span data-materials-tab>{tab.title}</span>
                   ) : (
                     tab.title
                   )
@@ -1587,23 +1589,6 @@ function ArtifactReview({
                   readOnly={readOnly}
                   onUse={onUseFileReference}
                   onTemplate={onTemplateFile}
-                  referenceAction={
-                    !toolResult &&
-                    ['document', 'plan', 'file'].includes(artifact.kind) ? (
-                      <SaveArtifactReference
-                        key={artifact.version.id}
-                        workspaceId={workspaceId}
-                        headers={tenantHeaders}
-                        versionId={artifact.version.id}
-                        fileName={artifact.version.fileName}
-                        version={artifact.version.version}
-                        readOnly={readOnly}
-                        icon
-                      />
-                    ) : (
-                      false
-                    )
-                  }
                 />
               ) : undefined
             }
@@ -1655,21 +1640,7 @@ function ArtifactReview({
                 void onReload();
               }
             }}
-          >
-            {!onUseFileReference &&
-              !toolResult &&
-              ['document', 'plan', 'file'].includes(artifact.kind) && (
-                <SaveArtifactReference
-                  key={artifact.version.id}
-                  workspaceId={workspaceId}
-                  headers={tenantHeaders}
-                  versionId={artifact.version.id}
-                  fileName={artifact.version.fileName}
-                  version={artifact.version.version}
-                  readOnly={readOnly}
-                />
-              )}
-          </DocumentToolbar>
+          />
           {!!artifact.provenance.referenceReads?.length && (
             <details className={styles.notice}>
               <summary>生成此版本时已检索的资料</summary>

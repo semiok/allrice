@@ -1,3 +1,8 @@
+import { legacyReferenceFixture } from '../../../../packages/database/src/legacy-reference.fixture.ts';
+import {
+  getWorkbenchArtifact,
+  readArtifactBytes,
+} from '../../../../packages/database/src/artifact-review.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { createRequire } from 'node:module';
@@ -253,6 +258,7 @@ suite(
       return fetch(origin + '/api/v1/references' + path, {
         ...init,
         headers: {
+          origin,
           cookie: 'fixture_session=' + token,
           'content-type': 'application/json',
         },
@@ -468,11 +474,51 @@ suite(
       }
     });
     it.each([1440, 390])(
-      'saves an exact business artifact through the dialog and reads its retained file at %ipx',
+      'removes the retired artifact save dialog while preserving an existing owner fixed revision at %ipx',
       async (width) => {
         const a = await tenantValidationFixture(f.db);
         const token = (await createSession(a.context.actor.id)).token;
         await f.db`insert into allrice_organization_people(organization_id,user_id,display_name,content_maintenance_level) values(${a.context.organizationId},${a.context.actor.id},'Publisher','company')`;
+        const ctx = (await authenticateSession(token, {
+          organizationId: a.context.organizationId,
+          workspaceId: a.context.workspaceId!,
+        }))!;
+        const original = await getWorkbenchArtifact(
+          ctx,
+          a.task.chatSessionId!,
+          a.artifact.artifactId,
+          f.db,
+        );
+        const bytes = await readArtifactBytes(
+          runtimeFixtureStorage(f.db),
+          original.object,
+        );
+        const saved = await legacyReferenceFixture(
+          ctx,
+          {
+            workspaceId: ctx.workspaceId,
+            requestId: randomUUID(),
+            scope: 'personal',
+            fileName: original.version.fileName,
+            purpose: 'Synthetic exact-version reference',
+            mediaType: original.object.mediaType,
+            contentBase64: bytes.toString('base64'),
+          },
+          f.db,
+          {
+            versionId: a.artifact.artifactId,
+            snapshot: {
+              fileName: original.version.fileName,
+              version: original.version.version,
+              checksum: original.object.checksum,
+            },
+          },
+        );
+        await runtimeFixtureStorage(f.db).put(
+          saved.object,
+          new Blob([new Uint8Array(saved.bytes)]).stream(),
+        );
+        await f.db`update allrice_storage_objects set state='ready' where id=${saved.object.id}`;
         const c = await browser.newContext({
           viewport: { width, height: 900 },
         });
@@ -489,42 +535,17 @@ suite(
               a.artifact.artifactId,
           );
           await page
-            .getByRole('button', { name: '保存为参考资料', exact: true })
-            .click();
-          const dialog = page.getByRole('dialog', {
-            name: '保存为参考资料',
-            exact: true,
-          });
-          await expect
-            .poll(() =>
-              dialog
-                .getByRole('button', { name: '保存', exact: true })
-                .isEnabled(),
-            )
-            .toBe(true);
-          expect(await dialog.getByLabel('保存范围').inputValue()).toBe(
-            'personal',
-          );
-          await dialog.getByLabel('保存范围').selectOption('company');
-          await dialog
-            .getByLabel('参考资料用途')
-            .fill('Synthetic exact-version reference');
-          const response = page.waitForResponse(
-            (r) =>
-              r.url().endsWith('/references/artifacts') &&
-              r.request().method() === 'POST',
-          );
-          await dialog
-            .getByRole('button', { name: '保存', exact: true })
-            .click();
-          const result = await response;
-          expect(result.status()).toBe(201);
-          const saved = await result.json();
-          await dialog.getByRole('status').waitFor();
-          await dialog
-            .getByRole('button', { name: '完成', exact: true })
-            .click();
-          await expect.poll(() => dialog.count()).toBe(0);
+            .getByRole('button', { name: '查看参考资料', exact: true })
+            .waitFor();
+          for (const name of ['可见范围', '设为参考资料', '保存为参考资料'])
+            expect(
+              await page.getByRole('button', { name, exact: true }).count(),
+            ).toBe(0);
+          expect(
+            await page
+              .getByRole('dialog', { name: '保存为参考资料', exact: true })
+              .count(),
+          ).toBe(0);
           await processNextReference(f.storageRoot);
           await page
             .getByRole('button', { name: '查看参考资料', exact: true })
@@ -584,14 +605,11 @@ suite(
             .getByRole('dialog')
             .getByRole('button', { name: '关闭', exact: true })
             .click();
-          await page
-            .getByRole('button', { name: '保存为参考资料', exact: true })
-            .click();
-          await dialog.getByLabel('保存范围').selectOption('company');
-          await dialog
-            .getByRole('button', { name: '保存', exact: true })
-            .click();
-          await dialog.getByRole('status').waitFor();
+          expect(
+            await page
+              .getByRole('button', { name: '保存为参考资料', exact: true })
+              .count(),
+          ).toBe(0);
           expect(
             (
               await f.db`select count(*)::int n from allrice_knowledge_revisions where source_artifact_version_id=${a.artifact.artifactId}`
@@ -603,9 +621,15 @@ suite(
       },
       30000,
     );
-    it('uploads from the drawer, indexes without a model, preserves both versions and previews/downloads exact files', async () => {
+    it('uploads a personal file and reads historical versions while shared creation, update and restore stay retired', async () => {
       const page = await pageFor();
-      await page.getByLabel('资料保存范围').selectOption('company');
+      await page.getByLabel('资料保存范围').waitFor();
+      expect(
+        await page
+          .getByLabel('资料保存范围')
+          .locator('option')
+          .allTextContents(),
+      ).toEqual(['个人']);
       await page.getByLabel('上传参考文件').setInputFiles({
         name: '口径.txt',
         mimeType: 'text/plain',
@@ -617,32 +641,65 @@ suite(
         .waitFor();
       expect(await processNextReference(f.storageRoot)).toBe(true);
       await page.getByRole('button', { name: '刷新', exact: true }).click();
-      await page.getByText('公司 · v1 · 处理完成', { exact: true }).waitFor();
+      await page.getByText('个人 · v1 · 处理完成', { exact: true }).waitFor();
       await page.getByRole('button', { name: '口径.txt', exact: true }).click();
       await page
         .getByText('已确认回款为 1000 元。', { exact: false })
         .first()
         .waitFor();
       const one = (await references()).find((r) => r.fileName === '口径.txt')!;
-      const downloaded = await api(
+      const path =
         '/revisions/' +
-          one.revisionId +
-          '/download?workspaceId=' +
-          reader.workspaceId,
-        readerToken,
+        one.revisionId +
+        '/download?workspaceId=' +
+        owner.workspaceId;
+      const own = await api(path);
+      expect(own.status).toBe(200);
+      expect(await own.text()).toBe('已确认回款为 1000 元。');
+      expect((await api(path, readerToken)).status).toBe(404);
+      expect(
+        await page
+          .getByRole('button', { name: '更新文件', exact: true })
+          .count(),
+      ).toBe(0);
+      const update = {
+        workspaceId: owner.workspaceId,
+        requestId: randomUUID(),
+        sourceId: one.sourceId,
+        expectedRevision: 1,
+        scope: 'personal',
+        fileName: '口径.txt',
+        mediaType: 'text/plain',
+        contentBase64: Buffer.from('已确认回款为 1200 元。').toString('base64'),
+      };
+      expect(
+        (
+          await api('', ownerToken, {
+            method: 'POST',
+            body: JSON.stringify(update),
+          })
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await api('', ownerToken, {
+            method: 'POST',
+            body: JSON.stringify({
+              ...update,
+              requestId: randomUUID(),
+              sourceId: undefined,
+              expectedRevision: undefined,
+              scope: 'company',
+            }),
+          })
+        ).status,
+      ).toBe(403);
+      const historical = await legacyReferenceFixture(owner, update, f.db);
+      await runtimeFixtureStorage(f.db).put(
+        historical.object,
+        new Blob([new Uint8Array(historical.bytes)]).stream(),
       );
-      expect(downloaded.status).toBe(200);
-      expect(await downloaded.text()).toBe('已确认回款为 1000 元。');
-      await page.getByRole('button', { name: '更新文件', exact: true }).click();
-      await page.getByLabel('上传参考文件').setInputFiles({
-        name: '口径.txt',
-        mimeType: 'text/plain',
-        buffer: Buffer.from('已确认回款为 1200 元。'),
-      });
-      await page.getByRole('button', { name: '保存资料', exact: true }).click();
-      await page
-        .getByText('公司 · v2 · 已保存 · 等待处理', { exact: true })
-        .waitFor();
+      await f.db`update allrice_storage_objects set state='ready' where id=${historical.object.id}`;
       await processNextReference(f.storageRoot);
       await page.getByRole('button', { name: '刷新', exact: true }).click();
       await page.getByRole('button', { name: '口径.txt', exact: true }).click();
@@ -659,6 +716,42 @@ suite(
       expect(
         history.references.map((r: ReferenceRevision) => r.revision),
       ).toEqual([2, 1]);
+      expect(
+        await page
+          .getByRole('button', { name: '更新文件', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(
+        (
+          await api('/' + one.sourceId, ownerToken, {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: owner.workspaceId,
+              requestId: randomUUID(),
+              expectedRevision: 2,
+              action: 'archive',
+            }),
+          })
+        ).status,
+      ).toBe(200);
+      await page.getByRole('button', { name: '刷新', exact: true }).click();
+      await page.getByText('个人 · v2 · 已停用', { exact: true }).waitFor();
+      expect(
+        await page.getByRole('button', { name: '恢复', exact: true }).count(),
+      ).toBe(0);
+      expect(
+        (
+          await api('/' + one.sourceId, ownerToken, {
+            method: 'POST',
+            body: JSON.stringify({
+              workspaceId: owner.workspaceId,
+              requestId: randomUUID(),
+              expectedRevision: 2,
+              action: 'restore',
+            }),
+          })
+        ).status,
+      ).toBe(409);
       expect(
         (
           await f.db`select count(*)::int n from allrice_runs where organization_id=${owner.organizationId}`
@@ -870,25 +963,30 @@ suite(
       await mobile.context().close();
     });
     it('rechecks authorization after preview IO and rejects an already loaded version after login revocation', async () => {
-      const file = (await references()).find((r) => r.fileName === '口径.txt')!;
+      const file = await postFile(
+        '登录撤销.txt',
+        'NO_BYTES_AFTER_SESSION_REVOKE',
+      );
       const storage = runtimeFixtureStorage(f.db),
         original = storage.get.bind(storage);
       const read = vi
         .spyOn(storage, 'get')
         .mockImplementationOnce(async (object) => {
           const stream = await original(object);
-          await f.db`update allrice_sessions set revoked_at=clock_timestamp() where id=${reader.sessionId}`;
+          await f.db`update allrice_sessions set revoked_at=clock_timestamp() where id=${owner.sessionId}`;
           return stream;
         });
       const response = await api(
         '/revisions/' +
           file.revisionId +
           '/preview?workspaceId=' +
-          reader.workspaceId,
-        readerToken,
+          owner.workspaceId,
+        ownerToken,
       );
       expect(response.status).toBe(404);
-      expect(await response.text()).not.toContain('1200');
+      expect(await response.text()).not.toContain(
+        'NO_BYTES_AFTER_SESSION_REVOKE',
+      );
       read.mockRestore();
       expect(
         (
@@ -896,8 +994,8 @@ suite(
             '/revisions/' +
               file.revisionId +
               '/download?workspaceId=' +
-              reader.workspaceId,
-            readerToken,
+              owner.workspaceId,
+            ownerToken,
           )
         ).status,
       ).toBe(401);

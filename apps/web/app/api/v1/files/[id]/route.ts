@@ -26,7 +26,9 @@ export async function GET(
       objectId: id,
       operation: 'read',
     });
-    const file = await resolveStorageGrant(grant);
+    const file = await resolveStorageGrant(grant, (target) =>
+      getRequestContext(request, target),
+    );
     return new Response(await getStorageAdapter().get(file.object), {
       headers: {
         'cache-control': 'private, no-store',

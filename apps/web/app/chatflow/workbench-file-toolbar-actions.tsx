@@ -3,7 +3,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import {
   IconContextInjectionOutlineRegular,
-  IconSettingsOutlineRegular,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
@@ -11,8 +10,6 @@ import {
   WorkbenchFileActionsCatalogSchema,
   type WorkbenchFileActionsCatalog,
 } from '../../lib/chatflow/workbench-file-actions';
-import { FileSettings } from './workbench-files-panel';
-import { WorkbenchFileIcon } from './workbench-file-icon';
 import {
   useWorkbenchFileReference,
   type WorkbenchFileReferenceProps,
@@ -23,21 +20,18 @@ export function WorkbenchFileToolbarActions(
   props: WorkbenchFileReferenceProps & {
     objectId: string;
     fileName: string;
-    referenceAction?: ReactNode;
   },
 ) {
   const [catalog, setCatalog] = useState<WorkbenchFileActionsCatalog | null>(
     null,
   );
   const [revision, setRevision] = useState(0);
-  const [editor, setEditor] = useState<'sharing' | 'reference' | null>(null);
   const reference = useWorkbenchFileReference(props);
   const file = catalog?.files.find((f) => f.objectId === props.objectId);
   useEffect(() => {
     if (!props.active) return;
     const abort = new AbortController();
     setCatalog(null);
-    setEditor(null);
     const query = new URLSearchParams({
       workspaceId: props.workspaceId,
       scope: 'all',
@@ -69,7 +63,7 @@ export function WorkbenchFileToolbarActions(
       window.removeEventListener('allrice:workbench-files-changed', changed);
   }, []);
   if (!props.active) return null;
-  if (!file || !catalog) return <>{props.referenceAction}</>;
+  if (!file || !catalog) return null;
   const actionButton = (
     label: string,
     icon: ReactNode,
@@ -99,23 +93,6 @@ export function WorkbenchFileToolbarActions(
           () => void reference.useFile(file),
           !!props.readOnly || reference.using !== null,
         )}
-      {props.referenceAction ??
-        ((file.canMaintain || file.isReference) &&
-          actionButton(
-            file.isReference ? '已设为参考资料' : '设为参考资料',
-            <WorkbenchFileIcon
-              kind="reference"
-              className={reader.opticalIcon}
-            />,
-            () => setEditor('reference'),
-            file.isReference || !file.canMaintain,
-          ))}
-      {actionButton(
-        '可见范围',
-        <IconSettingsOutlineRegular size={20} className={reader.opticalIcon} />,
-        () => setEditor('sharing'),
-        !file.canMaintain,
-      )}
       {(reference.error || reference.notice) && (
         <span
           className={reader.actionNotice}
@@ -131,21 +108,6 @@ export function WorkbenchFileToolbarActions(
             取消等待
           </button>
         </span>
-      )}
-      {editor && (
-        <FileSettings
-          key={file.objectId + '/' + file.revision + '/' + editor}
-          file={file}
-          mode={editor}
-          options={catalog.options}
-          workspaceId={props.workspaceId}
-          headers={props.headers}
-          onClose={() => setEditor(null)}
-          onSaved={() => {
-            setEditor(null);
-            window.dispatchEvent(new Event('allrice:workbench-files-changed'));
-          }}
-        />
       )}
     </>
   );
