@@ -27,15 +27,20 @@
   text-align: center;
   box-shadow: var(--dsw-shadow-lv2);
 }
-.back {
+.panel .back {
+  display: flex;
+  align-items: center;
+  gap: 3px;
   flex: none;
   align-self: flex-start;
-  margin: 12px 20px 4px;
-  padding: 4px 0;
+  margin: 12px 20px 16px;
+  padding: 0;
   border: 0;
+  border-radius: 0;
   color: var(--dsw-alias-label-secondary);
   background: transparent;
   font: inherit;
+  font-size: 12px;
   cursor: pointer;
 }
 .tools {
@@ -108,20 +113,22 @@
 .row {
   display: flex;
   align-items: center;
-  gap: 4px;
-  border-radius: 8px;
+  gap: 10px;
+  padding: 13px 0;
+  border-bottom: 1px solid light-dark(#0000000a, #ffffff0d);
 }
 .row:hover {
   background: var(--dsw-alias-interactive-bg-hover);
 }
-.open {
+.panel .open {
   display: flex;
   align-items: center;
   flex: 1;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
-  padding: 12px 4px;
+  padding: 0;
   border: 0;
+  border-radius: 0;
   background: transparent;
   color: inherit;
   text-align: left;
@@ -191,12 +198,23 @@
   flex-wrap: wrap;
   gap: 8px;
 }
-.failure span {
+.failure > span {
   flex: 1;
+  min-width: 0;
 }
-.failure button {
+.panel .failure button {
   flex: none;
+  color: inherit;
   font-size: 12px;
+  white-space: nowrap;
+}
+@media (max-width: 700px) {
+  .panel .failure {
+    font-size: 12px;
+  }
+  .panel .failure button {
+    padding: 6px 9px;
+  }
 }
 .management {
   padding-top: 16px;

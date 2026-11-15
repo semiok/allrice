@@ -9,7 +9,7 @@ import styles from './Dialog.module.css';
 interface DshDialogProps {
   ariaLabel: string;
   eyebrow?: string;
-  title: string;
+  title: ReactNode;
   children: ReactNode;
   onClose: () => void;
   onBack?: () => void;

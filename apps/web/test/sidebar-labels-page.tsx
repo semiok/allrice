@@ -57,6 +57,12 @@ const sessions = [
   session('budget', '核对十月预算', 26),
   session('notes', '会议纪要', 12),
 ];
+if (params.has('long-title')) {
+  sessions[0]!.title =
+    '整理本周销售周报与重点客户跟进计划：核对各区域营收、预算和待办事项，并生成下周行动建议';
+  sessions[1]!.title =
+    'QuarterlyRevenueAndCustomerFollowUpReport_2026_11_AllRegions_FinalReview_NoSpaces';
+}
 const workspace: Workspace = {
   viewerId: 'viewer',
   organizationId: 'org',

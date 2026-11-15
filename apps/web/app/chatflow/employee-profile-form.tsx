@@ -283,11 +283,6 @@ export function EmployeeProfileForm({
       }}
     >
       <ProfileFields mode={mode} disabled={locked}>
-        {mode === 'create' && (
-          <p className={createCss.intro}>
-            一个员工由人设、技能、工作场景、插件、记忆五部分组成。现在先定人设，其他四项创建后在“详情”里随时添加。
-          </p>
-        )}
         <div className={mode === 'create' ? createCss.persona : undefined}>
           {mode === 'create' && (
             <div className={createCss.heading}>

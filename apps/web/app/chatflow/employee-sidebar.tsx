@@ -26,6 +26,7 @@ import {
   readEmployeeExpansion,
 } from './employee-navigation';
 import css from './employee-sidebar.module.css';
+import workspaceCss from './dsh-upstream/archive/WorkspaceBrowser.module.css';
 import {
   employeeChoice,
   employeeChoiceProfile,
@@ -401,7 +402,7 @@ export function EmployeeSidebar({
               <div
                 role="group"
                 aria-label={`${group.label}的会话`}
-                className={css.sessions}
+                className={`${workspaceCss.flatList} ${css.sessions}`}
               >
                 {!activeId && pendingEmployeeAssignmentId === group.key && (
                   <div

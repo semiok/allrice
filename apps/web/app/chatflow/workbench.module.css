@@ -46,7 +46,6 @@
 .body {
   min-height: 0;
   overflow: auto;
-  overscroll-behavior: contain;
   padding: 14px 16px;
   flex: 1;
 }
@@ -289,9 +288,13 @@
   min-height: 240px;
   min-width: 0;
   height: min(70vh, 800px);
+}
+.documentPages,
+.previewCanvas {
   background: var(--dsw-static-neutral-100, #f0f0f0);
 }
-:global(body[data-ds-dark-theme]) .documentPages {
+:global(body[data-ds-dark-theme]) .documentPages,
+:global(body[data-ds-dark-theme]) .previewCanvas {
   background: var(--dsw-static-neutral-900, #1f1f1f);
 }
 .documentCanvas {
@@ -299,17 +302,76 @@
   min-height: 100%;
   min-width: 100%;
   width: 100%;
-  padding: 24px;
   display: flex;
   flex-direction: column;
   gap: 24px;
 }
-.documentPaper {
+.documentCanvas,
+.previewMarkdown.previewMarkdown,
+.previewSpreadsheet > div {
+  padding: 24px;
+}
+.previewImage > div {
+  padding-inline: 12px;
+}
+.previewImage [data-image-preview] {
+  padding-block: 24px;
+}
+.documentPaper,
+.previewMarkdown > section {
   flex: none;
   margin-inline: auto;
+}
+.documentPaper,
+.previewMarkdown > section,
+.previewSpreadsheet > div > [data-excel-preview],
+.previewImage [data-document-zoom-surface] {
   background: #fff;
   box-shadow: 0 1px 6px rgb(0 0 0 / 12%);
   outline: 1px solid rgb(0 0 0 / 8%);
+}
+.previewMarkdown {
+  composes: documentCanvas;
+  height: auto;
+}
+.previewMarkdown > section {
+  width: 100%;
+  max-width: 760px;
+  padding: 28px 36px;
+  color: #20242b;
+  color-scheme: light;
+  --dsw-alias-label-primary: #20242b;
+  --dsw-alias-label-secondary: #606873;
+  --dsw-alias-label-tertiary: #7c8188;
+  --dsw-alias-bg-base: #fff;
+  --dsw-alias-border-l2: #ddd;
+  --dsw-alias-markdown-inline-code: var(--dsw-static-neutral-bluish-100);
+  --dsw-alias-markdown-code-block: var(--dsw-static-neutral-bluish-50);
+  --dsw-alias-markdown-code-block-banner: var(--dsw-static-neutral-bluish-50);
+}
+.previewSpreadsheet > div > [data-excel-preview] {
+  color: #20242b;
+}
+.previewMarkdown > section h1 {
+  margin-top: 0;
+}
+.previewImage [data-document-zoom-surface] img {
+  border-radius: 0;
+}
+@media (max-width: 600px) {
+  .previewMarkdown.previewMarkdown,
+  .previewSpreadsheet > div {
+    padding: 16px;
+  }
+  .previewImage > div {
+    padding-inline: 4px;
+  }
+  .previewImage [data-image-preview] {
+    padding-block: 16px;
+  }
+  .previewMarkdown > section {
+    padding: 22px 20px;
+  }
 }
 .deliveryActions.deliveryActions {
   display: inline-flex;
@@ -487,6 +549,36 @@
 }
 .nativeDock :global([data-dockkit-strip]) :global([role='tab']) {
   padding: 0 8px;
+}
+.nativeDock :global([data-dockkit-strip-tabs]:has([data-materials-tab])) {
+  height: 32px;
+}
+.nativeDock
+  :global([data-dockkit-strip] [role='tab']:has([data-materials-tab])) {
+  box-sizing: border-box;
+  flex: none;
+  min-width: max-content;
+  max-width: none;
+  height: 32px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.panel.nativeDock
+  :global(
+    [data-dockkit-strip] [data-dockkit-tab-title]:has([data-materials-tab])
+  ) {
+  flex: none;
+  overflow: visible;
+  padding-right: 22px;
+  mask-image: none;
+}
+.nativeDock
+  :global([role='tab']:has([data-materials-tab]) [data-dockkit-tab-close]) {
+  width: 22px;
+  height: 22px;
+  top: 5px;
+  right: 5px;
 }
 .nativeDock :global([data-dockkit-strip-tabs]:has([data-native-subagent-tab])),
 .nativeDock :global([role='tab']:has([data-native-subagent-tab])) {

@@ -1,4 +1,5 @@
 'use client';
+import { documentPreviewPresentation } from './document-preview-presentation';
 import { useEffect, useState, type ReactNode } from 'react';
 import {
   parseArtifactPreview,
@@ -58,7 +59,7 @@ export function ReferenceSnapshotPreview(props: {
   const pdfFooter = !!props.material && preview?.kind === 'pdf' && !source;
   const content = (
     <div
-      className={`${css.content} ${nativeViewport ? css.officeContent : ''} ${props.material ? detail.deliveryPreview : ''} ${props.material && nativeViewport ? detail.deliveryViewport : ''}`}
+      className={`${css.content} ${nativeViewport ? css.officeContent : ''} ${props.material ? detail.deliveryPreview : ''} ${props.material && nativeViewport ? detail.deliveryViewport : ''} ${props.material ? documentPreviewPresentation(preview, source) : ''}`}
     >
       {error && !props.material ? (
         <p role="alert">{error}</p>
