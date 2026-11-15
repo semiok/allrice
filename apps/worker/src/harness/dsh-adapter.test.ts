@@ -3469,6 +3469,139 @@ describe('DshHarnessAdapter', () => {
     },
   );
 
+  it.each([
+    [
+      'workspace_reference_read_image',
+      'REFERENCE_READ_UNSUPPORTED',
+      'image_route',
+    ],
+    [
+      'workspace_reference_archive_list',
+      'REFERENCE_READ_LIMIT',
+      'archive_entries',
+    ],
+    [
+      'workspace_reference_archive_read',
+      'REFERENCE_READ_INVALID',
+      'archive_crc',
+    ],
+    [
+      'workspace_reference_archive_read',
+      'REFERENCE_READ_TIMEOUT',
+      'operation_budget',
+    ],
+  ])(
+    'projects the confirmed %s %s failure for the existing display ledger',
+    async (name, code, reason) => {
+      const failure = {
+        code,
+        reason,
+        message: '当前资料无法读取，请按提示处理。',
+        retryable: code === 'REFERENCE_READ_TIMEOUT',
+      };
+      const events: HarnessEvent[] = [];
+      await createAdapter().execute(
+        executionInput({
+          prompt:
+            'native-reference-failure:' +
+            JSON.stringify({
+              name,
+              nativeCode: code,
+              isError: true,
+              text: 'Error: ' + JSON.stringify(failure),
+            }),
+          events,
+        }),
+      );
+      expect(
+        events.find((event) => event.type === 'tool.failed'),
+      ).toMatchObject({
+        toolCallId: 'reference-failure-1',
+        summary: failure.message,
+        sourcePayload: { status: 'failed', referenceReadError: failure },
+      });
+      expect(JSON.stringify(events)).not.toContain(
+        'private-reference-arguments',
+      );
+    },
+  );
+
+  it.each(['REFERENCE_UNAVAILABLE', 'ECONNRESET'])(
+    'retains %s but never projects private source or infrastructure details',
+    async (code) => {
+      const events: HarnessEvent[] = [];
+      await createAdapter().execute(
+        executionInput({
+          prompt:
+            'native-reference-failure:' +
+            JSON.stringify({
+              name: 'workspace_reference_archive_read',
+              nativeCode: code,
+              isError: true,
+              text:
+                'Error: ' +
+                JSON.stringify({
+                  code,
+                  message: 'private-source-path-and-token',
+                  retryable: code === 'ECONNRESET',
+                }),
+            }),
+          events,
+        }),
+      );
+      const event = events.find((event) => event.type === 'tool.failed')!;
+      expect(event.sourcePayload?.referenceReadError).toMatchObject({
+        code,
+        retryable: code === 'ECONNRESET',
+      });
+      expect(JSON.stringify(events)).not.toContain(
+        'private-source-path-and-token',
+      );
+      expect(event.sourcePayload?.referenceReadError).not.toHaveProperty(
+        'reason',
+      );
+    },
+  );
+
+  it.each(['success', 'other-tool', 'wrong-code', 'malformed', 'extra-fields'])(
+    'does not manufacture a reference failure from %s',
+    async (kind) => {
+      const failure = {
+        code: 'REFERENCE_READ_UNSUPPORTED',
+        reason: 'image_route',
+        message: 'private-unconfirmed-result',
+        retryable: false,
+        ...(kind === 'extra-fields' ? { path: 'private-path' } : {}),
+      };
+      const events: HarnessEvent[] = [];
+      await createAdapter().execute(
+        executionInput({
+          prompt:
+            'native-reference-failure:' +
+            JSON.stringify({
+              name:
+                kind === 'other-tool'
+                  ? 'local_fs_list'
+                  : 'workspace_reference_read_image',
+              nativeCode: kind === 'wrong-code' ? 'OTHER_ERROR' : failure.code,
+              isError: kind !== 'success',
+              text:
+                kind === 'malformed'
+                  ? 'Error: private-unconfirmed-result'
+                  : 'Error: ' + JSON.stringify(failure),
+            }),
+          events,
+        }),
+      );
+      expect(
+        events.every((event) => !event.sourcePayload?.referenceReadError),
+      ).toBe(true);
+      expect(JSON.stringify(events)).not.toContain(
+        'private-unconfirmed-result',
+      );
+    },
+  );
+
   it('routes native local tools through the active AllRice Tool Broker', async () => {
     const adapter = createAdapter();
     const events: HarnessEvent[] = [];

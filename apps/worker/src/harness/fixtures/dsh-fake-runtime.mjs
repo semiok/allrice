@@ -611,6 +611,33 @@ lines.on('line', (line) => {
       },
     });
     text = 'skill task complete';
+  } else if (prompt.startsWith('native-reference-failure:')) {
+    const scenario = JSON.parse(
+      prompt.slice('native-reference-failure:'.length),
+    );
+    event(sessionId, 'tool/call', {
+      turn,
+      step: 1,
+      callId: 'reference-failure-1',
+      name: scenario.name,
+      arguments: JSON.stringify({ secret: 'private-reference-arguments' }),
+    });
+    event(sessionId, 'tool/result', {
+      turn,
+      step: 1,
+      error: { name: 'HarnessError', code: scenario.nativeCode },
+      message: {
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'reference-failure-1',
+            isError: scenario.isError,
+            content: [{ type: 'text', text: scenario.text }],
+          },
+        ],
+      },
+    });
+    text = 'reference-failure-finished';
   } else if (prompt.includes('native-result-outcome:')) {
     const outcome = prompt.match(/native-result-outcome:([a-z-]+)/)?.[1];
     reasoning(sessionId, turn, 0);

@@ -78,6 +78,7 @@ import {
   textBlocks,
   type DshSourceMetadata,
   visibleModelText,
+  referenceReadFailure,
 } from './dsh/event-projector.js';
 import {
   DshRuntimePool,
@@ -2147,6 +2148,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
         // Keep legacy event errors, but never infer status from result text or
         // truthy strings and never copy raw arguments/results into the stream.
         const failed = Boolean(data.error) || firstBlock?.isError === true;
+        const referenceReadError = failed
+          ? referenceReadFailure(name, data)
+          : null;
         const parkedQuestion =
           failed && parkingQuestion && name === 'ask_user_question';
         await input.onNative({
@@ -2166,13 +2170,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
                   ? '搜索失败'
                   : '搜索完成'
                 : failed
-                  ? nativeToolFailureSummary(firstBlock?.content)
+                  ? (referenceReadError?.message.slice(0, 1000) ??
+                    nativeToolFailureSummary(firstBlock?.content))
                   : '工具执行完成',
           ...source,
           sourcePayload: {
             ...source.sourcePayload,
             presentation: isDshSearchTool(name) ? 'search' : 'tool',
             status: failed ? 'failed' : 'completed',
+            ...(referenceReadError ? { referenceReadError } : {}),
             ...(parkedQuestion ? { questionWait: true } : {}),
             ...(active?.query ? { query: active.query } : {}),
             ...(skillName

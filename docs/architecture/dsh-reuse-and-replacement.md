@@ -22,6 +22,8 @@
 
 v1.8 extends `allrice-reference-read-v1` with `workspace_reference_read_image`. It reuses public `llm.resolveModelInfo`, the calling agent/session route, `attachments.saveImages` and native image ContentBlocks. Private Worker RPC binds the original call to the native store; model input cannot supply identity, host paths or attachments. Current publication authority and lease are checked again after persistence. Server-inspected immutable format facts qualify new publications without a text index; selection alone creates no read receipt. Unknown old formats stay in metadata search and can be verified by an exact image read. Approved SaaS differences are static-format/capacity gates, source versus normalized checksums, and V2 call receipts. Existing text receipts and frozen grants remain intact; new ordinary Runs gain the image tool through the existing storage reader rule. MET-225 should extend this existing row with these v1.8 seams.
 
+MET-247 v1.8 失败展示沿上述公开原生工具结果及现有单向显示账本：仅在活跃 R4 工具的 `isError`、原生结构化 code 和严格 Broker 错误相符时，将 `referenceReadError`（原 code、可选 reason、message、retryable）交给 `sourcePayload`，由既有持久化和 ChatFlow `sourceEvent.payload` 传给 Web。`REFERENCE_UNAVAILABLE` 只投影既有脱敏说明，不附来源信息；基础设施错误保留原 code/retryable，原始细节不进入前端。工具参数、一般结果正文及其他工具错误不变，没有新状态或二次授权；升级核对 rc.2 公开 `toolErrorResult` 的文本封装及 `tool/result` 的错误 code。
+
 ## MET195：原生运行关闭观察
 
 `allrice-observed-native-close-v1` 继续复用固定 `0.2.1-rc.2` 的公开 SDK shutdown、根 Context dispose 与 JSON-RPC transport flush。AllRice wrapper 逐项记录实际返回结果，最终响应排空失败使自身非零退出；Worker 等待原有子进程的 child close/stdio 关闭，并把原 owner、包、boot 与关闭观察写入不可变持久记录。物理退出、语义关闭确认和持久回执分别判断，缺失或失败保留 unknown/unconfirmed，不把历史补成成功，也不重放业务任务。

@@ -4,7 +4,13 @@ import { randomUUID } from 'node:crypto';
 import { readFile, writeFile, symlink } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { ReferenceReadsSchema } from '@allrice/contracts';
+import { HarnessEventSchema, ReferenceReadsSchema } from '@allrice/contracts';
+import { appendJobEvent, listRunEvents } from '@allrice/database';
+import {
+  referenceReadFailure,
+  sourceMetadata,
+} from '../../src/harness/dsh/event-projector.js';
+import { normalizeHarnessRunEvent } from '../../src/harness/runtime-contract.js';
 import * as database from '../../../../packages/database/src/core/client.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -99,6 +105,21 @@ suite('R4b real native directory/text/image results and cold history', () => {
     ).toEqual([]);
     let directory: { entries: { entryId: string; path: string }[] };
     const model = await p24Fixture(async (request, index) => {
+      if (index === 6)
+        return {
+          nativeTool: {
+            name: 'workspace_reference_archive_read',
+            arguments: {
+              ...pin,
+              entryId: directory.entries[0]!.entryId,
+              as: 'text',
+            },
+          },
+        };
+      if (index === 7)
+        expect(JSON.stringify(request.messages)).toContain(
+          'REFERENCE_UNAVAILABLE',
+        );
       if (index === 1) {
         expect(JSON.stringify(request.messages)).not.toContain('image_url');
         return {
@@ -322,6 +343,59 @@ suite('R4b real native directory/text/image results and cold history', () => {
       expect(JSON.stringify(model.requests[4]!.messages)).toContain(
         attachment.name,
       );
+      await restored.prompt(sessionId, '重新读取刚才的资料。');
+      await restored.wait(sessionId);
+      expect(model.requests).toHaveLength(7);
+      expect(calls).toHaveLength(4);
+      const denied = notices
+        .filter((n) => n.method === 'session.event')
+        .map((n) => n.params.event as Record<string, unknown>)
+        .findLast((event) => event.type === 'tool/result')!;
+      const failure = referenceReadFailure(
+        'workspace.reference.archive_read',
+        denied.data as Record<string, unknown>,
+      );
+      expect(failure).toEqual({
+        code: 'REFERENCE_UNAVAILABLE',
+        retryable: false,
+        message: '所选资料尚未就绪、已撤回或访问权限已变化，请重新选择资料。',
+      });
+      const event = HarnessEventSchema.parse({
+        type: 'tool.failed',
+        schemaVersion: 1,
+        harness: 'dsh',
+        generation: 0,
+        attempt: 1,
+        order: 1,
+        threadId: sessionId,
+        turnId: null,
+        sessionId: run.scope.sessionId,
+        messageId: null,
+        toolCallId: calls[3],
+        name: 'workspace.reference.archive_read',
+        label: 'workspace.reference.archive_read',
+        source: 'harness',
+        summary: failure!.message,
+        ...sourceMetadata(denied),
+        sourcePayload: { status: 'failed', referenceReadError: failure },
+      });
+      await appendJobEvent({
+        ...run.worker,
+        ...normalizeHarnessRunEvent(event),
+      });
+      const storedEvents = await listRunEvents(
+        x.context,
+        x.context.workspaceId!,
+        run.scope.runId,
+      );
+      expect(
+        storedEvents.findLast((event) => event.type === 'tool.failed')?.payload,
+      ).toMatchObject({
+        toolCallId: calls[3],
+        nativePayload: { referenceReadError: failure },
+      });
+      expect(JSON.stringify(failure)).not.toContain(saved.sourceId);
+      expect(JSON.stringify(failure)).not.toContain(imagePath);
       await restored.endRun(sessionId);
       const [after] =
         await f.db`select reference_reads from allrice_employee_runs where run_id=${run.scope.runId}`;
