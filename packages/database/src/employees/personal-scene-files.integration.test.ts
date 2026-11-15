@@ -697,14 +697,48 @@ suite(
         (await getPersonalSceneSkill(s.owner, s.instance.id, original.scene.id))
           .content,
       ).toBe(original.procedure.body);
-      const current = await install(s, file('2.0.0', original.scene.id));
+      // Keep the same historical procedure pin/location in both revisions.
+      // The legal knowledge change passes the separate method-retirement gate,
+      // so restore reaches the candidate package validation under test.
+      const dependency = await knowledge(s);
+      const [row] =
+        await f.db`select manifest from allrice_employee_content_revisions where id=${old.active!.id}`;
+      const manifest = structuredClone(row!.manifest);
+      manifest.scenes[0].references.push(dependency.ref);
+      const current = await seedHistoricalEmployeeContent(
+        f.db,
+        s.owner,
+        {
+          workspaceId: s.workspaceId,
+          setId,
+          ownership: {
+            scope: 'personal',
+            organizationId: s.owner.organizationId,
+            ownerId: s.owner.actor.id,
+          },
+          target: { kind: 'instance', instanceId: s.instance.id },
+          requestId: randomUUID(),
+          expectedRevision: old.revision,
+          operation: 'save_draft',
+          changeSummary: 'Synthetic later historical knowledge-only change',
+          manifest,
+          textEdits: [],
+        },
+        { active: true },
+      );
+      const currentRef = personalSceneContentRef({
+        setId,
+        revisionId: current.active!.id,
+        sceneId: original.scene.id,
+        sourceRevisionId,
+      });
       const before = await snapshot(s);
       await expect(
         restorePersonalSceneFile(s.owner, s.instance.id, {
           workspaceId: s.workspaceId,
           requestId: randomUUID(),
-          expectedRevision: current.receipt.revision,
-          expectedContentRef: current.receipt.contentRef,
+          expectedRevision: current.revision,
+          expectedContentRef: currentRef,
           restoreContentRef: contentRef,
           sceneId: original.scene.id,
           contentChecksum: bundle.contentChecksum,
@@ -715,8 +749,8 @@ suite(
       expect(await snapshot(s)).toEqual(before);
       expect(
         (await getPersonalSceneSkill(s.owner, s.instance.id, original.scene.id))
-          .bundle.version,
-      ).toBe('2.0.0');
+          .contentRef,
+      ).toBe(currentRef);
     });
 
     it('restores v1 as a new current revision with exact old sources, immutable history and untouched other scenes', async () => {
