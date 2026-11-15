@@ -15995,6 +15995,155 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       }, 30000);
     }
 
+  for (const appearance of ['light', 'dark'] as const)
+    for (const width of [1440, 390])
+      it.each(['txt-short', 'txt-long', 'json', 'md'] as const)(
+        `MET247 approved canvas keeps text natural and footer adjacent for %s at ${width}px ${appearance}`,
+        async (kind) => {
+          const f = await fixture({ width, appearance });
+          try {
+            const file = catalogFile(9691, {
+              fileName: `自然高度.${kind.startsWith('txt') ? 'txt' : kind}`,
+            });
+            f.state.workbenchFiles.push(file);
+            const text =
+              kind === 'txt-long'
+                ? Array.from(
+                    { length: 180 },
+                    (_, n) => `第 ${n + 1} 行经营记录`,
+                  ).join('\n')
+                : kind === 'json'
+                  ? JSON.stringify({ status: 'ready', total: 28 }, null, 2)
+                  : kind === 'md'
+                    ? '# 经营记录\n\n本周新增客户 **28 家**。'
+                    : '经营记录\n新增客户：28 家\n交付完成率：96%';
+            f.state.filePreview = {
+              kind: 'text',
+              mediaType:
+                kind === 'md'
+                  ? 'text/markdown'
+                  : kind === 'json'
+                    ? 'application/json'
+                    : 'text/plain',
+              text,
+            };
+            await f.page
+              .locator('header')
+              .getByRole('button', { name: '交付成果', exact: true })
+              .click();
+            await f.panel
+              .getByRole('region', { name: '交付成果', exact: true })
+              .getByRole('button', { name: file.fileName, exact: true })
+              .click();
+            const detail = f.panel.locator(
+              `[data-document-id="${file.objectId}"]:visible`,
+            );
+            const reading = detail.locator('[class*="deliveryReadingArea"]');
+            const preview = reading.locator('[class*="deliveryPreview"]');
+            const footer = detail.locator('footer');
+            const body = preview.getByRole('region', {
+              name: '文件正文',
+              exact: true,
+            });
+            await body.waitFor();
+            if (kind === 'md')
+              await body
+                .getByRole('heading', { name: '经营记录', exact: true })
+                .waitFor();
+            else
+              await body
+                .getByRole('button', { name: '复制文本', exact: true })
+                .waitFor();
+            const areaBox = (await reading.boundingBox())!;
+            const contentBox = (await preview.boundingBox())!;
+            const footerBox = (await footer.boundingBox())!;
+            expect(
+              Math.abs(footerBox.y - contentBox.y - contentBox.height),
+            ).toBeLessThan(1);
+            expect(
+              await preview.evaluate(
+                (n) => getComputedStyle(n).backgroundColor,
+              ),
+            ).toBe(
+              kind === 'md'
+                ? appearance === 'dark'
+                  ? 'rgb(15, 15, 15)'
+                  : 'rgb(245, 245, 245)'
+                : 'rgba(0, 0, 0, 0)',
+            );
+            if (kind === 'md') {
+              expect(
+                await body.evaluate((n) => getComputedStyle(n).backgroundColor),
+              ).toBe('rgb(255, 255, 255)');
+              expect(
+                await body.evaluate((n) => getComputedStyle(n).color),
+              ).toBe('rgb(32, 36, 43)');
+            }
+            if (kind === 'txt-long') {
+              expect(contentBox.height).toBeGreaterThan(areaBox.height);
+              await f.page.mouse.move(
+                areaBox.x + areaBox.width / 2,
+                areaBox.y + 100,
+              );
+              await f.page.mouse.wheel(0, 20000);
+              await expect
+                .poll(async () => {
+                  const box = (await footer.boundingBox())!;
+                  return (
+                    box.y >= areaBox.y - 1 &&
+                    box.y + box.height <= areaBox.y + areaBox.height + 1
+                  );
+                })
+                .toBe(true);
+            } else {
+              expect(contentBox.height).toBeLessThan(areaBox.height / 2);
+              expect(footerBox.y + footerBox.height).toBeLessThanOrEqual(
+                areaBox.y + areaBox.height,
+              );
+            }
+            for (const name of ['引用到对话', '下载', '收藏'])
+              expect(
+                await footer
+                  .getByRole('button', { name, exact: true })
+                  .evaluate((n) => {
+                    const r = n.getBoundingClientRect();
+                    return n.contains(
+                      document.elementFromPoint(
+                        r.x + r.width / 2,
+                        r.y + r.height / 2,
+                      ),
+                    );
+                  }),
+              ).toBe(true);
+            if (kind === 'md') {
+              await detail
+                .getByRole('button', { name: '更多文件操作', exact: true })
+                .click();
+              await f.page
+                .getByRole('menuitem', { name: '查看源文本', exact: true })
+                .click();
+              await preview
+                .getByRole('region', { name: '源文本', exact: true })
+                .waitFor();
+              expect(
+                await preview.evaluate(
+                  (n) => getComputedStyle(n).backgroundColor,
+                ),
+              ).toBe('rgba(0, 0, 0, 0)');
+              expect(
+                await preview
+                  .getByRole('button', { name: '复制文本', exact: true })
+                  .count(),
+              ).toBe(1);
+            }
+            expect(f.errors).toEqual([]);
+          } finally {
+            await f.close();
+          }
+        },
+        30000,
+      );
+
   for (const theme of ['light', 'dark'] as const)
     for (const width of [1440, 390])
       it.each(['md', 'docx', 'pdf', 'xlsx', 'image'] as const)(
@@ -16127,6 +16276,29 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                     ),
                 )
                 .toBe(480);
+            expect(
+              await preview.evaluate(
+                (n) => getComputedStyle(n).backgroundColor,
+              ),
+            ).toBe(theme === 'dark' ? 'rgb(15, 15, 15)' : 'rgb(245, 245, 245)');
+            if (kind === 'md' || kind === 'image' || kind === 'xlsx') {
+              const paper =
+                kind === 'md'
+                  ? preview.getByRole('region', {
+                      name: '文件正文',
+                      exact: true,
+                    })
+                  : preview.locator(
+                      kind === 'image'
+                        ? '[data-document-zoom-surface]'
+                        : '[data-excel-preview]',
+                    );
+              expect(
+                await paper.evaluate(
+                  (n) => getComputedStyle(n).backgroundColor,
+                ),
+              ).toBe('rgb(255, 255, 255)');
+            }
             const lastPage = detail.locator(
               `[data-pdf-page="${pdfPageCount}"]`,
             );
