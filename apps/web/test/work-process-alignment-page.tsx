@@ -20,6 +20,7 @@ import { cloudOperations, ids } from './technical-details-fixtures';
 const params = new URLSearchParams(location.search);
 const scene = params.get('scene') ?? 'complete';
 const live = scene === 'running';
+const approval = params.has('approval');
 const failed = scene === 'failed';
 const at = '2026-11-15T03:00:00.000Z';
 const nativeSessionId = `dsh-${ids.session}`;
@@ -171,7 +172,13 @@ const operation = {
   createdAt: at,
   snapshot: {
     ...sample.snapshot,
-    status: live ? 'running' : failed ? 'failed' : 'succeeded',
+    status: approval
+      ? 'waiting_user'
+      : live
+        ? 'running'
+        : failed
+          ? 'failed'
+          : 'succeeded',
     binding: {
       ...sample.snapshot.binding,
       action: 'cloud.process.execute',
@@ -187,6 +194,16 @@ const operation = {
       },
     },
   },
+  approval: approval
+    ? {
+        ...cloudOperations([])[0]!.approval,
+        request: {
+          ...cloudOperations([])[0]!.approval!.request,
+          expiresAt: new Date(Date.now() + 600000).toISOString(),
+        },
+        response: null,
+      }
+    : null,
   result: failed
     ? {
         code: 'EXECUTION_FAILED',
@@ -200,7 +217,9 @@ window.fetch = async (input) =>
     String(input).startsWith('/api/v1/runtime/cloud-operations')
       ? {
           operations:
-            materialReady && rows.some(([id]) => id === 'cloud')
+            !params.has('tool-only') &&
+            materialReady &&
+            rows.some(([id]) => id === 'cloud')
               ? [operation]
               : [],
         }
@@ -246,8 +265,14 @@ function Fixture() {
       <ChatTranscript
         key={revision}
         atBottom
-        streamingOutput
-        transcriptView="detailed"
+        streamingOutput={!params.has('unified')}
+        transcriptView={
+          params.get('mode') === 'compact'
+            ? 'compact'
+            : params.get('mode') === 'standard'
+              ? 'standard'
+              : 'detailed'
+        }
         collapseTiming="next-input"
         employeeName={params.get('employee') ?? 'Rice'}
         runTimings={[{ runId: ids.run, timing }]}
@@ -258,7 +283,13 @@ function Fixture() {
             status: live ? 'pending' : failed ? 'failed' : 'completed',
             runId: ids.run,
             createdAt: at,
-            content: { text: '' },
+            content: {
+              text: live
+                ? ''
+                : failed
+                  ? '缺少“销售金额”列。补齐后就可以继续汇总。'
+                  : '月度汇总已整理完成，异常订单已单独列出。',
+            },
           },
           ...(rows.some(([id]) => id === 'question') ? [answer] : []),
         ]}

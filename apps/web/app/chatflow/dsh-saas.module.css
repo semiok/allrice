@@ -1120,15 +1120,10 @@ div.composerAttachmentMenu,
 }
 
 .confirmationValue em {
-  flex: none;
-  border-radius: 5px;
-  padding: 1px 4px;
-  color: var(--dsw-alias-state-business-primary);
-  background: var(--dsw-specific-sidebar-nav-item-active-accent);
-  font-size: 12px;
+  margin-left: 4px;
+  color: inherit;
+  font: inherit;
   font-style: normal;
-  font-weight: 700;
-  line-height: 14px;
 }
 
 .confirmationSkipped {
@@ -1966,11 +1961,11 @@ div.composerAttachmentMenu,
     var(--dsw-alias-label-primary)
   );
 }
-.processBlock [data-executing] .processTitle,
-.processBlock [data-executing] .processHeader > :first-child {
+.processBlock .processExecuting .processTitle,
+.processBlock .processExecuting > :first-child {
   color: var(--employee-end, var(--dsw-alias-state-business-primary));
 }
-.processBlock [data-executing] .processHeader [data-shimmer] {
+.processBlock .processExecuting [data-shimmer] {
   --dsw-alias-label-shimmer: color-mix(
     in srgb,
     var(--employee-end, var(--dsw-alias-state-business-primary)) 75%,

@@ -153,8 +153,9 @@ suite('approved DSH process alignment', () => {
           step: getComputedStyle(
             step.querySelector('[data-disclosure-row] [data-shimmer]')!,
           ).color,
-          header: getComputedStyle(header.querySelector('[data-shimmer]')!)
-            .color,
+          header: getComputedStyle(
+            header.querySelector('[class*="processTitle"]')!,
+          ).color,
           outside: !timing.closest('[data-process-scrollport]'),
           font: getComputedStyle(step).fontSize,
           animated: !!step.querySelector('[data-shimmer] > [aria-hidden]'),
@@ -169,5 +170,57 @@ suite('approved DSH process alignment', () => {
       ).toContain('用时');
       await page.close();
     }
+  });
+  it('keeps cloud approval reachable inside its process in every display mode', async () => {
+    for (const mode of ['compact', 'standard', 'detailed']) {
+      const page = await openPage(`scene=running&approval&mode=${mode}`);
+      const approve = page.locator('[data-process-control="approve"]');
+      await approve.waitFor({ state: 'visible' });
+      expect(
+        await approve.evaluate(
+          (node) => !!node.closest('[data-step-id="tool:cloud"]'),
+        ),
+      ).toBe(true);
+      expect(
+        await page.locator('[data-process-control="reject"]').isVisible(),
+      ).toBe(true);
+      await page.close();
+    }
+  });
+  it('does not color nested group headers in the non-streaming path', async () => {
+    const page = await openPage(
+      'scene=running&mode=standard&unified&tool-only',
+    );
+    const top = page
+      .locator('[aria-label="工作过程"] > div > [data-disclosure-header]')
+      .first();
+    const nested = page
+      .locator('section[aria-label="工作步骤"] [data-disclosure-row]')
+      .first();
+    await nested.waitFor();
+    const color = async (row: typeof nested) =>
+      row
+        .locator('[class*="processTitle"]')
+        .first()
+        .evaluate((node) => getComputedStyle(node).color);
+    expect(await color(top)).not.toBe(await color(nested));
+    await page.close();
+  });
+  it('renders failure details without a crash and keeps their font/color consistent', async () => {
+    const page = await openPage('scene=failed');
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(String(error)));
+    const row = page.locator('[data-step-id="tool:cloud"]');
+    await row.locator('dl').first().waitFor();
+    expect(await row.innerText()).toContain('缺少“销售金额”列');
+    const fields = await row.locator('dt, dd').evaluateAll((nodes) =>
+      nodes.map((node) => {
+        const css = getComputedStyle(node);
+        return [css.fontSize, css.fontWeight, css.color];
+      }),
+    );
+    expect(new Set(fields.map((entry) => JSON.stringify(entry))).size).toBe(1);
+    expect(errors).toEqual([]);
+    await page.close();
   });
 });

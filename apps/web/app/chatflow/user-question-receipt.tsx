@@ -133,7 +133,6 @@ export function UserQuestionReceipt(props: {
             ? `提问 · ${rows.length}/${props.questions?.length ?? rows.length} 已回答`
             : `提问 · ${state.title}`
         }
-        failed={state.state === 'rejected'}
         details={rows.flatMap((row) => [
           {
             label: '问题',

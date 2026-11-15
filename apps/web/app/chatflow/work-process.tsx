@@ -173,6 +173,9 @@ export function WorkProcess({
     )
       ? materialReveal
       : undefined;
+  const requiringAttention = items.some((item) =>
+    item.operations?.some((ref) => ref.requiresAttention),
+  );
   const policy = presentationPolicyFor(transcriptView, collapseTiming);
   const currentPresentation =
     presentation ?? workProcessPresentation([], parts, undefined, false);
@@ -350,7 +353,7 @@ export function WorkProcess({
     canceled,
     hasHistory: parts ? Boolean(history?.length || expandable) : expandable,
     disclosure:
-      (revealingQuestion || revealingMaterial
+      (revealingQuestion || revealingMaterial || requiringAttention
         ? { presentation: currentPresentation, open: true }
         : disclosure) ??
       (readingQuestion
@@ -477,7 +480,7 @@ export function WorkProcess({
           expandOnRowClick
           keepContentWhenOpen
           onToggle={toggle}
-          rowClassName={styles.processHeader}
+          rowClassName={`${styles.processHeader} ${title === '执行中…' ? styles.processExecuting : ''}`}
           titleClassName={styles.processTitle}
           collapsedContent={
             <>
@@ -566,7 +569,7 @@ export function WorkProcess({
         expandable={display.canFold}
         expandOnRowClick
         keepContentWhenOpen
-        rowClassName={`${reasoning.row} ${styles.processHeader}`}
+        rowClassName={`${reasoning.row} ${styles.processHeader} ${title === '执行中…' ? styles.processExecuting : ''}`}
         leadingClassName={reasoning.leading}
         titleClassName={`${reasoning.title} ${styles.processTitle} ${microStatus ? styles.processStatus : ''}`}
         chevronClassName={reasoning.chevron}
@@ -591,7 +594,7 @@ export function WorkProcess({
         }
       />
       <div hidden={!display.open || !expandable}>
-        <div className={styles.processDetails}>
+        <div className={styles.processReceipts}>
           <NativeStepsGroup
             key={currentPresentation.answerGeneration}
             items={processItems(items)}
@@ -710,7 +713,12 @@ function NativeStepsGroup({
     questionKeys.filter((key) => revealingQuestions.includes(key)),
   );
   const open =
-    revealingMaterial || revealingQuestion || (manual ?? readingQuestion);
+    items.some((item) =>
+      item.operations?.some((ref) => ref.requiresAttention),
+    ) ||
+    revealingMaterial ||
+    revealingQuestion ||
+    (manual ?? readingQuestion);
   useLayoutEffect(() => {
     if ((revealingMaterial || revealingQuestion) && manual !== true)
       setOpen(true);
@@ -845,7 +853,7 @@ function WorkProcessSteps({
           (item?.stopped
             ? '已停止'
             : step.status === 'failed'
-              ? '失败'
+              ? '未成功'
               : stepRunning && question?.pending && !question.answer
                 ? '等待回答'
                 : question?.answered
@@ -898,7 +906,7 @@ function WorkProcessSteps({
                 }
                 title={
                   item?.stopped
-                    ? `${step.label} · 已停止`
+                    ? `${step.title.split(' · ')[0]} · 已停止`
                     : step.error
                       ? `${step.title.split(' · ')[0]} · ${step.error}`
                       : question

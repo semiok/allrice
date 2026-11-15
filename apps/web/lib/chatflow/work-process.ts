@@ -187,7 +187,7 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
             ? '提问'
             : isTool
               ? [
-                  toolLabel ?? genericToolLabel,
+                  toolLabel ?? item.toolName ?? fallback,
                   input?.replace(
                     /^(?:搜索资料|阅读文件|生成文件|修改文件|查找文件)：/,
                     '',

@@ -920,7 +920,7 @@ export function CloudOperationCard({
       data-process-operation={op.snapshot.binding.attempt.operationId}
       data-status={op.snapshot.status}
     >
-      {op.projectService && projectServiceContext && (
+      {!embedded && op.projectService && projectServiceContext && (
         <ProjectServiceCard
           service={op.projectService}
           {...projectServiceContext}
@@ -1294,11 +1294,19 @@ export function CloudOperationPanel({
             }
           : {}),
       })),
-      interaction: operations
-        .filter((op) => op.proposal.kind !== 'cloud')
-        .map((op) =>
-          renderOperation(op.snapshot.binding.attempt.operationId, true),
-        ),
+      interaction: operations.map((op) =>
+        op.proposal.kind !== 'cloud' ? (
+          renderOperation(op.snapshot.binding.attempt.operationId, true)
+        ) : op.projectService ? (
+          <ProjectServiceCard
+            key={op.projectService.id}
+            service={op.projectService}
+            workspaceId={workspaceId}
+            tenantHeaders={tenantHeaders}
+            onChanged={() => setRevision((value) => value + 1)}
+          />
+        ) : null,
+      ),
     });
   if (!operations.length && !loadError && !actionError && !readFeedback)
     return null;

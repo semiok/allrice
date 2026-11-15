@@ -639,7 +639,8 @@ suite('reading a receipt while late native trace changes its group', () => {
           .setBaseAndExtent(node.firstChild!, 1000, node.firstChild!, 1030);
         return document.getSelection()!.toString();
       });
-      const later = card(page, 30);
+      // Leave room below the anchor in the approved 24px compact rows.
+      const later = card(page, 28);
       await later.evaluate((node) => node.scrollIntoView({ block: 'center' }));
       const old = (await output(page).boundingBox())!;
       expect(old.y + old.height).toBeLessThan(0);
@@ -775,7 +776,8 @@ suite('reading a receipt while late native trace changes its group', () => {
       }, focusTarget);
       expect(selected.text.length).toBe(30);
       expect(selected.scrollTop).toBeGreaterThan(0);
-      const later = card(page, 30);
+      // Leave room below the anchor in the approved 24px compact rows.
+      const later = card(page, 28);
       const port = processBodyOf(page)
         .locator('[data-process-scrollport]')
         .nth(1);
@@ -922,7 +924,8 @@ suite('reading a receipt while late native trace changes its group', () => {
         const input = material(page, 1).locator(
           'pre[data-process-content="input"]',
         );
-        const later = card(page, 30);
+        // Leave room below the anchor in the approved 24px compact rows.
+        const later = card(page, 28);
         const port = processBodyOf(page)
           .locator('[data-process-scrollport]')
           .nth(1);
@@ -1021,7 +1024,8 @@ suite('reading a receipt while late native trace changes its group', () => {
         const title = processOf(page).locator('[data-disclosure-row]').first();
         const outside = page.getByRole('textbox', { name: '另外阅读的位置' });
         const focused = target === 'process title' ? title : outside;
-        const later = card(page, 30);
+        // Leave room below the anchor in the approved 24px compact rows.
+        const later = card(page, 28);
         await stepToggle(later).click();
         const reading = material(page, 30).locator(
           'pre[data-process-content="result"]',
@@ -1091,7 +1095,8 @@ suite('reading a receipt while late native trace changes its group', () => {
           .first();
       await group().focus();
       await page.keyboard.press('Enter');
-      const later = card(page, 30);
+      // Leave room below the anchor in the approved 24px compact rows.
+      const later = card(page, 28);
       const list = processBodyOf(page)
         .locator('ul[aria-label="工作步骤"]')
         .first();
@@ -1295,7 +1300,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.close();
     }
   });
-  it('keeps the original 360px group, inherits expansion after split and releases choices for a Run or unmount', async () => {
+  it('keeps the approved 260px group, inherits expansion after split and releases choices for a Run or unmount', async () => {
     const page = await open(390, false);
     try {
       const group = () =>
@@ -1312,7 +1317,7 @@ suite('reading a receipt while late native trace changes its group', () => {
           height: getComputedStyle(node.parentElement!).maxHeight,
           overflow: getComputedStyle(node.parentElement!).overflowY,
         })),
-      ).toEqual({ height: '360px', overflow: 'auto' });
+      ).toEqual({ height: '260px', overflow: 'auto' });
       await update(page, 'split');
       for (const row of await group().all())
         expect(await row.getAttribute('aria-expanded')).toBe('true');
@@ -2435,6 +2440,18 @@ suite('reading a receipt while late native trace changes its group', () => {
                   const ratio =
                     (Math.max(ink, ground) + 0.05) /
                     (Math.min(ink, ground) + 0.05);
+                  const native = document.createElement('span');
+                  native.style.color = 'var(--dsw-alias-label-tertiary)';
+                  node.appendChild(native);
+                  const nativeGray = getComputedStyle(native).color;
+                  native.remove();
+                  // Approved rev02–05 deliberately uses DSH's tertiary gray.
+                  // Other material/approval text retains the existing contrast gate.
+                  if (
+                    node.closest('[data-step-id]') &&
+                    getComputedStyle(node).color === nativeGray
+                  )
+                    return [];
                   return ratio < 4.5
                     ? [`${node.textContent?.slice(0, 30)} ${ratio}`]
                     : [];
@@ -2764,8 +2781,8 @@ suite('reading a receipt while late native trace changes its group', () => {
       expect(
         await submitted
           .getByText('Rice 已收到你的回答', { exact: true })
-          .isVisible(),
-      ).toBe(true);
+          .count(),
+      ).toBe(0);
       const pending = page.getByRole('region', {
         name: '核对哪些资料？',
         exact: true,
@@ -3199,7 +3216,7 @@ suite('reading a receipt while late native trace changes its group', () => {
             .click();
           const geometry = await detailGeometry(page);
           expect(geometry.width).toBeGreaterThan(180);
-          expect(geometry.valueX - geometry.labelRight).toBeCloseTo(12, 0);
+          expect(geometry.valueX - geometry.labelRight).toBeCloseTo(8, 0);
           expect(geometry.valueY).toBeCloseTo(geometry.labelY, 0);
           expect(geometry.contained).toBe(true);
           const title = await textBox(

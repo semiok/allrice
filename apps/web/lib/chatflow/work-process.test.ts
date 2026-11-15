@@ -36,7 +36,7 @@ describe('chronological public work process', () => {
     [
       'unknown',
       { toolName: 'cloud_mcp_call' },
-      '执行工具操作',
+      'cloud_mcp_call',
       '工具',
       '执行工具操作',
     ],
