@@ -58,7 +58,6 @@ import {
 } from './local-python-execution.ts';
 import { createGovernedBridgeOperationLedger } from './runtime-governed-bridge.ts';
 import { normalizeCloudPythonArguments } from './cloud-authority.ts';
-import { completeStorageDelete, prepareStorageDelete } from './data.ts';
 import {
   createToolBrokerExportObject,
   getToolBrokerFile,
@@ -2341,9 +2340,10 @@ suite(
                 })
               ).object;
         if (kind === 'deleted') {
-          const file = await prepareStorageDelete(f.context, parent.id);
-          await f.storage.delete(file.object);
-          await completeStorageDelete(f.context, parent.id);
+          // Historical deletion is fixture state; ordinary DELETE cannot
+          // remove managed delivery objects after R0.
+          await f.storage.delete(parent);
+          await isolated.db`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${parent.id}`;
         }
         const before =
           await isolated.db`select id from allrice_deliverable_versions where organization_id=${f.org} order by id`;
@@ -2371,8 +2371,8 @@ suite(
 
     it('rechecks a local parent deleted after admission and retains the unpublished ready output', async () => {
       const f = await fixture(),
-        // Existing mutable exports are deletable; do not bypass the ready
-        // immutable-object guard used by the Python v1/v2 positive cases.
+        // Historical disappearance is seeded below; ordinary DELETE cannot
+        // remove managed exports, mutable or immutable, after R0.
         parent = await seedOutputParent(f, { immutable: false }),
         run = await running(
           f,
@@ -2388,9 +2388,8 @@ suite(
         bytes = Buffer.from('amountCents\n250\n'),
         uploaded = await run.upload(0, bytes);
       await run.succeed([uploaded]);
-      const file = await prepareStorageDelete(f.context, parent.object.id);
-      await f.storage.delete(file.object);
-      await completeStorageDelete(f.context, parent.object.id);
+      await f.storage.delete(parent.object);
+      await isolated.db`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${parent.object.id}`;
       await expect(
         publishLocalPythonArtifacts(
           { context: f.execution, operationId: run.identity.operationId },
