@@ -31,10 +31,7 @@ const protocolValues: Record<string, readonly string[]> = {
 // These memory provenance rules refer to the model's own output, not delegated
 // children. Exempt only these phrases in their documented source files.
 const modelRoleTerms: Record<string, readonly string[]> = {
-  'skills/governed-memory/SKILL.md': [
-    'assistant response',
-    'assistant guesses',
-  ],
+  'skills/governed-memory/SKILL.md': ['assistant inference'],
   'allrice-jsonrpc-implementation.mjs': ['assistant inference'],
 };
 
@@ -201,7 +198,7 @@ describe('names the model reads (MET-214)', () => {
     const skill = texts.find(
       ({ source }) => source === 'skills/governed-memory/SKILL.md',
     )!;
-    expect(skill.text).toContain('assistant response');
+    expect(skill.text).toContain('assistant inference');
     expect(offenders([skill])).toEqual([]);
     const regressed = { ...skill, text: `${skill.text}\n每个 Child assistant` };
     expect(offenders([regressed])).toEqual([regressed]);
@@ -246,7 +243,7 @@ describe('names the model reads (MET-214)', () => {
   });
 
   it('does not exempt model-role terms in unrelated sources', () => {
-    const text = 'assistant response';
+    const text = 'assistant inference';
     const entry = { source: 'skills/development-cooperation/SKILL.md', text };
     expect(offenders([entry])).toEqual([entry]);
   });
