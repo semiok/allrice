@@ -1035,7 +1035,7 @@ suite(
           mediaType: 'text/plain',
           contentBase64: Buffer.from('bypass').toString('base64'),
         }),
-      ).rejects.toThrow('not_found');
+      ).rejects.toThrow('authorization_denied');
       // Existing message admission freezes the ORIGINAL template ID, digest and slots.
       const selection = {
         assetId,

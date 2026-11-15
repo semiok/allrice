@@ -76,7 +76,6 @@ export function ReferenceLibrary({
   const [scope, setScope] = useState<ReferenceUploadInput['scope']>(
       platform ? 'platform' : 'personal',
     ),
-    [department, setDepartment] = useState(''),
     [purpose, setPurpose] = useState(''),
     [query, setQuery] = useState('');
   const [updating, setUpdating] = useState<ReferenceRevision | null>(null),
@@ -233,7 +232,6 @@ export function ReferenceLibrary({
               }
             : {}),
           scope,
-          ...(scope === 'department' ? { departmentId: department } : {}),
           fileName: file.name,
           purpose,
           mediaType:
@@ -403,7 +401,11 @@ export function ReferenceLibrary({
                 </Button>
               )}
               {selected.status === 'archived' ? (
-                <p>资料已停用，恢复后可查看。</p>
+                <p>
+                  {platform && selected.ownership.scope === 'platform'
+                    ? '资料已停用，恢复后可查看。'
+                    : '资料已停用。'}
+                </p>
               ) : previewError ? (
                 <p role="alert">{previewError}</p>
               ) : preview ? (
@@ -438,48 +440,15 @@ export function ReferenceLibrary({
               onChange={(e) => {
                 setScope(e.target.value as typeof scope);
                 pending.current = null;
-                setDepartment(
-                  options.departmentId ?? options.departments[0]?.id ?? '',
-                );
               }}
             >
               {platform && options.platformMaintainer ? (
                 <option value="platform">平台</option>
               ) : (
-                <>
-                  <option value="personal">个人</option>
-                  {options.maintenanceLevel !== 'personal' &&
-                    options.departments.length > 0 && (
-                      <option value="department">部门</option>
-                    )}
-                  {options.maintenanceLevel === 'company' && (
-                    <option value="company">公司</option>
-                  )}
-                </>
+                <option value="personal">个人</option>
               )}
             </select>
           </label>
-          {scope === 'department' && (
-            <label>
-              部门
-              <select
-                aria-label="资料所属部门"
-                value={department}
-                disabled={!!updating}
-                onChange={(e) => {
-                  setDepartment(e.target.value);
-                  pending.current = null;
-                }}
-              >
-                <option value="">选择部门</option>
-                {options.departments.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
           <label>
             用途（选填）
             <input
@@ -505,10 +474,7 @@ export function ReferenceLibrary({
             }}
           />
           <div>
-            <Button
-              disabled={!file || (scope === 'department' && !department)}
-              onClick={() => void upload()}
-            >
+            <Button disabled={!file} onClick={() => void upload()}>
               {busy ? '保存中…' : '保存资料'}
             </Button>
             {updating && <Button onClick={reset}>取消更新</Button>}
@@ -558,27 +524,24 @@ export function ReferenceLibrary({
                   引用 v{r.revision}
                 </Button>
               )}
-              {r.canMaintain && (
+              {(r.canMaintain || r.canRetryProcessing) && (
                 <div className={css.actions}>
                   {r.status === 'active' && (
                     <>
-                      <Button
-                        disabled={busy}
-                        onClick={() => {
-                          reset();
-                          setUpdating(r);
-                          setScope(r.ownership.scope as typeof scope);
-                          setDepartment(
-                            r.ownership.scope === 'department'
-                              ? r.ownership.departmentId
-                              : '',
-                          );
-                          setPurpose(r.purpose);
-                          fileInput.current?.focus();
-                        }}
-                      >
-                        更新文件
-                      </Button>
+                      {platform && r.ownership.scope === 'platform' && (
+                        <Button
+                          disabled={busy}
+                          onClick={() => {
+                            reset();
+                            setUpdating(r);
+                            setScope('platform');
+                            setPurpose(r.purpose);
+                            fileInput.current?.focus();
+                          }}
+                        >
+                          更新文件
+                        </Button>
+                      )}
                       {(r.processing === 'failed' ||
                         (r.processing === 'unsupported' &&
                           r.canRetryProcessing)) && (
@@ -591,17 +554,21 @@ export function ReferenceLibrary({
                       )}
                     </>
                   )}
-                  <Button
-                    disabled={busy}
-                    onClick={() =>
-                      void action(
-                        r,
-                        r.status === 'active' ? 'archive' : 'restore',
-                      )
-                    }
-                  >
-                    {r.status === 'active' ? '停用' : '恢复'}
-                  </Button>
+                  {r.canMaintain &&
+                    (r.status === 'active' ||
+                      (platform && r.ownership.scope === 'platform')) && (
+                      <Button
+                        disabled={busy}
+                        onClick={() =>
+                          void action(
+                            r,
+                            r.status === 'active' ? 'archive' : 'restore',
+                          )
+                        }
+                      >
+                        {r.status === 'active' ? '停用' : '恢复'}
+                      </Button>
+                    )}
                 </div>
               )}
             </div>

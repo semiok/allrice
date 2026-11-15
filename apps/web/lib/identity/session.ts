@@ -1,4 +1,5 @@
 import { cookies } from 'next/headers';
+import type { RequestContext } from '@allrice/contracts';
 
 import {
   authenticateSession,
@@ -30,7 +31,11 @@ export const sessionCookieOptions = {
   path: '/',
 };
 
-export async function getRequestContext(request: Request) {
+/** target is an authoritative server-side resource scope, never request input. */
+export async function getRequestContext(
+  request: Request,
+  target?: Pick<RequestContext, 'organizationId' | 'workspaceId'>,
+) {
   const cookieStore = await cookies();
   const token = cookieStore.get(sessionCookieName)?.value;
   if (!token) return null;
@@ -45,6 +50,12 @@ export async function getRequestContext(request: Request) {
       portal,
     );
     if (!portalSession) return null;
+    if (
+      target &&
+      (target.organizationId !== portalSession.organizationId ||
+        target.workspaceId !== portalSession.workspaceId)
+    )
+      return null;
     const context =
       portal.kind === 'platform_admin'
         ? await authenticatePlatformSession(token)
@@ -72,9 +83,12 @@ export async function getRequestContext(request: Request) {
           token,
           {
             organizationId:
-              request.headers.get('x-allrice-organization-id') ?? undefined,
+              request.headers.get('x-allrice-organization-id') ??
+              target?.organizationId,
             workspaceId:
-              request.headers.get('x-allrice-workspace-id') ?? undefined,
+              request.headers.get('x-allrice-workspace-id') ??
+              target?.workspaceId ??
+              undefined,
           },
           kind === 'employee' ? 'employee' : undefined,
         );
@@ -82,6 +96,13 @@ export async function getRequestContext(request: Request) {
     const admin = await isPlatformAdmin(context);
     if (admin !== (kind === 'platform_admin')) return null;
   }
+  if (
+    context &&
+    target &&
+    (context.organizationId !== target.organizationId ||
+      context.workspaceId !== target.workspaceId)
+  )
+    return null;
   return context;
 }
 

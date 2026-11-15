@@ -164,8 +164,16 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
             '::placeholder',
           );
           await fits('references');
-          await save(page, open, readable);
-          await fits('save');
+          expect(
+            await page
+              .getByRole('button', { name: '保存为参考资料', exact: true })
+              .count(),
+          ).toBe(0);
+          expect(
+            await page
+              .getByRole('dialog', { name: '保存为参考资料', exact: true })
+              .count(),
+          ).toBe(0);
           await employee(page, open, readable);
           await fits('employee');
           await forms(page, open, readable);
@@ -250,33 +258,6 @@ suite('muted words stay readable in both themes', { timeout: 60_000 }, () => {
       .getByRole('searchbox', { name: '查找文件' })
       .fill('不存在的文件');
     await readable('空结果', page.getByText('未找到相关文件', { exact: true }));
-  }
-
-  async function save(page: Page, open: Open, readable: Readable) {
-    await open('save');
-    await page.getByRole('button', { name: '保存为参考资料' }).click();
-    const dialog = page.getByRole('dialog', { name: '保存为参考资料' });
-    await readable(
-      'L10 保存说明',
-      dialog.getByText('保存当前文件，后续修改不会覆盖这份参考资料。'),
-    );
-    await readable(
-      'L10 范围说明',
-      dialog.getByText('仅自己可以查看。', { exact: false }),
-    );
-    await readable(
-      'L10 用途占位',
-      dialog.getByRole('textbox', { name: '参考资料用途' }),
-      '::placeholder',
-    );
-    const submit = dialog.getByRole('button', { name: '保存', exact: true });
-    await expect.poll(() => submit.isEnabled()).toBe(true);
-    await submit.click();
-    await dialog.getByRole('status').waitFor();
-    await readable(
-      'L10 保存成功说明',
-      dialog.getByText('保留这份成果内容；重复保存会返回已有资料。'),
-    );
   }
 
   async function employee(page: Page, open: Open, readable: Readable) {

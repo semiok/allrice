@@ -110,6 +110,9 @@ async function sources() {
   const f = await createLocalBrowserFixture(db, storageRoot, {
     workbench: true,
   });
+  // This is the Web user's context; preserve its existing session UUID.
+  await db`insert into allrice_sessions(id,user_id,token_hash,expires_at)
+    values(${f.context.sessionId!},${f.user},${createHash('sha256').update(randomUUID()).digest('hex')},clock_timestamp()+interval '1 hour')`;
   const b = f.browser!,
     w = await readCurrentBrowserWorkspace(f.context, b.w.id, db);
   const bytes = Buffer.alloc(1000, 'x'),

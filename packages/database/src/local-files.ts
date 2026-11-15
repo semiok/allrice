@@ -1,3 +1,4 @@
+import { resourcePrincipal } from './resource-principal.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import type { TransactionSql } from 'postgres';
 import {
@@ -504,12 +505,13 @@ async function commitLocalFileUpload(input: {
   let pending = false;
   try {
     // Fixed object ID plus immutable metadata makes a lost upload ACK safe to query.
-    const existing = await getStoredFile(current.context, objectId).catch(
-      (e: unknown) => {
-        if (e instanceof DataAccessError && e.code === 'not_found') return null;
-        throw e;
-      },
-    );
+    const existing = await getStoredFile(
+      resourcePrincipal(current.context),
+      objectId,
+    ).catch((e: unknown) => {
+      if (e instanceof DataAccessError && e.code === 'not_found') return null;
+      throw e;
+    });
     if (existing) {
       if (
         existing.object.checksum !== version.checksum ||
@@ -717,7 +719,10 @@ export async function readLocalFileDownload(
   if (current.payload.capability !== 'local.file.save')
     throw new DataAccessError('authorization_denied');
   const ref = current.payload.arguments.object;
-  const file = await getStoredFile(current.context, ref.objectId);
+  const file = await getStoredFile(
+    resourcePrincipal(current.context),
+    ref.objectId,
+  );
   if (
     file.object.checksum !== ref.checksum ||
     file.object.sizeBytes !== ref.sizeBytes ||
