@@ -317,12 +317,10 @@ export const baseline: readonly BaselineEntry[] = [
     file: 'apps/web/app/chatflow/employee-detail-prompts.ts',
     owner: 'adjustEmployeeContentPrompt',
     kind: 'own-text',
-    use: '按系统自己的维度名称（经验积累、执行要求…）选调整提示词',
+    use: '按系统自己的维度名称（执行要求、执行流程）选调整提示词',
     sites: [
-      String.raw`=== "经验积累"`,
       String.raw`=== "执行要求"`,
       String.raw`=== "执行流程"`,
-      String.raw`=== "经验积累"`,
     ],
   },
   {
