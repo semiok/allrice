@@ -1,14 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
   WorkbenchFileSharingSchema,
-  WorkbenchFileUpdateSchema,
   WorkbenchFileUploadSchema,
   WorkbenchFileFavoriteSchema,
   WorkbenchDeliverablesFilterSchema,
 } from './workbench-files.ts';
 const a = '00000000-0000-4000-8000-000000000001',
   b = '00000000-0000-4000-8000-000000000002';
-describe('workspace file sharing inputs', () => {
+describe('workspace file inputs after legacy sharing retirement', () => {
+  const upload = {
+    workspaceId: a,
+    requestId: b,
+    fileName: 'report.csv',
+    mediaType: 'text/csv',
+    contentBase64: 'YQ==',
+  };
   it('accepts only an explicit personal favorite set/unset and the directory favorite filter', () => {
     for (const favorite of [true, false])
       expect(WorkbenchFileFavoriteSchema.parse({ favorite })).toEqual({
@@ -29,18 +35,10 @@ describe('workspace file sharing inputs', () => {
       }).category,
     ).toBe('favorite');
   });
-  it('defaults an upload to personal independently of a browsing filter', () => {
-    expect(
-      WorkbenchFileUploadSchema.parse({
-        workspaceId: a,
-        requestId: b,
-        fileName: 'report.csv',
-        mediaType: 'text/csv',
-        contentBase64: 'YQ==',
-      }).sharing,
-    ).toEqual({ scope: 'personal', departmentIds: [] });
+  it('accepts an upload without a client-controlled visibility or reference flag', () => {
+    expect(WorkbenchFileUploadSchema.parse(upload)).toEqual(upload);
   });
-  it('requires explicit departments only for department sharing', () => {
+  it('preserves explicit department audience validation for retained publications', () => {
     expect(
       WorkbenchFileSharingSchema.safeParse({
         scope: 'departments',
@@ -66,22 +64,23 @@ describe('workspace file sharing inputs', () => {
       }).success,
     ).toBe(false);
   });
-  it('does not accept a role/owner claim or an empty mutation', () => {
-    expect(
-      WorkbenchFileUpdateSchema.safeParse({
-        workspaceId: a,
-        requestId: b,
-        expectedRevision: 0,
-        role: 'admin',
-        sharing: { scope: 'company' },
-      }).success,
-    ).toBe(false);
-    expect(
-      WorkbenchFileUpdateSchema.safeParse({
-        workspaceId: a,
-        requestId: b,
-        expectedRevision: 0,
-      }).success,
-    ).toBe(false);
+  it('rejects retired sharing and reference writes, forged authority, and empty uploads', () => {
+    for (const retiredOrForged of [
+      { sharing: { scope: 'personal', departmentIds: [] } },
+      { sharing: { scope: 'company', departmentIds: [] } },
+      { sharing: { scope: 'departments', departmentIds: [a] } },
+      { isReference: true },
+      { isReference: false },
+      { role: 'admin' },
+      { ownerId: b },
+      { expectedRevision: 0 },
+    ])
+      expect(
+        WorkbenchFileUploadSchema.safeParse({
+          ...upload,
+          ...retiredOrForged,
+        }).success,
+      ).toBe(false);
+    expect(WorkbenchFileUploadSchema.safeParse({}).success).toBe(false);
   });
 });
