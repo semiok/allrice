@@ -74,7 +74,7 @@ suite(
     });
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
-      f = await createRuntimeFixtureDatabase();
+      f = await createRuntimeFixtureDatabase({ ownSchemaOnly: true });
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
       const p = await ensureBootstrapPortalPrincipal(
         {
@@ -610,8 +610,8 @@ suite(
         else
           await f.db`update allrice_memories set trust_level='derived' where id=${memory.id}`;
         expect(
-          await f.db`select memory_id from allrice_experience_reviews where memory_id=${memory.id}`,
-        ).toEqual([]);
+          await f.db`select to_regclass(current_schema() || '.allrice_experience_reviews') as legacy_reviews`,
+        ).toEqual([{ legacy_reviews: null }]);
         expect(
           (
             await listCompanyRuleSources(admin, a.context.organizationId, f.db)
