@@ -80,6 +80,32 @@
 .description {
   margin: 3px 0 18px;
 }
+.search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--dsw-alias-border-l2);
+  border-radius: 10px;
+  background: var(--dsw-specific-selector);
+  color: var(--dsw-alias-label-secondary);
+}
+.search > svg {
+  flex: none;
+}
+.search input {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 0;
+  border: 0;
+  background: transparent;
+  color: var(--dsw-alias-label-primary);
+  font: inherit;
+}
+.search input::placeholder {
+  color: var(--dsw-alias-label-secondary);
+}
 .count {
   margin: 14px 0 7px;
 }
@@ -294,7 +320,7 @@
   .version button {
     min-height: 44px;
   }
-}
-.search {
-  flex: none;
+  .search input {
+    font-size: 16px;
+  }
 }

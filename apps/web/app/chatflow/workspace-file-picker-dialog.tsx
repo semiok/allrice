@@ -1,10 +1,10 @@
 'use client';
 
 import { useState, type CSSProperties } from 'react';
-import { SearchField } from '../../components/search-field';
 import {
   FileTypeIcon,
   IconClockOutlineRegular,
+  IconSearchOutlineRegular,
   Tooltip,
   classifyFileType,
 } from '@deepseek-ai/dsh-client-ui-primitives';
@@ -91,14 +91,17 @@ export function WorkspaceFilePickerDialog({
           <p className={styles.description}>
             选择本轮交给 {employeeName} 的文件
           </p>
-          <SearchField
-            className={styles.search}
-            aria-label="搜索文件名"
-            autoComplete="off"
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索文件名…"
-            value={query}
-          />
+          <label className={styles.search}>
+            <IconSearchOutlineRegular size={18} />
+            <input
+              aria-label="搜索文件名"
+              autoComplete="off"
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="搜索文件名…"
+              type="search"
+              value={query}
+            />
+          </label>
           <p className={styles.count} aria-live="polite">
             {query.trim()
               ? `${matching.length} 个匹配文件`

@@ -7222,7 +7222,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   it.each([390, 1440])(
     'keeps one shared reference surface across parent refreshes, closes it and quotes the exact revision at %ipx',
     async (width) => {
-      const f = await fixture({ width });
+      const f = await fixture({ width, disabled: true });
       try {
         const shared = {
           ...fileReference(
@@ -7256,10 +7256,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
         for (let cycle = 0; cycle < 2; cycle++) {
           await f.page
-            .getByRole('button', { name: '添加文件', exact: true })
-            .click();
-          await f.page
-            .getByRole('menuitem', { name: '参考资料', exact: true })
+            .getByRole('button', { name: '参考资料', exact: true })
             .click();
           await dialog
             .getByRole('textbox', { name: '查找参考资料', exact: true })
@@ -7291,10 +7288,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ).not.toBe('hidden');
         }
         await f.page
-          .getByRole('button', { name: '添加文件', exact: true })
-          .click();
-        await f.page
-          .getByRole('menuitem', { name: '参考资料', exact: true })
+          .getByRole('button', { name: '参考资料', exact: true })
           .click();
         await dialog
           .getByRole('button', { name: '引用 v1', exact: true })
@@ -7328,7 +7322,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   ])(
     'prepares exact company template parameters without submitting, then preserves them in the original send at $width px (recommended=$recommended)',
     async ({ width, recommended }) => {
-      const f = await fixture({ width, taskSuggestions: recommended });
+      const f = await fixture({
+        width,
+        taskSuggestions: recommended,
+        disabled: !recommended,
+      });
       const revisionId = id(8401),
         assetId = id(8402);
       const asset = CompanyAssetSchema.parse({
@@ -7484,10 +7482,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         if (recommended) await openQuickDirectory();
         else {
           await f.page
-            .getByRole('button', { name: '添加文件', exact: true })
-            .click();
-          await f.page
-            .getByRole('menuitem', { name: '参考资料', exact: true })
+            .getByRole('button', { name: '参考资料', exact: true })
             .click();
         }
         if (!recommended)
@@ -14198,6 +14193,89 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .click();
     }
   }
+
+  for (const theme of ['light', 'dark'] as const)
+    for (const width of [1440, 390])
+      it(`composer add menu opens existing file sidebars at ${width}px ${theme}`, async () => {
+        const f = await materialFixture({ width, appearance: theme });
+        try {
+          const input = f.page.getByRole('textbox', { name: /给 .* 的消息/ });
+          await input.fill('打开资料目录时保留当前草稿');
+          const add = f.page.getByRole('button', {
+            name: '添加文件',
+            exact: true,
+          });
+          await add.click();
+          const menu = f.page.getByRole('menu');
+          expect(await menu.getByRole('menuitem').allTextContents()).toEqual([
+            '交付成果',
+            '企业资料',
+            '本地上传',
+          ]);
+          expect(
+            await menu.getByText('添加到本轮', { exact: true }).count(),
+          ).toBe(0);
+          await f.page.keyboard.press('Escape');
+          await menu.waitFor({ state: 'hidden' });
+          expect(
+            await add.evaluate((node) => node === document.activeElement),
+          ).toBe(true);
+          for (const name of ['交付成果', '企业资料']) {
+            await add.click();
+            await menu.getByRole('menuitem', { name, exact: true }).click();
+            await f.panel.getByRole('region', { name, exact: true }).waitFor();
+            await menu.waitFor({ state: 'hidden' });
+            expect(await f.page.getByRole('dialog').count()).toBe(0);
+            expect(await input.inputValue()).toBe('打开资料目录时保留当前草稿');
+            expect(f.state.messageInputs).toEqual([]);
+            const box = (await f.panel.boundingBox())!;
+            expect(box.x).toBeGreaterThanOrEqual(-0.5);
+            expect(box.x + box.width).toBeLessThanOrEqual(width + 0.5);
+            await f.panel
+              .getByRole('button', { name: '关闭工作台', exact: true })
+              .click();
+            await f.panel.waitFor({ state: 'hidden' });
+          }
+          await add.click();
+          const chooser = f.page.waitForEvent('filechooser');
+          await menu
+            .getByRole('menuitem', { name: '本地上传', exact: true })
+            .click();
+          expect((await chooser).isMultiple()).toBe(true);
+          await menu.waitFor({ state: 'hidden' });
+          expect(await input.inputValue()).toBe('打开资料目录时保留当前草稿');
+          expect(f.state.messageInputs).toEqual([]);
+          expect(f.errors).toEqual([]);
+        } finally {
+          await f.close();
+        }
+      });
+
+  for (const width of [1440, 390])
+    it(`composer add menu respects the workbench switch at ${width}px`, async () => {
+      const f = await fixture({ width, disabled: true });
+      try {
+        await f.page
+          .getByRole('button', { name: '添加文件', exact: true })
+          .click();
+        const menu = f.page.getByRole('menu');
+        for (const name of ['交付成果', '企业资料'])
+          expect(
+            await menu
+              .getByRole('menuitem', { name, exact: true })
+              .isDisabled(),
+          ).toBe(true);
+        expect(
+          await menu
+            .getByRole('menuitem', { name: '本地上传', exact: true })
+            .isEnabled(),
+        ).toBe(true);
+        expect(await f.panel.count()).toBe(0);
+        expect(f.errors).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    });
 
   for (const theme of ['light', 'dark'] as const)
     for (const width of [1440, 390, 320])
@@ -21681,43 +21759,31 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   });
 
   for (const width of [1440, 390])
-    it(`selects, removes and sends authorized session references at ${width}px`, async () => {
-      const f = await fixture({ width });
+    it(`restores, removes and resends persisted session references at ${width}px`, async () => {
+      const f = await fixture({ width, running: true, queue: true });
       try {
-        const sources = [
-          session(A),
-          { ...session(B), title: '历史财报' },
-          { ...session(id(801)), title: '市场研究' },
-          { ...session(id(802)), title: '上次汇报' },
-          { ...session(id(803)), title: '竞争对手' },
-        ];
-        await f.page.route('**/api/v1/sessions?**', (route) =>
-          route.fulfill({
-            status: 200,
-            contentType: 'application/json',
-            body: JSON.stringify({ sessions: sources, nextCursor: null }),
-          }),
-        );
+        // The custom picker entry was removed. References already persisted
+        // in queued messages must still survive edit, removal and resend.
+        f.state.queue.push({
+          id: id(804),
+          runId: id(805),
+          text: '请根据引用整理汇报',
+          sessionReferences: [
+            { sessionId: B, label: '历史财报' },
+            { sessionId: id(801), label: '市场研究' },
+            { sessionId: id(802), label: '上次汇报' },
+          ],
+          attachments: [],
+          createdAt: now,
+        });
+        await f.page.reload();
         await f.page
-          .getByRole('button', { name: '添加文件', exact: true })
+          .locator('[data-queue-dock]')
+          .getByRole('button', { name: '重新编辑', exact: true })
           .click();
-        await f.page.getByRole('menuitem', { name: '引用会话' }).click();
-        const picker = f.page.getByRole('dialog', { name: '引用会话' });
-        await picker.getByRole('button', { name: /历史财报/ }).click();
-        await picker.getByRole('button', { name: /市场研究/ }).click();
-        await picker.getByRole('button', { name: /上次汇报/ }).click();
-        expect(
-          await picker.getByRole('button', { name: /竞争对手/ }).isDisabled(),
-        ).toBe(true);
-        expect(
-          await picker.getByRole('button', { name: /研究任务 A/ }).count(),
-        ).toBe(0);
-        if (process.env.ALLRICE_SESSION_REFERENCE_SCREENSHOT) {
-          await f.page.screenshot({
-            path: `${process.env.ALLRICE_SESSION_REFERENCE_SCREENSHOT}-${width}.png`,
-          });
-        }
-        await picker.getByRole('button', { name: '完成', exact: true }).click();
+        await f.page
+          .getByRole('button', { name: '移除引用：历史财报' })
+          .waitFor();
         await f.page
           .getByRole('button', { name: '移除引用：市场研究' })
           .click();

@@ -22,7 +22,6 @@ import {
 import { EmployeeCreateDialog } from '../app/chatflow/employee-create-dialog';
 import { WorkbenchFilesPanel } from '../app/chatflow/workbench-files-panel';
 import { EnterpriseMaterialsPanel } from '../app/chatflow/enterprise-materials-panel';
-import { WorkspaceFilePickerDialog } from '../app/chatflow/workspace-file-picker-dialog';
 import { ReferencePublicationDialog } from '../app/chatflow/reference-publication-dialog';
 import { SidebarSettings } from '../app/chatflow/sidebar-settings';
 import { AutomationTaskList } from '../app/chatflow/automation-tasks';
@@ -33,7 +32,7 @@ import {
 } from '../app/chatflow/employee-navigation';
 import { employeeDetailsFixture } from './employee-details-fixture';
 import { applyTheme } from '../lib/theme/theme';
-import type { Workspace, WorkspaceFile } from '../app/chatflow/chatflow-types';
+import type { Workspace } from '../app/chatflow/chatflow-types';
 import frame from '../app/chatflow/dsh-upstream/AppFrame.module.css';
 import conversation from '../app/chatflow/dsh-saas.module.css';
 import workbench from '../app/chatflow/workbench.module.css';
@@ -242,7 +241,6 @@ const controls: Record<string, FocusControl[]> = {
       ownerSelector: '[data-select-field]',
     },
   ],
-  'file-picker': [search('search', '搜索文件名')],
   'reference-add': [{ id: 'purpose', label: '用途' }],
   'reference-audience': [],
   deliverables: [
@@ -470,19 +468,6 @@ function Fixture() {
         headers={headers}
         onClose={noop}
         onCreated={noop}
-      />
-    );
-  else if (caseName === 'file-picker')
-    content = (
-      <WorkspaceFilePickerDialog
-        open
-        files={[] as WorkspaceFile[]}
-        employeeName="Rice"
-        accentStyle={employeeAccentStyle('Rice', 'green')}
-        attachedFileIds={[]}
-        onAddFiles={deniedWrite}
-        onClose={noop}
-        onOpenVersionHistory={noop}
       />
     );
   else if (caseName === 'reference-add' || caseName === 'reference-audience')
