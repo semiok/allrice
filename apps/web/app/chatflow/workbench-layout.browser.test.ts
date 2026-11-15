@@ -14414,7 +14414,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             expect(seen.gap).toBe('6px');
             expect(seen.border).toBe('0px');
             expect(seen.separator).toEqual({
-              content: '\"\"',
+              content: '""',
               position: 'absolute',
               height: '0.5px',
               bottom: '0px',
