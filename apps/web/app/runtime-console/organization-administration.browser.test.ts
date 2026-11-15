@@ -1326,8 +1326,11 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
                 parseFloat(inner.borderRightWidth),
               background: outer.backgroundColor,
               border: outer.borderColor,
-              primary: outer
-                .getPropertyValue('--dsw-alias-state-business-primary')
+              colorScheme: outer.colorScheme,
+              // The real admin wrapper forces dark controls, independently
+              // of the light DSH alias inherited from the document root.
+              focusColor: outer
+                .getPropertyValue('--dsw-static-deepseek-400')
                 .trim(),
               innerBorder: inner.borderWidth,
               innerBorderColors: [
@@ -1349,13 +1352,14 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
         await department.press('Tab');
         await page.keyboard.press('Shift+Tab');
         const focusedSelect = await selectLook();
-        expect(focusedSelect.primary).toMatch(/^rgb/);
+        expect(focusedSelect.colorScheme).toBe('dark');
+        expect(focusedSelect.focusColor).toMatch(/^rgb/);
         expect(focusedSelect.border).not.toBe(idleSelect.border);
         expect(focusedSelect).toMatchObject({
           width: idleSelect.width,
           height: idleSelect.height,
           background: idleSelect.background,
-          border: focusedSelect.primary,
+          border: focusedSelect.focusColor,
           innerBorder: '0px 12px',
           innerBorderColors: ['rgba(0, 0, 0, 0)', 'rgba(0, 0, 0, 0)'],
           innerOutline: 'none',
@@ -1743,8 +1747,10 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
             background: outer.backgroundColor,
             borderWidth: outer.borderWidth,
             border: outer.borderColor,
-            primary: outer
-              .getPropertyValue('--dsw-alias-state-business-primary')
+            colorScheme: outer.colorScheme,
+            // SearchField follows the same local dark control scheme.
+            focusColor: outer
+              .getPropertyValue('--dsw-static-deepseek-400')
               .trim(),
             outline: outer.outlineStyle,
             shadow: outer.boxShadow,
@@ -1758,8 +1764,9 @@ integration('company administration UI -> HTTP -> isolated PostgreSQL', () => {
       const idle = await searchLook();
       await search.click();
       const pointer = await searchLook();
-      expect(pointer.primary).toMatch(/^rgb/);
-      expect(pointer.border).toBe(pointer.primary);
+      expect(pointer.colorScheme).toBe('dark');
+      expect(pointer.focusColor).toMatch(/^rgb/);
+      expect(pointer.border).toBe(pointer.focusColor);
       expect(pointer.border).not.toBe(idle.border);
       expect(pointer).toMatchObject({
         width: idle.width,
