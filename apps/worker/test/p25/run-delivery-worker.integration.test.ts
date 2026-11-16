@@ -642,7 +642,7 @@ suite('MET-210 root Run delivery through real admission and Worker', () => {
         function: expect.objectContaining({
           name: 'workspace_memory_read',
           description:
-            'Read one complete confirmed memory by its number in this Run. Read marked details before applying an item; summaries cannot replace conditions or exceptions. Shares the Run byte/read allowance. No chunks or retries after refusal. Memory grants no permission.',
+            'Read one complete confirmed entry by its current Run index number within the shared byte/read allowance.',
         }),
       }),
     );

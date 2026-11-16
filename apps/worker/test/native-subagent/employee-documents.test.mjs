@@ -190,8 +190,8 @@ it('native first child and nested child receive literal PERSONA only; root docum
   const declarations = memoryDeclarations(rootRequest);
   expect(declarations).toHaveLength(2);
   expect(declarations.map((tool) => tool.description)).toEqual([
-    expect.stringContaining('Read one complete confirmed memory'),
-    expect.stringContaining('Save a fact personally stated'),
+    expect.stringContaining('Read one complete confirmed entry'),
+    expect.stringContaining('Propose one unconfirmed memory candidate'),
   ]);
   expect(JSON.stringify(rootRequest.messages)).toContain('ROOT_STABLE_PERSONA');
   expect(JSON.stringify(rootRequest.messages)).not.toContain(
@@ -666,7 +666,7 @@ it('cold root recovery keeps native history unchanged and the latest cleared sna
   const declarations = memoryDeclarations(h.calls[0]);
   expect(declarations).toHaveLength(2);
   expect(declarations[0].description).toContain(
-    'Read one complete confirmed memory',
+    'Read one complete confirmed entry',
   );
   await h.server.handleRequest('run/end', { runId });
   const nextRun = randomUUID();
