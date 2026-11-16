@@ -210,6 +210,7 @@ type State = {
   helpGate?: Promise<void>;
   addGate?: Promise<void>;
   failGenerateOnce?: boolean;
+  loseGenerateResponseOnce?: boolean;
   failCandidateOnce?: boolean;
   failAllRecovery?: boolean;
   failRecoveryAfterGenerate?: boolean;
@@ -443,13 +444,23 @@ suite('MET-224 main-area brand media text workflow', () => {
             state.failGenerateOnce = false;
             return reply({ message: '网络中断，请重试' }, 503);
           }
-          const row = recovery(
-            body.operation,
-            'queued',
-            310 + state.runs.length * 2,
+          let row = state.runs.find(
+            (existing) =>
+              existing.invocation.intent.requestId === body.requestId,
           );
-          row.invocation.intent = body;
-          state.runs.unshift(row);
+          if (!row) {
+            row = recovery(
+              body.operation,
+              'queued',
+              310 + state.runs.length * 2,
+            );
+            row.invocation.intent = body;
+            state.runs.unshift(row);
+          }
+          if (state.loseGenerateResponseOnce) {
+            state.loseGenerateResponseOnce = false;
+            return reply({ message: '生成已受理但回执丢失' }, 503);
+          }
           return reply({
             run: row.run,
             invocation: row.invocation,
@@ -904,6 +915,70 @@ suite('MET-224 main-area brand media text workflow', () => {
       await f.close();
     },
   );
+
+  it('terminal retry replays one accepted request after a lost receipt, while a newly failed successor can start its own retry', async () => {
+    const original = recovery('article', 'failed');
+    original.invocation.intent.instructions = '原始修改意见';
+    original.invocation.intent.references = [
+      { origin: 'upload', file: { objectId: id(90), checksum } },
+    ];
+    const f = await fixture({
+      runs: [original],
+      loseGenerateResponseOnce: true,
+    });
+    await f.open();
+    await f.page.getByRole('tab', { name: '文章库', exact: true }).click();
+    await f.page.getByRole('button', { name: '重试', exact: true }).click();
+    await f.page.getByText('生成已受理但回执丢失', { exact: false }).waitFor();
+    expect(f.state.runs).toHaveLength(2); // Server already accepted this new Run.
+    await f.page.getByRole('button', { name: '重试', exact: true }).click();
+    await f.page.getByText('已排队，等待当前员工', { exact: true }).waitFor();
+    const attempts = generates(f.state);
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]!.body).toEqual(attempts[0]!.body);
+    expect(attempts[1]!.body).toMatchObject({
+      articleId: id(20),
+      expectedRevision: 1,
+      instructions: original.invocation.intent.instructions,
+      references: original.invocation.intent.references,
+    });
+    expect(f.state.runs).toHaveLength(2);
+    const successor = f.state.runs[0]!;
+    successor.run = runSnapshot(Number(successor.run.id.slice(-12)), 'failed');
+    await f.page.getByRole('button', { name: '← 回到对话' }).click();
+    await f.open();
+    await f.page.getByRole('tab', { name: '文章库', exact: true }).click();
+    await f.page.getByRole('button', { name: '重试', exact: true }).click();
+    await f.page.getByText('已排队，等待当前员工', { exact: true }).waitFor();
+    expect(generates(f.state)).toHaveLength(3);
+    expect(generates(f.state)[2]!.body!.requestId).not.toBe(
+      attempts[0]!.body!.requestId,
+    );
+    expect(f.state.runs).toHaveLength(3);
+    await f.close();
+  });
+
+  it('restores the same frozen retry identity across a full remount when the first request outcome is unknown', async () => {
+    const original = recovery('article', 'canceled');
+    const f = await fixture({ runs: [original], failGenerateOnce: true });
+    await f.open();
+    await f.page.getByRole('tab', { name: '文章库', exact: true }).click();
+    await f.page.getByRole('button', { name: '重试', exact: true }).click();
+    await f.page.getByText('网络中断，请重试', { exact: false }).waitFor();
+    await f.page.getByRole('button', { name: '← 回到对话' }).click();
+    await f.open();
+    await f.page.getByRole('tab', { name: '文章库', exact: true }).click();
+    await f.page.getByRole('button', { name: '重试', exact: true }).click();
+    await f.page.getByText('已排队，等待当前员工', { exact: true }).waitFor();
+    const attempts = generates(f.state);
+    expect(attempts).toHaveLength(2);
+    expect(attempts[1]!.body).toEqual(attempts[0]!.body);
+    expect(attempts[1]!.body!.requestId).not.toBe(
+      original.invocation.intent.requestId,
+    );
+    expect(f.state.runs).toHaveLength(2);
+    await f.close();
+  });
 
   it('applies legal topics, articles and calendar even when recovery reading fails, and preserves cancel for an unavailable historical target', async () => {
     const missing = recovery('article', 'queued');
