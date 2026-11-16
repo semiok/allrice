@@ -105,3 +105,8 @@ export {
   ReferenceContentCallSchema,
   isBoundedReferenceToolName,
 } from './reference-image.ts';
+
+export {
+  brandMediaTools,
+  brandMediaNativeParameters,
+} from './brand-media-tools.ts';

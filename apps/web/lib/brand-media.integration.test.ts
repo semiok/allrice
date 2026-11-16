@@ -10,6 +10,15 @@ import {
   allRiceToolManifest,
   brandMediaModule,
   brandMediaRelease,
+  brandMediaModuleV010,
+  brandMediaTools,
+  brandMediaUsage,
+  EmployeeExecutionSnapshotSchema,
+  BrandMediaCandidatesResultSchema,
+  BrandMediaArticleResultSchema,
+  type ExecutionContext,
+  type RunSnapshot,
+  type BrandMediaInvocation,
   makeObjectKey,
   type BrandMediaArticle,
   type BrandMediaMutationResult,
@@ -38,7 +47,11 @@ import {
   savePlatformEmployeeDraft,
   assignPublishedPlatformEmployeeToWorkspace,
 } from '../../../packages/database/src/employees/platform-employees.ts';
-import { getEmployeeWorkspace } from '../../../packages/database/src/workspace/service.ts';
+import {
+  createChatSession,
+  sendChatMessage,
+  getEmployeeWorkspace,
+} from '../../../packages/database/src/workspace/service.ts';
 import {
   EmployeeModuleError,
   requireEmployeeModuleBinding,
@@ -53,7 +66,17 @@ import {
   claimReferenceProcessing,
   finishReferenceProcessing,
 } from '../../../packages/database/src/reference-processing.ts';
-import { readBrandMedia } from '../../../packages/database/src/brand-media/server-wiring.ts';
+import {
+  readBrandMedia,
+  freezeBrandMediaModule,
+} from '../../../packages/database/src/brand-media/server-wiring.ts';
+import {
+  startClaimedJob,
+  cancelRun,
+} from '../../../packages/database/src/execution/queue.ts';
+import { readFrozenSkillResource } from '../../../packages/database/src/skill-bundles.ts';
+import * as runtimeStorage from './storage/runtime';
+import * as uploadHttp from '../app/api/v1/workbench/files/route';
 import * as catalog from '../app/api/v1/employee-instances/[id]/modules/route';
 import * as business from '../app/api/v1/employee-instances/[id]/brand-media/route';
 
@@ -132,6 +155,7 @@ function request(
       method: input === undefined ? 'GET' : 'POST',
       headers: {
         host: 'example.test',
+        origin: 'https://example.test',
         'Content-Type': 'application/json',
         'x-allrice-organization-id': a.context.organizationId,
         'x-allrice-workspace-id': a.scope.workspaceId,
@@ -380,8 +404,12 @@ suite(
   () => {
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '0');
+      vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       f = await createRuntimeFixtureDatabase();
       vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
+      vi.spyOn(runtimeStorage, 'getStorageAdapter').mockReturnValue(
+        runtimeFixtureStorage(f.db),
+      );
     }, 120000);
     afterAll(async () => {
       vi.restoreAllMocks();
@@ -504,8 +532,10 @@ suite(
         allRiceToolManifest.map((t) => t.canonicalName),
       );
       expect(actualNative.every((name) => known.has(name))).toBe(true);
-      expect(brandMediaModule.tools).toEqual([]);
-      expect(brandMediaModule.skills).toEqual([]);
+      expect(brandMediaModule.tools).toEqual(
+        brandMediaTools.map((tool) => tool.canonicalName),
+      );
+      expect(brandMediaModule.skills).toEqual(['brand-media']);
     });
 
     it('allows the real published platform Rice to self-add without preinstallation or changed capabilities', async () => {
@@ -1351,6 +1381,779 @@ suite(
         '@allrice/contracts',
         './errors.ts',
       ]);
+    });
+
+    async function generationActor(
+      tools = [
+        'workspace.export.create',
+        'workspace.skill.read',
+        'workspace.document.read',
+      ],
+      denied: string[] = [],
+    ) {
+      const a = await actor(),
+        versionId = randomUUID();
+      const manifest = EmployeeDefinitionSchema.parse({
+        ...a.manifest,
+        capabilityBindings: {
+          ...a.manifest.capabilityBindings,
+          toolNames: tools,
+        },
+        securityPolicy: {
+          ...a.manifest.securityPolicy,
+          deniedCapabilities: denied,
+        },
+      });
+      await f.db`insert into allrice_employee_versions(id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
+        select ${versionId},organization_id,workspace_id,employee_id,version+1,name,model,system_prompt,capabilities,
+          ${employeeManifestChecksum(manifest)},${f.db.json(manifest)},provider_snapshot from allrice_employee_versions where id=${a.currentVersionId}`;
+      await f.db`update allrice_employee_assignments set employee_version_id=${versionId} where id=${a.assignmentId}`;
+      a.manifest = manifest;
+      a.currentVersionId = versionId;
+      await install(a);
+      return a;
+    }
+    const candidateIntent = (a: Actor, patch: object = {}) => ({
+      ...a.scope,
+      requestId: randomUUID(),
+      operation: 'candidates',
+      direction: '参考已选资料，想几个新品选题',
+      references: [],
+      ...patch,
+    });
+    async function generate(
+      a: Actor,
+      input: Record<string, unknown> = candidateIntent(a),
+      status = 200,
+    ) {
+      const response = await business.POST(
+        request(a, 'brand-media', input),
+        params(a.scope.instanceId),
+      );
+      const result = await response.json();
+      expect(response.status, JSON.stringify(result)).toBe(status);
+      return result as {
+        run: RunSnapshot;
+        userMessage: { id: string; sessionId: string };
+        created: boolean;
+        delivery: string;
+        fallbackRunId: string | null;
+      };
+    }
+    async function execution(
+      a: Actor,
+      sent: Awaited<ReturnType<typeof generate>>,
+    ) {
+      const workerId = randomUUID(),
+        leaseToken = randomUUID();
+      const [job] =
+        await f.db`update allrice_jobs set status='claimed',worker_id=${workerId},lease_token=${leaseToken},claimed_at=clock_timestamp(),heartbeat_at=clock_timestamp(),lease_expires_at=clock_timestamp()+interval '5 minutes',available_at=clock_timestamp()
+        where run_id=${sent.run.id} returning id`;
+      const running = await startClaimedJob(workerId, job!.id, leaseToken);
+      expect(running).not.toBeNull();
+      const frozen = await resolveEmployeeExecution({
+        organizationId: a.context.organizationId,
+        workspaceId: a.scope.workspaceId,
+        ownerId: a.context.actor.id,
+        runId: sent.run.id,
+      });
+      return {
+        context: running!.context,
+        sessionId: sent.userMessage.sessionId,
+        userMessageId: sent.userMessage.id,
+        managedBrowserJobAttempt: running!.job.attempt,
+        managedBrowserJobLeaseToken: leaseToken,
+        capabilities: frozen.grantedCapabilities,
+        nativeSkills: frozen.nativeSkills,
+        storageRoot: f.storageRoot,
+      };
+    }
+    async function broker(
+      input: Awaited<ReturnType<typeof execution>>,
+      name: string,
+      args: Record<string, unknown>,
+      callId = randomUUID(),
+    ) {
+      const path = new URL('../../worker/src/tool-broker.ts', import.meta.url)
+        .href;
+      const { executeRiceTool } = (await import(path)) as {
+        executeRiceTool: (
+          input: object,
+        ) => Promise<{ modelContent: string; summary: string }>;
+      };
+      return executeRiceTool({
+        ...input,
+        call: { id: callId, name, arguments: args },
+      });
+    }
+    async function finish(runId: string) {
+      await f.db`update allrice_jobs set status='succeeded',completed_at=clock_timestamp(),worker_id=null,lease_token=null,lease_expires_at=null where run_id=${runId}`;
+      await f.db`update allrice_runs set state='succeeded',completed_at=clock_timestamp() where id=${runId}`;
+      await f.db`update allrice_employee_runs set status='succeeded',completed_at=clock_timestamp() where run_id=${runId}`;
+    }
+    const sampleCandidates = {
+      candidates: [
+        { title: '下班后的十分钟', summary: '面向通勤上班族' },
+        { title: '冬日新品故事', summary: '面向已有客户' },
+      ],
+    };
+    it('“先想几个选题，我来选” crosses login HTTP → frozen Run → real Broker → immutable JSON and only a human adds a topic', async () => {
+      const a = await generationActor(),
+        input = candidateIntent(a);
+      const first = await generate(a, input),
+        replay = await generate(a, input);
+      expect(replay.run.id).toBe(first.run.id);
+      expect(replay.userMessage.id).toBe(first.userMessage.id);
+      expect(first.delivery).toBe('immediate');
+      const session = (
+        await f.db`select * from allrice_chat_sessions where id=${first.userMessage.sessionId}`
+      )[0]!;
+      expect(session.employee_instance_id).toBe(a.scope.instanceId);
+      expect(session.account_capability_snapshot).not.toBeNull();
+      const [frozenTools] =
+        await f.db`select execution_snapshot from allrice_employee_runs where run_id=${first.run.id}`;
+      const names: string[] =
+        frozenTools!.execution_snapshot.capabilitySnapshot.bindings.toolNames;
+      expect(
+        names.filter((name) => name === 'workspace.skill.read'),
+      ).toHaveLength(1);
+      expect(
+        names.filter((name) =>
+          [
+            'workspace.export.create',
+            'workspace.skill.read',
+            'workspace.document.read',
+          ].includes(name),
+        ),
+      ).toEqual([
+        'workspace.export.create',
+        'workspace.skill.read',
+        'workspace.document.read',
+      ]);
+      const run = await execution(a, first),
+        callId = randomUUID();
+      const result = await broker(
+        run,
+        'workspace.brand_media.candidates',
+        sampleCandidates,
+        callId,
+      );
+      const receipt = BrandMediaCandidatesResultSchema.parse(
+        JSON.parse(result.modelContent),
+      );
+      expect(receipt).toMatchObject({
+        ...sampleCandidates,
+        runId: first.run.id,
+        addedToTopics: false,
+      });
+      expect(await read(a, { view: 'topics' })).toMatchObject({ items: [] });
+      expect(
+        BrandMediaCandidatesResultSchema.parse(
+          JSON.parse(
+            (
+              await broker(
+                run,
+                'workspace.brand_media.candidates',
+                sampleCandidates,
+                callId,
+              )
+            ).modelContent,
+          ),
+        ),
+      ).toEqual(receipt);
+      await finish(first.run.id);
+      const recovered = await business.GET(
+        request(a, 'brand-media', undefined, '?view=runs'),
+        params(a.scope.instanceId),
+      );
+      expect(recovered.status).toBe(200);
+      const recovery = await recovered.json();
+      expect(recovery.runs[0].run).toMatchObject({
+        id: first.run.id,
+        status: 'succeeded',
+      });
+      expect(JSON.parse(recovery.runs[0].deliveries[0].content)).toEqual(
+        sampleCandidates,
+      );
+      const add = {
+        operation: 'topic.add',
+        requestId: randomUUID(),
+        candidate: sampleCandidates.candidates[0],
+        direction: input.direction,
+        references: [],
+        sourceRunId: first.run.id,
+      };
+      const selected = await command(a, add),
+        selectedAgain = await command(a, add);
+      expect(selectedAgain).toEqual({ ...selected, replayed: true });
+      expect(await read(a, { view: 'topics' })).toMatchObject({
+        items: [
+          {
+            candidate: sampleCandidates.candidates[0],
+            sourceRunId: first.run.id,
+          },
+        ],
+      });
+    });
+    it('queues a new fixed article Run behind an active Run without a steer command or mutating the old snapshot, including replay', async () => {
+      const a = await generationActor(),
+        session = await createChatSession(a.context, {
+          workspaceId: a.scope.workspaceId,
+          employeeInstanceId: a.scope.instanceId,
+          title: '已有对话',
+        });
+      const first = await generate(
+        a,
+        candidateIntent(a, { sessionId: session.id }),
+      );
+      await execution(a, first);
+      const [old] =
+        await f.db`select execution_snapshot from allrice_employee_runs where run_id=${first.run.id}`;
+      // Establish the ordinary native runtime's active turn, as the real Worker does.
+      await f.db`insert into allrice_conversation_runtimes(session_id,organization_id,workspace_id,owner_id,thread_id,thread_generation,active_run_id,active_turn_id,state,worker_id,provider,config_checksum)
+        values(${session.id},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${randomUUID()},1,${first.run.id},'active-module-fixture','running',${randomUUID()},'dsh',${employeeManifestChecksum(a.manifest)})
+        on conflict(session_id) do update set active_run_id=excluded.active_run_id,active_turn_id=excluded.active_turn_id,state='running'`;
+      const article = await draft(a),
+        intent = candidateIntent(a, {
+          sessionId: session.id,
+          operation: 'article',
+          articleId: article.id,
+          expectedRevision: article.revision,
+          instructions: '写正文',
+        });
+      delete (intent as Record<string, unknown>).direction;
+      const next = await generate(a, intent),
+        replay = await generate(a, intent);
+      expect(next.run.id).not.toBe(first.run.id);
+      expect(next.delivery).toBe('follow_up');
+      expect(replay.run.id).toBe(next.run.id);
+      expect(next.fallbackRunId).toBe(next.run.id);
+      expect(
+        (
+          await f.db`select execution_snapshot from allrice_employee_runs where run_id=${first.run.id}`
+        )[0],
+      ).toEqual(old);
+      const [newer] =
+        await f.db`select execution_snapshot from allrice_employee_runs where run_id=${next.run.id}`;
+      expect(newer!.execution_snapshot.moduleInvocation.intent).toMatchObject({
+        operation: 'article',
+        articleId: article.id,
+        expectedRevision: article.revision,
+      });
+      expect(
+        await f.db`select * from allrice_conversation_commands where followup_run_id=${next.run.id}`,
+      ).toHaveLength(0);
+      await generate(
+        a,
+        { ...intent, expectedRevision: article.revision + 1 },
+        409,
+      );
+      await generate(a, { ...intent, articleId: randomUUID() }, 409);
+      await generate(
+        a,
+        {
+          ...intent,
+          references: [
+            {
+              origin: 'reference',
+              sourceId: randomUUID(),
+              revisionId: randomUUID(),
+            },
+          ],
+        },
+        409,
+      );
+    });
+    it('fixed no-chat Session retries once, a new request survives previous module Session archival, and normal chat digests are unchanged', async () => {
+      const a = await generationActor(),
+        intent = candidateIntent(a);
+      const first = await generate(a, intent),
+        again = await generate(a, intent);
+      expect(again.run.id).toBe(first.run.id);
+      expect(
+        await f.db`select id from allrice_chat_sessions where id=${first.userMessage.sessionId}`,
+      ).toHaveLength(1);
+      await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${first.userMessage.sessionId}`;
+      const next = await generate(a, candidateIntent(a));
+      expect(next.userMessage.sessionId).not.toBe(first.userMessage.sessionId);
+      const session = await createChatSession(a.context, {
+        workspaceId: a.scope.workspaceId,
+        employeeInstanceId: a.scope.instanceId,
+        title: '普通聊天',
+      });
+      const { SendChatMessageInputSchema } = await import('@allrice/contracts');
+      const message = SendChatMessageInputSchema.parse({
+        text: '只读说明',
+        clientMessageId: randomUUID(),
+      });
+      const sent = await sendChatMessage(
+        a.context,
+        a.scope.workspaceId,
+        session.id,
+        message,
+      );
+      const [digest] =
+        await f.db`select request_digest from allrice_chat_input_requests where user_message_id=${sent.userMessage.id}`;
+      expect(digest!.request_digest).toBe(
+        'sha256:' +
+          createHash('sha256').update(JSON.stringify(message)).digest('hex'),
+      );
+      expect(
+        (
+          await f.db`select execution_snapshot from allrice_employee_runs where run_id=${sent.run.id}`
+        )[0]!.execution_snapshot,
+      ).not.toHaveProperty('moduleInvocation');
+    });
+    it('keeps all 64 original frozen tools and only exact module overflow slots, with unchanged module-free JSON', async () => {
+      // The old editable contract accepts these synthetic names. They are never
+      // dispatched; one existing export tool supplies the original write grant.
+      const a = await generationActor([
+        'workspace.export.create',
+        ...Array.from(
+          { length: 60 },
+          (_, index) => `fixture.original.${index}`,
+        ),
+      ]);
+      const sent = await generate(a);
+      const frozen = (
+        await resolveEmployeeExecution({
+          organizationId: a.context.organizationId,
+          workspaceId: a.scope.workspaceId,
+          ownerId: a.context.actor.id,
+          runId: sent.run.id,
+        })
+      ).executionSnapshot!;
+      expect(frozen.schemaVersion).toBe(2);
+      if (frozen.schemaVersion !== 2) throw Error('Requires V2 freeze');
+      const additions = [
+        ...brandMediaTools.map((tool) => tool.canonicalName),
+        'workspace.skill.read',
+      ];
+      const names = frozen.capabilitySnapshot.bindings.toolNames;
+      const original = names.filter((name) => !additions.includes(name));
+      expect(original).toHaveLength(64);
+      expect(names).toEqual([...original, ...additions]);
+      const plain = JSON.parse(JSON.stringify(frozen));
+      delete plain.modules;
+      delete plain.moduleInvocation;
+      plain.capabilitySnapshot.bindings.toolNames = original;
+      const {
+        EmployeeExecutionSnapshotSchema,
+        EmployeeExecutionSnapshotV1Schema,
+        EmployeeDefinitionSchema,
+      } = await import('@allrice/contracts');
+      expect(JSON.stringify(EmployeeExecutionSnapshotSchema.parse(plain))).toBe(
+        JSON.stringify(plain),
+      );
+      for (const candidate of [
+        {
+          ...plain,
+          capabilitySnapshot: {
+            ...plain.capabilitySnapshot,
+            bindings: {
+              ...plain.capabilitySnapshot.bindings,
+              toolNames: [...original, 'fixture.overflow'],
+            },
+          },
+        },
+        {
+          ...frozen,
+          capabilitySnapshot: {
+            ...frozen.capabilitySnapshot,
+            bindings: {
+              ...frozen.capabilitySnapshot.bindings,
+              toolNames: [
+                ...original,
+                ...additions.slice(1),
+                'fixture.overflow',
+              ],
+            },
+          },
+        },
+        {
+          ...frozen,
+          modules: frozen.modules!.map((module) => ({
+            ...module,
+            release: { ...module.release, digest: 'sha256:' + '0'.repeat(64) },
+          })),
+        },
+      ])
+        expect(
+          EmployeeExecutionSnapshotSchema.safeParse(candidate).success,
+        ).toBe(false);
+      expect(
+        EmployeeExecutionSnapshotV1Schema.shape.capabilitySnapshot.shape.bindings.safeParse(
+          {
+            ...plain.capabilitySnapshot.bindings,
+            toolNames: [...original, 'fixture.overflow'],
+          },
+        ).success,
+      ).toBe(false);
+      expect(
+        EmployeeDefinitionSchema.safeParse({
+          ...a.manifest,
+          capabilityBindings: {
+            ...a.manifest.capabilityBindings,
+            toolNames: Array.from(
+              { length: 65 },
+              (_, index) => `fixture.${index}`,
+            ),
+          },
+        }).success,
+      ).toBe(false);
+    });
+    it.each([
+      { tools: [] },
+      { tools: ['workspace.document.read'] },
+      { tools: ['workspace.export.create'] },
+    ])(
+      'adds no grants from module tools or Skill for original selected tools $tools',
+      async ({ tools }) => {
+        const a = await actor(),
+          scope = {
+            ...a.scope,
+            organizationId: a.context.organizationId,
+            ownerId: a.context.actor.id,
+          };
+        await install(a);
+        const original = tools.includes('workspace.export.create')
+          ? (['storage:read', 'storage:write'] as const)
+          : (['storage:read'] as const);
+        const frozen = await freezeBrandMediaModule(scope, original);
+        expect(frozen?.binding.release).toEqual(brandMediaRelease);
+        expect(frozen?.tools.includes('workspace.brand_media.candidates')).toBe(
+          original.includes('storage:write' as never),
+        );
+        expect(frozen?.skill?.requiredToolRefs).toEqual([
+          'workspace.skill.read',
+        ]);
+        expect(original).toEqual(
+          tools.includes('workspace.export.create')
+            ? ['storage:read', 'storage:write']
+            : ['storage:read'],
+        );
+        const resource = readFrozenSkillResource(
+          [frozen!.skill!],
+          'brand-media',
+          brandMediaUsage.path,
+        );
+        expect(Buffer.from(resource.contentBase64, 'base64').toString()).toBe(
+          brandMediaUsage.content,
+        );
+        expect(resource.checksum).toBe(brandMediaUsage.checksum);
+      },
+    );
+    it('read-only and explicit denied write employees cannot gain write by installing; old 0.1 bindings never hot-upgrade', async () => {
+      for (const a of [
+        await generationActor(['workspace.document.read']),
+        await generationActor(undefined, ['storage:write']),
+      ]) {
+        const input = candidateIntent(a);
+        await generate(a, input, 403);
+        const source = (
+          await f.db`select manifest from allrice_employee_versions where id=${a.currentVersionId}`
+        )[0]!.manifest;
+        expect(source.capabilityBindings.toolNames).not.toContain(
+          'workspace.brand_media.candidates',
+        );
+      }
+      const moduleOnly = await generationActor([
+        'workspace.brand_media.candidates',
+      ]);
+      await generate(moduleOnly, candidateIntent(moduleOnly), 403);
+      const a = await generationActor();
+      await f.db`update allrice_employee_module_bindings set content_version='0.1.0',digest=${brandMediaModuleV010.digest} where instance_id=${a.scope.instanceId}`;
+      await generate(a, candidateIntent(a), 403);
+      expect(
+        await f.db`select content_version from allrice_employee_module_bindings where instance_id=${a.scope.instanceId}`,
+      ).toMatchObject([{ content_version: '0.1.0' }]);
+      const response = await catalog.POST(
+        request(a, 'modules', installInput(a)),
+        params(a.scope.instanceId),
+      );
+      expect(response.status).toBe(409);
+    });
+    it('“把这篇写完整” submits only the fixed article and preserves an immutable deliverable on late CAS conflicts', async () => {
+      const a = await generationActor(),
+        article = await draft(a);
+      const intent = {
+        ...a.scope,
+        requestId: randomUUID(),
+        operation: 'article',
+        articleId: article.id,
+        expectedRevision: article.revision,
+        instructions: '把这篇写完整',
+        references: [],
+      };
+      const sent = await generate(a, intent),
+        run = await execution(a, sent),
+        callId = randomUUID();
+      const args = {
+        articleId: article.id,
+        expectedRevision: article.revision,
+        title: '完整标题',
+        body: '第一段正文。\n第二段正文。',
+      };
+      await expect(
+        broker(run, 'workspace.brand_media.article.submit', {
+          ...args,
+          articleId: randomUUID(),
+        }),
+      ).rejects.toThrow();
+      const result = await broker(
+          run,
+          'workspace.brand_media.article.submit',
+          args,
+          callId,
+        ),
+        receipt = BrandMediaArticleResultSchema.parse(
+          JSON.parse(result.modelContent),
+        );
+      expect(receipt.articleUpdated).toBe(true);
+      const saved = await articleRead(a, article.id);
+      expect(saved).toMatchObject({
+        title: args.title,
+        revision: article.revision + 1,
+        body: receipt.file,
+      });
+      expect(
+        BrandMediaArticleResultSchema.parse(
+          JSON.parse(
+            (
+              await broker(
+                run,
+                'workspace.brand_media.article.submit',
+                args,
+                callId,
+              )
+            ).modelContent,
+          ),
+        ),
+      ).toMatchObject({
+        articleUpdated: true,
+        replayed: true,
+        file: receipt.file,
+      });
+      await finish(sent.run.id);
+      const savedRecovery = await business.GET(
+        request(a, 'brand-media', undefined, '?view=runs'),
+        params(a.scope.instanceId),
+      );
+      expect(savedRecovery.status).toBe(200);
+      expect((await savedRecovery.json()).runs[0].submission).toEqual({
+        articleUpdated: true,
+        revision: saved.revision,
+      });
+      const nextIntent = {
+        ...intent,
+        requestId: randomUUID(),
+        expectedRevision: saved.revision,
+      };
+      const next = await generate(a, nextIntent),
+        nextRun = await execution(a, next);
+      await publication(a, saved, { action: 'schedule', schedule });
+      const conflict = BrandMediaArticleResultSchema.parse(
+        JSON.parse(
+          (
+            await broker(nextRun, 'workspace.brand_media.article.submit', {
+              ...args,
+              expectedRevision: saved.revision,
+              body: '迟到的改稿',
+            })
+          ).modelContent,
+        ),
+      );
+      expect(conflict).toMatchObject({
+        articleUpdated: false,
+        conflict: 'version_conflict',
+      });
+      expect((await articleRead(a, article.id)).body).toEqual(receipt.file);
+      expect(
+        await f.db`select version_id from allrice_workbench_artifacts where version_id=${conflict.file.versionId}`,
+      ).toHaveLength(1);
+      await finish(next.run.id);
+      const recovery = await business.GET(
+        request(a, 'brand-media', undefined, '?view=runs'),
+        params(a.scope.instanceId),
+      );
+      expect(recovery.status).toBe(200);
+      const cold = await recovery.json();
+      expect(cold.runs[0].submission).toEqual({
+        articleUpdated: false,
+        revision: null,
+      });
+      expect(
+        cold.runs.some((row: { deliveries: { content: string }[] }) =>
+          row.deliveries.some((delivery) => delivery.content === '迟到的改稿'),
+        ),
+      ).toBe(true);
+    });
+    it.each(['lease', 'cancel', 'module', 'instance', 'internal'] as const)(
+      'refuses a real Broker call after %s authority loss without a candidate or business write',
+      async (kind) => {
+        const a = await generationActor(),
+          sent = await generate(a),
+          run = await execution(a, sent);
+        if (kind === 'lease')
+          await f.db`update allrice_jobs set lease_token=${randomUUID()} where id=${run.context.jobId}`;
+        if (kind === 'cancel')
+          await cancelRun(a.context, a.scope.workspaceId, sent.run.id, {
+            reason: '真人取消',
+          });
+        if (kind === 'module')
+          await f.db`update allrice_employee_module_bindings set revoked_at=clock_timestamp(),revision=revision+1 where instance_id=${a.scope.instanceId}`;
+        if (kind === 'instance')
+          await f.db`update allrice_employee_instances set archived_at=clock_timestamp() where id=${a.scope.instanceId}`;
+        if (kind === 'internal') {
+          // Existing durable automation source predicate; no regex intent or actor impersonation.
+          await f.db`insert into allrice_platform_quality_checks(id,request_id,organization_id,workspace_id,owner_id,run_id,job_id,session_id,input_digest,frozen) values(${randomUUID()},${randomUUID()},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${sent.run.id},${run.context.jobId},${run.sessionId},${'sha256:' + 'b'.repeat(64)},'{}')`;
+        }
+        await expect(
+          broker(run, 'workspace.brand_media.candidates', sampleCandidates),
+        ).rejects.toThrow();
+        expect(
+          await f.db`select * from allrice_workbench_artifacts where run_id=${sent.run.id}`,
+        ).toHaveLength(0);
+        expect(
+          await read(
+            a,
+            { view: 'topics' },
+            kind === 'module' || kind === 'instance' ? 403 : 200,
+          ),
+        ).toBeDefined();
+      },
+    );
+    it('rejects browser-forged invocation/steer/actor and cross-origin writes, and gates module Skill resources by current lease/binding', async () => {
+      const a = await generationActor();
+      for (const forged of [
+        { deliveryMode: 'steer' },
+        { moduleInvocation: {} },
+        { actorId: a.context.actor.id },
+      ])
+        await generate(a, candidateIntent(a, forged), 422);
+      const req = request(a, 'brand-media', candidateIntent(a));
+      req.headers.set('origin', 'https://attacker.test');
+      expect(
+        (await business.POST(req, params(a.scope.instanceId))).status,
+      ).toBe(403);
+      const moduleRequest = request(a, 'modules', installInput(a));
+      moduleRequest.headers.set('origin', 'https://attacker.test');
+      expect(
+        (await catalog.POST(moduleRequest, params(a.scope.instanceId))).status,
+      ).toBe(403);
+      for (const malformed of [null, [], { operation: 'candidates' }])
+        expect(
+          (
+            await business.POST(
+              request(a, 'brand-media', malformed),
+              params(a.scope.instanceId),
+            )
+          ).status,
+        ).toBe(422);
+      const sent = await generate(a),
+        run = await execution(a, sent);
+      const args = { skill: 'brand-media', path: brandMediaUsage.path };
+      const resource = JSON.parse(
+        (await broker(run, 'workspace.skill.read', args)).modelContent,
+      );
+      expect(resource.text).toBe(brandMediaUsage.content);
+      expect(resource.checksum).toBe(brandMediaUsage.checksum);
+      expect(resource.executionPermission).toBe(false);
+      await f.db`update allrice_employee_module_bindings set revoked_at=clock_timestamp(),revision=revision+1 where instance_id=${a.scope.instanceId}`;
+      await expect(broker(run, 'workspace.skill.read', args)).rejects.toThrow();
+    });
+    it('uploads a real JPG privately, freezes its upload pin and uses the existing native image attachment path without publication', async () => {
+      const a = await generationActor();
+      browser.token = a.token;
+      // Two-pixel deterministic JPEG fixture, no image/model service is called.
+      const input = {
+        workspaceId: a.scope.workspaceId,
+        requestId: randomUUID(),
+        fileName: '品牌参考.jpg',
+        mediaType: 'image/jpeg',
+        contentBase64:
+          '/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAqADAAQAAAABAAAAAgAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAgACAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A/Neiiiv1A/Oz/9k=',
+      };
+      const http = (url: string, body: unknown) =>
+        new Request(url, {
+          method: 'POST',
+          headers: {
+            host: 'example.test',
+            origin: 'https://example.test',
+            'content-type': 'application/json',
+            'x-allrice-organization-id': a.context.organizationId,
+            'x-allrice-workspace-id': a.scope.workspaceId,
+          },
+          body: JSON.stringify(body),
+        });
+      const first = await uploadHttp.POST(
+        http('https://example.test/api/v1/workbench/files', input),
+      );
+      expect(first.status).toBe(201);
+      const file = await first.json();
+      const replay = await uploadHttp.POST(
+        http('https://example.test/api/v1/workbench/files', input),
+      );
+      expect(await replay.json()).toEqual(file);
+      const owned = await uploadHttp.GET(
+        new Request(
+          `https://example.test/api/v1/workbench/files?view=deliverables&objectId=${file.objectId}&workspaceId=${a.scope.workspaceId}`,
+          { headers: http('https://example.test', {}).headers },
+        ),
+      );
+      expect(owned.status).toBe(200);
+      const uploaded = (await owned.json()).files[0];
+      expect(uploaded).toMatchObject({
+        objectId: file.objectId,
+        origin: 'user-upload',
+        ownedByMe: true,
+        reference: null,
+      });
+      const pin = {
+        origin: 'upload',
+        file: { objectId: file.objectId, checksum: uploaded.checksum },
+      };
+      const intent = candidateIntent(a, { references: [pin] }),
+        sent = await generate(a, intent),
+        again = await generate(a, intent);
+      expect(again.run.id).toBe(sent.run.id);
+      const [frozen] =
+        await f.db`select execution_snapshot,prompt_snapshot from allrice_employee_runs where run_id=${sent.run.id}`;
+      expect(
+        frozen!.execution_snapshot.moduleInvocation.intent.references,
+      ).toEqual([pin]);
+      expect(frozen!.prompt_snapshot.imageAttachments).toMatchObject([
+        {
+          fileName: input.fileName,
+          object: {
+            id: file.objectId,
+            mediaType: 'image/jpeg',
+            checksum: uploaded.checksum,
+          },
+        },
+      ]);
+      expect(
+        await f.db`select * from allrice_message_attachments where message_id=${sent.userMessage.id} and object_id=${file.objectId}`,
+      ).toHaveLength(1);
+      expect(
+        await f.db`select id from allrice_knowledge_sources where organization_id=${a.context.organizationId} and publication_kind is not null`,
+      ).toHaveLength(0);
+      await generate(
+        a,
+        candidateIntent(a, {
+          references: [
+            {
+              ...pin,
+              file: { ...pin.file, checksum: 'sha256:' + '0'.repeat(64) },
+            },
+          ],
+        }),
+        409,
+      );
+      const other = await generationActor();
+      await generate(other, candidateIntent(other, { references: [pin] }), 409);
+      await f.db`update allrice_storage_objects set immutable=false where id=${file.objectId}`;
+      await generate(a, candidateIntent(a, { references: [pin] }), 409);
     });
   },
 );

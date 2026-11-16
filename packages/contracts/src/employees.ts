@@ -1,3 +1,7 @@
+import { EmployeeModuleBindingSchema } from './employee-modules.ts';
+import { BrandMediaInvocationSchema } from './brand-media.ts';
+import { brandMediaRelease } from './brand-media-module.ts';
+import { brandMediaTools } from './brand-media-tools.ts';
 import {
   EmployeeDocumentsSchema,
   EmployeePersonaPinSchema,
@@ -766,6 +770,8 @@ export const EmployeeExecutionSnapshotV2Schema =
     // and exact document/policy digests are frozen in the existing binding.
     persona: EmployeePersonaPinSchema.optional(),
     workflowInvocation: BrandContentWorkflowInvocationSchema.optional(),
+    modules: z.array(EmployeeModuleBindingSchema).optional(),
+    moduleInvocation: BrandMediaInvocationSchema.optional(),
     baseSkillCatalog: EmployeeBaseSkillCatalogSchema.optional(),
     content: EmployeeRuntimeContentSchema.optional(),
     modelSnapshot: SessionModelSnapshotSchema.optional(),
@@ -813,7 +819,19 @@ export const EmployeeExecutionSnapshotV2Schema =
       .object({
         declaredCapabilities: z.array(SkillCapabilitySchema).max(16),
         grantedCapabilities: z.array(SkillCapabilitySchema).max(16),
-        bindings: FrozenEmployeeCapabilityBindingsSchema,
+        bindings: FrozenEmployeeCapabilityBindingsSchema.extend({
+          // Only server-frozen module tools may exceed the original 64 slots.
+          // The enclosing refinement preserves the old limit without a module.
+          toolNames: z
+            .array(EmployeeCapabilityBindingsSchema.shape.toolNames.element)
+            .max(
+              64 +
+                new Set([
+                  ...brandMediaTools.map((tool) => tool.canonicalName),
+                  'workspace.skill.read',
+                ]).size,
+            ),
+        }),
         skillBindings: z.array(FrozenEmployeeSkillBindingSchema).max(32),
         agentSkills: z.array(FrozenAgentSkillBindingSchema).max(32),
         workflows: z.array(FrozenWorkflowBindingSchema).max(32),
@@ -821,7 +839,49 @@ export const EmployeeExecutionSnapshotV2Schema =
         resolvedForActorId: UuidSchema,
       })
       .strict(),
-  }).strict();
+  })
+    .strict()
+    .superRefine((snapshot, context) => {
+      const names = snapshot.capabilitySnapshot.bindings.toolNames;
+      if (names.length <= 64) return;
+      const module = snapshot.modules?.find(
+        (binding) =>
+          binding.release.moduleId === brandMediaRelease.moduleId &&
+          binding.release.contractVersion ===
+            brandMediaRelease.contractVersion &&
+          binding.release.contentVersion === brandMediaRelease.contentVersion &&
+          binding.release.digest === brandMediaRelease.digest &&
+          binding.revokedAt === null &&
+          Date.parse(binding.enabledAt) <= Date.parse(snapshot.createdAt) &&
+          binding.instanceId === snapshot.instance?.id &&
+          binding.organizationId === snapshot.tenantContext.organizationId &&
+          binding.workspaceId === snapshot.tenantContext.workspaceId &&
+          binding.ownerId === snapshot.tenantContext.actorId,
+      );
+      const grants = snapshot.capabilitySnapshot.grantedCapabilities;
+      const additions = new Set<string>(
+        module
+          ? [
+              ...brandMediaTools
+                .filter((tool) => grants.includes(tool.capability))
+                .map((tool) => tool.canonicalName),
+              ...(grants.includes('storage:read')
+                ? ['workspace.skill.read']
+                : []),
+            ]
+          : [],
+      );
+      const actualAdditions = new Set(
+        names.filter((name) => additions.has(name)),
+      );
+      if (names.length > 64 + actualAdditions.size)
+        context.addIssue({
+          code: 'custom',
+          path: ['capabilitySnapshot', 'bindings', 'toolNames'],
+          message:
+            'Only exact frozen module tools may extend the original tool slots.',
+        });
+    });
 
 export const EmployeeExecutionSnapshotSchema = z.discriminatedUnion(
   'schemaVersion',

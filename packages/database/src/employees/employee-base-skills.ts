@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type postgres from 'postgres';
 import {
   EmployeeBaseSkillCatalogSchema,
+  brandMediaSkillId,
   type EmployeeBaseSkillCatalog,
   type DshNativeSkillSnapshot,
 } from '@allrice/contracts';
@@ -49,6 +50,7 @@ export const employeeBaseSkillLimits = {
 export async function freezeEmployeeBaseSkills(
   original: DshNativeSkillSnapshot[],
   transaction?: postgres.TransactionSql,
+  moduleSkill?: DshNativeSkillSnapshot,
 ) {
   assertCurrentPlatformSkillSources(original);
   const freeze = async (sql: postgres.TransactionSql) => {
@@ -136,7 +138,7 @@ export async function freezeEmployeeBaseSkills(
       new Set(nativeSkills.map((s) => s.name)).size !== nativeSkills.length
     )
       throw Error('base_skill_catalog_identity_conflict');
-    assertBudget(nativeSkills);
+    assertBudget(nativeSkills, moduleSkill);
     const catalog = EmployeeBaseSkillCatalogSchema.parse({
       schemaVersion: 1,
       authority: 'skills/catalog.json',
@@ -154,12 +156,32 @@ export async function freezeEmployeeBaseSkills(
     : getDatabase().begin('isolation level repeatable read read only', freeze);
 }
 
-function assertBudget(skills: DshNativeSkillSnapshot[]) {
-  if (
-    skills.length > employeeBaseSkillLimits.count ||
+/** The caller supplies the exact immutable module Skill from server-wiring,
+ * never a model/admin-selected name. All bytes still share the original cap. */
+export function exceedsEmployeeSkillBudget(
+  skills: DshNativeSkillSnapshot[],
+  moduleSkill?: DshNativeSkillSnapshot,
+) {
+  const extra =
+    moduleSkill?.id === brandMediaSkillId &&
+    !moduleSkill.personal &&
+    skills.filter(
+      (skill) =>
+        runtimePolicyDigest(skill) === runtimePolicyDigest(moduleSkill),
+    ).length === 1
+      ? 1
+      : 0;
+  return (
+    skills.length > employeeBaseSkillLimits.count + extra ||
     Buffer.byteLength(JSON.stringify(skills)) >
       employeeBaseSkillLimits.snapshotBytes
-  )
+  );
+}
+function assertBudget(
+  skills: DshNativeSkillSnapshot[],
+  moduleSkill?: DshNativeSkillSnapshot,
+) {
+  if (exceedsEmployeeSkillBudget(skills, moduleSkill))
     throw Error('base_skill_catalog_budget_exceeded');
 }
 
@@ -167,9 +189,10 @@ function assertBudget(skills: DshNativeSkillSnapshot[]) {
 export function assertFrozenBaseSkillCatalog(
   input: EmployeeBaseSkillCatalog,
   nativeSkills: DshNativeSkillSnapshot[],
+  moduleSkill?: DshNativeSkillSnapshot,
 ) {
   const catalog = EmployeeBaseSkillCatalogSchema.parse(input);
-  assertBudget(nativeSkills);
+  assertBudget(nativeSkills, moduleSkill);
   if (
     runtimePolicyDigest({ skills: catalog.skills, nativeSkills }) !==
     catalog.snapshotChecksum

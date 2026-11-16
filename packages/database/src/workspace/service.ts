@@ -1,3 +1,7 @@
+import {
+  BrandMediaInvocationSchema,
+  type BrandMediaInvocation,
+} from '@allrice/contracts';
 import { personalInstanceNameSql } from '../employees/employee-instance-policy.ts';
 import { freezeConversationCapabilities } from './conversation-capabilities.ts';
 import {
@@ -1277,6 +1281,7 @@ type ChatMessagePersistenceInput = {
   requestDigest: string;
   options: {
     folderEventId?: string;
+    moduleInvocation?: BrandMediaInvocation;
   };
 };
 
@@ -1434,7 +1439,8 @@ async function persistChatMessageInTransaction(
           message.reviewContinuation ||
           message.changesetAction ||
           message.companyTemplates?.length ||
-          message.referenceRevisionIds?.length))
+          message.referenceRevisionIds?.length ||
+          options.moduleInvocation))
     )
       throw new ArtifactReviewError('input_id_conflict');
     message.text = ChatMessageContentSchema.parse(userMessage.content).text;
@@ -1726,6 +1732,9 @@ async function prepareChatRunBinding(
     {
       context,
       employeeDocuments,
+      ...(input.options.moduleInvocation
+        ? { moduleInvocation: input.options.moduleInvocation }
+        : {}),
       ...(task
         ? {
             taskPersona: {
@@ -2010,11 +2019,29 @@ export async function sendChatMessage(
   input: unknown,
   options: {
     folderEventId?: string;
+    moduleInvocation?: BrandMediaInvocation;
   } = {},
 ) {
   const message = SendChatMessageInputSchema.parse(input);
+  const moduleInvocation = options.moduleInvocation
+    ? BrandMediaInvocationSchema.parse(options.moduleInvocation)
+    : undefined;
+  if (
+    moduleInvocation &&
+    (options.folderEventId ||
+      message.deliveryMode !== 'follow_up' ||
+      message.clientMessageId !== moduleInvocation.intent.requestId ||
+      moduleInvocation.intent.workspaceId !== workspaceId ||
+      (moduleInvocation.intent.sessionId &&
+        moduleInvocation.intent.sessionId !== sessionId))
+  )
+    throw new DataAccessError('authorization_denied');
   const requestDigest = `sha256:${createHash('sha256')
-    .update(JSON.stringify(message))
+    .update(
+      JSON.stringify(
+        moduleInvocation ? { message, moduleInvocation } : message,
+      ),
+    )
     .digest('hex')}`;
   const conversationMessage = message.userQuestionAnswer
     ? `allrice:user-question:v1:${JSON.stringify(message.userQuestionAnswer)}`

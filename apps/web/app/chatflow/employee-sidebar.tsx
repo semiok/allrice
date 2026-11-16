@@ -44,6 +44,7 @@ export function EmployeeSidebar({
   nativeReads,
   collapsed,
   onSelectSession,
+  onEmployeeNavigate,
   onPrepareSession,
   onDetails,
   archive,
@@ -63,6 +64,7 @@ export function EmployeeSidebar({
   nativeReads?: Record<string, NativeSubagentRead>;
   collapsed: boolean;
   onSelectSession: (id: string) => void;
+  onEmployeeNavigate?: (instanceId: string) => void;
   onPrepareSession: (id: string) => void;
   onDetails?: (assignmentId: string) => void;
   excludedEmployeeInstanceIds?: ReadonlySet<string>;
@@ -271,7 +273,10 @@ export function EmployeeSidebar({
                 aria-label={group.label}
                 aria-expanded={rail === group.key}
                 onFocus={() => setRail(group.key)}
-                onClick={() => setRail(group.key)}
+                onClick={() => {
+                  onEmployeeNavigate?.(group.key);
+                  setRail(group.key);
+                }}
               >
                 {Array.from(group.label)[0]}
               </button>
@@ -354,12 +359,13 @@ export function EmployeeSidebar({
                       {Array.from(group.label)[0]}
                     </span>
                   }
-                  onToggle={() =>
+                  onToggle={() => {
+                    onEmployeeNavigate?.(group.key);
                     setExpansion((current) => ({
                       ...current,
                       [group.key]: !group.expanded,
-                    }))
-                  }
+                    }));
+                  }}
                   t={employeeTranslate}
                 />
                 {onNewSession && employee && (

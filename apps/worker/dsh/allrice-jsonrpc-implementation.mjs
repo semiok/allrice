@@ -1,3 +1,7 @@
+import {
+  brandMediaTools,
+  brandMediaNativeParameters,
+} from '@allrice/contracts/native-runtime';
 import { isBoundedReferenceToolName } from '@allrice/contracts/native-runtime';
 import {
   referenceImageOperation,
@@ -137,6 +141,14 @@ export async function createAllRiceRuntime(
   const codexCredentialKey = credentialKey('llm-pi-ai', 'openai-codex');
   const maximumNativeSkillBodyBytes = 500_000;
   const brokerNativeTools = [
+    ...brandMediaTools.map((tool) => ({
+      canonicalName: tool.canonicalName,
+      wireName: tool.dshWireName,
+      description: tool.description,
+      parameters: brandMediaNativeParameters(tool.input),
+      isConcurrencySafe: tool.risk === 'read_only',
+      validateArguments: (args) => tool.input.parse(args),
+    })),
     ...referenceNativeTools,
     ...fileReadNativeTools,
     ...brandContentNativeTools,

@@ -1434,7 +1434,9 @@ export async function publishWorkbenchArtifact(
       | 'workspace.export.create'
       | 'workspace.project'
       | 'browser.workspace'
-      | 'workspace.brand_content.step';
+      | 'workspace.brand_content.step'
+      | 'workspace.brand_media.candidates'
+      | 'workspace.brand_media.article.submit';
     /** Server-only finite saved-document verification result. */
     browserVerification?: { execution: RuntimeExecutionScope };
     /** Server-only private QA browser capture. Its managed task must already

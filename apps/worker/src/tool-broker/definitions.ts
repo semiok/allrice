@@ -1,4 +1,5 @@
 import {
+  brandMediaTools,
   ImageToolInputSchema,
   ReferenceSearchInputSchema,
   ReferenceReadInputSchema,
@@ -56,6 +57,11 @@ export const nativeGovernedToolNames: ReadonlySet<string> = new Set([
 ]);
 
 export const riceToolDefinitions = [
+  ...brandMediaTools.map((tool) => ({
+    name: tool.canonicalName,
+    description: tool.description,
+    inputSchema: z.toJSONSchema(tool.input),
+  })),
   {
     name: 'workspace.brand_content.read',
     description:

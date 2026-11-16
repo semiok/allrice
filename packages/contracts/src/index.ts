@@ -207,3 +207,5 @@ export * from './reference-archive.ts';
 export * from './reference-member.ts';
 export * from './employee-modules.ts';
 export * from './brand-media-module.ts';
+
+export * from './brand-media-tools.ts';

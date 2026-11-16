@@ -6,6 +6,7 @@ import {
   BrandMediaTopicSchema,
   transitionBrandMediaPublication,
   type BrandMediaArticle,
+  type BrandMediaArticleSubmission,
   type BrandMediaMutationResult,
   type BrandMediaReadInput,
   type BrandMediaReadResult,
@@ -275,4 +276,22 @@ export async function applyBrandMediaUserCommand(
     kind: 'article',
     article: await readArticle(tx, scope, article.id, true),
   };
+}
+
+/** Only the Worker adapter calls this port. Browser commands never accept body.
+ * The exact original revision is compared; no read-latest-and-overwrite path. */
+export async function submitBrandMediaArticleRecord(
+  tx: Tx,
+  scope: BrandMediaScope,
+  input: BrandMediaArticleSubmission,
+) {
+  const article = await readArticle(tx, scope, input.articleId, true);
+  assertRevision(article.revision, input.expectedRevision);
+  if (article.publication.state === 'published') fail('invalid_state');
+  const updated =
+    await tx`update allrice_brand_media_articles set title=${input.title},body_file=${tx.json(input.body)},
+    revision=revision+1,updated_at=clock_timestamp()
+    where ${scopeWhere(tx, scope)} and id=${input.articleId} and revision=${input.expectedRevision}`;
+  if (updated.count !== 1) fail('version_conflict');
+  return readArticle(tx, scope, input.articleId, true);
 }

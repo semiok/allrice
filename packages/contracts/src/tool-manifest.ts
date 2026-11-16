@@ -1,3 +1,4 @@
+import { brandMediaTools } from './brand-media-tools.ts';
 import type { SkillCapability } from './skills.ts';
 
 /**
@@ -74,6 +75,15 @@ export function withEmployeeCustomizationTools(
  * and the Tool Broker remains the final validation and authorization boundary.
  */
 export const allRiceToolManifest = [
+  ...brandMediaTools.map(
+    ({
+      input: _input,
+      output: _output,
+      handlerRef: _handler,
+      description: _description,
+      ...metadata
+    }) => metadata,
+  ),
   {
     canonicalName: 'workspace.brand_content.read',
     capability: 'storage:read',

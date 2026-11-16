@@ -53,6 +53,7 @@ interface ChatSidebarProps {
   pendingEmployeeAssignmentId?: string | null;
   onOpenEmployeeDetails: (assignmentId?: string) => void;
   onSelectSession: (sessionId: string) => void;
+  onEmployeeNavigate?: (instanceId: string) => void;
   onPrepareSession: (sessionId: string) => void;
   onOpenAutomations?: () => void;
   automationsActive?: boolean;
@@ -87,6 +88,7 @@ export function ChatSidebar({
   pendingEmployeeAssignmentId,
   onOpenEmployeeDetails,
   onSelectSession,
+  onEmployeeNavigate,
   onPrepareSession,
   onOpenAutomations,
   automationsActive = false,
@@ -312,6 +314,7 @@ export function ChatSidebar({
             nativeReads={nativeReads}
             collapsed={collapsed}
             onSelectSession={onSelectSession}
+            onEmployeeNavigate={onEmployeeNavigate}
             onPrepareSession={onPrepareSession}
             onDetails={onOpenEmployeeDetails}
           />

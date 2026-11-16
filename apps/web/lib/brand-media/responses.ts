@@ -1,12 +1,28 @@
 import {
   BrandMediaError,
+  ArtifactReviewError,
+  QueueError,
+  ReferenceSelectionUnavailableError,
   EmployeeModuleError,
   IdentityError,
 } from '@allrice/database';
+import { referenceSelectionError } from '../reference-library';
 import { apiProblem, isRequestValidationError } from '../api-error-response';
 import { brandContentErrorResponse } from '../brand-content/responses';
 
 export function brandMediaErrorResponse(error: unknown) {
+  if (error instanceof ReferenceSelectionUnavailableError)
+    return referenceSelectionError(error);
+  if (error instanceof ArtifactReviewError || error instanceof QueueError)
+    return apiProblem({
+      status: 409,
+      code: 'CONFLICT',
+      message:
+        error.code === 'input_id_conflict'
+          ? '相同提交编号已用于另一项生成，请核对原结果。'
+          : '当前任务或固定版本已变化，请刷新后重试。',
+      retryable: false,
+    });
   if (error instanceof IdentityError)
     return apiProblem({
       status:

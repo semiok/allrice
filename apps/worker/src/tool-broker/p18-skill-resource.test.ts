@@ -194,3 +194,15 @@ it('exact Workflow resources require the Worker closure and cannot fall back to 
     readSkillResource({ input, arguments: { ...args, skill: f.skill.name } }),
   ).rejects.toThrow();
 });
+
+it('does not reinterpret an ordinary resource Skill named brand-media as a module binding', async () => {
+  const f = fixture();
+  f.skill.name = 'brand-media';
+  f.args.skill = f.skill.name;
+  const result = await readSkillResource({ input: f.input, arguments: f.args });
+  expect(JSON.parse(result.modelContent)).toMatchObject({
+    skill: 'brand-media',
+    text: f.script,
+    executionPermission: false,
+  });
+});

@@ -1,3 +1,5 @@
+import { brandMediaTools, type BrandMediaToolName } from '@allrice/contracts';
+import { executeBrandMediaTool } from './handlers/brand-media.js';
 import {
   installPersonalSkill,
   versionPersonalSkill,
@@ -73,6 +75,12 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
  * a manifest-backed tool without registering its handler fails typecheck.
  */
 export const riceToolHandlerRegistry = Object.freeze({
+  ...(Object.fromEntries(
+    brandMediaTools.map((tool) => [
+      tool.canonicalName,
+      registration('workspace', executeBrandMediaTool),
+    ]),
+  ) as Record<BrandMediaToolName, RiceToolHandlerRegistration>),
   'workspace.reference.archive_list': registration(
     'workspace',
     executeReferenceTool,

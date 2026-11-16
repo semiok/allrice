@@ -1,5 +1,8 @@
 import { expect, it } from 'vitest';
-import { EmployeeProfileChatInputSchema } from '@allrice/contracts';
+import {
+  EmployeeProfileChatInputSchema,
+  brandMediaTools,
+} from '@allrice/contracts';
 import { employeeInstanceInstructions } from '../employee-kernel.js';
 import { riceToolDefinitions } from '../tool-broker/definitions.js';
 import { nativeBrokerRoundtrip } from './dsh-native-broker.fixture.js';
@@ -105,6 +108,49 @@ it.each(['rice', 'custom', 'professional'] as const)(
             effectiveFrom: 'next_task',
           }),
           summary: 'Personal profile updated',
+        };
+      },
+    });
+  },
+  45000,
+);
+
+it.each(brandMediaTools)(
+  'projects the one $canonicalName definition through the real DSH native tool seam',
+  async (tool) => {
+    const args =
+      tool.handlerRef === 'read'
+        ? { view: 'topics' }
+        : tool.handlerRef === 'candidates'
+          ? { candidates: [{ title: '原生候选', summary: '受控native夹具' }] }
+          : {
+              articleId: 'b7bcff06-d6cb-4bbc-80db-0c70f0983961',
+              expectedRevision: 3,
+              title: '原生正文',
+              body: '纯文本正文',
+            };
+    await nativeBrokerRoundtrip({
+      canonicalName: tool.canonicalName,
+      wireName: tool.dshWireName,
+      args,
+      invalidArgs: { ...args, ownerId: '00000000-0000-4000-8000-000000000001' },
+      inspectTool(native) {
+        expect(native.description).toBe(tool.description);
+      },
+      inspectSchema(schema) {
+        expect(Object.keys(schema.properties as object).sort()).toEqual(
+          Object.keys(
+            riceToolDefinitions.find(
+              (entry) => entry.name === tool.canonicalName,
+            )!.inputSchema.properties!,
+          ).sort(),
+        );
+      },
+      onToolCall: async (call) => {
+        expect(tool.input.parse(call.arguments)).toEqual(args);
+        return {
+          modelContent: JSON.stringify({ received: true }),
+          summary: '受控原生接缝回执',
         };
       },
     });
