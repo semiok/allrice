@@ -6218,9 +6218,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       .getByRole('button', { name: '跳转到第 100 轮', exact: true })
       .waitFor({ timeout: 15_000 });
     await expect
-      .poll(() => traces.size === 100 || internalErrors.length > 0, {
-        timeout: 5000,
-      })
+      .poll(
+        async () =>
+          internalErrors.length > 0 ||
+          (traces.size === 100 &&
+            (await f.page.getByText('加载过程…', { exact: true }).count()) ===
+              0),
+        { timeout: 5000 },
+      )
       .toBe(true);
     expect(internalErrors).toEqual([]);
     await expect
