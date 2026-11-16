@@ -13,6 +13,8 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
+import { DataAccessError } from '../data.ts';
+import { workbenchOriginFileAccess } from '../workbench-file-access.ts';
 import { employeeAccessTransaction } from '../employees/employee-access-cancellation.ts';
 import {
   addEmployeeModuleBinding,
@@ -50,6 +52,41 @@ type Db = ReturnType<typeof getDatabase>;
 // This is the only brand module adapter to the current core. MET-252/253 can
 // replace named port imports here without moving business rules or duplicating
 // bindings, requests, audit, permissions or native execution lifecycle.
+async function holdFileAuthority(
+  tx: Tx,
+  context: RequestContext,
+  scope: BrandMediaScope,
+  file: Parameters<typeof assertBrandContentFile>[3],
+  lock: boolean,
+) {
+  if (!lock) return;
+  // Use the core identity -> policy -> storage order before the existing
+  // readers take their storage/version locks. Hold current ACL through COMMIT.
+  const access = await workbenchOriginFileAccess(
+    { ...context, workspaceId: scope.workspaceId },
+    file.objectId,
+    tx,
+    true,
+  );
+  if (!access.canRead) {
+    // Preserve the existing source/error checks and denial audit, then fail
+    // closed even if a narrower reader ever admits this denied origin.
+    await assertBrandContentFile(tx, context, scope, file, false, lock);
+    throw new DataAccessError('authorization_denied');
+  }
+}
+async function assertImages(
+  tx: Tx,
+  context: RequestContext,
+  scope: BrandMediaScope,
+  images: Parameters<typeof assertBrandContentImages>[3],
+  lock = true,
+) {
+  for (const image of images)
+    await holdFileAuthority(tx, context, scope, image.file, lock);
+  // Media types, exact versions and generated-operation receipts remain core.
+  await assertBrandContentImages(tx, context, scope, images, lock);
+}
 async function assertReferences(
   tx: Tx,
   context: RequestContext,
@@ -58,9 +95,10 @@ async function assertReferences(
   lock = true,
 ) {
   for (const pin of references) {
-    if (pin.origin === 'file')
+    if (pin.origin === 'file') {
+      await holdFileAuthority(tx, context, scope, pin.file, lock);
       await assertBrandContentFile(tx, context, scope, pin.file, false, lock);
-    else {
+    } else {
       const selected = await readReferenceSelection(
         { ...context, workspaceId: scope.workspaceId },
         pin.revisionId,
@@ -107,9 +145,11 @@ async function assertArticle(
   lock = true,
 ) {
   await assertReferences(tx, context, scope, article.references, lock);
-  if (article.body)
+  if (article.body) {
+    await holdFileAuthority(tx, context, scope, article.body, lock);
     await assertBrandContentFile(tx, context, scope, article.body, false, lock);
-  await assertBrandContentImages(
+  }
+  await assertImages(
     tx,
     context,
     scope,
@@ -285,7 +325,7 @@ export async function commandBrandMediaUser(
     if (input.operation === 'topic.add')
       await assertSourceRun(tx, context, scope, input.sourceRunId);
     if (input.operation === 'article.image.add')
-      await assertBrandContentImages(tx, context, scope, [
+      await assertImages(tx, context, scope, [
         {
           file: input.image.file,
           sourceKind: input.image.source,
