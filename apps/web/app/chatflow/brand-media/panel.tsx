@@ -286,6 +286,17 @@ export function BrandMediaPanel({
   const generate = async (intent: Scoped<BrandMediaGenerateInput>) => {
     const result = await client.generate(intent);
     // The receipt identifies this new Run, including follow-up queueing.
+    // Preserve its native facts even if the subsequent cold read fails.
+    setRuns((old) => [
+      {
+        run: result.run,
+        sessionId: result.userMessage.sessionId,
+        invocation: result.invocation,
+        deliveries: [],
+        submission: null,
+      },
+      ...old.filter((row) => row.run.id !== result.run.id),
+    ]);
     await reload();
     return result;
   };
