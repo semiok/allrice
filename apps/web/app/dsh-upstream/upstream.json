@@ -76,6 +76,12 @@
       "target": "apps/web/app/chatflow/employee-sidebar.tsx; employee-sidebar.module.css",
       "reuse": "Existing employee-workspace source sync at 0.2.1-rc.2 / 687f282e8625c6b8d11ff58211a90524be2e4317: SessionNodeItem owns title ellipsis, inline layout, hover marquee, time/action swap and selection. Reuse the unmodified WorkspaceBrowser flatList block flow and spacing; no new row/component source or patch.",
       "productChanges": "Remove the host grid, extra session padding, hover/selection overrides and broad trailing-span layout overrides. The native indent variable retains the employee card 5px inset; a -20px host margin offsets the native 16px status slot + 4px title gap so session titles align with the avatar. Existing accessible label/icon tokens and recorded keyboard/touch adapters remain; only sessions without action buttons retain the time/pin on focus and touch, because shared sessions cannot expose owner actions."
+    },
+    {
+      "source": "packages/client/ui-workspace/src/client/rows/Rows.tsx (SessionNodeItem)",
+      "target": "apps/web/app/chatflow/dsh-upstream/workspace/Rows.tsx; apps/web/app/chatflow/native-subagent-directory.tsx",
+      "reuse": "Keep the native Menu and its close behavior; stabilize host onClose callbacks without changing its effect or synchronous store notifications.",
+      "productChanges": "MET-240: prevent repeated closed-menu effects from exhausting React update depth while long history restores run traces. No layout, timing, navigation or error-contract change."
     }
   ],
   "componentSets": [
@@ -90,9 +96,9 @@
           "source": "packages/client/ui-workspace/src/client/rows/Rows.tsx",
           "target": "apps/web/app/chatflow/dsh-upstream/workspace/Rows.tsx",
           "upstreamSha256": "b8a7da793a526a1b4e04f321be547dfb2983b73b6604c474ed1fcb41e8493408",
-          "sha256": "8e5936b5ccb11b61a03905b752f2c88f6560f098abf1c305efa86dfb80654a62",
+          "sha256": "1f12ab868a211aecf8ed830f1b20818f21184f18b76e7f0419c9c780abeb92d4",
           "patch": "scripts/dsh-ui-patches/Rows.tsx.patch",
-          "patchSha256": "bd58dde13ec90db6b6afcc2b4ea2bc64b63e31aa5459f0c591b36eb6572307f2"
+          "patchSha256": "fb0f627c4df677a9c3c4d0368c368bf9a919bcd5ff70f8ee81427e090a3b2553"
         },
         {
           "source": "packages/client/ui-workspace/src/client/rows/Rows.module.css",

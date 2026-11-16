@@ -1,5 +1,11 @@
 'use client';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import { createPortal } from 'react-dom';
 import { Button, Menu, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives';
 import type { NativeSubagentSummary } from '@allrice/contracts';
@@ -126,7 +132,10 @@ export function NativeSubagentDirectory({
   const catalog = useRef<HTMLDivElement>(null),
     trigger = useRef<HTMLButtonElement>(null);
   const pendingFocus = useRef(false);
-  const close = () => showCatalog(false);
+  const close = useCallback(() => {
+    openRef.current = false;
+    setOpenedScope(null);
+  }, []);
   useEffect(() => {
     setOpenedScope(null);
     openRef.current = false;
