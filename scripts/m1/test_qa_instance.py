@@ -44,7 +44,7 @@ elif command == 'launchctl' and args[0] == 'print':
     else:
         sys.exit(113)
 elif command == 'lsof':
-    print('p999999\\nn/private/tmp/unrelated')
+    print('p999999\\nfcwd\\nn/private/tmp/unrelated')
 elif command == 'ps':
     print('999999 1 node /tmp/unrelated.mjs')
 elif command == 'sleep' and os.environ.get('QA_TEST_RELEASE'):

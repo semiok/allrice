@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import socket
 import stat
@@ -109,16 +110,42 @@ def process_state(path, data):
     if any(pid not in ancestors and any(prefix + '/' in command for prefix in prefixes)
            for pid, (_, command) in processes.items()):
         return 'running'
-    result = subprocess.run(['lsof', '-nP', '-a', '-u', str(os.getuid()), '-Fpn'],
+    result = subprocess.run(['lsof', '-nP', '-a', '-u', str(os.getuid()), '-Fpfn'],
                             capture_output=True, text=True, timeout=5)
     if result.returncode != 0:
         return 'unknown'
-    pid = None
+    pid, descriptor, directories = None, None, {}
     for line in result.stdout.splitlines():
         if line.startswith('p'):
             pid = int(line[1:])
-        elif line.startswith('n') and pid not in ancestors and refers(line[1:]):
-            return 'running'
+            descriptor = None
+        elif line.startswith('f'):
+            descriptor = line[1:]
+        elif line.startswith('n'):
+            if descriptor == 'cwd':
+                directories[pid] = line[1:]
+            if pid not in ancestors and refers(line[1:]):
+                return 'running'
+    for pid, (_, command) in processes.items():
+        if pid in ancestors:
+            continue
+        cwd = directories.get(pid)
+        if cwd is None:
+            try:
+                os.kill(pid, 0)  # read-only liveness probe; never send a signal
+            except ProcessLookupError:
+                continue
+            except PermissionError:
+                pass
+            return 'unknown'
+        try:
+            # Resolve --env-file=relative/.env, relative scripts and symlinked
+            # paths against this process's cwd. Do not open the referenced file.
+            arguments = shlex.split(command)
+            if any(refers(str((Path(cwd) / arg.split('=', 1)[-1]).resolve())) for arg in arguments):
+                return 'running'
+        except (ValueError, OSError, RuntimeError):
+            return 'unknown'
     return 'stopped'
 
 

@@ -51,10 +51,13 @@ class LeaseSafety(unittest.TestCase):
     def test_detached_process_paths_and_open_files_prevent_reclaim(self):
         absent = subprocess.CompletedProcess([], 113, '', '')
         for command, files, expected in [
-            ('node ' + str(self.path.parent / 'release/worker.mjs'), 'n/private/tmp', 'running'),
-            ('node --env-file=' + str(self.path.parent / '.env') + ' worker.mjs', 'n/private/tmp', 'running'),
-            ('node /tmp/probe.mjs', 'n' + str(self.path.parent / 'logs/worker.log'), 'running'),
-            ('node /tmp/unrelated.mjs', 'n/private/tmp', 'stopped'),
+            ('node ' + str(self.path.parent / 'release/worker.mjs'), 'fcwd\nn/private/tmp', 'running'),
+            ('node --env-file=' + str(self.path.parent / '.env') + ' worker.mjs', 'fcwd\nn/private/tmp', 'running'),
+            ('node /tmp/probe.mjs', 'f3\nn' + str(self.path.parent / 'logs/worker.log'), 'running'),
+            ('node /tmp/unrelated.mjs', 'fcwd\nn/private/tmp', 'stopped'),
+            ('node --env-file=qa/occupant/.env qa-probe.mjs', 'fcwd\nn' + str(self.root), 'running'),
+            ('node qa/occupant/release/worker.mjs', 'fcwd\nn' + str(self.root), 'running'),
+            ('node /tmp/probe.mjs', '', 'unknown'),
         ]:
             with self.subTest(command=command):
                 def run(args, **kwargs):
@@ -62,7 +65,7 @@ class LeaseSafety(unittest.TestCase):
                         return absent
                     output = ('999999 1 ' + command) if args[0] == 'ps' else ('p999999\n' + files)
                     return subprocess.CompletedProcess(args, 0, output, '')
-                with patch.object(lease.subprocess, 'run', side_effect=run), patch.object(lease.socket, 'create_connection', side_effect=ConnectionRefusedError):
+                with patch.object(lease.subprocess, 'run', side_effect=run), patch.object(lease.socket, 'create_connection', side_effect=ConnectionRefusedError), patch.object(lease.os, 'kill'):
                     self.assertEqual(lease.process_state(self.path, self.data), expected)
 
     def test_log_enumeration_failure_preserves_source_and_rejects_archive(self):
