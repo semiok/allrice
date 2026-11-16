@@ -1,0 +1,285 @@
+#!/usr/bin/python3
+"""M1 wake-when watchdog: run, status, launchd install/remove; no task execution."""
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import plistlib
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import wake_runtime as runtime
+
+LABEL = 'ai.bplabs.allrice-m1-dog'
+INTERVAL = 600
+
+
+def last_turn(path):
+    # Bounded tail, only explicit Codex turn events. Never parse tool output or
+    # user instructions as a request to resume work. Unknown schemas fail closed.
+    with path.open('rb') as stream:
+        size = stream.seek(0, 2)
+        stream.seek(max(0, size - 2 * 1024 * 1024))
+        if stream.tell():
+            stream.readline()
+        lines = stream.readlines()
+    last = None
+    for line in lines:
+        try:
+            row = json.loads(line)
+            payload = row.get('payload', {})
+            if row.get('type') == 'event_msg':
+                if payload.get('type') in ('task_started', 'turn_aborted'):
+                    last = None
+                elif payload.get('type') == 'task_complete':
+                    last = (row['timestamp'], payload.get('last_agent_message', ''), payload.get('turn_id'))
+            elif row.get('type') == 'response_item' and payload.get('role') == 'user':
+                last = None  # a queued reply may already be waiting for execution
+        except (ValueError, KeyError, TypeError):
+            continue
+    return last
+
+
+def says_waiting(text):
+    # A diagnostic hint only, never an authorization or intent classifier. Require
+    # a positive wait phrase and external target in the SAME line; conservative.
+    for line in re.split(r'[。；;，,\n]', text):
+        if re.search(r'(?:无需|不用|不再|未在|没有|不必).{0,8}(?:等|wait)', line, re.I):
+            continue
+        if re.search(r'(?:等待|正等|仍等|等.{0,6}结束|后台.{0,12}等|waiting\s+(?:for|on))', line, re.I) and re.search(r'(?<![A-Za-z])(?:CI|M5)(?![A-Za-z])|部署|deploy', line, re.I):
+            return True
+    return False
+
+
+def task_active(state, run, boot, now):
+    if state.get('commandEndedAt'):
+        return False, None
+    if state.get('boot') and state['boot'] != boot:
+        return False, 'M1 重启后遗留等待'
+    identity = runtime.process_identity(state.get('pid'))
+    if not identity or state.get('identity', identity) != identity:
+        return False, 'supervisor 已退出'
+    beat = runtime.read(run / 'heartbeat.json', {})
+    if beat and now - runtime.epoch(beat['at']) > 180:
+        return False, 'supervisor 心跳超过 3 分钟未更新'
+    # Legacy #885 jobs have no heartbeat; allow their original deadline plus
+    # bounded process cleanup/notification grace, rather than declaring them dead.
+    if now > runtime.epoch(state['startedAt']) + state['timeoutSeconds'] + 300:
+        return False, 'supervisor 超过等待期限和收尾宽限'
+    return True, None
+
+
+def normal_message(state, run):
+    task = state.get('task', {})
+    return '%s：已记录终态 %s，等待退出码 %s。请读取 %s 核对后继续原任务；不是新增授权。' % (
+        state['label'], task.get('conclusion', '未知'), state.get('commandExitCode'), run / 'result.json')
+
+
+def check_round(now=None):
+    now = time.time() if now is None else now
+    dog = runtime.root() / 'dog'
+    dog.mkdir(parents=True, exist_ok=True, mode=0o700)
+    boot = runtime.boot_id()
+    heartbeat = dict(startedAt=runtime.stamp(), pid=os.getpid(), boot=boot)
+    runtime.save(dog / 'heartbeat.json', heartbeat)
+    wake = runtime.load_tool('wake-when')
+    snapshot = runtime.read(dog / 'state.json', {})
+    try:
+        allowed = runtime.threads()
+    except (ValueError, OSError):
+        runtime.alert(runtime.incident('whitelist'), 'M1-dog：白名单不可读或不符合7线程合同，请打野线检查。', now)
+        allowed = {}
+    active = set()
+    recent_delivery = {}
+    tasks = list(runtime.root().glob('*/result.json'))
+    for path in tasks:
+        run = path.parent
+        state = runtime.read(path)
+        if not isinstance(state, dict) or not all(k in state for k in ('label', 'thread', 'startedAt', 'timeoutSeconds')):
+            runtime.alert(runtime.incident(str(path)), 'M1-dog：等待记录损坏，请人工核对 ' + str(path), now)
+            continue
+        thread = state['thread']
+        delivery = runtime.read(run / 'delivery.json', {})
+        # Old successful receipts need no re-delivery after installing the dog.
+        if state.get('notification') == 'sent' or delivery.get('sentAt'):
+            sent = delivery.get('sentAt') or state.get('finishedAt', state['startedAt'])
+            recent_delivery[thread] = max(recent_delivery.get(thread, 0), runtime.epoch(sent))
+            continue
+        if state.get('commandEndedAt'):
+            runtime.deliver(run, thread, delivery.get('message') or normal_message(state, run), wake.run_group, now)
+            recent_delivery[thread] = now
+            continue
+        alive, reason = task_active(state, run, boot, now)
+        issue = runtime.thread_problem(thread)
+        if issue:
+            runtime.alert(runtime.incident('target:' + str(run)), 'M1-dog：%s；%s；线程 %s；记录 %s' %
+                          (issue, state['label'], thread, run), now)
+        if alive:
+            active.add(thread)
+            continue
+        message = '等待中断，请自行核对 %s：%s。日志 %s。M1-dog 不重跑或停止原任务；这不是新增授权。' % (
+            state['label'], reason, run / 'command.log')
+        runtime.deliver(runtime.incident('interrupted:' + str(run)), thread, message, wake.run_group, now)
+        recent_delivery[thread] = now
+    for thread, (folder, path) in runtime.rollout_paths(allowed).items():
+        if folder == 'archived_sessions':
+            runtime.alert(runtime.incident('archived:' + thread), 'M1-dog：白名单线程 %s（%s）已归档，请更新名单。' %
+                          (allowed[thread], thread), now)
+            continue
+        turn = last_turn(path)
+        if not turn:
+            continue
+        at, text, turn_id = turn
+        ended = runtime.epoch(at)
+        if (now - ended >= 1800 and thread not in active and recent_delivery.get(thread, 0) < ended
+                and says_waiting(text)):
+            runtime.deliver(runtime.incident('empty:%s:%s' % (thread, turn_id or at)), thread,
+                            'M1-dog 空等提醒：上一回合结束超过30分钟，提到等待 CI/M5/部署，却没有活动 wake-when。'
+                            '请核对原任务，不要直接重跑。这不是新增授权。\n回合时间 ' + at,
+                            wake.run_group, now)
+    for thread in allowed.keys() - runtime.rollout_paths(allowed).keys():
+        runtime.alert(runtime.incident('missing:' + thread), 'M1-dog：白名单线程 %s（%s）不存在，请更新名单。' %
+                      (allowed[thread], thread), now)
+    # Retry durable Telegram failures, including startup/invalid-target alerts
+    # that have no result.json. Never retry a task command.
+    for path in (dog / 'alerts').glob('*/telegram.json'):
+        pending = runtime.read(path, {})
+        if pending.get('unresolved'):
+            runtime.alert(path.parent, pending['message'], now)
+    wake.remove_stale_locks(runtime.root() / '.locks')
+    day = datetime.fromtimestamp(now, timezone.utc).strftime('%Y-%m-%d')
+    deliveries = [runtime.read(p, {}) for p in runtime.root().glob('**/delivery.json')]
+    tg = [runtime.read(p, {}) for p in runtime.root().glob('**/telegram.json')]
+    success = sum(d.get('sentAt', '').startswith(day) for d in deliveries)
+    failed = sum(d.get('attemptedAt', d.get('createdAt', '')).startswith(day) and d.get('status') == 'escalated' for d in deliveries)
+    unresolved = sum(bool(d.get('unresolved')) for d in tg)
+    # Escalation delivered to the user still needs a person; keep this separate
+    # from the transport backlog, so a successful Telegram is not a task fix.
+    escalated = sum(not (p.parent / 'ack.json').exists() for p in (dog / 'alerts').glob('*/delivery.json'))
+    escalated += sum(not (p.parent / 'ack.json').exists() and not (p.parent / 'delivery.json').exists()
+                     for p in (dog / 'alerts').glob('*/telegram.json'))
+    if datetime.fromtimestamp(now, timezone.utc).hour >= 1 and snapshot.get('dailySent') != day:
+        report = runtime.alert(dog / 'daily' / day,
+                               'M1-dog 平安报告 %s UTC：看门狗存活；今日叫醒成功 %s / 失败 %s；'
+                               '需人工核对 %s，TG待送 %s。维护：打野。' % (day, success, failed, escalated, unresolved), now)
+        if report.get('sentAt'):
+            snapshot['dailySent'] = day
+    snapshot.update(boot=boot, activeThreads=sorted(active), wakeSuccess=success, wakeFailed=failed,
+                    unresolved=unresolved, escalated=escalated)
+    runtime.save(dog / 'state.json', snapshot)
+    heartbeat.update(completedAt=runtime.stamp(), activeWaits=len(active))
+    runtime.save(dog / 'heartbeat.json', heartbeat)
+    print(json.dumps(heartbeat), flush=True)
+
+
+def run(daemon=False):
+    wake = runtime.load_tool('wake-when')
+    dog = runtime.root() / 'dog'
+    dog.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = wake.claim(dog / 'run.lock')
+    try:
+        while True:
+            check_round()
+            if not daemon:
+                break
+            time.sleep(INTERVAL)
+    finally:
+        wake.release(fd, dog / 'run.lock')
+
+
+def launchd(action):
+    if sys.platform != 'darwin':
+        raise ValueError('launchd is only available on M1/macOS')
+    path = Path.home() / 'Library/LaunchAgents' / (LABEL + '.plist')
+    target = 'gui/%s/%s' % (os.getuid(), LABEL)
+    dog = runtime.root() / 'dog'
+    backups = dog / 'launchd-backups' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S-%fZ')
+    backups.mkdir(parents=True, mode=0o700)
+    prior = subprocess.run(['launchctl', 'print', target], capture_output=True, timeout=10)
+    (backups / 'launchctl.txt').write_bytes(prior.stdout + prior.stderr)
+    had_plist = path.exists()
+    if had_plist:
+        shutil.copy2(path, backups / path.name)
+    runtime.save(backups / 'before.json', dict(loaded=prior.returncode == 0, hadPlist=had_plist))
+    if action == 'install':
+        document = dict(Label=LABEL, ProgramArguments=['/usr/bin/python3', str(runtime.base() / 'bin/m1-dog'), 'daemon'],
+                        RunAtLoad=True, KeepAlive=True, ThrottleInterval=60,
+                        EnvironmentVariables=dict(PATH='/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'),
+                        StandardOutPath=str(dog / 'dog.log'), StandardErrorPath=str(dog / 'dog.log'))
+        candidate = backups / 'candidate.plist'
+        candidate.write_bytes(plistlib.dumps(document))
+        subprocess.run(['plutil', '-lint', str(candidate)], check=True, timeout=10)
+    if prior.returncode == 0:
+        subprocess.run(['launchctl', 'bootout', target], check=True, timeout=15)
+        old_pid = re.search(rb'(?m)^\s*pid = (\d+)', prior.stdout)
+        old_pid = int(old_pid[1]) if old_pid else None
+        identity = runtime.process_identity(old_pid)
+        deadline = time.monotonic() + 30
+        while True:
+            loaded = subprocess.run(['launchctl', 'print', target], stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=5).returncode == 0
+            alive = identity is not None and runtime.process_identity(old_pid) == identity
+            if not loaded and not alive:
+                break
+            if time.monotonic() > deadline:
+                raise RuntimeError('old dog has not stopped; backup ' + str(backups))
+            time.sleep(.2)
+    try:
+        if action == 'remove':
+            path.unlink(missing_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(candidate, path)
+            subprocess.run(['launchctl', 'bootstrap', 'gui/%s' % os.getuid(), str(path)], check=True, timeout=15)
+            subprocess.run(['launchctl', 'print', target], check=True, stdout=subprocess.DEVNULL, timeout=10)
+    except Exception:
+        subprocess.run(['launchctl', 'bootout', target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+        if had_plist:
+            shutil.copy2(backups / path.name, path)
+        else:
+            path.unlink(missing_ok=True)
+        if prior.returncode == 0 and had_plist:
+            subprocess.run(['launchctl', 'bootstrap', 'gui/%s' % os.getuid(), str(path)], check=True, timeout=15)
+        raise
+    print('m1-dog %s; backup: %s' % (action, backups))
+
+
+def main():
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=['run', 'daemon', 'status', 'ack', 'launchd', '_telegram'])
+    parser.add_argument('action', nargs='?')
+    args = parser.parse_args()
+    if args.command == '_telegram':
+        try:
+            monitor = runtime.load_tool('monitor')
+            monitor.send_telegram(monitor.load_config(None, False), sys.stdin.read(4096))
+        except Exception:
+            return 1  # no exception or URL is printed
+    elif args.command == 'status':
+        print(json.dumps({name: runtime.read(runtime.root() / 'dog' / (name + '.json'))
+                          for name in ('heartbeat', 'state')}, ensure_ascii=False, indent=2))
+    elif args.command == 'ack':
+        if not args.action or not re.fullmatch('[a-f0-9]{64}', args.action):
+            parser.error('ack requires the alert directory ID')
+        path = runtime.root() / 'dog/alerts' / args.action
+        if not path.is_dir():
+            parser.error('unknown alert ID')
+        runtime.save(path / 'ack.json', dict(at=runtime.stamp()))
+    elif args.command == 'launchd':
+        if args.action not in ('install', 'remove'):
+            parser.error('launchd requires install or remove')
+        launchd(args.action)
+    else:
+        # No child is alive while sleeping; SIGTERM closes the kernel run lock.
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        run(args.command == 'daemon')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

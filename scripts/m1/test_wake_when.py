@@ -34,6 +34,11 @@ class WakeWhen(unittest.TestCase):
         self.base = self.home / 'allrice-dev'
         self.base.mkdir()
         (self.base / 'wake-when.threads').write_text(THREADS.read_text())
+        sessions = self.home / '.codex/sessions'
+        sessions.mkdir(parents=True)
+        for row in THREADS.read_text().splitlines():
+            if row.strip() and not row.startswith('#'):
+                (sessions / ('rollout-' + row.split()[-1] + '.jsonl')).write_text('{}\n')
         self.codex = self.home / '.local/bin/codex'
         self.codex.parent.mkdir(parents=True)
         self.codex.write_text('#!' + sys.executable + '''
@@ -191,10 +196,12 @@ time.sleep(60)
         replacement = '00000000-0000-4000-8000-000000000007'
         refused = self.invoke('raise Exception("must not run")', thread=replacement)
         self.assertEqual(refused.returncode, 2)
-        self.assertFalse((self.base / 'qa').exists())
+        self.assertEqual(list((self.base / 'qa/wake-when').glob('*/result.json')), [])
+        self.assertTrue(list((self.base / 'qa/wake-when/dog/alerts').glob('*/telegram.json')))
         path = self.base / 'wake-when.threads'
         path.write_text(path.read_text().replace(THREAD, replacement))
         self.assertEqual(self.invoke('pass').returncode, 2)
+        (self.home / '.codex/sessions' / ('rollout-' + replacement + '.jsonl')).write_text('{}\n')
         item = self.start('pass', thread=replacement)
         self.finished(item)
         self.assertEqual(self.notifications()[0][2], replacement)
@@ -225,7 +232,7 @@ time.sleep(60)
         item = self.start('print("one execution")', extra_env={'QUEUE_EXIT': '9'})
         state = self.finished(item)
         self.assertEqual((state['notification'], state['queueExitCode']), ('failed', 9))
-        self.assertEqual(len(self.notifications()), 1)
+        self.assertEqual(len(self.notifications()), 4)
         self.assertEqual(Path(item['log']).read_text().count('one execution'), 1)
         self.assert_released(item)
 
@@ -462,6 +469,11 @@ print(json.dumps(dict(databaseId=7 if mode == 'wrong-id' else 43868459286,
         self.base = self.home / 'allrice-dev'
         self.base.mkdir(exist_ok=True)
         (self.base / 'wake-when.threads').write_text(THREADS.read_text())
+        sessions = self.home / '.codex/sessions'
+        sessions.mkdir(parents=True)
+        for row in THREADS.read_text().splitlines():
+            if row.strip() and not row.startswith('#'):
+                (sessions / ('rollout-' + row.split()[-1] + '.jsonl')).write_text('{}\n')
         self.codex = self.home / '.local/bin/codex'
         self.codex.write_text(queue_source)
         self.env.update(HOME=str(self.home), M5_FAKE_HOME=fixture.m5,
@@ -523,6 +535,17 @@ print(line)
                 self.assertEqual(state['task']['status'], 'unknown')
                 self.assertIn('等待失败，任务状态未知', self.notifications()[-1][4])
                 self.assert_released(item)
+
+    def test_deploy_refusal_has_real_terminal_receipt_and_does_not_deploy(self):
+        item = self.start('', command=[str(TOOL.parent / 'deploy-dev')])
+        state = self.finished(item)
+        self.assertEqual(state['commandExitCode'], 6)
+        self.assertEqual(state['task']['exitCode'], 6)
+        self.assertEqual(state['task']['status'], 'completed')
+        receipt = json.loads(Path(state['terminalFile']).read_text())
+        self.assertEqual((receipt['status'], receipt['exitCode']), ('completed', 6))
+        self.assertFalse((self.home / 'allrice-dev-releases').exists())
+        self.assert_released(item)
 
     def test_installer_seeds_whitelist_once_and_preserves_thread_rotation_on_upgrade(self):
         repo = self.home / 'repo'

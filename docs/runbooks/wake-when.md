@@ -41,7 +41,7 @@ EOF、5xx、超时等导致 watch／查询不能确认终态时，按 5、15、3
 { "id": "本次任务ID", "status": "completed", "exitCode": 0 }
 ```
 
-这是可选接入合同，现有 `deploy-dev` **尚不生成这种 JSON**，不能假装已有；也不能把 SSH／等待命令的退出码直接包装成终态文件。文件必须是启动等待时尚不存在的本次专用路径，ID、终态、整数退出码都要匹配；命令退出后按上述退避读取，仍无终态就报“等待失败，任务状态未知”。未提供终态文件的普通命令异常退出时，直接报告等待失败和原退出码，任务结论保持未知。需要 shell 组合语法时显式传 `bash -lc '...'`，工具不解释 shell；CI／M5 仍必须用各自直接命令形式，不能用外部 JSON 覆盖原生核验。
+直接包住 `~/allrice-dev/bin/deploy-dev <原授权参数>` 时，wake-when 自动设置专用文件及 ID。deploy-dev 在实际退出清理之后写 completed，覆盖参数/权限拒绝、构建失败、回滚收尾、冒烟失败和正常完成；SIGKILL/断电会留下 running，不能误报完成。部署工具单独使用时，也在 `qa/deploy-results/<UUID>.json` 留终态。`--status`/帮助只读，不生成部署终态；不要把它们当成部署调用。此接入不改变发布负责人和部署授权门禁。其他工具仍用上面的可选合同，不能把 SSH／等待命令退出码直接包装成终态文件。文件必须是启动等待时尚不存在的本次专用路径，ID、终态、整数退出码都要匹配；命令退出后按上述退避读取，仍无终态就报“等待失败，任务状态未知”。未提供终态文件的普通命令异常退出时，直接报告等待失败和原退出码，任务结论保持未知。需要 shell 组合语法时显式传 `bash -lc '...'`，工具不解释 shell；CI／M5 仍必须用各自直接命令形式，不能用外部 JSON 覆盖原生核验。
 
 命令必须在前台阻塞直到工作完成，不要在命令里自行 `nohup`、`setsid` 或启动常驻服务。超时退出码为 124；结束时会清理该命令进程组，包括仍运行的子进程。TERM 后留 10 秒清理宽限，覆盖现有 `m5-test relay()` 对其独立子进程组的 5 秒清理流程，再对残留进程组发 KILL；因此回执可比命令时限稍晚。不要传入读取凭据、打印敏感内容的命令：命令输出会进入本机日志，失败尾部会发到本线。
 
@@ -55,6 +55,33 @@ EOF、5xx、超时等导致 watch／查询不能确认终态时，按 5、15、3
 
 启动回执给出后台 PID、日志与结果路径。文件均在 `~/allrice-dev/qa/wake-when/<时间-随机ID>/`，目录 700、文件 600。`command.log` 是命令原始输出，`notification.log` 是 queue 回执，`result.json` 中 `task` 是已核实结论或 `unknown`，`commandExitCode` 是等待命令退出码；还记录核验次数、超时与通知结果。记录工作目录、固定 CI 仓库/run 或终态文件路径，不另存完整 argv 或读取凭据。
 
-`notification=sent` 只说明 queue 已接收，不等于本线已执行后续。通知发送失败或 30 秒超时会记 `notification=failed`，不重跑原命令；按结果文件手动补发回执。正常结束／超时／TERM 会退出后台进程并删除任务锁。M1 重启或 supervisor 被 SIGKILL 时不自动恢复、不补发通知；下一次启动清理已失效的锁，调用方根据原日志决定是否重新等待。日志作为证据保留，不占实例名额。
+`notification=sent` 只说明 queue 已接收，不等于本线已执行后续。queue 每次最多30秒；失败按1/2/4秒退避再试，累计最多4次，不重跑原命令。delivery.json 记录投递过程；线程不存在/归档/不在白名单立即升级TG，其他失败耗尽后升级TG。TG失败有持久化退避，交看门狗续送。正常结束／超时／TERM 会退出后台进程并删除任务锁。M1 重启或 supervisor 被 SIGKILL 时不自动恢复任务；看门狗启动补扫并通知核对，清理内核已解锁的任务锁。日志作为证据保留，不占实例名额。
 
-安装只使用已提交版本的 `scripts/m1/install`，切换版本化共享 bin，不直接修改已安装工具；本工具不安装 launchd、不改 macOS 或网络设置。测试使用临时 HOME 和假 queue，不给真实会话发消息。
+安装只使用已提交版本的 `scripts/m1/install`，切换版本化共享 bin，不直接修改已安装工具；wake-when 本身不装 launchd；下面的 m1-dog 需已有安装授权，不改网络设置。测试使用临时 HOME 和假 queue，不给真实会话发消息。
+
+## M1-dog 看门狗
+
+维护人：**打野线**。源码 `scripts/m1/m1-dog`、共享 `wake_runtime.py`；仓库 Skill `.agents/skills/m1-dog/SKILL.md`。不涉及 DSH 原生能力，无 SaaS 自补项。纯本机脚本，每 10 分钟一轮，绝不调用模型或自动重跑 CI/M5/部署。
+
+`m1-dog launchd install` 安装用户 LaunchAgent `ai.bplabs.allrice-m1-dog`，RunAtLoad/KeepAlive，崩溃由 launchd 拉起（60秒节流）。开机后用户登录时启动，不安装 root LaunchDaemon。安装先把原 plist/launchctl 状态存到 `qa/wake-when/dog/launchd-backups/<UTC>/`，验证新 plist；停旧 dog 时轮询 launchctl 和旧 PID，最长30秒，再启新版本。安装失败恢复原 plist/加载状态。只操作自己的 label。
+
+```bash
+~/allrice-dev/bin/m1-dog status
+launchctl print gui/$(id -u)/ai.bplabs.allrice-m1-dog
+# 已获维护授权后，升级/重装（不停止任何 CI/M5/部署）：
+~/allrice-dev/bin/m1-dog launchd install
+```
+
+心跳 `dog/heartbeat.json` 有 startedAt/completedAt；`dog.log` 为每轮日志，`dog/state.json` 为活动等待/叫醒计数/告警数。每个 supervisor 在阻塞命令期间最多30秒更新 heartbeat，记录本次开机身份和进程启动时间，防止 PID 重用。心跳停更超过3分钟或超过任务总时限+5分钟收尾宽限，下一轮发“等待中断，请自行核对”；不据此杀任务。旧#885等待没有心跳，兼容其进程/截止时间直到自然收尾。
+
+通知投递共用 delivery.json 和内核互斥，防 dog 与 supervisor 同时发送。持久化前后发生进程崩溃/queue超时可能无法确认是否已接收，因此只能提供至少一次尝试，不能承诺严格恰好一次。收到重复回执先核对任务，不重复执行。`delivery.lock` 是保留 inode 的公共互斥文件，空闲无持锁进程，不占名额；不要删它。任务 label 锁仍由原工具释放。
+
+TG 复用已安装 monitor 的 send_telegram，不新增机器人或复制凭据；整个调用最多50秒，日志不输出发送异常 URL。失败记录 telegram.json 并在以后巡检退避续送（最长每小时一次）；白名单错误立即TG，不能静默丢弃。若整个M1离线，需现有外部看护兜底，本机工具无法自己告警。
+
+空等检测只读七个白名单线程的 rollout 尾部（最多2MiB），只识别 `event_msg.task_complete.last_agent_message`，新 task_started/turn_aborted/用户消息会取消旧判断。不读取 auth/配置数据库或其他线程正文。已结束回合提到等待CI/M5/部署、超过30分钟且无活动等待/后续已送终态时，每回合提醒一次。自然语言只是保守诊断提示，可能误报/漏报，绝不作为业务授权。Codex事件格式改变时先补夹具和核验，不猜字段。
+
+UTC01:00后的第一轮发送每天一条平安报告（若当时关机，启动后补当天），包含当日成功/失败、需人工核对和TG待送数。路径 `dog/daily/YYYY-MM-DD/telegram.json`，sentAt只代表TG接收。对已核对的 `dog/alerts/<ID>` 用 `m1-dog ack <ID>` 关闭人工待办，原始证据保留。
+
+回滚：先 `m1-dog launchd remove`，只移除本看门狗并备份；若恢复之前已安装的dog，把对应备份plist贴回原 `~/Library/LaunchAgents/ai.bplabs.allrice-m1-dog.plist`，用 `launchctl bootstrap gui/$(id -u) <该plist>` 重新加载。工具版本回滚由已授权维护者用旧提交的 `scripts/m1/install` 切回已保留的版本，不直接改共享bin。重新检查 launchctl、心跳、当日TG；没有旧dog时保持移除即可，wake-when既有任务不受影响。
+
+MET-245 应登记：上述工具/Skill位置、10分钟心跳与launchctl检查、每日UTC01:00TG、告警按任务原终态核对、维护人打野、规划线看护仍是最后兜底。破坏测试使用隔离HOME/假queue/假TG，不杀真实任务；真实安装后用无模型短命令核验本线可收到回执。
