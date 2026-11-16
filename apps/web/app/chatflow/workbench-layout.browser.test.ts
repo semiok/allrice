@@ -4574,28 +4574,33 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                   : { error: { message: 'Current content unavailable' } },
             }),
         );
-        await f.page.route(
-          `**/api/v1/employee-instances/${historicalId}/skills?*`,
-          (route) => {
-            const request = route.request();
-            if (request.method() !== 'GET') return route.fallback();
-            const url = new URL(request.url());
-            expect(url.pathname).toBe(
-              `/api/v1/employee-instances/${historicalId}/skills`,
-            );
-            expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
-            expect(url.searchParams.get('workspaceId')).toBe(workspace);
-            expect(request.headers()['x-allrice-workspace-id']).toBe(workspace);
-            expect(historical.ownerId).toBe(f.state.viewer);
-            return route.fulfill({
-              status: currentStatus,
-              json:
-                currentStatus === 409
-                  ? archivedError
-                  : { error: { message: 'Current content unavailable' } },
-            });
-          },
-        );
+        for (const catalog of ['skills', 'modules'] as const) {
+          await f.page.route(
+            `**/api/v1/employee-instances/${historicalId}/${catalog}?*`,
+            (route) => {
+              const request = route.request();
+              if (request.method() !== 'GET') return route.fallback();
+              const url = new URL(request.url());
+              expect(url.pathname).toBe(
+                `/api/v1/employee-instances/${historicalId}/${catalog}`,
+              );
+              expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+              expect(url.searchParams.get('workspaceId')).toBe(workspace);
+              expect(request.headers()['x-allrice-organization-id']).toBe(org);
+              expect(request.headers()['x-allrice-workspace-id']).toBe(
+                workspace,
+              );
+              expect(historical.ownerId).toBe(f.state.viewer);
+              return route.fulfill({
+                status: currentStatus,
+                json:
+                  currentStatus === 409
+                    ? archivedError
+                    : { error: { message: 'Current content unavailable' } },
+              });
+            },
+          );
+        }
         await f.page.route(
           `**/api/v1/employee-instances/${historicalId}/scene-skills/reads?*`,
           (route) => {
