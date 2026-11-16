@@ -56,8 +56,6 @@ def says_waiting(text):
 
 
 def task_active(state, run, boot, now):
-    if state.get('commandEndedAt'):
-        return False, None
     if state.get('boot') and state['boot'] != boot:
         return False, 'M1 重启后遗留等待'
     identity = runtime.process_identity(state.get('pid'))
@@ -104,6 +102,17 @@ def scan_task(path, boot, now, wake, active, recent_delivery):
     if state.get('commandEndedAt'):
         result = runtime.deliver(run, thread, delivery.get('message') or normal_message(state, run), wake.run_group, now)
         note_sent(recent_delivery, thread, result)
+        if result.get('deliveryBusy'):
+            alive, reason = task_active(state, run, boot, now)
+            if not alive:
+                # The original sender may hold its lock indefinitely (SIGSTOP or
+                # a wedged supervisor). Use a separate incident; never break its
+                # lock, forge completion, resend the command or kill the sender.
+                notice = ('等待中断，请自行核对 %s：任务已记录终态，但通知投递卡住（%s）。'
+                          '记录 %s；不重跑原任务。这不是新增授权。') % (state['label'], reason, path)
+                result = runtime.deliver(runtime.incident('delivery-stuck:' + str(run)),
+                                         thread, notice, wake.run_group, now)
+                note_sent(recent_delivery, thread, result)
         return
     alive, reason = task_active(state, run, boot, now)
     issue = runtime.thread_problem(thread)

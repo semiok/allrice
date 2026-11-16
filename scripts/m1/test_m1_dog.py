@@ -1,6 +1,7 @@
 """Isolated destructive drills: no live Codex queue, Telegram, launchd or deploy."""
 from datetime import datetime, timezone
 import json
+import fcntl
 import plistlib
 import os
 from pathlib import Path
@@ -349,6 +350,30 @@ if mode.exists():
         self.assertTrue(state['restored'])
         self.assertTrue(state['loaded'])
         self.assertEqual(path.read_bytes(), original)
+
+
+    def test_stalled_notification_owner_alerts_once_without_breaking_delivery_lock(self):
+        run, state = self.task(pid=os.getpid(), identity=runtime.process_identity(os.getpid()),
+                               commandEndedAt=runtime.stamp(), task=dict(status='completed', conclusion='success'))
+        runtime.save(run / 'delivery.json', dict(status='sending', attempts=1))
+        fd = os.open(run / 'delivery.lock', os.O_RDWR | os.O_CREAT, 0o600)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        runtime.save(run / 'heartbeat.json', dict(at=runtime.stamp()))
+        self.dog.check_round(self.now)
+        self.assertEqual(self.notifications(), [], 'a live sender must finish undisturbed')
+        runtime.save(run / 'heartbeat.json', dict(at=datetime.fromtimestamp(self.now-600, timezone.utc).isoformat()))
+        self.dog.check_round(self.now)
+        self.dog.check_round(self.now+600)
+        self.assertEqual(len(self.notifications()), 1)
+        self.assertIn('通知投递卡住', self.notifications()[0][4])
+        self.assertEqual(runtime.read(run / 'result.json'), state)
+        probe = os.open(run / 'delivery.lock', os.O_RDWR)
+        try:
+            with self.assertRaises(BlockingIOError): fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(probe)
+        self.assertTrue(runtime.process_identity(os.getpid()))
 
 
 

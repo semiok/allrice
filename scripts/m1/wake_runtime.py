@@ -172,7 +172,7 @@ def deliver(directory, thread, message, runner, now=None):
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            return read(directory / 'delivery.json', {})
+            return dict(read(directory / 'delivery.json', {}), deliveryBusy=True)
         state = read(directory / 'delivery.json', {})
         if state.get('sentAt'):
             return state
