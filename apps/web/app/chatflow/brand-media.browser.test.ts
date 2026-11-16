@@ -230,7 +230,7 @@ suite('MET-224 main-area brand media text workflow', () => {
         loader: 'tsx',
         resolveDir: resolve('apps/web'),
         contents: `
-        import { useMemo, useState } from 'react';
+        import { useEffect, useMemo, useState } from 'react';
         import { createRoot } from 'react-dom/client';
         import { BrandMediaHost, BrandMediaPluginSection, BrandMediaPluginPicker, useBrandMediaEntry } from './app/chatflow/brand-media/frontend-wiring';
         import { BrandMediaPanel } from './app/chatflow/brand-media/panel';
@@ -245,6 +245,11 @@ suite('MET-224 main-area brand media text workflow', () => {
           const [draft, setDraft] = useState('未发送的聊天草稿');
           const headers = useMemo(() => ({ 'x-allrice-organization-id': ids.organizationId, 'x-allrice-workspace-id': ids.workspaceId }), []);
           const controller = useBrandMediaEntry({ ...ids, instanceId, headers });
+          useEffect(() => {
+            const navigate = () => setOpen(false);
+            window.addEventListener('fixture-employee-navigation', navigate);
+            return () => window.removeEventListener('fixture-employee-navigation', navigate);
+          }, []);
           const launch = () => { setSerial(n => n + 1); setOpen(true); };
           return <div style={{ display:'flex', height:'100vh', width:'100vw' }}>
             <aside aria-label="员工侧栏" style={{ width:300, flexShrink:0 }}>
@@ -1256,32 +1261,53 @@ suite('MET-224 main-area brand media text workflow', () => {
     await f.close();
   });
 
-  it('closing with a candidate reference Modal releases its focus layer and keeps the original conversation', async () => {
-    const f = await fixture();
-    const { page } = f;
-    await f.open();
-    await candidatesPage(page);
-    await page
-      .getByRole('button', { name: '添加参考资料', exact: true })
-      .click();
-    await page.getByRole('dialog', { name: '添加参考资料' }).waitFor();
-    await page
-      .getByRole('button', { name: 'Rice 员工', exact: true })
-      .click({ force: true });
-    await expect.poll(() => page.getByRole('dialog').count()).toBe(0);
-    await expect
-      .poll(() =>
-        page
-          .getByLabel('聊天草稿')
-          .evaluate((el) => document.activeElement === el),
-      )
-      .toBe(true);
-    await page.keyboard.press('Escape');
-    expect(await page.getByLabel('聊天草稿').inputValue()).toBe(
-      '未发送的聊天草稿',
-    );
-    await f.close();
-  });
+  it.each(['user-navigation', 'external-navigation'] as const)(
+    'closing with a candidate reference Modal releases its focus layer and keeps the original conversation through %s',
+    async (navigation) => {
+      const f = await fixture();
+      const { page } = f;
+      await f.open();
+      await candidatesPage(page);
+      await page
+        .getByRole('button', { name: '添加参考资料', exact: true })
+        .click();
+      await page.getByRole('dialog', { name: '添加参考资料' }).waitFor();
+      expect(
+        await page.locator('[data-brand-media-host]').getAttribute('data-open'),
+      ).toBe('true');
+      if (navigation === 'user-navigation') {
+        await page.keyboard.press('Escape');
+        await page
+          .getByRole('dialog', { name: '添加参考资料' })
+          .waitFor({ state: 'detached' });
+        await page
+          .getByRole('button', { name: 'Rice 员工', exact: true })
+          .click();
+      } else {
+        await page.evaluate(() =>
+          window.dispatchEvent(new Event('fixture-employee-navigation')),
+        );
+      }
+      await expect
+        .poll(() =>
+          page.locator('[data-brand-media-host]').getAttribute('data-open'),
+        )
+        .toBe('false');
+      await expect.poll(() => page.getByRole('dialog').count()).toBe(0);
+      await expect
+        .poll(() =>
+          page
+            .getByLabel('聊天草稿')
+            .evaluate((el) => document.activeElement === el),
+        )
+        .toBe(true);
+      await page.keyboard.press('Escape');
+      expect(await page.getByLabel('聊天草稿').inputValue()).toBe(
+        '未发送的聊天草稿',
+      );
+      await f.close();
+    },
+  );
 
   it('a calendar article beyond the first page stays selected after filter reset and Run refresh; conflicts report retained delivery facts', async () => {
     const old = article(99),
