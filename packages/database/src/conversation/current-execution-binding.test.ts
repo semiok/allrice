@@ -1,5 +1,6 @@
 import { legacyRuntimePackageFixture as buildEmployeeRuntimePackage } from '../platform-employees/legacy-runtime-package.fixture.ts';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   EmployeeDefinitionSchema,
@@ -9,6 +10,9 @@ import {
   PlatformEmployeeDefinitionSchema,
   SessionModelSnapshotSchema,
   withEmployeeCustomizationTools,
+  allRiceToolManifest,
+  employeeToolConfigurationErrors,
+  freezeMemoryIndexToolNames,
   type EmployeeDefinition,
 } from '@allrice/contracts';
 import {
@@ -288,6 +292,99 @@ function run(
 }
 
 describe('current employee source policy: immutable original identities', () => {
+  it('the standard Rice publication declares only current tools', async () => {
+    const standard = PlatformEmployeeDefinitionSchema.parse(
+      JSON.parse(
+        await readFile(
+          new URL('../../../../scripts/m1/rice-standard.json', import.meta.url),
+          'utf8',
+        ),
+      ),
+    );
+    const known = new Set<string>(
+      allRiceToolManifest.map((tool) => tool.canonicalName),
+    );
+    for (const name of [
+      ...standard.capabilities.toolNames,
+      ...(standard.capabilities.explicitToolNames ?? []),
+    ])
+      expect(known.has(name), name).toBe(true);
+    expect(employeeToolConfigurationErrors(standard)).toEqual([]);
+  });
+
+  it.each(['definition', 'plain', 'bundled'] as const)(
+    'reads signed pre-A2 %s declarations without granting retired memory tools',
+    (format) => {
+      // Original publication bytes: the names were valid before A2 removed
+      // their catalog entries. Do not repair or re-sign them in the reader.
+      const retired = ['workspace.memory.search', 'workspace.experience.read'];
+      const source =
+        format === 'definition'
+          ? definitionOnly()
+          : packaged(newNativeGeneration, format);
+      const manifest = manifestOf(source);
+      manifest.capabilityBindings.toolNames.push(...retired);
+      if (manifest.runtimePackage) {
+        const pkg = packageOf(source);
+        pkg.runtimeManifest.toolNames.push(...retired);
+        pkg.skills[0]!.requiredToolRefs.push(...retired);
+        const bundle = pkg.skills[0]!.bundle;
+        if (bundle) {
+          bundle.dependencies.push(
+            ...retired.map((name) => ({ kind: 'tool' as const, name })),
+          );
+          const { checksum: _checksum, ...payload } = bundle;
+          void _checksum;
+          bundle.checksum = skillBundleChecksum(payload);
+        }
+        fingerprint(pkg);
+        source.configChecksum = pkg.checksum;
+      } else source.configChecksum = employeeManifestChecksum(manifest);
+      const original = structuredClone(source);
+      const existing = chat(source);
+      const input = run(source, existing);
+      const snapshot = EmployeeExecutionSnapshotSchema.parse(
+        input.executionSnapshot,
+      );
+      snapshot.capabilitySnapshot.bindings.toolNames =
+        freezeMemoryIndexToolNames(
+          snapshot.capabilitySnapshot.bindings.toolNames,
+          snapshot.capabilitySnapshot.grantedCapabilities,
+          undefined,
+        );
+      input.executionSnapshot = snapshot;
+      const binding = freezeEmployeeRunExecutionBinding(input);
+      expect(binding.source).toEqual(existing.origin.birthSource);
+      expect(assertEmployeeRunExecutionBinding(binding, input)).toEqual(
+        binding,
+      );
+      expect(source).toEqual(original);
+      const unknown = structuredClone(source);
+      manifestOf(unknown).capabilityBindings.toolNames.push(
+        'unknown.never_registered',
+      );
+      if (manifestOf(unknown).runtimePackage) {
+        const pkg = packageOf(unknown);
+        pkg.runtimeManifest.toolNames.push('unknown.never_registered');
+        fingerprint(pkg);
+        unknown.configChecksum = pkg.checksum;
+      } else
+        unknown.configChecksum = employeeManifestChecksum(manifestOf(unknown));
+      expect(() => validateEmployeeExecutionSource(unknown)).toThrow(
+        'CURRENT_EXECUTION_SOURCE_TOOL_INVALID',
+      );
+      for (const name of [...retired, 'workspace.memory.read'])
+        expect(snapshot.capabilitySnapshot.bindings.toolNames).not.toContain(
+          name,
+        );
+
+      snapshot.capabilitySnapshot.bindings.toolNames.push(retired[0]!);
+      expect(() => freezeEmployeeRunExecutionBinding(input)).toThrow(
+        'CURRENT_EMPLOYEE_EXECUTION_RETIRED_TOOL',
+      );
+    },
+  );
+
   it.each([null, newNativeGeneration])(
     'validates original source %s without rewriting it or fabricating a package',
     (generation) => {

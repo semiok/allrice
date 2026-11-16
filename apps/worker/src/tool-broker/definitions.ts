@@ -14,6 +14,7 @@ import {
 } from '@allrice/contracts';
 import {
   allRiceToolManifest,
+  retiredMemoryToolNames,
   RuntimeLocalCommandToolInputSchema,
   LocalMcpDiscoverInputSchema,
   McpCallInputSchema,
@@ -864,10 +865,8 @@ export function riceReadOnlyToolDefinitionsForPreview(
   ).filter(
     (definition) =>
       riceToolRisk(definition.name) === 'read_only' &&
-      ![
-        'workspace.memory.search',
-        'workspace.experience.read',
-        'workspace.memory.read',
-      ].includes(definition.name),
+      ![...retiredMemoryToolNames, 'workspace.memory.read'].includes(
+        definition.name,
+      ),
   );
 }

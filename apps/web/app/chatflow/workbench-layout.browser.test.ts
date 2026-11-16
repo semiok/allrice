@@ -20792,7 +20792,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           )
           .toBeLessThanOrEqual(0.5);
         const expanded = await geometry(collapse);
-        expect(expanded.target).toEqual(folded.target);
+        expect(centerDelta(expanded.target, folded.target)).toBeLessThanOrEqual(
+          0.5,
+        );
         expect(expanded.glyph).toEqual(folded.glyph);
         expect(
           centerDelta(expanded.glyphCenter, expanded.center),

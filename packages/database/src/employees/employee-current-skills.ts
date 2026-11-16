@@ -5,7 +5,10 @@ import {
 } from '@allrice/contracts';
 import type { ContentSql, ContentTx } from './employee-content-model.ts';
 import { DataAccessError } from '../data.ts';
-import { frozenPackageSkills, validateFrozenSkill } from '../skill-bundles.ts';
+import {
+  frozenPackageSkills,
+  validateHistoricalFrozenSkill,
+} from '../skill-bundles.ts';
 import { freezeEmployeeBaseSkills } from './employee-base-skills.ts';
 
 /** Current instance publication + current platform catalog, with the same
@@ -49,7 +52,7 @@ async function readBaseInTransaction(
         and b.enabled and s.enabled order by s.name,s.id`;
     for (const skill of skills) versions.set(skill.id, skill.version);
     original = skills.map((skill) =>
-      validateFrozenSkill({
+      validateHistoricalFrozenSkill({
         id: skill.id,
         name: skill.name,
         description: skill.description,

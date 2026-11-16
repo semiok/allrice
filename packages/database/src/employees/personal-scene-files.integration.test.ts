@@ -637,6 +637,128 @@ suite(
       ).toEqual(current);
     });
 
+    it('reads a pre-A2 scene but rejects restoring its retired tool dependency as a new publication', async () => {
+      const s = await setup(),
+        original = file();
+      if (!('skillPackage' in original.procedure))
+        throw Error('fixture package required');
+      const bundle = original.procedure.skillPackage.bundle;
+      bundle.dependencies.push({
+        kind: 'tool',
+        name: 'workspace.memory.search',
+      });
+      const { checksum: _checksum, ...payload } = bundle;
+      void _checksum;
+      bundle.checksum = skillBundleChecksum(payload);
+      const setId = randomUUID(),
+        contentId = randomUUID(),
+        sourceRevisionId = randomUUID();
+      const old = await seedHistoricalEmployeeContent(
+        f.db,
+        s.owner,
+        {
+          workspaceId: s.workspaceId,
+          setId,
+          ownership: {
+            scope: 'personal',
+            organizationId: s.owner.organizationId,
+            ownerId: s.owner.actor.id,
+          },
+          target: { kind: 'instance', instanceId: s.instance.id },
+          requestId: randomUUID(),
+          expectedRevision: 0,
+          operation: 'save_draft',
+          changeSummary: 'Synthetic pre-A2 published scene',
+          manifest: {
+            schemaVersion: 1,
+            common: [],
+            declaredConflicts: [],
+            scenes: [
+              {
+                id: original.scene.id,
+                name: original.scene.name,
+                appliesWhen: original.scene.appliesWhen,
+                references: [{ sourceKind: 'draft_text', contentId }],
+              },
+            ],
+          },
+          textEdits: [
+            {
+              ...original.procedure,
+              contentId,
+              revisionId: sourceRevisionId,
+              expectedRevision: 0,
+            },
+          ],
+        },
+        { active: true },
+      );
+      const contentRef = personalSceneContentRef({
+        setId,
+        revisionId: old.active!.id,
+        sceneId: original.scene.id,
+        sourceRevisionId,
+      });
+      expect(
+        (await getPersonalSceneSkill(s.owner, s.instance.id, original.scene.id))
+          .content,
+      ).toBe(original.procedure.body);
+      // Keep the same historical procedure pin/location in both revisions.
+      // The legal knowledge change passes the separate method-retirement gate,
+      // so restore reaches the candidate package validation under test.
+      const dependency = await knowledge(s);
+      const [row] =
+        await f.db`select manifest from allrice_employee_content_revisions where id=${old.active!.id}`;
+      const manifest = structuredClone(row!.manifest);
+      manifest.scenes[0].references.push(dependency.ref);
+      const current = await seedHistoricalEmployeeContent(
+        f.db,
+        s.owner,
+        {
+          workspaceId: s.workspaceId,
+          setId,
+          ownership: {
+            scope: 'personal',
+            organizationId: s.owner.organizationId,
+            ownerId: s.owner.actor.id,
+          },
+          target: { kind: 'instance', instanceId: s.instance.id },
+          requestId: randomUUID(),
+          expectedRevision: old.revision,
+          operation: 'save_draft',
+          changeSummary: 'Synthetic later historical knowledge-only change',
+          manifest,
+          textEdits: [],
+        },
+        { active: true },
+      );
+      const currentRef = personalSceneContentRef({
+        setId,
+        revisionId: current.active!.id,
+        sceneId: original.scene.id,
+        sourceRevisionId,
+      });
+      const before = await snapshot(s);
+      await expect(
+        restorePersonalSceneFile(s.owner, s.instance.id, {
+          workspaceId: s.workspaceId,
+          requestId: randomUUID(),
+          expectedRevision: current.revision,
+          expectedContentRef: currentRef,
+          restoreContentRef: contentRef,
+          sceneId: original.scene.id,
+          contentChecksum: bundle.contentChecksum,
+          bundleChecksum: bundle.checksum,
+          changeSummary: 'Must reject retired dependency in a new publication',
+        }),
+      ).rejects.toThrow('validation_failed');
+      expect(await snapshot(s)).toEqual(before);
+      expect(
+        (await getPersonalSceneSkill(s.owner, s.instance.id, original.scene.id))
+          .contentRef,
+      ).toBe(currentRef);
+    });
+
     it('restores v1 as a new current revision with exact old sources, immutable history and untouched other scenes', async () => {
       const s = await setup(),
         original = file(),

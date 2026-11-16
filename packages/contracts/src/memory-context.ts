@@ -2,6 +2,13 @@ import { EmployeeCapabilityBindingsSchema } from './employees.ts';
 import { withPlatformImageTools } from './image-generation.ts';
 import type { SkillCapability } from './skills.ts';
 
+/** A2 retirement: historical declaration names only, never executable tools
+ * or aliases for V2 grants. Keep source readers and Run projection aligned. */
+export const retiredMemoryToolNames = [
+  'workspace.memory.search',
+  'workspace.experience.read',
+] as const;
+
 /** Freeze the current read tool only from an explicit memory.read grant.
  * Retired tools never grant a replacement capability. */
 export function freezeMemoryIndexToolNames(
@@ -14,11 +21,7 @@ export function freezeMemoryIndexToolNames(
     toolNames.includes('workspace.memory.read');
   const names = toolNames.filter(
     (name) =>
-      ![
-        'workspace.memory.search',
-        'workspace.experience.read',
-        'workspace.memory.read',
-      ].includes(name),
+      ![...retiredMemoryToolNames, 'workspace.memory.read'].includes(name),
   );
   const selected = [
     ...new Set([...names, ...(readable ? ['workspace.memory.read'] : [])]),
@@ -36,9 +39,8 @@ export function withoutTaskMemoryTools(toolNames: readonly string[]) {
     (name) =>
       ![
         'workspace.memory.read',
-        'workspace.memory.search',
+        ...retiredMemoryToolNames,
         'workspace.memory.remember',
-        'workspace.experience.read',
       ].includes(name),
   );
 }
