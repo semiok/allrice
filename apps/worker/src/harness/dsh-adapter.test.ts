@@ -1089,6 +1089,55 @@ describe('DshHarnessAdapter', () => {
     }
   }, 30_000);
 
+  it('rechecks an image-bearing model input before the first and every later native dispatch, without sending revoked bytes', async () => {
+    const runtime = await schedulingRuntime(['AUTHORIZED_IMAGE_REPLY']);
+    const input = executionInput({
+      prompt: 'Read the selected JPG.',
+      provider: runtime.provider,
+      images: [
+        {
+          mediaType: 'image/jpeg',
+          data: 'aW1hZ2UtYnl0ZXM=',
+          name: 'private.jpg',
+        },
+      ],
+    });
+    input.workDirectory = runtime.root;
+    let allowed = false;
+    input.contentGuard = {
+      generationId: randomUUID(),
+      check: async () => {
+        if (!allowed)
+          throw new HandlerError(
+            'EMPLOYEE_CONTENT_UNAVAILABLE',
+            'upload revoked',
+            false,
+          );
+      },
+    };
+    try {
+      await expect(runtime.adapter.execute(input)).rejects.toMatchObject({
+        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+      });
+      expect(runtime.requests).toHaveLength(0);
+      allowed = true;
+      const first = await runtime.adapter.execute(input);
+      expect(runtime.requests).toHaveLength(1);
+      expect(JSON.stringify(runtime.requests[0])).toContain('aW1hZ2UtYnl0ZXM=');
+      input.threadId = first.threadId;
+      input.kernel.userMessageId = randomUUID();
+      input.kernel.assistantMessageId = randomUUID();
+      input.kernel.userRequest = 'Read it again.';
+      allowed = false;
+      await expect(runtime.adapter.execute(input)).rejects.toMatchObject({
+        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+      });
+      expect(runtime.requests).toHaveLength(1);
+    } finally {
+      await runtime.close();
+    }
+  }, 30_000);
+
   it('checks plain completion authority once after the native reply while retaining both dispatch checks and an available tool directory', async () => {
     const diagnostics = vi.spyOn(console, 'info').mockImplementation(() => {});
     const runtime = await schedulingRuntime(['SYNTHETIC_REMINDER']);

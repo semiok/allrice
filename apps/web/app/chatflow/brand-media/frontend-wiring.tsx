@@ -22,6 +22,7 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
   BrandMediaReadResultSchema,
+  BrandMediaCandidateSchema,
   BrandMediaMutationResultSchema,
   BrandMediaInvocationSchema,
   BrandMediaFileSchema,
@@ -65,6 +66,8 @@ const runsSchema = z.object({
       run: RunSnapshotSchema,
       sessionId: z.uuid(),
       invocation: BrandMediaInvocationSchema,
+      addedCandidates: z.array(BrandMediaCandidateSchema),
+      unavailable: z.boolean(),
       submission: z
         .object({
           articleUpdated: z.boolean(),
@@ -86,6 +89,32 @@ export const runActive = (run: BrandMediaRun) =>
   !['succeeded', 'failed', 'canceled', 'needs_attention'].includes(
     run.run.status,
   );
+/** One immutable candidate selection keeps its identity across host remounts. */
+export async function candidateRequestId(
+  scope: BrandMediaClientScope,
+  runId: string,
+  candidate: BrandMediaTopic['candidate'],
+) {
+  const bytes = await crypto.subtle.digest(
+    'SHA-256',
+    new TextEncoder().encode(
+      JSON.stringify([
+        'brand-media-candidate',
+        scope.organizationId,
+        scope.workspaceId,
+        scope.ownerId,
+        scope.instanceId,
+        runId,
+        candidate.title,
+        candidate.summary,
+      ]),
+    ),
+  );
+  const hex = Array.from(new Uint8Array(bytes), (value) =>
+    value.toString(16).padStart(2, '0'),
+  ).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
 async function json(
   url: string,
   headers: Record<string, string>,
