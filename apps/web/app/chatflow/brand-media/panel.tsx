@@ -136,12 +136,20 @@ export function BrandMediaPanel({
     }
   }, [active]);
   const [detail, setDetail] = useState<BrandMediaArticle | null>(null);
+  const detailGeneration = useRef(0);
+  const acceptDetail = useCallback((article: BrandMediaArticle) => {
+    detailGeneration.current++;
+    setDetail((old) =>
+      old?.id === article.id && old.revision > article.revision ? old : article,
+    );
+  }, []);
   const selectedIdRef = useRef(selectedId);
   selectedIdRef.current = selectedId;
+  const listed = articles.find((article) => article.id === selectedId);
   const selected =
-    detail?.id === selectedId
+    detail?.id === selectedId && (!listed || detail.revision >= listed.revision)
       ? detail
-      : articles.find((article) => article.id === selectedId);
+      : listed;
   const copyKey = JSON.stringify([
     client.scope,
     selected?.id,
@@ -171,8 +179,26 @@ export function BrandMediaPanel({
       copyLifetime.current.revision++;
     };
   }, []);
+  const readDetail = useCallback(
+    async (articleId: string, signal?: AbortSignal) => {
+      const version = ++detailGeneration.current;
+      const current = () =>
+        version === detailGeneration.current &&
+        !signal?.aborted &&
+        selectedIdRef.current === articleId;
+      const result = await client
+        .read({ view: 'article', articleId }, signal)
+        .catch((cause) => {
+          if (current()) throw cause;
+          return null;
+        });
+      if (current() && result?.view === 'article') acceptDetail(result.article);
+    },
+    [client, acceptDetail],
+  );
   const reload = useCallback(async () => {
     const version = ++generation.current;
+    detailGeneration.current++;
     try {
       const [topicPage, articlePage, schedule, recovery] =
         await Promise.allSettled([
@@ -209,49 +235,37 @@ export function BrandMediaPanel({
       );
       setError(failed?.status === 'rejected' ? failed.reason.message : '');
       const currentId = selectedIdRef.current;
-      if (currentId) {
-        const current = await client.read({
-          view: 'article',
-          articleId: currentId,
-        });
-        if (
-          version === generation.current &&
-          current.view === 'article' &&
-          selectedIdRef.current === currentId
-        )
-          setDetail(current.article);
-      }
+      if (currentId) await readDetail(currentId);
     } catch (cause) {
       if (version === generation.current)
         setError(
           cause instanceof Error ? cause.message : '暂时无法读取，请刷新重试。',
         );
     }
-  }, [client, month, timezone, state]);
+  }, [client, month, timezone, state, readDetail]);
   useEffect(() => {
     void reload();
     return () => {
       generation.current += 1;
+      detailGeneration.current++;
     };
   }, [reload]);
   useBrandMediaRunEvents(client, runs, reload, setError);
   useEffect(() => {
     if (!selectedId) {
+      detailGeneration.current++;
       setDetail(null);
       return;
     }
     const controller = new AbortController();
-    void client
-      .read({ view: 'article', articleId: selectedId }, controller.signal)
-      .then((result) => {
-        if (!controller.signal.aborted && result.view === 'article')
-          setDetail(result.article);
-      })
-      .catch((cause) => {
-        if (!controller.signal.aborted) setError(cause.message);
-      });
-    return () => controller.abort();
-  }, [client, selectedId]);
+    void readDetail(selectedId, controller.signal).catch((cause) => {
+      if (!controller.signal.aborted) setError(cause.message);
+    });
+    return () => {
+      controller.abort();
+      detailGeneration.current++;
+    };
+  }, [readDetail, selectedId]);
   useEffect(() => {
     const controller = new AbortController();
     setBody('');
@@ -303,7 +317,9 @@ export function BrandMediaPanel({
     setError('');
     try {
       const result = await client.command(request.input);
+      if (result.kind === 'article') acceptDetail(result.article);
       if (result.kind === 'deleted' && selectedIdRef.current === result.id) {
+        detailGeneration.current++;
         selectedIdRef.current = null;
         setSelectedId(null);
         setDetail(null);
@@ -384,7 +400,7 @@ export function BrandMediaPanel({
     setArticles((old) =>
       old.some((item) => item.id === article.id) ? old : [article, ...old],
     );
-    setDetail(article);
+    acceptDetail(article);
     selectedIdRef.current = article.id;
     setSelectedId(article.id);
     setTab('articles');

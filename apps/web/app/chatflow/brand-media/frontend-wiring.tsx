@@ -101,7 +101,7 @@ const runsSchema = z.object({
   ),
 });
 export type BrandMediaRun = z.infer<typeof runsSchema>['runs'][number];
-export const runActive = (run: BrandMediaRun) =>
+export const runActive = (run: Pick<BrandMediaRun, 'run'>) =>
   !['succeeded', 'failed', 'canceled', 'needs_attention'].includes(
     run.run.status,
   );
@@ -173,7 +173,13 @@ async function json(
 type Scoped<T> = T extends unknown
   ? Omit<T, 'workspaceId' | 'instanceId'>
   : never;
-export function createBrandMediaClient(scope: BrandMediaClientScope) {
+export function createBrandMediaClient(
+  scope: BrandMediaClientScope,
+  onAccepted?: (
+    sessionId: string,
+    run: z.infer<typeof RunSnapshotSchema>,
+  ) => void,
+) {
   const base = `/api/v1/employee-instances/${scope.instanceId}`,
     q = `?workspaceId=${encodeURIComponent(scope.workspaceId)}`;
   return {
@@ -231,8 +237,8 @@ export function createBrandMediaClient(scope: BrandMediaClientScope) {
         );
       return response.result;
     },
-    generate: async (intent: Scoped<BrandMediaGenerateInput>) =>
-      z
+    generate: async (intent: Scoped<BrandMediaGenerateInput>) => {
+      const result = z
         .object({
           run: RunSnapshotSchema,
           invocation: BrandMediaInvocationSchema,
@@ -247,7 +253,10 @@ export function createBrandMediaClient(scope: BrandMediaClientScope) {
               instanceId: scope.instanceId,
             }),
           }),
-        ),
+        );
+      onAccepted?.(result.userMessage.sessionId, result.run);
+      return result;
+    },
     runs: async (signal?: AbortSignal) =>
       runsSchema.parse(
         await json(base + '/brand-media' + q + '&view=runs', scope.headers, {
@@ -512,19 +521,23 @@ export function useBrandMediaEntry(scope: BrandMediaClientScope | null) {
         ? pending.current
         : { key, requestId: crypto.randomUUID() };
     pending.current = request;
+    const ownsRequest = () =>
+      current.current === capturedKey && pending.current === request;
     setBusy(true);
     setError('');
     try {
       await client.add(request.requestId);
-      if (current.current !== capturedKey) return;
+      if (!ownsRequest()) return;
       await reload();
+      if (!ownsRequest()) return;
+      setBusy(false);
       pending.current = null;
       setPicker(false);
     } catch (cause) {
-      if (current.current === capturedKey)
+      if (ownsRequest())
         setError(cause instanceof Error ? cause.message : '添加失败');
     } finally {
-      if (current.current === capturedKey) setBusy(false);
+      if (ownsRequest()) setBusy(false);
     }
   };
   return {
@@ -762,7 +775,9 @@ export function useBrandMediaRunEvents(
           sessionId: row.sessionId,
           workspaceId: client.scope.workspaceId,
           tenantHeaders: client.scope.headers,
-          loadHistory: refresh,
+          loadHistory: async () => {
+            void refresh();
+          },
           loadWorkspace: async () => {},
           setError,
         });
@@ -772,7 +787,8 @@ export function useBrandMediaRunEvents(
       void stream.streamRun(row.run.id);
     }
     const reconnect = () => {
-      for (const stream of streams.values()) stream.recoverConnections();
+      for (const row of runs.filter(runActive))
+        void streams.get(row.sessionId)?.streamRun(row.run.id);
       void refresh();
     };
     window.addEventListener('online', reconnect);

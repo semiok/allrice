@@ -56,6 +56,8 @@ import {
   BrandContentBoardSchema,
   brandContentTemplateKeys,
   brandMediaModule,
+  brandMediaRelease,
+  RunSnapshotSchema,
   workspaceCapabilityIds,
   type WorkspaceCapability,
   type InteractionStatus,
@@ -22989,6 +22991,348 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.context.close();
     }
   }, 30_000);
+  it.each([
+    'candidates',
+    'start',
+    'article',
+    'image',
+    'scope-changed',
+    'unlisted',
+    'terminal',
+  ] as const)(
+    'projects real plugin %s receipts into the authorized host sidebar without changing the selected chat',
+    async (kind) => {
+      const f = await fixture({
+        employeeDetails: true,
+        sidebarActivity: true,
+        controlledStream: true,
+      });
+      const { page } = f,
+        changed = kind === 'scope-changed',
+        unlisted = kind === 'unlisted',
+        terminal = kind === 'terminal';
+      const sessionId = unlisted ? id(7401) : A,
+        runId = id(7400);
+      const binding = {
+        organizationId: org,
+        workspaceId: workspace,
+        ownerId: user,
+        instanceId: id(7),
+        release: brandMediaRelease,
+        revision: 1,
+        enabledAt: now,
+        revokedAt: null,
+      };
+      const topic = {
+        workspaceId: workspace,
+        instanceId: id(7),
+        id: id(7410),
+        revision: 1,
+        createdAt: now,
+        updatedAt: now,
+        candidate: {
+          title: '宿主里的真实选题',
+          summary: '用于插件接线的合成资料',
+        },
+        direction: '日常故事',
+        sourceRunId: run,
+        references: [],
+      };
+      const article = {
+        workspaceId: workspace,
+        instanceId: id(7),
+        id: id(7420),
+        revision: 1,
+        createdAt: now,
+        updatedAt: now,
+        topicId: topic.id,
+        title: '宿主里的文章',
+        requirements: '',
+        body: null,
+        references: [],
+        images: [],
+        publication: { state: 'draft', schedule: null, links: null },
+      };
+      const snapshot = RunSnapshotSchema.parse({
+        id: runId,
+        organizationId: org,
+        workspaceId: workspace,
+        ownerId: user,
+        status: terminal ? 'succeeded' : 'queued',
+        job: {
+          id: id(7402),
+          organizationId: org,
+          workspaceId: workspace,
+          ownerId: user,
+          status: terminal ? 'succeeded' : 'queued',
+          idempotencyKey: 'plugin-host-receipt',
+          priority: 0,
+          attempt: 0,
+          maxAttempts: 3,
+          availableAt: now,
+          timeoutAt: now,
+          payload: {
+            schemaVersion: 1,
+            type: 'allrice.employee.run',
+            input: {},
+          },
+          lease: null,
+        },
+        cancelRequestedAt: null,
+        result: null,
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      let accepted: Record<string, unknown> | undefined,
+        receipt: Record<string, unknown> | undefined;
+      let release = () => {},
+        list = () => {};
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      await page.route(
+        (url) => url.pathname === `/api/v1/employee-instances/${id(7)}/modules`,
+        async (route) => {
+          const request = route.request(),
+            url = new URL(request.url());
+          if (
+            url.searchParams.get('workspaceId') !== workspace ||
+            f.state.viewer !== user
+          )
+            return route.fallback();
+          expect(request.method()).toBe('GET');
+          expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+          expect(request.headers()['x-allrice-organization-id']).toBe(org);
+          expect(request.headers()['x-allrice-workspace-id']).toBe(workspace);
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({
+              modules: [
+                {
+                  descriptor: brandMediaModule,
+                  binding,
+                  available: false,
+                  enabled: true,
+                },
+              ],
+            }),
+          });
+        },
+      );
+      await page.route(
+        (url) =>
+          url.pathname === `/api/v1/employee-instances/${id(7)}/brand-media`,
+        async (route) => {
+          const request = route.request(),
+            url = new URL(request.url());
+          expect(request.headers()['x-allrice-organization-id']).toBe(org);
+          expect(request.headers()['x-allrice-workspace-id']).toBe(workspace);
+          const reply = (body: unknown) =>
+            route.fulfill({
+              status: 200,
+              contentType: 'application/json',
+              body: JSON.stringify(body),
+            });
+          if (request.method() === 'GET') {
+            expect(url.searchParams.get('workspaceId')).toBe(workspace);
+            const view = url.searchParams.get('view');
+            if (view === 'runs')
+              return reply({ runs: receipt ? [receipt] : [] });
+            if (view === 'topics')
+              return reply({ view, items: [topic], nextCursor: null });
+            if (view === 'articles')
+              return reply({ view, items: [article], nextCursor: null });
+            if (view === 'article') return reply({ view, article });
+            if (view === 'calendar') return reply({ view, items: [] });
+            throw Error('Unexpected plugin read ' + view);
+          }
+          expect(request.method()).toBe('POST');
+          const body = request.postDataJSON();
+          if (body.operation === 'article.start')
+            return reply({
+              result: { kind: 'article', article },
+              replayed: false,
+            });
+          expect(['candidates', 'article', 'image']).toContain(body.operation);
+          expect(body).toMatchObject({
+            workspaceId: workspace,
+            instanceId: id(7),
+            sessionId: A,
+          });
+          expect(body).not.toHaveProperty('deliveryMode');
+          accepted = body;
+          receipt = {
+            run: snapshot,
+            sessionId,
+            invocation: { module: binding, intent: body },
+            addedCandidates: [],
+            unavailable: false,
+            submission: null,
+            deliveries: [],
+            image: null,
+          };
+          f.state.sidebarRunIds[sessionId] = terminal ? [] : [runId];
+          await gate;
+          return reply({
+            run: snapshot,
+            invocation: receipt.invocation,
+            userMessage: { sessionId },
+          });
+        },
+      );
+      try {
+        const refreshed = page.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === '/api/v1/workspace',
+        );
+        const details = await openOwnerDetails(f);
+        await (await refreshed).finished();
+        await details
+          .getByRole('button', { name: '打开 品牌自媒体', exact: true })
+          .click();
+        const brand = page.getByRole('region', {
+          name: '品牌自媒体',
+          exact: true,
+        });
+        await brand.getByRole('tab', { name: '排期表', exact: true }).waitFor();
+        f.state.sessionListDelay = new Promise<void>((done) => {
+          list = done;
+        });
+        if (kind === 'start') {
+          await brand.getByRole('tab', { name: '选题库', exact: true }).click();
+          await brand
+            .getByRole('button', { name: '写正文', exact: true })
+            .click();
+          await page
+            .getByRole('dialog', { name: '写正文', exact: true })
+            .getByRole('button', { name: '开始写', exact: true })
+            .click();
+        } else if (kind === 'article' || kind === 'image') {
+          await brand.getByRole('tab', { name: '文章库', exact: true }).click();
+          if (kind === 'image') {
+            await brand
+              .getByRole('button', { name: '＋ 加配图', exact: true })
+              .click();
+            const modal = page.getByRole('dialog', {
+              name: '加配图',
+              exact: true,
+            });
+            await modal.getByLabel('画面描述').fill('一张蓝色品牌封面');
+            await modal
+              .getByRole('button', { name: '生成', exact: true })
+              .click();
+          } else {
+            await brand.getByLabel('修改意见').fill('保留结构，增加结尾');
+            await brand
+              .getByRole('button', { name: '修改', exact: true })
+              .click();
+          }
+        } else {
+          await brand.getByRole('tab', { name: '选题库', exact: true }).click();
+          await brand
+            .getByRole('button', { name: '＋ 想选题', exact: true })
+            .click();
+          await brand
+            .getByLabel('内容方向', { exact: true })
+            .fill('新品的日常故事');
+          await brand
+            .getByRole('button', {
+              name: '让 Rice 想选题 / 换一批',
+              exact: true,
+            })
+            .click();
+        }
+        await expect.poll(() => !!accepted).toBe(true);
+        await page.keyboard.press('Escape');
+        await page.locator(`[data-row-key="session:${B}"]`).click();
+        await brand
+          .getByRole('button', { name: '← 回到对话', exact: true })
+          .click();
+        const input = page.getByRole('textbox', { name: '给 Rice 的消息' });
+        await input.fill('B的草稿保留');
+        if (changed) {
+          list();
+          f.state.sessionListDelay = null;
+          f.state.employeeDetailStatus = 403;
+          f.state.viewer = id(999);
+          f.state.workspace = id(998);
+          f.state.sidebarRunIds[A] = [];
+          const scoped = page.waitForResponse(
+            (response) =>
+              new URL(response.url()).pathname.endsWith('/modules') &&
+              new URL(response.url()).searchParams.get('workspaceId') ===
+                id(998),
+          );
+          await page
+            .getByRole('button', { name: '查看Rice详情', exact: true })
+            .click();
+          await (await scoped).finished();
+          await page
+            .getByRole('dialog', { name: /员工详情/ })
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
+          await page
+            .locator('[data-composer-seat]')
+            .getByText('归档列表读取失败，请重试。', { exact: true })
+            .waitFor();
+        }
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+        const reads = f.state.sessionListRequests;
+        const response = page.waitForResponse(
+          (value) =>
+            value.request().method() === 'POST' &&
+            new URL(value.url()).pathname.endsWith('/brand-media'),
+        );
+        release();
+        await (await response).finished();
+        const a = page.locator(`[data-row-key="session:${A}"]`);
+        if (!changed)
+          await expect
+            .poll(() => f.state.sessionListRequests)
+            .toBeGreaterThan(reads);
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+        await expect
+          .poll(() => a.locator('svg[data-state="ongoing"]').count())
+          .toBe(changed || unlisted || terminal ? 0 : 1);
+        expect(
+          await page.locator(`[data-row-key="session:${id(7401)}"]`).count(),
+        ).toBe(0);
+        if (changed) {
+          expect(f.state.sessionListRequests).toBe(reads);
+          expect(await input.count()).toBe(0);
+          expect(await sidebarStreams(page)).toEqual([]);
+        } else {
+          expect(await input.inputValue()).toBe('B的草稿保留');
+          list();
+          f.state.sessionListDelay = null;
+          if (!unlisted && !terminal) {
+            await expect.poll(() => sidebarStreams(page)).toContain(runId);
+            f.state.sidebarRunIds[A] = [];
+            snapshot.status = 'succeeded';
+            snapshot.job.status = 'succeeded';
+            await finishSidebarRun(page, runId);
+            await expect
+              .poll(() => a.locator('svg[data-state="ongoing"]').count())
+              .toBe(0);
+            await expect.poll(() => sidebarStreams(page)).not.toContain(runId);
+          }
+        }
+        expect(
+          await page
+            .locator('[data-chat-scroll]')
+            .getByText('新品的日常故事', { exact: true })
+            .count(),
+        ).toBe(0);
+      } finally {
+        release();
+        list();
+        await f.close();
+      }
+    },
+  );
+
   it.each([false, true])(
     'keeps a late accepted send scoped to its original Session (tenant changed=%s)',
     async (changed) => {

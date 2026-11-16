@@ -13,6 +13,7 @@ import {
 import type {
   Browser,
   Page,
+  Request,
 } from '../../../worker/node_modules/playwright-core/index.js';
 
 // Actual public primitives, host, entry controller, client and business page.
@@ -1429,6 +1430,343 @@ suite('MET-224 main-area brand media text workflow', () => {
         '未发送的聊天草稿',
       );
       await f.close();
+    },
+  );
+
+  it('a completed A addition cannot close B picker or clear its in-flight request after the catalog await', async () => {
+    const f = await fixture({ installed: new Set() }),
+      { page } = f;
+    let releaseA = () => {},
+      releaseB = () => {},
+      heldA = false;
+    const catalog = new Promise<void>((done) => {
+      releaseA = done;
+    });
+    const postB = new Promise<void>((done) => {
+      releaseB = done;
+    });
+    let bRequest: Record<string, unknown> | undefined;
+    await page.route(
+      (url) => url.pathname.endsWith('/modules'),
+      async (route) => {
+        const request = route.request(),
+          path = new URL(request.url()).pathname;
+        if (
+          request.method() === 'GET' &&
+          path.includes(scope.instanceId) &&
+          f.state.installed.has(scope.instanceId)
+        ) {
+          heldA = true;
+          await catalog;
+        }
+        if (request.method() === 'POST' && path.includes(id(5))) {
+          bRequest = request.postDataJSON();
+          await postB;
+        }
+        await route.fallback();
+      },
+    );
+    try {
+      await page.getByRole('button', { name: '添加插件', exact: true }).click();
+      await page
+        .getByRole('checkbox', { name: '品牌自媒体', exact: true })
+        .check();
+      await page.getByRole('button', { name: '添加', exact: true }).click();
+      await expect.poll(() => heldA).toBe(true);
+      expect(f.state.installed.has(scope.instanceId)).toBe(true);
+      await page.getByRole('button', { name: '另一个员工' }).click();
+      await page.getByRole('button', { name: '添加插件', exact: true }).click();
+      await page
+        .getByRole('checkbox', { name: '品牌自媒体', exact: true })
+        .check();
+      await page.getByRole('button', { name: '添加', exact: true }).click();
+      await expect.poll(() => !!bRequest).toBe(true);
+      const pending = structuredClone(bRequest);
+      const aResponse = page.waitForResponse(
+        (response) =>
+          response.request().method() === 'GET' &&
+          new URL(response.url()).pathname.includes(scope.instanceId) &&
+          new URL(response.url()).pathname.endsWith('/modules'),
+      );
+      releaseA();
+      await (await aResponse).finished();
+      await page.evaluate(() => new Promise(requestAnimationFrame));
+      expect(
+        await page
+          .getByRole('region', { name: '选择插件', exact: true })
+          .count(),
+      ).toBe(1);
+      expect(
+        await page
+          .getByRole('button', { name: '添加', exact: true })
+          .isDisabled(),
+      ).toBe(true);
+      expect(bRequest).toEqual(pending);
+      releaseB();
+      await page
+        .getByRole('button', { name: '打开 品牌自媒体', exact: true })
+        .waitFor();
+      const adds = f.state.requests.filter(
+        (request) =>
+          request.method === 'POST' && request.path.endsWith('/modules'),
+      );
+      expect(adds).toHaveLength(2);
+      expect(adds[1]!.body).toEqual(pending);
+    } finally {
+      releaseA();
+      releaseB();
+      await f.close();
+    }
+  });
+
+  it.each([false, true])(
+    'online recovers the exact active brand Run after seven exhausted connections (old refresh held=%s)',
+    async (holdOld) => {
+      const f = await fixture(),
+        { page } = f;
+      f.state.runs = [recovery('candidates', 'running')];
+      let attempts = 0,
+        finished = 0,
+        reads = 0,
+        exhaustedRead = false;
+      let heldRequest: Request | undefined;
+      let oldFinished = false;
+      let first = () => {},
+        terminal = () => {},
+        old = () => {};
+      const firstGate = new Promise<void>((done) => {
+        first = done;
+      });
+      const terminalGate = new Promise<void>((done) => {
+        terminal = done;
+      });
+      const oldGate = new Promise<void>((done) => {
+        old = done;
+      });
+      const events = (url: URL) =>
+        url.pathname === `/api/v1/runs/${id(300)}/events`;
+      page.on('requestfinished', (request) => {
+        if (events(new URL(request.url()))) finished++;
+        if (request === heldRequest) oldFinished = true;
+      });
+      await page.route(events, async (route) => {
+        attempts++;
+        expect(
+          new URL(route.request().url()).searchParams.get('workspaceId'),
+        ).toBe(scope.workspaceId);
+        if (attempts === 1) await firstGate;
+        if (attempts === 8) await terminalGate;
+        await route.fulfill({
+          status: 200,
+          contentType: 'text/event-stream',
+          body:
+            attempts < 8
+              ? ''
+              : `data: ${JSON.stringify({ schemaVersion: 3, eventId: id(999), organizationId: scope.organizationId, workspaceId: scope.workspaceId, conversationId: id(6), runId: id(300), generation: 1, cursor: 'brand:1', sequence: 1, harness: 'dsh', occurredAt: stamp, sourceEvent: null, type: 'run.succeeded', payload: {} })}\n\n`,
+        });
+      });
+      await page.route(
+        (url) =>
+          url.pathname.endsWith('/brand-media') &&
+          url.searchParams.get('view') === 'runs',
+        async (route) => {
+          reads++;
+          const snapshot = structuredClone(f.state.runs);
+          if (attempts === 7 && !exhaustedRead) {
+            exhaustedRead = true;
+            heldRequest = route.request();
+            if (holdOld) await oldGate;
+          }
+          await route.fulfill({
+            status: 200,
+            contentType: 'application/json',
+            body: JSON.stringify({ runs: snapshot }),
+          });
+        },
+      );
+      try {
+        await f.open();
+        await page.clock.install();
+        first();
+        for (let index = 0; index < 7; index++) {
+          await expect.poll(() => attempts).toBe(index + 1);
+          await expect.poll(() => finished).toBe(index + 1);
+          await page.clock.runFor(3000);
+        }
+        await expect.poll(() => exhaustedRead).toBe(true);
+        await page.clock.runFor(30000);
+        expect(attempts).toBe(7);
+        const before = reads;
+        await page.evaluate(() => window.dispatchEvent(new Event('online')));
+        await expect.poll(() => attempts).toBe(8);
+        await expect.poll(() => reads).toBeGreaterThan(before);
+        expect(f.state.runs[0]!.run.status).toBe('running');
+        if (holdOld) expect(oldFinished).toBe(false);
+        await page.clock.resume();
+        await candidatesPage(page);
+        expect(
+          await page
+            .getByRole('button', {
+              name: '让 Rice 想选题 / 换一批',
+              exact: true,
+            })
+            .isDisabled(),
+        ).toBe(true);
+        expect(
+          await page
+            .getByRole('button', { name: '取消', exact: true })
+            .isVisible(),
+        ).toBe(true);
+        f.state.runs = [recovery('candidates')];
+        terminal();
+        await page.getByText('本次生成已完成', { exact: true }).waitFor();
+        await page
+          .getByRole('heading', { name: '十分钟的新品体验', exact: true })
+          .waitFor();
+        old();
+        await expect.poll(() => oldFinished).toBe(true);
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+        expect(
+          await page
+            .getByRole('button', {
+              name: '让 Rice 想选题 / 换一批',
+              exact: true,
+            })
+            .isEnabled(),
+        ).toBe(true);
+        await page.evaluate(() => window.dispatchEvent(new Event('online')));
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+        expect(attempts).toBe(8);
+      } finally {
+        first();
+        terminal();
+        old();
+        await f.close();
+      }
+    },
+  );
+
+  it.each(['snapshot', 'failure'] as const)(
+    'a late detail %s cannot reverse a newer reload or command receipt, its body pin or the next CAS',
+    async (outcome) => {
+      const f = await fixture(),
+        { page } = f;
+      let release = () => {},
+        held = false;
+      let heldRequest: Request | undefined,
+        completedRevision = 0;
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      await page
+        .context()
+        .grantPermissions(['clipboard-read', 'clipboard-write']);
+      await page.route(
+        (url) =>
+          url.pathname.endsWith('/brand-media') &&
+          url.searchParams.get('view') === 'article',
+        async (route) => {
+          const snapshot = structuredClone(f.state.articles[0]);
+          const first = !held;
+          if (first) {
+            held = true;
+            heldRequest = route.request();
+            await gate;
+          }
+          await route.fulfill({
+            status: first && outcome === 'failure' ? 503 : 200,
+            contentType: 'application/json',
+            body: JSON.stringify(
+              first && outcome === 'failure'
+                ? { message: '过期详情读取失败' }
+                : { view: 'article', article: snapshot },
+            ),
+          });
+          if (!first)
+            completedRevision = Math.max(completedRevision, snapshot!.revision);
+        },
+      );
+      await page.route(
+        (url) => url.pathname === `/api/v1/files/${id(82)}/download`,
+        (route) =>
+          route.fulfill({
+            status: 200,
+            contentType: 'text/plain',
+            body: 'N+1的原始正文',
+          }),
+      );
+      try {
+        await f.open();
+        await expect.poll(() => held).toBe(true);
+        f.state.articles[0] = {
+          ...article(),
+          revision: 2,
+          title: '更新后的文章N+1',
+          body: { objectId: id(82), versionId: id(83), checksum },
+        };
+        await page.evaluate(() => window.dispatchEvent(new Event('online')));
+        await page.getByRole('tab', { name: '文章库', exact: true }).click();
+        await page
+          .getByRole('heading', { name: '更新后的文章N+1', exact: true })
+          .waitFor();
+        await expect
+          .poll(() => page.getByLabel('文章正文').textContent())
+          .toBe('N+1的原始正文');
+        await page
+          .getByRole('button', { name: '添加参考资料', exact: true })
+          .click();
+        const modal = page.getByRole('dialog', {
+          name: '添加参考资料',
+          exact: true,
+        });
+        await modal
+          .getByRole('checkbox', { name: '品牌介绍.txt · v2', exact: true })
+          .check();
+        await modal
+          .getByRole('button', { name: '添加所选资料', exact: true })
+          .click();
+        await page.getByText('参考资料：1 份', { exact: true }).waitFor();
+        expect(f.state.articles[0]!.revision).toBe(3);
+        await expect.poll(() => completedRevision).toBe(3);
+        const oldResponse = page.waitForResponse(
+          (response) => response.request() === heldRequest,
+        );
+        release();
+        await (await oldResponse).finished();
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+        expect(
+          await page.getByText('过期详情读取失败', { exact: true }).count(),
+        ).toBe(0);
+        expect(
+          await page
+            .getByRole('heading', { name: '更新后的文章N+1', exact: true })
+            .isVisible(),
+        ).toBe(true);
+        expect(
+          await page.getByText('参考资料：1 份', { exact: true }).isVisible(),
+        ).toBe(true);
+        await page
+          .getByRole('button', { name: '复制正文', exact: true })
+          .click();
+        await page.getByText('正文已复制', { exact: true }).waitFor();
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+          'N+1的原始正文',
+        );
+        await page
+          .getByLabel('修改意见', { exact: true })
+          .fill('保留最新正文，补充结尾');
+        await page.getByRole('button', { name: '修改', exact: true }).click();
+        await expect.poll(() => generates(f.state).length).toBe(1);
+        expect(generates(f.state)[0]!.body!.expectedRevision).toBe(3);
+        expect(f.state.articles[0]!.body).toEqual({
+          objectId: id(82),
+          versionId: id(83),
+          checksum,
+        });
+      } finally {
+        release();
+        await f.close();
+      }
     },
   );
 

@@ -57,6 +57,7 @@ import {
   BrandMediaPluginSection,
   BrandMediaPluginPicker,
   createBrandMediaClient,
+  runActive,
   useBrandMediaEntry,
 } from './brand-media/frontend-wiring';
 import { BrandMediaPanel } from './brand-media/panel';
@@ -1211,6 +1212,7 @@ export function ChatFlowClient({
       .sort(),
   );
   const acceptSidebarRuns = archive.acceptRuns;
+  const reloadSidebar = archive.reload;
   useEffect(() => {
     if (activeId) acceptSidebarRuns(activeId, JSON.parse(knownActiveRuns));
   }, [activeId, knownActiveRuns, acceptSidebarRuns]);
@@ -1886,13 +1888,20 @@ export function ChatFlowClient({
   const brandMediaClient = useMemo(
     () =>
       workspace?.viewerId && brandMediaHost?.scope === settingsScope
-        ? createBrandMediaClient({
-            organizationId: workspace.organizationId,
-            workspaceId: workspace.workspaceId,
-            ownerId: workspace.viewerId,
-            instanceId: brandMediaHost.instanceId,
-            headers: tenantHeaders,
-          })
+        ? createBrandMediaClient(
+            {
+              organizationId: workspace.organizationId,
+              workspaceId: workspace.workspaceId,
+              ownerId: workspace.viewerId,
+              instanceId: brandMediaHost.instanceId,
+              headers: tenantHeaders,
+            },
+            (sessionId, run) => {
+              if (currentSettingsScope.current !== settingsScope) return;
+              if (runActive({ run })) acceptSidebarRuns(sessionId, [run.id]);
+              void reloadSidebar();
+            },
+          )
         : null,
     [
       workspace?.viewerId,
@@ -1902,6 +1911,8 @@ export function ChatFlowClient({
       brandMediaHost?.scope,
       brandMediaHost?.instanceId,
       tenantHeaders,
+      acceptSidebarRuns,
+      reloadSidebar,
     ],
   );
   useEffect(() => {
