@@ -498,20 +498,9 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     const [prior] =
       await fixture.db`select * from allrice_platform_repair_verifications where operation_id=${prepared.operationId}`;
     expect(prior!.proof.tmpfsMiB).toBe(128);
-    const script = prepared.arguments.script.replace(
-      '"totalBytes":64000000,"archiveBytes":12000000,"jsonBytes":96000000',
-      '"totalBytes":40000000,"archiveBytes":12000000,"jsonBytes":60000000',
+    expect(prior!.proof.inputLimit).toBe(
+      prior!.proof.version === 1 ? 48_000_000 : 59_000_000,
     );
-    expect(script).not.toBe(prepared.arguments.script);
-    const command = {
-      ...prepared.command,
-      arguments: { ...prepared.arguments, script },
-    };
-    const proof = {
-      ...prior!.proof,
-      commandDigest: repositoryDigest(JSON.stringify(command)),
-      tmpfsMiB: prior!.proof.version === 1 ? 64 : 128,
-    };
     const scope = {
       organizationId: context.organizationId,
       workspaceId: context.workspaceId,
@@ -522,52 +511,111 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
       leaseToken: lease.leaseToken,
       operationId: prepared.operationId,
     };
-    try {
-      await fixture.db`update allrice_platform_repair_verifications set command=${fixture.db.json(command)},command_digest=${proof.commandDigest},proof=${fixture.db.json(proof)} where operation_id=${prepared.operationId}`;
-      const recovered = await preparePlatformRepairVerification(
-        lease,
-        context,
-        proof.candidateChecksum,
+    const resolve = (command: typeof prepared.command) =>
+      fixture.db.begin((tx) =>
+        resolvePlatformRepositoryExecutionProofTx(tx, scope, command),
       );
-      expect(recovered.command).toEqual(command);
+    try {
+      expect(await resolve(prepared.command)).toEqual(prior!.proof);
       expect(
-        await fixture.db.begin((tx) =>
-          resolvePlatformRepositoryExecutionProofTx(tx, scope, command),
-        ),
-      ).toEqual(proof);
-      const [unchanged] =
-        await fixture.db`select command,command_digest,proof from allrice_platform_repair_verifications where operation_id=${prepared.operationId}`;
-      expect(unchanged).toEqual({
-        command,
-        command_digest: proof.commandDigest,
-        proof,
-      });
-      const forged = {
-        ...command,
-        arguments: {
-          ...command.arguments,
-          script: command.arguments.script + '\n// not the frozen harness',
-        },
+        (
+          await preparePlatformRepairVerification(
+            lease,
+            context,
+            prior!.proof.candidateChecksum,
+          )
+        ).command,
+      ).toEqual(prepared.command);
+      for (const [totalBytes, jsonBytes] of [
+        [40_000_000, 60_000_000],
+        [64_000_000, 96_000_000],
+      ]) {
+        const script = prepared.arguments.script.replace(
+          '{"files":8192,"fileBytes":2000000,"totalBytes":64000000,"archiveBytes":48000000,"jsonBytes":96000000}',
+          JSON.stringify({
+            files: 4096,
+            fileBytes: 2_000_000,
+            totalBytes,
+            archiveBytes: 12_000_000,
+            jsonBytes,
+          }),
+        );
+        expect(script).not.toBe(prepared.arguments.script);
+        const command = {
+          ...prepared.command,
+          arguments: { ...prepared.arguments, script },
+        };
+        const proof = {
+          ...prior!.proof,
+          commandDigest: repositoryDigest(JSON.stringify(command)),
+          inputLimit: prior!.proof.version === 1 ? 12_000_000 : 23_000_000,
+          tmpfsMiB:
+            prior!.proof.version === 1 && totalBytes === 40_000_000 ? 64 : 128,
+        };
+        await fixture.db`update allrice_platform_repair_verifications set command=${fixture.db.json(command)},command_digest=${proof.commandDigest},proof=${fixture.db.json(proof)} where operation_id=${prepared.operationId}`;
+        const recovered = await preparePlatformRepairVerification(
+          lease,
+          context,
+          proof.candidateChecksum,
+        );
+        expect(recovered.command).toEqual(command);
+        expect(await resolve(command)).toEqual(proof);
+        const [unchanged] =
+          await fixture.db`select command,command_digest,proof from allrice_platform_repair_verifications where operation_id=${prepared.operationId}`;
+        expect(unchanged).toEqual({
+          command,
+          command_digest: proof.commandDigest,
+          proof,
+        });
+        // A valid new numeric budget cannot be attached to historical bytes.
+        await fixture.db`update allrice_platform_repair_verifications set proof=${fixture.db.json({ ...proof, inputLimit: prior!.proof.inputLimit })} where operation_id=${prepared.operationId}`;
+        await expect(resolve(command)).rejects.toThrow('authorization_denied');
+        await expect(
+          preparePlatformRepairVerification(
+            lease,
+            context,
+            proof.candidateChecksum,
+          ),
+        ).rejects.toThrow('conflict');
+        const forged = {
+          ...command,
+          arguments: {
+            ...command.arguments,
+            script: command.arguments.script + '\n// not the frozen harness',
+          },
+        };
+        const forgedDigest = repositoryDigest(JSON.stringify(forged));
+        await fixture.db`update allrice_platform_repair_verifications set command=${fixture.db.json(forged)},command_digest=${forgedDigest},proof=${fixture.db.json({ ...proof, commandDigest: forgedDigest })} where operation_id=${prepared.operationId}`;
+        await expect(resolve(forged)).rejects.toThrow('authorization_denied');
+        await expect(
+          preparePlatformRepairVerification(
+            lease,
+            context,
+            proof.candidateChecksum,
+          ),
+        ).rejects.toThrow('conflict');
+      }
+      const changedProof = {
+        ...prior!.proof,
+        inputLimit: prior!.proof.version === 1 ? 12_000_000 : 23_000_000,
       };
-      const forgedDigest = repositoryDigest(JSON.stringify(forged));
-      await fixture.db`update allrice_platform_repair_verifications set command=${fixture.db.json(forged)},command_digest=${forgedDigest},proof=${fixture.db.json({ ...proof, commandDigest: forgedDigest })} where operation_id=${prepared.operationId}`;
-      await expect(
-        fixture.db.begin((tx) =>
-          resolvePlatformRepositoryExecutionProofTx(tx, scope, forged),
-        ),
-      ).rejects.toThrow('authorization_denied');
+      await fixture.db`update allrice_platform_repair_verifications set command=${fixture.db.json(prior!.command)},command_digest=${prior!.command_digest},proof=${fixture.db.json(changedProof)} where operation_id=${prepared.operationId}`;
+      await expect(resolve(prepared.command)).rejects.toThrow(
+        'authorization_denied',
+      );
       await expect(
         preparePlatformRepairVerification(
           lease,
           context,
-          proof.candidateChecksum,
+          changedProof.candidateChecksum,
         ),
       ).rejects.toThrow('conflict');
     } finally {
       await fixture.db`update allrice_platform_repair_verifications set command=${fixture.db.json(prior!.command)},command_digest=${prior!.command_digest},proof=${fixture.db.json(prior!.proof)} where operation_id=${prepared.operationId}`;
     }
   }
-  it('retains the exact original source-only command and 64 MiB proof during prepare and recovery without accepting changed frozen bytes', async () => {
+
+  it('retains both exact historical source-only commands and proofs during prepare and recovery without accepting changed frozen bytes', async () => {
     const q = await submit();
     const workerId = randomUUID(),
       job = await claimNextJob(workerId, 60000);
@@ -610,6 +658,64 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     );
     await assertFrozenCommandRecovery(prepared, lease, execution!.context);
     await cancelPlatformRepairTask(admin, q.id);
+  });
+  it('admits and copies an exact 48 MB source archive through the administrator task and immutable storage ingress', async () => {
+    const original = baseline;
+    const bytes = Buffer.alloc(48_000_000);
+    readFileSync(join(catalogRoot, original.id, 'source.json.gz')).copy(bytes);
+    // Valid gzip zero padding exercises the real transport/read bound without
+    // changing source contents, expanded JSON, model input or physical work.
+    baseline = RepositoryBaselineSchema.parse({
+      ...original,
+      id: randomUUID(),
+      archiveBytes: bytes.length,
+      archiveChecksum: repositoryDigest(bytes),
+    });
+    const folder = join(catalogRoot, baseline.id);
+    mkdirSync(folder);
+    writeFileSync(join(folder, 'baseline.json'), JSON.stringify(baseline));
+    writeFileSync(join(folder, 'source.json.gz'), bytes);
+    let task: Awaited<ReturnType<typeof submit>> | undefined;
+    try {
+      task = await submit();
+      expect(task.baseline.archiveBytes).toBe(48_000_000);
+      const workerId = randomUUID(),
+        job = await claimNextJob(workerId, 60000);
+      expect(job?.id).toBe(task.jobId);
+      const lease = {
+        workerId,
+        jobId: job!.id,
+        leaseToken: job!.lease!.token,
+        attempt: job!.attempt,
+      };
+      const execution = await startClaimedJob(
+        workerId,
+        job!.id,
+        lease.leaseToken,
+      );
+      const { preparePlatformRepairInput } =
+        await import('./platform-repair.ts');
+      const { runtimeFixtureStorage } = await import('./runtime.fixture.ts');
+      const input = await preparePlatformRepairInput(
+        lease,
+        execution!.context,
+        runtimeFixtureStorage(fixture.db),
+      );
+      expect(input.object.sizeBytes).toBe(48_000_000);
+      expect(input.object.checksum).toBe(baseline.archiveChecksum);
+      expect(input.object.immutable).toBe(true);
+      const [stored] =
+        await fixture.db`select state,size_bytes,checksum from allrice_storage_objects where id=${input.object.id}`;
+      expect(stored).toMatchObject({
+        state: 'ready',
+        checksum: baseline.archiveChecksum,
+      });
+      expect(Number(stored!.size_bytes)).toBe(48_000_000);
+    } finally {
+      if (task) await cancelPlatformRepairTask(admin, task.id);
+      baseline = original;
+      rmSync(folder, { recursive: true, force: true });
+    }
   });
   it('fresh fixed repair freezes real source through Worker and native Host to the HTTP provider', async () => {
     const originalFreeze = modelPool.freezeSessionModelSnapshot;

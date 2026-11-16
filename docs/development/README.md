@@ -65,13 +65,21 @@ node scripts/acceptance/platform/repository-ci.mjs capture --output=.local/repos
 ```
 
 The complete tracked tree is retained. The private repository source profile
-allows at most 4,096 files, 2,000,000 bytes per file and 64,000,000 total source
-bytes; expanded JSON is bounded at 96,000,000 bytes and gzip archives remain
-bounded at 12,000,000 bytes. CI and product limits have a shared regression
+allows at most 8,192 files, 2,000,000 bytes per file and 64,000,000 total source
+bytes; expanded JSON is bounded at 96,000,000 bytes and gzip archives are
+bounded at 48,000,000 bytes. CI and product limits have a shared regression
 check. These limits do not change ordinary project, Bridge or cloud wire limits.
 New source-only repository operations use a private 128 MiB tmpfs. Historical
-64 MiB proofs retain the original 40 MB source / 60 MB JSON command and recovery
-identity; their frozen payload and digests are not rewritten.
+4,096-file source-only commands retain the original 40 MB source / 60 MB JSON /
+64 MiB tmpfs and the 64 MB source / 96 MB JSON / 128 MiB tmpfs recovery identities;
+historical compiled commands keep their 128 MiB tmpfs with either source budget.
+Their 12 MB source-only and 23 MB compiled proofs and frozen command bytes are
+not rewritten. Current private input budgets are 48 MB source-only and 59 MB
+compiled; dependency bundles remain bounded at 12 MB. Only these current
+private proofs select the larger base64 receivers. Memory, tmpfs and execution
+timeouts remain unchanged; the live compiler guard must attest the new input
+budget before admitting a new compiled operation. This capacity change does
+not resume frozen repair tasks or authorize a real model Run.
 
 ## Default database: Docker Compose
 

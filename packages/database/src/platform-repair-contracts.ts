@@ -11,19 +11,27 @@ import {
   CompiledVerificationTimeoutSchema,
   compiledRepairLimits,
   compiledRepairProfileId,
+  legacyCompiledRepairInputBytes,
 } from './platform-repair-compiled-contracts.ts';
 export * from './platform-repair-compiled-contracts.ts';
 
 // Private platform source/profile contract. Ordinary project and Bridge limits
 // remain unchanged; only this registered repository source uses these budgets.
 export const repositorySourceLimits = Object.freeze({
+  files: 8192,
+  fileBytes: 2_000_000,
+  totalBytes: 64_000_000,
+  archiveBytes: 48_000_000,
+  jsonBytes: 96_000_000,
+});
+// Historical operations retain their original frozen command bytes.
+export const previousRepositorySourceLimits = Object.freeze({
   files: 4096,
   fileBytes: 2_000_000,
   totalBytes: 64_000_000,
   archiveBytes: 12_000_000,
   jsonBytes: 96_000_000,
 });
-// Historical operations retain their original frozen command bytes.
 export const legacyRepositorySourceLimits = Object.freeze({
   files: 4096,
   fileBytes: 2_000_000,
@@ -179,13 +187,19 @@ export const RepositoryExecutionProofSchema = z.discriminatedUnion('version', [
   RepositoryExecutionProofFields.extend({
     version: z.literal(1),
     profileId: z.literal(repairProfileId),
-    inputLimit: z.literal(repositorySourceLimits.archiveBytes),
+    inputLimit: z.union([
+      z.literal(legacyRepositorySourceLimits.archiveBytes),
+      z.literal(repositorySourceLimits.archiveBytes),
+    ]),
     tmpfsMiB: z.union([z.literal(64), z.literal(repositorySourceTmpfsMiB)]),
   }).strict(),
   RepositoryExecutionProofFields.extend({
     version: z.literal(2),
     profileId: z.literal(compiledRepairProfileId),
-    inputLimit: z.literal(compiledRepairLimits.inputBytes),
+    inputLimit: z.union([
+      z.literal(legacyCompiledRepairInputBytes),
+      z.literal(compiledRepairLimits.inputBytes),
+    ]),
     tmpfsMiB: z.literal(compiledRepairLimits.tmpfsMiB),
     dependencyChecksum: ChecksumSchema,
     planDigest: ChecksumSchema,
@@ -195,7 +209,10 @@ export const RepositoryExecutionProofSchema = z.discriminatedUnion('version', [
   RepositoryExecutionProofFields.extend({
     version: z.literal(3),
     profileId: z.literal(maintenanceCompiledProfileId),
-    inputLimit: z.literal(compiledRepairLimits.inputBytes),
+    inputLimit: z.union([
+      z.literal(legacyCompiledRepairInputBytes),
+      z.literal(compiledRepairLimits.inputBytes),
+    ]),
     tmpfsMiB: z.literal(compiledRepairLimits.tmpfsMiB),
     dependencyChecksum: ChecksumSchema,
     planDigest: ChecksumSchema,
@@ -211,7 +228,9 @@ export type RepositoryExecutionProof = z.infer<
 
 export function matchesRepositoryExecutionIsolation(
   proof: RepositoryExecutionProof,
-  observed: { commandDigest: string; tmpfsMiB?: number } | undefined,
+  observed:
+    | { commandDigest: string; tmpfsMiB?: number; inputLimit?: number }
+    | undefined,
 ) {
   if (observed?.commandDigest !== proof.commandDigest) return false;
   // The original source-only collector required an actual 64m mount but did
@@ -220,7 +239,10 @@ export function matchesRepositoryExecutionIsolation(
   const tmpfsMiB =
     observed.tmpfsMiB ??
     (proof.version === 1 && proof.tmpfsMiB === 64 ? 64 : undefined);
-  return tmpfsMiB === proof.tmpfsMiB;
+  return (
+    tmpfsMiB === proof.tmpfsMiB &&
+    (proof.version === 1 || observed?.inputLimit === proof.inputLimit)
+  );
 }
 
 export function isCompiledRepositoryExecution(

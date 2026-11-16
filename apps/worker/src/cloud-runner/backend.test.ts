@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { spawn, execFile } from 'node:child_process';
+import { spawn, spawnSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +11,14 @@ import {
   cloudPlatform,
   cloudToolchainImageV1,
 } from '@allrice/contracts';
-import { CloudRunnerBackend, cloudSupervisor } from './backend.js';
+import {
+  CloudRunnerBackend,
+  cloudSupervisor,
+  repositoryCompiledSupervisor,
+  repositoryExpandedSourceSupervisor,
+  repositoryExpandedCompiledSupervisor,
+} from './backend.js';
+import { RepositoryExecutionProofSchema } from '@allrice/database/technical-contracts';
 import { colimaEnvironmentPath, colimaExecutable } from './colima.js';
 
 const command = (script: string, extra: Record<string, unknown> = {}) =>
@@ -167,7 +174,277 @@ describe('P15 cloud contract fail-closed', () => {
         ),
       ).rejects.toThrow('REPOSITORY_ISOLATION_CHANGED');
     }
+    container.HostConfig.Tmpfs['/tmp'] =
+      'rw,nosuid,nodev,noexec,size=128m,mode=1777';
+    container.Config.Cmd = [
+      '--input-type=module',
+      '--eval',
+      repositoryExpandedSourceSupervisor,
+    ];
+    Object.assign(container.Config.Labels, {
+      'xyz.bplabs.allrice.repository.input-limit': '48000000',
+    });
+    expect(
+      (
+        await new HistoricalContainer().collect(
+          attempt,
+          command('current typed command'),
+          Date.now(),
+        )
+      ).repositoryIsolation?.tmpfsMiB,
+    ).toBe(128);
+    for (const label of ['12000000', '24000000', '48000001', undefined]) {
+      const labels = container.Config.Labels as Record<string, string>;
+      if (label === undefined)
+        delete labels['xyz.bplabs.allrice.repository.input-limit'];
+      else labels['xyz.bplabs.allrice.repository.input-limit'] = label;
+      await expect(
+        new HistoricalContainer().collect(
+          attempt,
+          command('current typed command'),
+          Date.now(),
+        ),
+      ).rejects.toThrow('REPOSITORY_ISOLATION_CHANGED');
+    }
+    Object.assign(container.Config.Labels, {
+      'xyz.bplabs.allrice.repository.input-limit': '48000000',
+    });
+    container.Config.Cmd = ['--input-type=module', '--eval', cloudSupervisor];
+    await expect(
+      new HistoricalContainer().collect(
+        attempt,
+        command('current typed command'),
+        Date.now(),
+      ),
+    ).rejects.toThrow('REPOSITORY_ISOLATION_CHANGED');
   });
+  it.each([
+    [23_000_000, repositoryCompiledSupervisor],
+    [59_000_000, repositoryExpandedCompiledSupervisor],
+  ] as const)(
+    'recovers only the exact %i-byte compiled receiver and label pair',
+    async (inputLimit, supervisor) => {
+      const container = {
+        Id: 'a'.repeat(64),
+        Config: {
+          Labels: {
+            'xyz.bplabs.allrice.cloud.kind': 'repository',
+            'xyz.bplabs.allrice.repository.profile':
+              'allrice.output-redaction.compiled.v1',
+            'xyz.bplabs.allrice.repository.command': 'sha256:' + 'a'.repeat(64),
+            'xyz.bplabs.allrice.repository.dependency':
+              'sha256:' + 'b'.repeat(64),
+            'xyz.bplabs.allrice.repository.timeout': '300000',
+            'xyz.bplabs.allrice.repository.input-limit': String(inputLimit),
+          },
+          Image: cloudToolchainImageV1,
+          User: '0:0',
+          Env: [],
+          Entrypoint: ['/usr/local/bin/node'],
+          Cmd: ['--expose-gc', '--input-type=module', '--eval', supervisor],
+        },
+        HostConfig: {
+          Runtime: 'runsc',
+          NetworkMode: 'none',
+          ReadonlyRootfs: true,
+          Privileged: false,
+          CapDrop: ['ALL'],
+          CapAdd: ['SETUID', 'SETGID', 'KILL'],
+          SecurityOpt: ['no-new-privileges'],
+          Memory: 768 * 1024 ** 2,
+          MemorySwap: 768 * 1024 ** 2,
+          PidsLimit: 64,
+          Tmpfs: { '/tmp': 'rw,nosuid,nodev,noexec,size=128m,mode=1777' },
+        },
+        State: {
+          Running: false,
+          ExitCode: 0,
+          OOMKilled: false,
+          Status: 'exited',
+        },
+      };
+      class CompiledContainer extends CloudRunnerBackend {
+        override async inspect() {
+          return container;
+        }
+        override async json<T>() {
+          return { Config: { Env: [] } } as T;
+        }
+        override async call() {
+          return Buffer.alloc(0);
+        }
+      }
+      const collect = () =>
+        new CompiledContainer().collect(
+          randomUUID(),
+          command('typed command'),
+          Date.now(),
+        );
+      expect((await collect()).repositoryIsolation?.inputLimit).toBe(
+        inputLimit,
+      );
+      for (const label of [
+        String(inputLimit === 23_000_000 ? 59_000_000 : 23_000_000),
+        '35000000',
+        '59000001',
+      ]) {
+        container.Config.Labels['xyz.bplabs.allrice.repository.input-limit'] =
+          label;
+        await expect(collect()).rejects.toThrow('REPOSITORY_ISOLATION_CHANGED');
+      }
+    },
+  );
+  it.each([12_000_000, 48_000_000])(
+    'enforces the private %i-byte source proof at Worker input before creating a container',
+    async (inputLimit) => {
+      const created: Record<string, unknown>[] = [];
+      class InputBoundary extends CloudRunnerBackend {
+        override async preflight() {
+          return {
+            backend: 'cloud-gvisor-v1',
+            runtime: 'runsc',
+            architecture: cloudPlatform.architecture,
+            imageDigest: cloudToolchainImageV1,
+          } as const;
+        }
+        override async inspect() {
+          return null;
+        }
+        override async json<T>(
+          _method: string,
+          _path: string,
+          body?: unknown,
+        ): Promise<T> {
+          created.push(body as Record<string, unknown>);
+          throw Error('CLOUD_DAEMON_422');
+        }
+        run(
+          payload: ReturnType<typeof command>,
+          files: Parameters<CloudRunnerBackend['execute']>[1],
+          options: Parameters<CloudRunnerBackend['execute']>[2],
+        ) {
+          return this.executeAdmittedScript(
+            payload.arguments,
+            files,
+            options,
+            false,
+          );
+        }
+      }
+      for (const overflow of [0, 1]) {
+        created.length = 0;
+        const bytes = Buffer.alloc(inputLimit + overflow);
+        const checksum =
+          'sha256:' + createHash('sha256').update(bytes).digest('hex');
+        const payload = command('0', {
+          inputs: [
+            { path: 'repository.json.gz', objectId: randomUUID(), checksum },
+          ],
+          limits: {
+            memoryMiB: 512,
+            timeoutMs: 60000,
+            outputBytes: 16384,
+            artifactBytes: 16384,
+            cpuMillis: 1000,
+            pids: 64,
+          },
+        });
+        const proof = RepositoryExecutionProofSchema.parse({
+          version: 1,
+          profileId: 'allrice.output-redaction.v1',
+          inputLimit,
+          tmpfsMiB: 128,
+          baselineId: randomUUID(),
+          candidateChecksum: checksum,
+          commandDigest:
+            'sha256:' +
+            createHash('sha256').update(JSON.stringify(payload)).digest('hex'),
+        });
+        await expect(
+          new InputBoundary().run(
+            payload,
+            [
+              {
+                path: 'repository.json.gz',
+                contentBase64: bytes.toString('base64'),
+              },
+            ],
+            {
+              attemptId: randomUUID(),
+              signal: new AbortController().signal,
+              deadlineAt: new Date(Date.now() + 60000).toISOString(),
+              maintainLease: async () => true,
+              repositoryExecution: proof,
+            },
+          ),
+        ).rejects.toThrow(overflow ? 'CLOUD_INPUT_LIMIT' : 'CLOUD_DAEMON_422');
+        if (overflow) expect(created).toEqual([]);
+        else {
+          expect(created[0]?.Cmd).toContain(
+            inputLimit === 12_000_000
+              ? cloudSupervisor
+              : repositoryExpandedSourceSupervisor,
+          );
+          expect(created[0]?.HostConfig).toMatchObject({
+            Memory: 512 * 1024 ** 2,
+            Tmpfs: { '/tmp': 'rw,nosuid,nodev,noexec,size=128m,mode=1777' },
+          });
+        }
+      }
+    },
+  );
+  it.each([
+    [
+      48_000_000,
+      65_000_000,
+      cloudSupervisor,
+      repositoryExpandedSourceSupervisor,
+    ],
+    [
+      59_000_000,
+      80_000_000,
+      repositoryCompiledSupervisor,
+      repositoryExpandedCompiledSupervisor,
+    ],
+  ] as const)(
+    'receives %i binary bytes with base64/JSON overhead only in the current finite private receiver',
+    (inputBytes, characters, historical, current) => {
+      const receive = (supervisor: string, input: string) =>
+        spawnSync(
+          process.execPath,
+          [
+            '--input-type=module',
+            '--eval',
+            supervisor.slice(0, supervisor.indexOf('fs.mkdirSync')) +
+              'process.stdout.write("accepted");process.exit(0);',
+          ],
+          { input, encoding: 'utf8', maxBuffer: 1024 },
+        );
+      const encoded =
+        JSON.stringify({
+          files: [
+            {
+              path: 'repository.json.gz',
+              contentBase64: Buffer.alloc(48_000_000).toString('base64'),
+            },
+            ...(inputBytes === 59_000_000
+              ? [
+                  {
+                    path: 'dependencies.json.gz',
+                    contentBase64: Buffer.alloc(11_000_000).toString('base64'),
+                  },
+                ]
+              : []),
+          ],
+          script: '\u0001'.repeat(100_000),
+        }) + '\n';
+      expect(receive(historical, encoded).status).toBe(126);
+      const accepted = receive(current, encoded);
+      expect(accepted.status).toBe(0);
+      expect(accepted.stdout).toBe('accepted');
+      expect(receive(current, ' '.repeat(characters + 1)).status).toBe(126);
+    },
+  );
   it('recognizes watchdog deadline stops from Docker time without guessing or overriding cancellation/unknown', async () => {
     const deadline = Date.now() + 5000;
     const container = {

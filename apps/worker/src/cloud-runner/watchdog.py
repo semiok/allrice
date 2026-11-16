@@ -393,7 +393,7 @@ def command_deadline_valid(container, created, deadline):
         # Docker's inventory creation timestamp is rounded to whole seconds.
         and deadline <= created + timeout + 1000
         and labels.get('xyz.bplabs.allrice.cloud.kind') == 'repository'
-        and labels.get('xyz.bplabs.allrice.repository.input-limit') == '23000000'
+        and labels.get('xyz.bplabs.allrice.repository.input-limit') in ('23000000', '59000000')
         and re.fullmatch(r'sha256:[a-f0-9]{64}', labels.get('xyz.bplabs.allrice.repository.command', ''))
         and re.fullmatch(r'sha256:[a-f0-9]{64}', labels.get('xyz.bplabs.allrice.repository.dependency', ''))
         and config.get('Image') == NODE_IMAGE and config.get('User') == '0:0'
@@ -410,7 +410,7 @@ def command_deadline_valid(container, created, deadline):
 
 
 def compiled_budget():
-    return {'profileId': COMPILED_PROFILE, 'timeoutStepMs': COMPILED_TIMEOUT_STEP, 'maximumTimeoutMs': COMPILED_TIMEOUT_MAX, 'memoryMiB': 768}
+    return {'profileId': COMPILED_PROFILE, 'timeoutStepMs': COMPILED_TIMEOUT_STEP, 'maximumTimeoutMs': COMPILED_TIMEOUT_MAX, 'memoryMiB': 768, 'inputLimits': [23000000, 59000000]}
 
 
 def project_web_budget():

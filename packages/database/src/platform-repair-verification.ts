@@ -23,6 +23,8 @@ import {
   repositorySourceLimits,
   repositorySourceTmpfsMiB,
   compiledRepairLimits,
+  legacyCompiledRepairInputBytes,
+  legacyRepositorySourceLimits,
   compiledRepairProfileId,
   maintenanceCompiledProfileId,
   isCompiledRepositoryExecution,
@@ -49,25 +51,44 @@ function frozenVerificationCommand(
   input: Parameters<typeof repositoryVerificationCommand>[0],
   prior?: { command: unknown; proof: RepositoryExecutionProof },
 ) {
-  const build = (legacySourceLimits: boolean) =>
+  const build = (sourceLimitsVersion?: typeof input.sourceLimitsVersion) =>
     CloudCommandSchema.parse({
       capability: 'cloud.process.execute',
       arguments: repositoryVerificationCommand({
         ...input,
-        legacySourceLimits,
+        sourceLimitsVersion,
       }),
       backend: cloudBackendV1,
       imageDigest: cloudToolchainImageV1,
       runtime: 'runsc',
       network: 'none',
     });
-  if (prior?.proof.version === 1) return build(prior.proof.tmpfsMiB === 64);
-  if (prior) {
-    const original = build(true);
-    if (technicalDigest(prior.command) === technicalDigest(original))
-      return original;
+  if (!prior) return build();
+  // The same 128 MiB mount was used by both the 64 MB historical command and
+  // the current profile. Select only a known command/proof pair, never infer
+  // source limits from a mount size or trust arbitrary persisted script bytes.
+  for (const version of [undefined, 'legacy_64mb', 'legacy_40mb'] as const) {
+    const command = build(version);
+    const inputLimit = input.compiled
+      ? version
+        ? legacyCompiledRepairInputBytes
+        : compiledRepairLimits.inputBytes
+      : version
+        ? legacyRepositorySourceLimits.archiveBytes
+        : repositorySourceLimits.archiveBytes;
+    const tmpfsMiB =
+      !input.compiled && version === 'legacy_40mb'
+        ? 64
+        : repositorySourceTmpfsMiB;
+    if (
+      technicalDigest(prior.command) === technicalDigest(command) &&
+      prior.proof.commandDigest === repositoryDigest(JSON.stringify(command)) &&
+      prior.proof.inputLimit === inputLimit &&
+      prior.proof.tmpfsMiB === tmpfsMiB
+    )
+      return command;
   }
-  return build(false);
+  return undefined;
 }
 
 export async function preparePlatformRepairVerification(
@@ -132,6 +153,7 @@ export async function preparePlatformRepairVerification(
         ? { command: prior.command, proof: priorProof }
         : undefined,
     );
+    if (!command) throw new QueueError('conflict');
     const args = command.arguments;
     const callId = 'repair-verify:' + source.candidate.revision,
       operationId = cloudStableId(
@@ -163,9 +185,10 @@ export async function preparePlatformRepairVerification(
       baselineId: source.source.baseline.id,
       candidateChecksum,
       inputLimit:
-        source.task.frozen.verificationMode === 'compiled_packages'
+        priorProof?.inputLimit ??
+        (source.task.frozen.verificationMode === 'compiled_packages'
           ? compiledRepairLimits.inputBytes
-          : repositorySourceLimits.archiveBytes,
+          : repositorySourceLimits.archiveBytes),
       tmpfsMiB:
         source.task.frozen.verificationMode === 'compiled_packages'
           ? compiledRepairLimits.tmpfsMiB
@@ -298,6 +321,7 @@ export async function resolvePlatformRepositoryExecutionProofTx(
     },
     { command: v.command, proof },
   );
+  if (!expected) throw new DataAccessError('authorization_denied');
   if (
     v.head_candidate?.checksum !== candidate.checksum ||
     technicalDigest(payload) !== technicalDigest(expected) ||
@@ -437,7 +461,8 @@ export async function recordPlatformRepairVerification(
       (report.version !== 1 &&
         (v.outcome.repositoryIsolation?.compilerUid !== 1002 ||
           v.outcome.repositoryIsolation?.tmpfsMiB !== 128 ||
-          v.outcome.repositoryIsolation?.inputLimit !== 23000000 ||
+          v.outcome.repositoryIsolation?.inputLimit !==
+            executionProof.inputLimit ||
           v.outcome.repositoryIsolation?.timeoutMs !==
             report.compiled.timeoutMs ||
           v.outcome.repositoryIsolation?.memoryMiB !==

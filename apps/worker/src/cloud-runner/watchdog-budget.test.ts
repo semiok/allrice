@@ -126,7 +126,8 @@ s=importlib.util.spec_from_file_location('guard',sys.argv[1]);m=importlib.util.m
 old={'at':1,'running':0,'availableBytes':1000000000}
 current={**old,'repositoryCompiled':m.compiled_budget()}
 changed={**current,'repositoryCompiled':{**m.compiled_budget(),'maximumTimeoutMs':3600000}}
-print(json.dumps([m.live_compiled_budget(h) for h in [old,current,changed]]))
+legacy={**current,'repositoryCompiled':{k:v for k,v in m.compiled_budget().items() if k!='inputLimits'}}
+print(json.dumps([m.live_compiled_budget(h) for h in [old,current,changed,legacy]]))
 `,
           source,
         ],
@@ -140,7 +141,9 @@ print(json.dumps([m.live_compiled_budget(h) for h in [old,current,changed]]))
         timeoutStepMs: 300000,
         maximumTimeoutMs: 1800000,
         memoryMiB: 768,
+        inputLimits: [23000000, 59000000],
       },
+      null,
       null,
     ]);
   });
@@ -173,6 +176,9 @@ values.append(bool(m.command_deadline_valid(c,created,created+301001)))
 for path,key,value in [('Config','User','1001:1001'),('Config','Image','untrusted'),('HostConfig','Memory',1024*1024**2),('HostConfig','Privileged',True),('HostConfig','Binds',['/host:/tmp']),('HostConfig','Tmpfs',{'/tmp':'rw,size=128m'}),('HostConfig','CapAdd',['SYS_ADMIN']),('Labels','xyz.bplabs.allrice.cloud.kind','script'),('Labels','xyz.bplabs.allrice.repository.timeout','3e5'),('Labels','xyz.bplabs.allrice.repository.dependency','unknown')]:
  x=copy.deepcopy(c);target=x['Config']['Labels'] if path=='Labels' else x[path];target[key]=value
  values.append(bool(m.command_deadline_valid(x,created,created+300000)))
+for limit in ['59000000','59000001','35000000','23000001','59000000.0']:
+ x=copy.deepcopy(c);x['Config']['Labels']['xyz.bplabs.allrice.repository.input-limit']=limit
+ values.append(bool(m.command_deadline_valid(x,created,created+300000)))
 print(json.dumps(values))
 `,
           source,
@@ -192,6 +198,8 @@ print(json.dumps(values))
       false,
       false,
       ...Array(10).fill(false),
+      true,
+      ...Array(4).fill(false),
     ]);
   });
 });
