@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
+import { createConnection } from 'node:net';
 import { crc32 } from 'node:zlib';
 import {
   afterAll,
@@ -12,6 +13,7 @@ import {
   describe,
   expect,
   it,
+  onTestFinished,
 } from 'vitest';
 import {
   readSmokeReply,
@@ -534,11 +536,33 @@ suite('smoke reply evidence belongs to the requested assistant turn', () => {
         origin: `http://127.0.0.1:${server.address().port}`,
         bytes,
         object,
+        server,
       });
     } finally {
-      await new Promise((resolve) => server.close(resolve));
+      const closed = new Promise((resolve) => server.close(resolve));
+      // Chromium may preconnect without an HTTP request; close() keeps those
+      // sockets open. The assertions have finished, so release every fixture socket.
+      server.closeAllConnections();
+      await closed;
     }
   }
+
+  it('closes the CSV fixture with an unused preconnection', async () => {
+    let socket;
+    let closed;
+    onTestFinished(() => socket?.destroy());
+    await withCsvDownloadServer(async ({ origin, server }) => {
+      const accepted = once(server, 'connection');
+      socket = createConnection({
+        host: '127.0.0.1',
+        port: Number(new URL(origin).port),
+      });
+      closed = once(socket, 'close');
+      await Promise.all([once(socket, 'connect'), accepted]);
+    });
+    await closed;
+    expect(socket.destroyed).toBe(true);
+  });
 
   it('downloads exact CSV PNG bytes using the page Secure HttpOnly login cookie on HTTP 127.0.0.1', async () => {
     await withCsvDownloadServer(async ({ origin, bytes, object }) => {
