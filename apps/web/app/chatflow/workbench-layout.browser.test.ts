@@ -23015,15 +23015,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         f.state.messageReceiptDelay = new Promise<void>((done) => {
           receipt = done;
         });
-        const response = f.page.waitForResponse(
-          (value) =>
-            value.request().method() === 'POST' &&
-            new URL(value.url()).pathname === `/api/v1/sessions/${A}/messages`,
-        );
         await input.fill('给原会话继续整理资料。');
         await input.press('Enter');
         await expect.poll(() => f.state.messageInputs.length).toBe(1);
         await sidebar.locator(`[data-row-key="session:${B}"]`).click();
+        await input.fill('这里的草稿继续保留。');
         if (changed) {
           const scoped = f.page.waitForResponse(
             (value) =>
@@ -23042,8 +23038,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('dialog', { name: /员工详情/ })
             .getByRole('button', { name: '关闭', exact: true })
             .click();
+          await f.page
+            .locator('[data-composer-seat]')
+            .getByRole('alert')
+            .getByText('没有权限，如需使用请联系管理员', { exact: true })
+            .waitFor();
         }
-        await input.fill('这里的草稿继续保留。');
+        const response = f.page.waitForResponse(
+          (value) =>
+            value.request().method() === 'POST' &&
+            new URL(value.url()).pathname === `/api/v1/sessions/${A}/messages`,
+        );
         receipt();
         list();
         f.state.messageReceiptDelay = f.state.sessionListDelay = null;
@@ -23052,7 +23057,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await expect
           .poll(() => a.locator('svg[data-state="ongoing"]').count())
           .toBe(changed ? 0 : 1);
-        expect(await input.inputValue()).toBe('这里的草稿继续保留。');
+        if (changed) expect(await input.count()).toBe(0);
+        else expect(await input.inputValue()).toBe('这里的草稿继续保留。');
         expect(
           await f.page
             .locator('[data-chat-scroll]')
@@ -23237,21 +23243,35 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 .closest('section[aria-label]')!
                 .querySelector('[class*="employeeCard"]')!
                 .getBoundingClientRect();
-              let left = rect.left,
-                right = rect.right;
-              for (let at = row.parentElement; at; at = at.parentElement) {
-                if (
-                  !['auto', 'scroll', 'hidden', 'clip'].includes(
-                    getComputedStyle(at).overflowX,
-                  )
-                )
-                  continue;
-                const ancestor = at.getBoundingClientRect();
-                left = Math.max(left, ancestor.left + at.clientLeft);
+              let left = Math.max(0, rect.left),
                 right = Math.min(
-                  right,
-                  ancestor.left + at.clientLeft + at.clientWidth,
-                );
+                  document.documentElement.clientWidth,
+                  rect.right,
+                ),
+                fixedToViewport = false;
+              for (let at = row.parentElement; at; at = at.parentElement) {
+                const style = getComputedStyle(at);
+                if (fixedToViewport) {
+                  const createsContainingBlock =
+                    style.transform !== 'none' ||
+                    style.filter !== 'none' ||
+                    style.perspective !== 'none' ||
+                    /paint|layout|strict|content/.test(style.contain) ||
+                    /transform|filter|perspective/.test(style.willChange);
+                  if (!createsContainingBlock) continue;
+                  fixedToViewport = false;
+                }
+                if (
+                  ['auto', 'scroll', 'hidden', 'clip'].includes(style.overflowX)
+                ) {
+                  const ancestor = at.getBoundingClientRect();
+                  left = Math.max(left, ancestor.left + at.clientLeft);
+                  right = Math.min(
+                    right,
+                    ancestor.left + at.clientLeft + at.clientWidth,
+                  );
+                }
+                if (style.position === 'fixed') fixedToViewport = true;
               }
               const css = getComputedStyle(row);
               return {
@@ -23261,6 +23281,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 cardRight: card.right,
                 visibleLeft: left,
                 visibleRight: right,
+                edgeHits: [rect.left + 1, rect.right - 1].map((x) =>
+                  row.contains(
+                    document.elementFromPoint(x, rect.top + rect.height / 2),
+                  ),
+                ),
                 radius: [
                   css.borderTopLeftRadius,
                   css.borderTopRightRadius,
@@ -23280,6 +23305,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               0.5,
             );
             expect(box.radius).toEqual(['12px', '12px', '12px', '12px']);
+            expect(box.edgeHits).toEqual([true, true]);
           };
           f.state.sessionListDelay = new Promise<void>((done) => {
             release = done;
