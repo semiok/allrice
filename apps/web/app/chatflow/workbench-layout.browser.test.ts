@@ -23054,11 +23054,20 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     },
   );
 
-  it('recovers an exhausted background Run stream on online using the original retry budget', async () => {
+  it('recovers an exhausted background Run stream on online before its old activity read finishes using the original retry budget', async () => {
     const f = await fixture({
       queue: true,
       sidebarActivity: true,
       controlledStream: true,
+    });
+    let releaseList = () => {};
+    let heldRead: Request | undefined;
+    let heldReadFinished = false;
+    const activityRead = (request: Request) =>
+      request.method() === 'GET' &&
+      new URL(request.url()).pathname === '/api/v1/sessions';
+    f.page.on('requestfinished', (request) => {
+      if (request === heldRead) heldReadFinished = true;
     });
     try {
       const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
@@ -23074,6 +23083,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.clock.install();
       for (let index = 0; index < 7; index++) {
         await expect.poll(attempts).toBe(index + 1);
+        const reads = f.state.sessionListRequests;
+        const exhaustedRead =
+          index === 6 ? f.page.waitForRequest(activityRead) : null;
+        if (index === 6)
+          f.state.sessionListDelay = new Promise<void>((done) => {
+            releaseList = done;
+          });
         await f.page.evaluate(
           (runId) =>
             window.dispatchEvent(
@@ -23084,13 +23100,28 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           id(401),
         );
         await f.page.clock.runFor(3000);
+        if (exhaustedRead) {
+          heldRead = await exhaustedRead;
+          await expect.poll(() => f.state.sessionListRequests).toBe(reads + 1);
+          // That request already captured its gate. New online reads stay live.
+          f.state.sessionListDelay = null;
+        }
       }
       await f.page.clock.runFor(30000);
       expect(await attempts()).toBe(7);
       expect(await a.locator('svg[data-state="ongoing"]').count()).toBe(1);
+      const refreshed = f.page.waitForResponse(
+        (response) =>
+          activityRead(response.request()) && response.request() !== heldRead,
+      );
       await f.page.evaluate(() => window.dispatchEvent(new Event('online')));
+      await (await refreshed).finished();
+      expect(heldReadFinished).toBe(false);
       await expect.poll(attempts).toBe(8);
       await expect.poll(() => sidebarStreams(f.page)).toEqual([id(401)]);
+      releaseList();
+      await expect.poll(() => heldReadFinished).toBe(true);
+      expect(await attempts()).toBe(8);
       f.state.sidebarRunIds[A] = [];
       await finishSidebarRun(f.page, id(401));
       await expect
@@ -23100,6 +23131,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await attempts()).toBe(8);
       expect(await sidebarStreams(f.page)).toEqual([]);
     } finally {
+      f.state.sessionListDelay = null;
+      releaseList();
       await f.close();
     }
   });

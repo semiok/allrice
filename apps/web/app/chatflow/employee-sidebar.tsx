@@ -130,7 +130,7 @@ export function EmployeeSidebar({
         loadHistory: async () => {},
         loadWorkspace: async () => {
           if (activityCallbacks.current.scope === activityScope)
-            await activityCallbacks.current.reload?.();
+            void activityCallbacks.current.reload?.();
         },
         setError: () => {},
       });
