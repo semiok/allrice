@@ -31,6 +31,11 @@ import {
   type BrandMediaTopic,
 } from '@allrice/contracts';
 import * as client from '../../../packages/database/src/core/client.ts';
+import {
+  createStorageMetadata,
+  markStorageReady,
+  abandonStorageMetadata,
+} from '../../../packages/database/src/data.ts';
 import { createReadPathProbe } from '../../../packages/database/src/read-path-probe.fixture.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -2609,7 +2614,7 @@ suite(
         again = await generate(a, intent);
       expect(again.run.id).toBe(sent.run.id);
       const [frozen] =
-        await f.db`select execution_snapshot,prompt_snapshot from allrice_employee_runs where run_id=${sent.run.id}`;
+        await f.db`select execution_snapshot,execution_snapshot::text frozen_bytes,prompt_snapshot from allrice_employee_runs where run_id=${sent.run.id}`;
       expect(
         frozen!.execution_snapshot.moduleInvocation.intent.references,
       ).toEqual([pin]);
@@ -2644,7 +2649,9 @@ suite(
       expect(await imageBytes()).toMatchObject([
         { mediaType: 'image/jpeg', data: input.contentBase64 },
       ]);
-      await f.db`update allrice_storage_objects set retention_until=clock_timestamp()-interval '1 second' where id=${file.objectId}`;
+      // Model an existing old upload: expiry follows creation and has already
+      // elapsed. Neither wall-clock waits nor invalid storage rows are needed.
+      await f.db`update allrice_storage_objects set created_at=clock_timestamp()-interval '2 days',retention_until=clock_timestamp()-interval '1 day' where id=${file.objectId}`;
       // Immutable storage bytes still exist; the real production check denies their use.
       expect(await imageBytes()).toMatchObject([{ data: input.contentBase64 }]);
       await expect(guard.check()).rejects.toMatchObject({
@@ -2652,12 +2659,38 @@ suite(
       });
       await f.db`update allrice_storage_objects set retention_until=null where id=${file.objectId}`;
       await guard.check();
-      await f.db`update allrice_storage_objects set deleted_at=clock_timestamp() where id=${file.objectId}`;
-      expect(await imageBytes()).toHaveLength(1);
-      await expect(guard.check()).rejects.toMatchObject({
-        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+      const [unchanged] =
+        await f.db`select * from allrice_storage_objects where id=${file.objectId}`;
+      expect(unchanged).toMatchObject({
+        state: 'ready',
+        immutable: true,
+        deleted_at: null,
+        checksum: uploaded.checksum,
       });
-      await f.db`update allrice_storage_objects set deleted_at=null where id=${file.objectId}`;
+      // A ready immutable upload cannot be deleted or made mutable in place.
+      // Exercise that actual storage contract instead of seeding an impossible
+      // transition and calling it a mid-Run authorization loss.
+      for (const mutation of [
+        () =>
+          f.db`update allrice_storage_objects set state='deleted',deleted_at=clock_timestamp() where id=${file.objectId}`,
+        () =>
+          f.db`update allrice_storage_objects set immutable=false where id=${file.objectId}`,
+      ])
+        await expect(mutation()).rejects.toMatchObject({
+          code: 'P0001',
+          message: 'ready immutable storage objects cannot be mutated',
+        });
+      expect(
+        (
+          await f.db`select * from allrice_storage_objects where id=${file.objectId}`
+        )[0],
+      ).toEqual(unchanged);
+      expect(
+        (
+          await f.db`select execution_snapshot::text frozen_bytes from allrice_employee_runs where run_id=${sent.run.id}`
+        )[0]!.frozen_bytes,
+      ).toBe(frozen!.frozen_bytes);
+      expect(await imageBytes()).toMatchObject([{ data: input.contentBase64 }]);
       await guard.check();
       await f.db`update allrice_employee_module_bindings set revoked_at=clock_timestamp() where instance_id=${a.scope.instanceId}`;
       await expect(guard.check()).rejects.toMatchObject({
@@ -2679,8 +2712,66 @@ suite(
       );
       const other = await generationActor();
       await generate(other, candidateIntent(other, { references: [pin] }), 409);
-      await f.db`update allrice_storage_objects set immutable=false where id=${file.objectId}`;
-      await generate(a, candidateIntent(a, { references: [pin] }), 409);
+      for (const kind of ['deleted', 'mutable'] as const) {
+        // Independent legal initial states, not a mutation of the frozen Run:
+        // pending uploads may be abandoned; mutable objects may become ready.
+        const bytes = Buffer.from(input.contentBase64, 'base64');
+        const invalid = await createStorageMetadata(
+          a.context,
+          {
+            id: randomUUID(),
+            workspaceId: a.scope.workspaceId,
+            category: 'uploads',
+            mediaType: input.mediaType,
+            sizeBytes: bytes.length,
+            checksum: uploaded.checksum,
+            visibility: 'private',
+            retentionUntil: null,
+            immutable: kind === 'deleted',
+          },
+          f.db,
+        );
+        await runtimeFixtureStorage(f.db)!.put(
+          invalid.object,
+          new Blob([bytes]).stream(),
+        );
+        if (kind === 'deleted')
+          await abandonStorageMetadata(a.context, invalid.object.id, f.db);
+        else await markStorageReady(a.context, invalid.object.id, f.db);
+        expect(
+          (
+            await f.db`select state,immutable,deleted_at is not null deleted from allrice_storage_objects where id=${invalid.object.id}`
+          )[0],
+        ).toEqual({
+          state: kind === 'deleted' ? 'deleted' : 'ready',
+          immutable: kind === 'deleted',
+          deleted: kind === 'deleted',
+        });
+        const runsBefore =
+          await f.db`select id from allrice_runs where owner_id=${a.context.actor.id} order by id`;
+        expect(
+          (
+            await generate(
+              a,
+              candidateIntent(a, {
+                references: [
+                  {
+                    origin: 'upload',
+                    file: {
+                      objectId: invalid.object.id,
+                      checksum: uploaded.checksum,
+                    },
+                  },
+                ],
+              }),
+              409,
+            )
+          ).error,
+        ).toMatchObject({ code: 'CONFLICT' });
+        expect(
+          await f.db`select id from allrice_runs where owner_id=${a.context.actor.id} order by id`,
+        ).toEqual(runsBefore);
+      }
     });
   },
 );
