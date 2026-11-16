@@ -257,13 +257,6 @@ suite('reading a receipt while late native trace changes its group', () => {
     page.locator(`article[data-question-id="dsh-${native}:${call}"]`);
   const searchStep = (page: Page) =>
     page.locator(`#message-${ids.run} [data-step-id="tool:search"]`);
-  const textBox = (node: Locator) =>
-    node.evaluate((node) => {
-      const range = document.createRange();
-      range.selectNodeContents(node);
-      const box = range.getClientRects()[0]!;
-      return { x: box.x, y: box.y, width: box.width, height: box.height };
-    });
   const detailGeometry = (page: Page, target = searchStep(page)) =>
     target
       .locator('dl')
