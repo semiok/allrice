@@ -57,6 +57,10 @@ import { ArtifactSummaryCards } from './artifact-workbench';
 import { SteeredWorkProcess } from './steered-work-process';
 import { type ReferenceDraft } from './reference-chips';
 import {
+  ReferenceCitationSources,
+  type ReadReferenceCitation,
+} from './reference-sources';
+import {
   InputStatusContext,
   TranscriptUserMessage,
 } from './transcript-user-message';
@@ -79,6 +83,7 @@ interface ChatTranscriptProps {
   memoryScope?: string;
   memoryWrites?: MemoryWriteStore;
   onOpenReference?: (reference: ReferenceDraft) => void;
+  onOpenReferenceCitation?: (citation: ReadReferenceCitation) => void;
   messageImages?: MessageImageSource;
   streamingOutput?: boolean;
   fontSize?: UserPreferences['fontSize'];
@@ -217,6 +222,7 @@ export const ChatTranscript = memo(function ChatTranscript({
   memoryScope,
   memoryWrites,
   onOpenReference,
+  onOpenReferenceCitation,
   messageImages,
   streamingOutput = false,
   fontSize = 14,
@@ -683,6 +689,10 @@ export const ChatTranscript = memo(function ChatTranscript({
                                     )}
                                   </div>
                                 )}
+                                <ReferenceCitationSources
+                                  citations={message.content.citations ?? []}
+                                  onOpen={onOpenReferenceCitation}
+                                />
                                 {applicationFailure && (
                                   <p
                                     className={styles.failedMessage}

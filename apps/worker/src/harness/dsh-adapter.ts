@@ -1,5 +1,6 @@
 /// <reference types="./dsh-web-cancellation-types.d.ts" />
 
+import { isBoundedReferenceToolName } from '@allrice/contracts';
 import { createWebCallScope } from '../../dsh/allrice-web-cancellation.mjs';
 import {
   personalScenePromptParts,
@@ -77,6 +78,7 @@ import {
   textBlocks,
   type DshSourceMetadata,
   visibleModelText,
+  referenceReadFailure,
 } from './dsh/event-projector.js';
 import {
   DshRuntimePool,
@@ -326,6 +328,7 @@ export class DshHarnessAdapter implements HarnessAdapter {
     const webCalls = createWebCallScope();
     const ordinaryHandler = dshInboundToolHandler({
       ...input,
+      referenceImage: (call) => runtime.client.referenceImagePort(call),
       ...(input.nativeFileRead &&
       runtime.nativeTools.includes('workspace.file.read') &&
       runId
@@ -430,8 +433,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
       if (runScope) params = runScope.check(params);
       if (
         method === 'allrice/web-cancel' ||
+        method === 'allrice/reference-image-cancel' ||
         (method === 'allrice/tool-call' &&
-          (params.name === 'web.search' || params.name === 'web.fetch'))
+          (params.name === 'web.search' ||
+            params.name === 'web.fetch' ||
+            isBoundedReferenceToolName(params.name)))
       ) {
         if (
           (!runScope && params.nativeSessionId !== threadId) ||
@@ -439,7 +445,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
           typeof params.toolCallId !== 'string' ||
           !params.toolCallId ||
           params.toolCallId.length > 240 ||
-          (params.name !== 'web.search' && params.name !== 'web.fetch')
+          (params.name !== 'web.search' &&
+            params.name !== 'web.fetch' &&
+            !isBoundedReferenceToolName(params.name))
         )
           throw Error('WEB_CALL_SCOPE_INVALID');
         const key = JSON.stringify([
@@ -447,7 +455,11 @@ export class DshHarnessAdapter implements HarnessAdapter {
           params.name,
           params.toolCallId,
         ]);
-        if (method === 'allrice/web-cancel') return webCalls.cancel(key);
+        if (
+          method === 'allrice/web-cancel' ||
+          method === 'allrice/reference-image-cancel'
+        )
+          return webCalls.cancel(key);
         // Register before the first await so cancellation during content
         // authorization reaches this exact call. Run admission was checked above.
         return webCalls.run(key, async (callSignal) => {
@@ -2136,6 +2148,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
         // Keep legacy event errors, but never infer status from result text or
         // truthy strings and never copy raw arguments/results into the stream.
         const failed = Boolean(data.error) || firstBlock?.isError === true;
+        const referenceReadError = failed
+          ? referenceReadFailure(name, data)
+          : null;
         const parkedQuestion =
           failed && parkingQuestion && name === 'ask_user_question';
         await input.onNative({
@@ -2155,13 +2170,15 @@ export class DshHarnessAdapter implements HarnessAdapter {
                   ? '搜索失败'
                   : '搜索完成'
                 : failed
-                  ? nativeToolFailureSummary(firstBlock?.content)
+                  ? (referenceReadError?.message.slice(0, 1000) ??
+                    nativeToolFailureSummary(firstBlock?.content))
                   : '工具执行完成',
           ...source,
           sourcePayload: {
             ...source.sourcePayload,
             presentation: isDshSearchTool(name) ? 'search' : 'tool',
             status: failed ? 'failed' : 'completed',
+            ...(referenceReadError ? { referenceReadError } : {}),
             ...(parkedQuestion ? { questionWait: true } : {}),
             ...(active?.query ? { query: active.query } : {}),
             ...(skillName

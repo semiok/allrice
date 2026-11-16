@@ -1,3 +1,15 @@
+import { isBoundedReferenceToolName } from '@allrice/contracts/native-runtime';
+import {
+  referenceImageOperation,
+  referenceImageFailure,
+  referenceImageOutput,
+  referenceArchiveOutput,
+  referenceImageValue,
+} from './allrice-reference-image.mjs';
+import {
+  ReferenceImageFailureSchema,
+  referenceImagePolicy,
+} from '@allrice/contracts/native-runtime';
 import { searchCodexWeb } from './allrice-codex-web-search.mjs';
 import { installNativeWeb } from './allrice-native-web.mjs';
 import {
@@ -1456,22 +1468,37 @@ export async function createAllRiceRuntime(
           name: tool.wireName,
           description: tool.description,
           parameters: tool.parameters,
-          output: {
-            schema: {
-              type: 'object',
-              additionalProperties: false,
-              properties: {
-                content: { type: 'string', required: true },
-              },
-            },
-            render: (_args, value) => [{ type: 'text', text: value.content }],
-          },
-          // Tool declarations are the single source for DSH's native enforcer.
-          timeoutMs: tool.timeoutMs ?? 65_000,
+          output:
+            tool.canonicalName === 'workspace.reference.archive_read'
+              ? referenceArchiveOutput
+              : tool.canonicalName === 'workspace.reference.read_image'
+                ? referenceImageOutput
+                : {
+                    schema: {
+                      type: 'object',
+                      additionalProperties: false,
+                      properties: {
+                        content: { type: 'string', required: true },
+                      },
+                    },
+                    render: (_args, value) => [
+                      { type: 'text', text: value.content },
+                    ],
+                  },
+          // Image reads own the frozen business timeout code and still join
+          // native persistence. The generic timeout policy would replace it.
+          timeoutMs: isBoundedReferenceToolName(tool.canonicalName)
+            ? undefined
+            : (tool.timeoutMs ?? 65_000),
           isConcurrencySafe: () =>
             tool.isConcurrencySafe ??
             tool.canonicalName !== 'local.process.execute',
           execute: async (args, exec) => {
+            const referenceImageDeadlineAt = isBoundedReferenceToolName(
+              tool.canonicalName,
+            )
+              ? Date.now() + referenceImagePolicy.operationMilliseconds
+              : undefined;
             const agent = this.ctx.agents.requireInitiator();
             if (
               tool.canonicalName === 'workspace.employee.profile.update' &&
@@ -1503,6 +1530,9 @@ export async function createAllRiceRuntime(
                   toolCallId: exec.callId,
                   name: tool.canonicalName,
                   arguments: args,
+                  ...(referenceImageDeadlineAt === undefined
+                    ? {}
+                    : { referenceImageDeadlineAt }),
                 },
                 exec.signal,
               );
@@ -1540,6 +1570,26 @@ export async function createAllRiceRuntime(
               typeof response.modelContent !== 'string'
             ) {
               throw new Error('AllRice Tool Broker returned an invalid result');
+            }
+            if (isBoundedReferenceToolName(tool.canonicalName)) {
+              exec.signal.throwIfAborted();
+              if (response.referenceImageDenied) {
+                const denied = response.referenceImageDenied;
+                if (
+                  denied.callId !== exec.callId ||
+                  denied.nativeSessionId !== exec.agent.id
+                )
+                  throw Error('REFERENCE_IMAGE_FAILURE_INVALID');
+                const error = ReferenceImageFailureSchema.parse(denied.error);
+                throw new HarnessError(JSON.stringify(error), error.code);
+              }
+              if (
+                tool.canonicalName === 'workspace.reference.read_image' ||
+                (tool.canonicalName === 'workspace.reference.archive_read' &&
+                  args.as === 'image')
+              )
+                return referenceImageValue(response);
+              return { content: response.modelContent };
             }
             return this.waitForApplicationConnection(
               tool.canonicalName,
@@ -1836,6 +1886,13 @@ export async function createAllRiceRuntime(
         );
       }
       switch (method) {
+        case 'allrice/reference-image/route':
+        case 'allrice/reference-image/save':
+          return referenceImageOperation(
+            this,
+            method.split('/').at(-1),
+            params,
+          ).catch(referenceImageFailure);
         case 'session/park-question':
           return {
             checkpoint: await checkpointNativeQuestion(
@@ -2021,11 +2078,15 @@ export async function createAllRiceRuntime(
   server.toolBrokerRequest = (params, signal) => {
     signal?.throwIfAborted();
     const scope = attributed(params);
-    return params.name === 'web.search' || params.name === 'web.fetch'
+    return params.name === 'web.search' ||
+      params.name === 'web.fetch' ||
+      isBoundedReferenceToolName(params.name)
       ? requestCancellableWeb(
           (method, value) => transport.request(method, value),
           'allrice/tool-call',
-          'allrice/web-cancel',
+          isBoundedReferenceToolName(params.name)
+            ? 'allrice/reference-image-cancel'
+            : 'allrice/web-cancel',
           scope,
           signal,
         )

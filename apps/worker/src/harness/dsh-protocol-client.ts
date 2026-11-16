@@ -1,5 +1,14 @@
 /// <reference types="./dsh-web-cancellation-types.d.ts" />
 
+import {
+  ReferenceContentCallSchema,
+  ReferenceImageRouteResultSchema,
+  ReferenceImageSaveResultSchema,
+  ReferenceImageFailureSchema,
+  referenceImagePolicy,
+} from '@allrice/contracts';
+import type { ReferenceImagePort } from '@allrice/database';
+
 import { randomUUID } from 'node:crypto';
 import { requestCancellableWeb } from '../../dsh/allrice-web-cancellation.mjs';
 import type { EmployeeDocuments } from '@allrice/contracts';
@@ -589,6 +598,60 @@ export class DshProtocolClient {
     source?: { mediaType: string; data: string };
   }) {
     return this.request('provider/image-generation', input, 310_000);
+  }
+
+  referenceImagePort(callInput: {
+    id: string;
+    name: string;
+    nativeSessionId?: string;
+    deadlineAt?: number;
+  }): ReferenceImagePort {
+    const { deadlineAt, ...identity } = callInput;
+    const call = ReferenceContentCallSchema.parse(identity);
+    const runId = this.runId;
+    if (
+      !Number.isSafeInteger(deadlineAt) ||
+      deadlineAt! > Date.now() + referenceImagePolicy.operationMilliseconds
+    )
+      throw new HandlerError(
+        'REFERENCE_IMAGE_DEADLINE_INVALID',
+        'Invalid native image deadline',
+        false,
+      );
+    const request = async (
+      operation: string,
+      payload: Record<string, unknown> = {},
+    ) => {
+      const result = await this.request(
+        `allrice/reference-image/${operation}`,
+        { call, runId, deadlineAt, ...payload },
+        // Public saveImages cannot abort mid-save. Join its actual completion;
+        // the native operation checks the shared deadline before returning.
+        0,
+      );
+      if (result.failure) {
+        const failure = ReferenceImageFailureSchema.parse(result.failure);
+        throw new HandlerError(
+          failure.code,
+          failure.message,
+          failure.retryable,
+        );
+      }
+      return result;
+    };
+    return {
+      deadlineAt: deadlineAt!,
+      route: async () =>
+        ReferenceImageRouteResultSchema.parse(await request('route')),
+      save: async ({ data, mediaType, name }) =>
+        ReferenceImageSaveResultSchema.parse(
+          await request('save', {
+            data: data.toString('base64'),
+            mediaType,
+            name,
+          }),
+        ),
+    };
   }
 
   async searchCodexWeb(query: string, maxResults = 5, signal?: AbortSignal) {

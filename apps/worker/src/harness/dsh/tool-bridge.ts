@@ -1,4 +1,10 @@
-import { allRiceToolManifest } from '@allrice/contracts';
+import { isBoundedReferenceToolName } from '@allrice/contracts';
+import type { ReferenceImagePort } from '@allrice/database';
+import {
+  allRiceToolManifest,
+  ReferenceReadImageResultSchema,
+  ReferenceImageFailureSchema,
+} from '@allrice/contracts';
 
 import { HandlerError, isConfirmedToolFailure } from '../../errors.js';
 import type { HarnessExecutionInput, HarnessToolCall } from '../adapter.js';
@@ -163,6 +169,12 @@ export function parseDshToolCall(text: string): HarnessToolCall | null {
 
 export function dshInboundToolHandler(
   input: Pick<HarnessExecutionInput, 'tools' | 'onToolCall'> & {
+    referenceImage?: (call: {
+      id: string;
+      name: string;
+      nativeSessionId?: string;
+      deadlineAt?: number;
+    }) => ReferenceImagePort;
     fileReadRoot?: {
       nativeSessionId: string;
       runId: string;
@@ -223,6 +235,12 @@ export function dshInboundToolHandler(
         'Native file reads require the admitted root.',
         false,
       );
+    if (isBoundedReferenceToolName(name) && (!input.referenceImage || !signal))
+      throw new HandlerError(
+        'TOOL_NOT_ALLOWED',
+        'Image reading requires the admitted cancelable call.',
+        false,
+      );
     const result = await input
       .onToolCall(
         {
@@ -233,9 +251,48 @@ export function dshInboundToolHandler(
             ? { nativeSessionId: params.nativeSessionId }
             : {}),
         },
-        ...(signal ? ([{ signal }] as const) : []),
+        ...(isBoundedReferenceToolName(name) && input.referenceImage
+          ? [
+              {
+                signal: signal!,
+                referenceImage: input.referenceImage({
+                  id,
+                  name,
+                  deadlineAt:
+                    typeof params.referenceImageDeadlineAt === 'number'
+                      ? params.referenceImageDeadlineAt
+                      : undefined,
+                  nativeSessionId:
+                    typeof params.nativeSessionId === 'string'
+                      ? params.nativeSessionId
+                      : undefined,
+                }),
+              },
+            ]
+          : signal
+            ? [{ signal }]
+            : []),
       )
       .catch((error: unknown) => {
+        if (isBoundedReferenceToolName(name) && error instanceof HandlerError) {
+          const denied = ReferenceImageFailureSchema.safeParse({
+            code: error.code,
+            ...(error.reason ? { reason: error.reason } : {}),
+            message: error.message,
+            retryable: error.retryable,
+          });
+          if (denied.success)
+            return {
+              modelContent: '',
+              summary: error.message,
+              itemCount: 0,
+              referenceImageDenied: {
+                callId: id,
+                nativeSessionId: params.nativeSessionId,
+                error: denied.data,
+              },
+            };
+        }
         if (name !== 'workspace.file.read' || !input.fileReadRoot) throw error;
         input.fileReadRoot.signal.throwIfAborted();
         if (
@@ -262,9 +319,18 @@ export function dshInboundToolHandler(
       });
     if (name === 'workspace.file.read')
       input.fileReadRoot!.signal.throwIfAborted();
-    if ('fileReadDenied' in result) return result;
+    if ('fileReadDenied' in result || 'referenceImageDenied' in result)
+      return result;
     return {
       modelContent: result.modelContent,
+      ...(name === 'workspace.reference.read_image' ||
+      (name === 'workspace.reference.archive_read' && args.as === 'image')
+        ? {
+            referenceImage: ReferenceReadImageResultSchema.parse(
+              result.referenceImage,
+            ),
+          }
+        : {}),
       summary: result.summary,
       ...(result.itemCount === undefined
         ? {}

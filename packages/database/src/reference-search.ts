@@ -427,7 +427,7 @@ function boundary(text: string, offset: number) {
 }
 
 export function referenceTextPage(
-  prepared: PreparedReferenceText,
+  prepared: Pick<PreparedReferenceText, 'fullText'>,
   offset: number,
   limit: number,
 ) {

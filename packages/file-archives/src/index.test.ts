@@ -1,9 +1,12 @@
+import { ZipFile } from 'yauzl';
 import { randomBytes } from 'node:crypto';
 import { setImmediate as yieldTask } from 'node:timers/promises';
 import { describe, expect, it, vi } from 'vitest';
 import { Zip, ZipPassThrough, zipSync } from 'fflate';
 import {
   createFileArchive,
+  openReferenceArchive,
+  isFileArchiveContainer,
   FileArchiveError,
   fileArchiveMaximumBytes,
   readFileArchive,
@@ -418,4 +421,252 @@ describe('MET164 bounded byte-only ZIP codec', () => {
       expect(calls).toBeGreaterThanOrEqual(6);
     },
   );
+});
+
+describe('v1.8 lazy publication ZIP directory/member reads', () => {
+  it('lists 50 images without opening any member, then opens only the requested member', async () => {
+    const input = storedArchive(
+      Array.from({ length: 50 }, (_, i) => ({
+        path: `photo/${i}.png`,
+        bytes: Buffer.from(`image-${i}`),
+      })),
+    );
+    const spy = vi.spyOn(ZipFile.prototype, 'openReadStream');
+    const archive = await openReferenceArchive(input);
+    try {
+      expect(archive.entries).toHaveLength(50);
+      expect(spy).not.toHaveBeenCalled();
+      expect(await archive.readMember(17)).toEqual(Buffer.from('image-17'));
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0]![0].fileName).toBe('photo/17.png');
+      expect(archive.entries[17]).not.toHaveProperty('checksum');
+    } finally {
+      archive.close();
+      spy.mockRestore();
+    }
+    await rejectsArchive(readFileArchive(input), 'FILE_ARCHIVE_LIMIT');
+  });
+  it('retains exact Unicode paths and stable central identities for an independent DEFLATE ZIP', async () => {
+    const first = await openReferenceArchive(pythonArchive),
+      second = await openReferenceArchive(pythonArchive);
+    try {
+      expect(first.entries).toEqual(second.entries);
+      expect(first.directoryChecksum).toBe(second.directoryChecksum);
+      expect(first.entries[0]!.path).toBe('中文 目录/说明.txt');
+      expect(await first.readMember(0)).toEqual(
+        Buffer.from('中文 😀\n00123,-200.00\n'),
+      );
+    } finally {
+      first.close();
+      second.close();
+    }
+  });
+  it('accepts empty ZIP and explicit directories without inflating', async () => {
+    const empty = await openReferenceArchive(await createFileArchive([]));
+    expect(empty.entries).toEqual([]);
+    empty.close();
+    const dirs = await openReferenceArchive(
+      storedArchive([{ path: 'dir/', attrs: (0o40755 << 16) >>> 0 }]),
+    );
+    expect(dirs.entries[0]).toMatchObject({ path: 'dir/', kind: 'directory' });
+    dirs.close();
+    expect(isFileArchiveContainer(Buffer.from('not zip'))).toBe(false);
+    expect(
+      isFileArchiveContainer(
+        zipSync({ '[Content_Types].xml': Buffer.from('<Types/>') }),
+      ),
+    ).toBe(false);
+  });
+  it('does not validate unrelated payload CRC while listing or reading another member', async () => {
+    const input = storedArchive([
+      { path: 'bad.txt', bytes: Buffer.from('corrupt me') },
+      { path: 'good.txt', bytes: Buffer.from('correct') },
+    ]);
+    input[30 + Buffer.byteLength('bad.txt')]! ^= 1;
+    const archive = await openReferenceArchive(input);
+    try {
+      expect(await archive.readMember(1)).toEqual(Buffer.from('correct'));
+      await expect(archive.readMember(0)).rejects.toMatchObject({
+        reason: 'archive_crc',
+      });
+    } finally {
+      archive.close();
+    }
+  });
+  it.each(['/absolute', '../escape', 'a\\b', 'C:bad', 'bad\nname'])(
+    'rejects unsafe names before any member read: %s',
+    async (path) => {
+      await rejectsArchive(openReferenceArchive(storedArchive([{ path }])));
+    },
+  );
+  it.each([
+    ['same', 'SAME'],
+    ['é', 'e\u0301'],
+    ['a', 'a/b'],
+  ])('rejects collisions %s / %s', async (left, right) => {
+    await rejectsArchive(
+      openReferenceArchive(storedArchive([{ path: left }, { path: right }])),
+    );
+  });
+  it('rejects symlinks, encrypted/unsupported methods, volume markers and mismatched local headers', async () => {
+    await rejectsArchive(
+      openReferenceArchive(
+        storedArchive([{ path: 'link', attrs: (0o120777 << 16) >>> 0 }]),
+      ),
+    );
+    await expect(
+      openReferenceArchive(storedArchive([{ path: 'a', compression: 99 }])),
+    ).rejects.toMatchObject({ reason: 'archive_compression' });
+    const encrypted = storedArchive([{ path: 'a' }]);
+    const central = encrypted.indexOf(Buffer.from('504b0102', 'hex'));
+    encrypted.writeUInt16LE(1, central + 8);
+    await expect(openReferenceArchive(encrypted)).rejects.toMatchObject({
+      reason: 'archive_encrypted',
+    });
+    const volume = storedArchive([{ path: 'a' }]);
+    volume.writeUInt16LE(1, volume.length - 18);
+    await expect(openReferenceArchive(volume)).rejects.toMatchObject({
+      reason: 'archive_multivolume',
+    });
+    const mismatch = storedArchive([{ path: 'a' }]);
+    mismatch[30] = 98;
+    await expect(openReferenceArchive(mismatch)).rejects.toMatchObject({
+      reason: 'archive_structure',
+    });
+  });
+  it('enforces directory/ratio/source bounds without decompressing', async () => {
+    await expect(
+      openReferenceArchive(
+        storedArchive(
+          Array.from({ length: 129 }, (_, i) => ({
+            path: `${i}/`,
+            attrs: (0o40755 << 16) >>> 0,
+          })),
+        ),
+      ),
+    ).rejects.toMatchObject({ reason: 'archive_entries' });
+    await expect(
+      openReferenceArchive(zipSync({ bomb: Buffer.alloc(300000) })),
+    ).rejects.toMatchObject({ reason: 'expansion_ratio' });
+    await expect(
+      openReferenceArchive(Buffer.alloc(50 * 1024 * 1024 + 1)),
+    ).rejects.toMatchObject({ reason: 'archive_bytes' });
+  });
+  it('checks cancellation, current authority and preserves infrastructure faults', async () => {
+    const controller = new AbortController();
+    const archive = await openReferenceArchive(pythonArchive, {
+      signal: controller.signal,
+    });
+    controller.abort();
+    await rejectsArchive(archive.readMember(0), 'FILE_ARCHIVE_CANCELED');
+    archive.close();
+    let allowed = true;
+    const guarded = await openReferenceArchive(pythonArchive, {
+      authorize: async () => allowed,
+    });
+    allowed = false;
+    await rejectsArchive(guarded.readMember(0), 'FILE_ARCHIVE_AUTHORITY_LOST');
+    guarded.close();
+    const infrastructure = new Error('database unavailable');
+    await expect(
+      openReferenceArchive(pythonArchive, {
+        authorize: async () => {
+          throw infrastructure;
+        },
+      }),
+    ).rejects.toBe(infrastructure);
+  });
+});
+
+it('accepts a bounded ZIP64 directory envelope and rejects unsafe wide integers', async () => {
+  const ordinary = Buffer.from(
+    zipSync({ 'wide.txt': Buffer.from('ZIP64 source') }, { level: 0 }),
+  );
+  const offset = ordinary.length - 22;
+  const record = Buffer.alloc(56),
+    locator = Buffer.alloc(20),
+    end = Buffer.from(ordinary.subarray(offset));
+  record.writeUInt32LE(0x06064b50);
+  record.writeBigUInt64LE(44n, 4);
+  record.writeUInt16LE(45, 12);
+  record.writeUInt16LE(45, 14);
+  record.writeBigUInt64LE(1n, 24);
+  record.writeBigUInt64LE(1n, 32);
+  record.writeBigUInt64LE(BigInt(end.readUInt32LE(12)), 40);
+  record.writeBigUInt64LE(BigInt(end.readUInt32LE(16)), 48);
+  locator.writeUInt32LE(0x07064b50);
+  locator.writeBigUInt64LE(BigInt(offset), 8);
+  locator.writeUInt32LE(1, 16);
+  end.writeUInt16LE(0xffff, 8);
+  end.writeUInt16LE(0xffff, 10);
+  end.writeUInt32LE(0xffffffff, 12);
+  end.writeUInt32LE(0xffffffff, 16);
+  const input = Buffer.concat([
+    ordinary.subarray(0, offset),
+    record,
+    locator,
+    end,
+  ]);
+  const archive = await openReferenceArchive(input);
+  try {
+    expect(await archive.readMember(0)).toEqual(Buffer.from('ZIP64 source'));
+  } finally {
+    archive.close();
+  }
+  input.writeBigUInt64LE(BigInt(Number.MAX_SAFE_INTEGER) + 1n, offset + 48);
+  await expect(openReferenceArchive(input)).rejects.toMatchObject({
+    reason: 'archive_structure',
+  });
+});
+it('bounds declared aggregates and actual member bytes, and detects a declared size lie', async () => {
+  const oversized = Buffer.from(
+    zipSync(
+      { 'large.txt': Buffer.alloc(20 * 1024 * 1024 + 1, 97) },
+      { level: 0 },
+    ),
+  );
+  const archive = await openReferenceArchive(oversized);
+  try {
+    await expect(archive.readMember(0)).rejects.toMatchObject({
+      reason: 'member_bytes',
+    });
+  } finally {
+    archive.close();
+  }
+  const lie = Buffer.from(
+    zipSync({ 'lie.txt': Buffer.from('actual source') }, { level: 0 }),
+  );
+  const central = lie.indexOf(Buffer.from('504b0102', 'hex'));
+  lie.writeUInt32LE(1, 22);
+  lie.writeUInt32LE(1, central + 24);
+  const wrong = await openReferenceArchive(lie);
+  try {
+    await expect(wrong.readMember(0)).rejects.toMatchObject({
+      reason: 'member_size_mismatch',
+    });
+  } finally {
+    wrong.close();
+  }
+  const declared = Buffer.from(
+    zipSync(
+      Object.fromEntries(
+        Array.from({ length: 100 }, (_, i) => [`${i}`, Buffer.alloc(40000)]),
+      ),
+      { level: 0 },
+    ),
+  );
+  let cursor = declared.readUInt32LE(declared.length - 6);
+  for (let i = 0; i < 100; i++) {
+    const local = declared.readUInt32LE(cursor + 42);
+    declared.writeUInt32LE(3000000, cursor + 24);
+    declared.writeUInt32LE(3000000, local + 22);
+    cursor +=
+      46 +
+      declared.readUInt16LE(cursor + 28) +
+      declared.readUInt16LE(cursor + 30) +
+      declared.readUInt16LE(cursor + 32);
+  }
+  await expect(openReferenceArchive(declared)).rejects.toMatchObject({
+    reason: 'archive_declared_bytes',
+  });
 });

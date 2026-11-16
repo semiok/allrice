@@ -140,6 +140,7 @@
   },
   "devDependencies": {
     "@types/pdfkit": "0.17.4",
-    "@types/ws": "8.18.1"
+    "@types/ws": "8.18.1",
+    "fflate": "0.8.3"
   }
 }

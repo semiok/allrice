@@ -217,6 +217,28 @@ export const allRiceToolManifest = [
     dshWireName: 'workspace_reference_read',
   },
   {
+    canonicalName: 'workspace.reference.read_image',
+    capability: 'storage:read',
+    risk: 'read_only',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_reference_read_image',
+  },
+
+  {
+    canonicalName: 'workspace.reference.archive_list',
+    capability: 'storage:read',
+    risk: 'read_only',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_reference_archive_list',
+  },
+  {
+    canonicalName: 'workspace.reference.archive_read',
+    capability: 'storage:read',
+    risk: 'read_only',
+    transport: 'dsh_broker_native',
+    dshWireName: 'workspace_reference_archive_read',
+  },
+  {
     canonicalName: 'workspace.memory.read',
     capability: 'storage:read',
     risk: 'read_only',

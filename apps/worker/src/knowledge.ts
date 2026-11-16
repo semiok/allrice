@@ -18,6 +18,14 @@ import type {
 const chunkCharacters = 2_400;
 const chunkOverlap = 240;
 
+export function decodeReferenceText(data: Buffer) {
+  if (data.length > maximumKnowledgeTextBytes)
+    throw new Error('knowledge source file exceeds the indexing limit');
+  return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(
+    data,
+  );
+}
+
 export async function readKnowledgeText(
   storage: LocalStorageAdapter,
   object: Parameters<LocalStorageAdapter['get']>[0],
@@ -55,12 +63,15 @@ export async function readKnowledgeText(
         object.checksum)
   )
     throw new Error('资料文件校验失败');
-  const content = verifyChecksum
-    ? new TextDecoder('utf-8', {
-        fatal: true,
-        ignoreBOM: options.preserveText === true,
-      }).decode(data)
-    : data.toString('utf8');
+  const content =
+    verifyChecksum && options.preserveText
+      ? decodeReferenceText(data)
+      : verifyChecksum
+        ? new TextDecoder('utf-8', {
+            fatal: true,
+            ignoreBOM: options.preserveText === true,
+          }).decode(data)
+        : data.toString('utf8');
   if (options.preserveText || object.mediaType !== 'application/json')
     return content;
   try {

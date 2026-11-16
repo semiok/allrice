@@ -12,6 +12,8 @@ import { WorkMethodSchema } from './work-methods.ts';
 import { TimestampSchema, UuidSchema, VisibilitySchema } from './common.ts';
 import { officeMediaTypes } from './office-quality.ts';
 import { KnowledgeCitationSchema } from './knowledge.ts';
+import { ReferenceArchiveCitationSchema } from './reference-archive.ts';
+import { ReferenceImageCitationSchema } from './reference-image.ts';
 import { UserQuestionAnswerSubmissionSchema } from './user-questions.ts';
 import { ChangesetActionInputSchema } from './runtime-v2/changeset-execution.ts';
 
@@ -50,6 +52,8 @@ export const ChatCitationSchema = z.union([
     })
     .strict(),
   KnowledgeCitationSchema,
+  ReferenceImageCitationSchema,
+  ReferenceArchiveCitationSchema,
 ]);
 export type ChatCitation = z.infer<typeof ChatCitationSchema>;
 

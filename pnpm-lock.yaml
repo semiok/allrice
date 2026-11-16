@@ -670,6 +670,9 @@ importers:
       '@types/ws':
         specifier: 8.18.1
         version: 8.18.1
+      fflate:
+        specifier: 0.8.3
+        version: 0.8.3
 
   packages/browser-control:
     dependencies:
@@ -691,6 +694,9 @@ importers:
       '@allrice/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@allrice/file-archives':
+        specifier: workspace:*
+        version: link:../file-archives
       '@allrice/storage':
         specifier: workspace:*
         version: link:../storage

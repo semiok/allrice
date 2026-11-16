@@ -112,7 +112,16 @@ export async function executeRiceTool(
     await recordToolBrokerAudit({
       context: input.context,
       toolName: input.call.name,
-      metadata: auditMetadata(input, requiredCapability),
+      metadata: {
+        ...auditMetadata(input, requiredCapability),
+        nativeCallId: input.call.id,
+        ...((result.referenceReceiptId ?? result.referenceImage?.receiptId)
+          ? {
+              referenceReceiptId:
+                result.referenceReceiptId ?? result.referenceImage!.receiptId,
+            }
+          : {}),
+      },
     });
     return result;
   } catch (cause) {
@@ -143,7 +152,10 @@ export async function executeRiceTool(
         errorCode:
           error instanceof HandlerError ? error.code : 'TOOL_EXECUTION_FAILED',
         ...(error instanceof HandlerError
-          ? { retryable: error.retryable }
+          ? {
+              retryable: error.retryable,
+              ...(error.reason ? { reason: error.reason } : {}),
+            }
           : {}),
       },
     }).catch((auditFailure: unknown) => {

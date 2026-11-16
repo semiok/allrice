@@ -28,7 +28,7 @@ const documentMediaTypes = [
   'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 ];
 
-class IncompleteReferenceText extends Error {}
+export class IncompleteReferenceText extends Error {}
 
 async function verifiedDocumentBytes(
   storage: LocalStorageAdapter,
@@ -100,10 +100,25 @@ async function extractDocumentText(
   claim: ReferenceProcessingClaim,
 ): Promise<ReferenceFullText> {
   const bytes = await verifiedDocumentBytes(storage, claim.object);
+  return extractReferenceDocumentBytes(
+    bytes,
+    claim.object.mediaType,
+    claim.fileName,
+  );
+}
+
+/** Shared full-document extraction for a retained publication or one ZIP member. */
+export async function extractReferenceDocumentBytes(
+  bytes: Buffer,
+  mediaType: string,
+  fileName: string,
+  signal?: AbortSignal,
+): Promise<ReferenceFullText> {
+  signal?.throwIfAborted();
   const input = {
     bytes,
-    mediaType: claim.object.mediaType,
-    fileName: claim.fileName,
+    mediaType,
+    fileName,
     includeStructure: true,
     requireCompleteText: true as const,
   };
@@ -121,6 +136,7 @@ async function extractDocumentText(
   const seenPages = new Set<number>();
   let returnedCharacters = 0;
   while (true) {
+    signal?.throwIfAborted();
     // PDF truncated also means deliberately selected pages. Only the native
     // content warning is fatal here; every remaining physical page is visited.
     if (
@@ -202,6 +218,7 @@ async function extractDocumentText(
     )
   )
     throw new Error('资料没有可检索的文本');
+  signal?.throwIfAborted();
   return fullText;
 }
 

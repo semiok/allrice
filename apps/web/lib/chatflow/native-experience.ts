@@ -3,6 +3,7 @@ import {
   type ChatFlowEventEnvelope,
   type RuntimeOperationSnapshot,
 } from '@allrice/contracts';
+import { referenceReadFailureMessage } from './reference-read-error';
 
 /** Already-authorized display facts; never an approval or execution authority. */
 export interface WorkProcessReference {
@@ -218,6 +219,8 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
               ? 'failed'
               : 'completed';
       const query = text(native.query);
+      const detail =
+        referenceReadFailureMessage(event) ?? text(event.payload.summary);
       items.set(key, {
         id: key,
         kind,
@@ -228,8 +231,8 @@ export function projectNativeExperience(events: ChatFlowEventEnvelope[]) {
               ? `Search · ${query}`
               : (previous?.title ?? 'Search')
             : (name ?? 'Tool'),
-        ...(text(event.payload.summary)
-          ? { detail: text(event.payload.summary) }
+        ...(detail
+          ? { detail }
           : previous?.detail
             ? { detail: previous.detail }
             : {}),
