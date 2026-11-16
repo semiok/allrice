@@ -726,7 +726,8 @@ class M5Test(unittest.TestCase):
 
     def test_locked_browser_reaches_build_and_vitest_on_m5_only(self):
         overrides = ('ALLRICE_TEST_CHROME_EXECUTABLE', 'ALLRICE_BROWSER_EXECUTABLE',
-                     'PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH', 'ALLRICE_MANAGED_BROWSER_EXECUTABLE', 'CHROME_PATH')
+                     'ALLRICE_TEST_CHROMIUM_PATH', 'PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH',
+                     'ALLRICE_MANAGED_BROWSER_EXECUTABLE', 'CHROME_PATH')
         # No --browser: complete plans can enable their browser batches inside --build.
         p = self.run_m5('--build', 'env | sort >browser-build.env', '--', '--maxWorkers=1', '--testTimeout=30000', 'browser.test.ts',
                         **{key: '/caller/Chrome' for key in overrides})

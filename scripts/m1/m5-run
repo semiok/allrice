@@ -352,6 +352,7 @@ prepare() { # install and build; prints why when one fails
     local chromium_path
     chromium_path=$(cd "$wt" && clean node -e 'const {createRequire}=require("node:module"); const {resolve}=require("node:path"); console.log(createRequire(resolve("apps/worker/package.json"))("playwright-core").chromium.executablePath())') || { rc=$?; finish "could not resolve locked Chromium"; }
     TEST_ENV+=("ALLRICE_TEST_CHROME_EXECUTABLE=$chromium_path"
+      "ALLRICE_TEST_CHROMIUM_PATH=$chromium_path"
       "ALLRICE_BROWSER_EXECUTABLE=$chromium_path"
       "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$chromium_path"
       "ALLRICE_MANAGED_BROWSER_EXECUTABLE=$chromium_path"
