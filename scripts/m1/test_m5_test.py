@@ -56,6 +56,11 @@ VITEST = r'''#!/bin/sh
 env | sort >"$HOME/vitest.env"
 exec pnpm exec vitest "$@"
 '''
+NODE = r'''#!/bin/sh
+# Isolated stand-in for path resolution and the stray-process cleanup test.
+[ "$1" != -e ] || { printf '%s/cached Chromium\n' "$HOME"; exit 0; }
+sleep "$1"
+'''
 CODEX = r'''#!/bin/sh
 # stub codex: records its arguments and prompt, writes a result, changes the worktree
 [ "$1" != login ] || exit 0
@@ -97,7 +102,9 @@ def signal_all(pids, sig):  # short-lived helpers of a waiting run may be gone a
 
 def write(path, text, mode=0o644):
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, 'w') as f:
+    # A fixture must never truncate a real executable through a test symlink.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, mode)
+    with os.fdopen(fd, 'w') as f:
         f.write(text)
     os.chmod(path, mode)
 
@@ -126,7 +133,7 @@ class M5Test(unittest.TestCase):
         for home in (self.m1, self.m5):
             write(os.path.join(home, '.local/opt/node-22.23.2/bin/pnpm'), PNPM, 0o755)
             write(os.path.join(home, '.local/opt/node-22.23.2/bin/vitest'), VITEST, 0o755)
-            os.symlink(shutil.which('node'), os.path.join(home, '.local/opt/node-22.23.2/bin/node'))
+            write(os.path.join(home, '.local/opt/node-22.23.2/bin/node'), NODE, 0o755)
         write(os.path.join(self.m1, '.local/bin/codex'), CODEX, 0o755)
         self.codex = os.path.join(self.m5, 'codex')
         write(self.codex, CODEX, 0o755)
@@ -342,7 +349,7 @@ class M5Test(unittest.TestCase):
         self.assertEqual(self.run_m5('--', 'l.test.ts').returncode, 0)
         wt = os.path.join(self.base, 'slots/slot-1')
         node = os.path.join(self.m5, '.local/opt/node-22.23.2/bin/node')  # "our" Node, standing in
-        write(node, '#!/bin/sh\nsleep "$1"\n', 0o755)
+        write(node, NODE, 0o755)
         # test processes that outlived their run (no lock descriptor): one working in the worktree,
         # one elsewhere naming it, and a child of one; a user's process there is left alone
         strays = [subprocess.Popen([node, '120'], cwd=wt, close_fds=True),
@@ -363,6 +370,8 @@ class M5Test(unittest.TestCase):
         self.assertEqual(self.run_m5('--', 'l.test.ts').returncode, 0)
         wt = os.path.join(self.base, 'slots/slot-1')
         node = os.path.join(self.m5, '.local/opt/node-22.23.2/bin/node')
+        os.unlink(node)  # This one test needs a real Node, only for execution.
+        os.symlink(os.path.realpath(shutil.which('node')), node)
         # "exec node …" from a pnpm shim: argv[0] is just "node", the command line names no path of ours
         stray = subprocess.Popen(['node', '-e', 'setTimeout(() => {}, 120000)'], cwd=wt, close_fds=True,
                                  env=dict(os.environ, PATH=os.path.dirname(node) + ':' + os.environ['PATH']))
@@ -734,6 +743,15 @@ class M5Test(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         env = dict(line.split('=', 1) for line in read(os.path.join(self.m1, 'vitest.env')).splitlines())
         self.assertTrue(all(key not in env for key in overrides))
+
+    def test_fixture_writer_refuses_symlink_targets(self):
+        target = os.path.join(self.tmp, 'real-executable')
+        link = os.path.join(self.tmp, 'fixture-executable')
+        write(target, 'preserve original', 0o755)
+        os.symlink(target, link)
+        with self.assertRaises(OSError):
+            write(link, 'stand-in', 0o755)
+        self.assertEqual(read(target), 'preserve original')
 
     def test_uncommitted_changes_are_named(self):
         write(os.path.join(self.repo, 'README.md'), 'dirty\n')
