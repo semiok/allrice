@@ -289,6 +289,26 @@ if mode.exists():
                 self.assertEqual(self.notifications(), [])
         self.assertTrue(self.dog.says_waiting('本线正在等待部署版本 release-99 的结果。\n部署版本 release-98 已完成。'))
 
+    def test_m5_finished_test_batch_keeps_existing_terminal_match(self):
+        for index, label in enumerate(['M5 测试批次', 'M5 的批次']):
+            text = '本线正在等待 M5 批次 batch-99 的结果。\n%s batch-99 已完成。' % label
+            with self.subTest(label=label):
+                self.assertFalse(self.dog.says_waiting(text))
+                self.turn(self.now-1801, text, turn_id='m5-terminal-%s' % index)
+                self.dog.check_round(self.now)
+                self.assertEqual(self.notifications(), [])
+
+    def test_distinct_deploy_ids_keep_trailing_hyphen_and_underscore(self):
+        for suffix in ['-', '_', '--', '__', '-x']:
+            with self.subTest(suffix=suffix):
+                pending = '部署任务 deploy-99' + suffix
+                self.assertEqual(self.dog.wait_targets(pending), {('deploy', 'deploy-99' + suffix)})
+                self.assertFalse(self.dog.says_waiting('本线正在等待%s的结果。\n%s 已完成。' % (pending, pending)))
+                self.assertTrue(self.dog.says_waiting('本线正在等待%s的结果。\n部署任务 deploy-99 已完成。' % pending))
+        self.turn(self.now-1801, '本线正在等待部署任务 deploy-99- 的结果。\n部署任务 deploy-99 已完成。')
+        self.dog.check_round(self.now)
+        self.assertEqual(len(self.notifications()), 1)
+
     def check_at(self, now):
         with patch.object(runtime, 'stamp', return_value=datetime.fromtimestamp(now, timezone.utc).isoformat()):
             self.dog.check_round(now)
