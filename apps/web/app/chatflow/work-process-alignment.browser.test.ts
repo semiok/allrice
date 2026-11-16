@@ -288,16 +288,40 @@ suite('approved DSH process alignment', () => {
         }
       });
       it(`keeps the message anchor when the first timing arrives at ${width}px ${theme}`, async () => {
-        const page = await openPage(`scene=running&preparing&theme=${theme}`);
+        const page = await openPage(
+          `scene=running&preparing&timing-only&theme=${theme}`,
+        );
         try {
           await page.setViewportSize({ width, height: 960 });
           const identity = page.locator('[class*="assistantIdentity"]');
           await identity.waitFor();
           await page.evaluate(() => document.fonts.ready);
-          const top = (await identity.boundingBox())!.y;
-          await page.evaluate(() => window.alignTiming());
+          const frames = await page.evaluate(async () => {
+            const measure = () => ({
+              top: document
+                .querySelector('[class*="assistantIdentity"]')!
+                .getBoundingClientRect().top,
+              height: document.querySelector('main')!.getBoundingClientRect()
+                .height,
+            });
+            const frames = [measure()];
+            window.alignTiming();
+            for (let i = 0; i < 12; i++) {
+              await new Promise<void>((resolve) =>
+                requestAnimationFrame(() => resolve()),
+              );
+              frames.push(measure());
+            }
+            return frames;
+          });
           await page.getByLabel('本轮运行时间').waitFor();
-          expect((await identity.boundingBox())!.y).toBe(top);
+          expect(
+            frames.every(
+              (frame) =>
+                frame.top === frames[0]!.top &&
+                frame.height === frames[0]!.height,
+            ),
+          ).toBe(true);
           expect(
             await page
               .locator('[aria-label="本地命令审批与执行"]:empty')

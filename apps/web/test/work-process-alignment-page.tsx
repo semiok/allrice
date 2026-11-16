@@ -218,12 +218,13 @@ window.fetch = async (input) =>
       ? {
           operations:
             !params.has('tool-only') &&
+            !params.has('timing-only') &&
             materialReady &&
             rows.some(([id]) => id === 'cloud')
               ? [operation]
               : [],
         }
-      : {},
+      : { operations: [] },
   );
 declare global {
   interface Window {
@@ -243,7 +244,8 @@ function Fixture() {
     materialReady = true;
     setRevision((n) => n + 1);
   };
-  const events = timingReady ? eventsFor(traceReady) : [];
+  const events =
+    timingReady && !params.has('timing-only') ? eventsFor(traceReady) : [];
   const wallMs = live ? 18000 : failed ? 21000 : 34000;
   const timing: TaskRuntimeTiming = {
     activeMs: wallMs,
@@ -270,6 +272,7 @@ function Fixture() {
     >
       <ChatTranscript
         key={revision}
+        localCommandsEnabled
         atBottom
         streamingOutput={!params.has('unified')}
         transcriptView={
@@ -287,7 +290,7 @@ function Fixture() {
             id: 'assistant',
             role: 'assistant',
             status: live ? 'pending' : failed ? 'failed' : 'completed',
-            runId: ids.run,
+            runId: timingReady ? ids.run : null,
             createdAt: at,
             content: {
               text: live
