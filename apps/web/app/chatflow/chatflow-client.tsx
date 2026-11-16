@@ -1411,8 +1411,9 @@ export function ChatFlowClient({
       if (!isSendReceipt(result)) throw new Error('结果待确认，请刷新页面查看');
       retry.confirmed();
       recordNativeAdmission(sessionId, result.run.id, nativeAdmission);
+      if (currentSettingsScope.current === referenceRequestScope)
+        archive.acceptRuns(sessionId, [result.fallbackRunId ?? result.run.id]);
       if (!action.current()) return;
-      archive.acceptRuns(sessionId, [result.fallbackRunId ?? result.run.id]);
       const retainedPreviews = imageCache.handoff(
         `${settingsScope}/${sessionId}`,
         tenantHeaders,
@@ -1533,6 +1534,7 @@ export function ChatFlowClient({
     if (!action) return;
     const sessionId = activeId;
     const scope = captureSelection();
+    const queueRequestScope = settingsScope;
     const target = interactions.data?.runtime;
     setBusy(true);
     setError('');
@@ -1557,6 +1559,8 @@ export function ChatFlowClient({
           },
         ),
       );
+      if (currentSettingsScope.current !== queueRequestScope) return;
+      void archive.reload();
       if (!action.current()) return;
       setHistory((current) =>
         current?.session.id === sessionId
@@ -1600,7 +1604,11 @@ export function ChatFlowClient({
         });
       }
       await loadHistory(sessionId);
-      void interactions.reload();
+      if (
+        action.current() &&
+        currentSettingsScope.current === queueRequestScope
+      )
+        void interactions.reload();
     } catch (cause) {
       if (action.current()) {
         void loadHistory(sessionId).catch(() => {});

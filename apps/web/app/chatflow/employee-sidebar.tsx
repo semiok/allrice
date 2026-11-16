@@ -85,6 +85,8 @@ export function EmployeeSidebar({
       string,
       {
         key: string;
+        scope: string;
+        runIds: string[];
         stream: ReturnType<typeof createSessionRunStream>;
       }
     >(),
@@ -134,6 +136,8 @@ export function EmployeeSidebar({
       });
       activityObservers.current.set(sessionId, {
         key: JSON.stringify([activityScope, runIds]),
+        scope: activityScope,
+        runIds,
         stream,
       });
       stream.activate();
@@ -153,6 +157,27 @@ export function EmployeeSidebar({
     },
     [activityScope],
   );
+  useEffect(() => {
+    const reconnect = async () => {
+      const callbacks = activityCallbacks.current;
+      if (callbacks.scope !== activityScope) return;
+      await callbacks.reload?.();
+      if (activityCallbacks.current.scope !== activityScope) return;
+      for (const {
+        scope,
+        stream,
+        runIds,
+      } of activityObservers.current.values()) {
+        if (scope !== activityScope) continue;
+        const { runViews } = stream.getSnapshot();
+        for (const runId of runIds)
+          if (runViews[runId]?.connectionError) void stream.streamRun(runId);
+      }
+    };
+    const online = () => void reconnect();
+    window.addEventListener('online', online);
+    return () => window.removeEventListener('online', online);
+  }, [activityScope]);
   const activeSession = sessions.find((session) => session.id === activeId);
   const { reads: backgroundReads } = useNativeSubagents(
     workspace.workspaceId,

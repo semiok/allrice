@@ -965,6 +965,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         attachmentIds: string[];
         referenceRevisionIds?: string[];
       }>,
+      messageReceiptDelay: null as Promise<void> | null,
       connections: [] as McpConnection[],
       connectionReads: 0,
       connectionError: false,
@@ -1192,19 +1193,29 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           let closed = false;
           let cleanup = () => {};
           const key = ++streamId;
+          document.documentElement.dataset.streamStarted = String(streamId);
           const stream = new ReadableStream<Uint8Array>({
             start(controller) {
               streams.set(key, url.pathname + url.search);
               record();
               const push = (event: Event) => {
                 const detail = (
-                  event as CustomEvent<string | { runId: string; body: string }>
+                  event as CustomEvent<
+                    | string
+                    | { runId: string; body: string }
+                    | { runId: string; close: true }
+                  >
                 ).detail;
                 if (
                   typeof detail !== 'string' &&
                   url.pathname !== `/api/v1/runs/${detail.runId}/events`
                 )
                   return;
+                if (typeof detail !== 'string' && 'close' in detail) {
+                  cleanup();
+                  controller.close();
+                  return;
+                }
                 controller.enqueue(
                   new TextEncoder().encode(
                     typeof detail === 'string' ? detail : detail.body,
@@ -1874,6 +1885,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           state.sidebarRunIds[sessionId] = [run];
           state.messageStatus = 'pending';
         }
+        if (state.messageReceiptDelay) await state.messageReceiptDelay;
         return answer({
           run: { id: run },
           delivery: 'immediate',
@@ -1902,6 +1914,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const body = route.request().postDataJSON();
           state.messageInputs.push(body);
           const messageId = id(300 + state.messageInputs.length);
+          const assistantMessageId = id(500 + state.messageInputs.length);
           const queued: QueuedMessage = {
             id: messageId,
             runId: id(400 + state.messageInputs.length),
@@ -1922,6 +1935,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               queued.runId!,
             ];
           }
+          if (state.messageReceiptDelay) await state.messageReceiptDelay;
           return answer({
             delivery: 'follow_up',
             fallbackRunId: queued.runId,
@@ -1935,7 +1949,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               createdAt: now,
             },
             assistantMessage: {
-              id: id(500 + state.messageInputs.length),
+              id: assistantMessageId,
               role: 'assistant',
               content: { text: 'Rice 正在处理…' },
               status: 'pending',
@@ -1953,6 +1967,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               { error: { message: '这条消息已开始处理，不能再从队列修改。' } },
               409,
             );
+          const removed = state.queue.find(
+            (item) => item.id === path.split('/').at(-1),
+          );
+          if (options.sidebarActivity && removed?.runId) {
+            const sessionId = path.split('/')[4]!;
+            state.sidebarRunIds[sessionId] = (
+              state.sidebarRunIds[sessionId] ?? []
+            ).filter((runId) => runId !== removed.runId);
+          }
           state.queue = state.queue.filter(
             (item) => item.id !== path.split('/').at(-1),
           );
@@ -22953,6 +22976,185 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.context.close();
     }
   }, 30_000);
+  it.each([false, true])(
+    'keeps a late accepted send scoped to its original Session (tenant changed=%s)',
+    async (changed) => {
+      const f = await fixture({
+        queue: true,
+        sidebarActivity: true,
+        controlledStream: true,
+      });
+      let receipt = () => {},
+        list = () => {};
+      try {
+        const sidebar = f.page.locator('#chat-sidebar');
+        const a = sidebar.locator(`[data-row-key="session:${A}"]`);
+        const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+        f.state.sessionListDelay = new Promise<void>((done) => {
+          list = done;
+        });
+        const reads = f.state.sessionListRequests;
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await expect
+          .poll(() => f.state.sessionListRequests)
+          .toBeGreaterThan(reads);
+        f.state.messageReceiptDelay = new Promise<void>((done) => {
+          receipt = done;
+        });
+        const response = f.page.waitForResponse(
+          (value) =>
+            value.request().method() === 'POST' &&
+            new URL(value.url()).pathname === `/api/v1/sessions/${A}/messages`,
+        );
+        await input.fill('给原会话继续整理资料。');
+        await input.press('Enter');
+        await expect.poll(() => f.state.messageInputs.length).toBe(1);
+        await sidebar.locator(`[data-row-key="session:${B}"]`).click();
+        if (changed) {
+          const scoped = f.page.waitForResponse(
+            (value) =>
+              new URL(value.url()).pathname.endsWith('/modules') &&
+              new URL(value.url()).searchParams.get('workspaceId') === id(998),
+          );
+          f.state.viewer = id(999);
+          f.state.workspace = id(998);
+          f.state.sidebarRunIds[A] = [];
+          await f.page
+            .getByRole('button', { name: '查看Rice详情', exact: true })
+            .click();
+          await (await scoped).finished();
+          await f.page
+            .getByRole('dialog', { name: /员工详情/ })
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
+        }
+        await input.fill('这里的草稿继续保留。');
+        receipt();
+        list();
+        f.state.messageReceiptDelay = f.state.sessionListDelay = null;
+        await (await response).finished();
+        await f.page.evaluate(() => new Promise(requestAnimationFrame));
+        await expect
+          .poll(() => a.locator('svg[data-state="ongoing"]').count())
+          .toBe(changed ? 0 : 1);
+        expect(await input.inputValue()).toBe('这里的草稿继续保留。');
+        expect(
+          await f.page
+            .locator('[data-chat-scroll]')
+            .getByText('给原会话继续整理资料。', { exact: true })
+            .count(),
+        ).toBe(0);
+        if (changed) expect(await sidebarStreams(f.page)).toEqual([]);
+        else await expect.poll(() => sidebarStreams(f.page)).toEqual([id(401)]);
+      } finally {
+        receipt();
+        list();
+        await f.close();
+      }
+    },
+  );
+
+  it('recovers an exhausted background Run stream on online using the original retry budget', async () => {
+    const f = await fixture({
+      queue: true,
+      sidebarActivity: true,
+      controlledStream: true,
+    });
+    try {
+      const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+      await input.fill('切走后继续执行。');
+      await input.press('Enter');
+      await expect.poll(() => input.isEnabled()).toBe(true);
+      await f.page.locator(`[data-row-key="session:${B}"]`).click();
+      const a = f.page.locator(`[data-row-key="session:${A}"]`);
+      const attempts = () =>
+        f.page.evaluate(() =>
+          Number(document.documentElement.dataset.streamStarted ?? 0),
+        );
+      await f.page.clock.install();
+      for (let index = 0; index < 7; index++) {
+        await expect.poll(attempts).toBe(index + 1);
+        await f.page.evaluate(
+          (runId) =>
+            window.dispatchEvent(
+              new CustomEvent('allrice-test-stream', {
+                detail: { runId, close: true },
+              }),
+            ),
+          id(401),
+        );
+        await f.page.clock.runFor(3000);
+      }
+      await f.page.clock.runFor(30000);
+      expect(await attempts()).toBe(7);
+      expect(await a.locator('svg[data-state="ongoing"]').count()).toBe(1);
+      await f.page.evaluate(() => window.dispatchEvent(new Event('online')));
+      await expect.poll(attempts).toBe(8);
+      await expect.poll(() => sidebarStreams(f.page)).toEqual([id(401)]);
+      f.state.sidebarRunIds[A] = [];
+      await finishSidebarRun(f.page, id(401));
+      await expect
+        .poll(() => a.locator('svg[data-state="ongoing"]').count())
+        .toBe(0);
+      await f.page.clock.runFor(30000);
+      expect(await attempts()).toBe(8);
+      expect(await sidebarStreams(f.page)).toEqual([]);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it.each(['edit', 'remove'] as const)(
+    'refreshes queued Run facts after %s without clearing another queued Run',
+    async (action) => {
+      const f = await fixture({
+        queue: true,
+        sidebarActivity: true,
+        controlledStream: true,
+      });
+      try {
+        const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+        const a = f.page.locator(`[data-row-key="session:${A}"]`);
+        for (const text of ['排队一', '排队二']) {
+          await input.fill(text);
+          await input.press('Enter');
+          await expect.poll(() => input.isEnabled()).toBe(true);
+        }
+        await f.page.getByRole('button', { name: /排队消息 · 2/ }).click();
+        const dock = f.page.locator('[data-queue-dock]');
+        for (let index = 0; index < 2; index++) {
+          const reads = f.state.sessionListRequests;
+          await dock
+            .getByRole('button', {
+              name: action === 'edit' ? '重新编辑' : '撤回消息',
+            })
+            .first()
+            .click();
+          await expect.poll(() => f.state.queue.length).toBe(1 - index);
+          await expect
+            .poll(() => f.state.sessionListRequests)
+            .toBeGreaterThan(reads);
+          await expect
+            .poll(() => a.locator('svg[data-state="ongoing"]').count())
+            .toBe(index === 0 ? 1 : 0);
+          if (action === 'edit') {
+            expect(await input.inputValue()).toBe(
+              index === 0 ? '排队一' : '排队二',
+            );
+            await input.fill('');
+          }
+        }
+        expect(f.state.queueActions.map((item) => item.action)).toEqual([
+          action,
+          action,
+        ]);
+        expect(await sidebarStreams(f.page)).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
   for (const width of [1440, 390])
     for (const appearance of ['light', 'dark'] as const)
       it(`keeps accepted work running after switching sessions with full native corners at ${width}px ${appearance}`, async () => {
@@ -23110,8 +23312,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await expect.poll(() => sidebarStreams(f.page)).toEqual([]);
           await employee.click();
           await expect.poll(() => sidebarStreams(f.page)).toEqual([id(403)]);
+          const identity = f.page.waitForResponse(
+            (response) =>
+              new URL(response.url()).pathname === '/api/v1/workspace',
+          );
           f.state.viewer = id(99);
-          await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+          await f.page
+            .getByRole('button', { name: '查看Rice详情', exact: true })
+            .click();
+          await (await identity).finished();
+          await f.page
+            .getByRole('dialog', { name: /员工详情/ })
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
           await expect.poll(() => sidebarStreams(f.page)).toEqual([]);
           reads = f.state.sessionListRequests;
           await finishSidebarRun(f.page, id(403));
