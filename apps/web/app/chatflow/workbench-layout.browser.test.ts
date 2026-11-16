@@ -6545,6 +6545,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await cdp.send('Runtime.enable');
       await cdp.send('Debugger.enable');
       await cdp.send('Debugger.setPauseOnExceptions', { state: 'all' });
+      const cleared = new Promise<void>((resolve) => {
+        cdp.once('Runtime.executionContextsCleared', () => resolve());
+      });
       await page.evaluate(() => {
         setTimeout(() => {
           try {
@@ -6556,7 +6559,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       });
       await expect.poll(() => exceptions.length).toBe(1);
       await reload;
-      await page.evaluate(() => document.readyState);
+      await cleared;
       await probe.drain();
       expect(exceptions[0]).toContain(
         'Maximum update depth exceeded: probe sentinel',
