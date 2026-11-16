@@ -227,16 +227,17 @@ suite('MET-224 main-area brand media text workflow', () => {
     const result = await build({
       stdin: {
         sourcefile: 'brand-media-page.tsx',
-        resolveDir: resolve('.'),
+        loader: 'tsx',
+        resolveDir: resolve('apps/web'),
         contents: `
         import { useMemo, useState } from 'react';
         import { createRoot } from 'react-dom/client';
-        import { BrandMediaHost, BrandMediaPluginSection, BrandMediaPluginPicker, useBrandMediaEntry } from './apps/web/app/chatflow/brand-media/frontend-wiring';
-        import { BrandMediaPanel } from './apps/web/app/chatflow/brand-media/panel';
-        import './apps/web/app/dsh-upstream/design-platform.css';
-        import './apps/web/app/dsh-upstream/base.css';
+        import { BrandMediaHost, BrandMediaPluginSection, BrandMediaPluginPicker, useBrandMediaEntry } from './app/chatflow/brand-media/frontend-wiring';
+        import { BrandMediaPanel } from './app/chatflow/brand-media/panel';
+        import './app/dsh-upstream/design-platform.css';
+        import './app/dsh-upstream/base.css';
         import '@allrice/ui/tokens.css';
-        import './apps/web/app/styles/base.css';
+        import './app/styles/base.css';
         import '@allrice/ui/styles.css';
         const ids = ${JSON.stringify(scope)};
         function Fixture() {

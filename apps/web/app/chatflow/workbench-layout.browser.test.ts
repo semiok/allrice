@@ -55,6 +55,7 @@ import {
   WorkflowPackageSchema,
   BrandContentBoardSchema,
   brandContentTemplateKeys,
+  brandMediaModule,
   workspaceCapabilityIds,
   type WorkspaceCapability,
   type InteractionStatus,
@@ -2061,6 +2062,52 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             pending: [],
           }),
         );
+      }
+      const moduleCatalogTarget = path.match(
+        /^\/api\/v1\/employee-instances\/([^/]+)\/modules$/,
+      );
+      if (moduleCatalogTarget && route.request().method() === 'GET') {
+        const instanceId = moduleCatalogTarget[1]!;
+        expect([
+          id(7),
+          id(17),
+          id(99),
+          ...(options.brandContent ? [id(8100)] : []),
+          ...state.createdEmployeeInstances.map((instance) => instance.id),
+        ]).toContain(instanceId);
+        expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+        expect(route.request().headers()['x-allrice-organization-id']).toBe(
+          org,
+        );
+        expect(route.request().headers()['x-allrice-workspace-id']).toBe(
+          url.searchParams.get('workspaceId'),
+        );
+        if (
+          state.viewer !== user ||
+          url.searchParams.get('workspaceId') !== state.workspace
+        )
+          return answer({ error: { message: 'No access' } }, 403);
+        if (options.employeeDetails && state.employeeDetailStatus !== 200)
+          return answer(
+            { error: { message: 'No access' } },
+            state.employeeDetailStatus,
+          );
+        if (instanceId === id(7) && state.employeeInstanceArchived) {
+          const response = employeeHubErrorResponse(
+            new EmployeeInstanceError('instance_archived'),
+          );
+          return answer(await response.json(), response.status);
+        }
+        return answer({
+          modules: [
+            {
+              descriptor: brandMediaModule,
+              binding: null,
+              available: true,
+              enabled: false,
+            },
+          ],
+        });
       }
       const skillCatalogTarget = path.match(
         /^\/api\/v1\/employee-instances\/([^/]+)\/skills$/,
