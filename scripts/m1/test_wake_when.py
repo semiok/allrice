@@ -354,6 +354,23 @@ print(json.dumps(dict(databaseId=7 if mode == 'wrong-id' else 43868459286,
         self.assertEqual(len(self.notifications()), 1)
         self.assert_released(item)
 
+    def test_interrupt_during_ci_backoff_preserves_watch_exit_code(self):
+        item = self.start('', command=self.fake_ci(), timeout='15s')
+        deadline = time.monotonic() + 4
+        while time.monotonic() < deadline:
+            if 'reconnect/check after' in Path(item['log']).read_text():
+                break
+            time.sleep(.02)
+        self.assertIn('reconnect/check after', Path(item['log']).read_text())
+        os.kill(item['pid'], signal.SIGTERM)
+        state = self.finished(item)
+        self.assertEqual(state['commandExitCode'], 1)
+        self.assertEqual(state['interruptSignal'], signal.SIGTERM)
+        self.assertEqual(state['task']['status'], 'unknown')
+        self.assertIn('等待命令退出码 1', self.notifications()[0][4])
+        self.assertIn('等待被信号 15 中断', self.notifications()[0][4])
+        self.assert_released(item)
+
     def test_ci_unverified_timeout_is_unknown_even_with_zero_watch_exit(self):
         for mode in ['watch-zero', 'wrong-id', 'malformed', 'watch-hang']:
             with self.subTest(mode=mode):
@@ -371,12 +388,12 @@ print(json.dumps(dict(databaseId=7 if mode == 'wrong-id' else 43868459286,
         module = importlib.util.module_from_spec(spec)
         loader.exec_module(module)
         command = self.fake_ci()
-        args = SimpleNamespace(command=command, timeout=200, ci=module.ci_target(command), terminal_file=None)
+        args = SimpleNamespace(command=command, timeout=200, ci=module.ci_target(command), m5=False, terminal_file=None)
         state = {}
         elapsed = [0]
         def advance(seconds):
             elapsed[0] += seconds
-        def watch(*_args):
+        def watch(*_args, **_kwargs):
             advance(10)
             return 1, False
         with patch.object(module, 'run_group', side_effect=watch) as run, \
@@ -432,6 +449,80 @@ print(json.dumps(dict(databaseId=7 if mode == 'wrong-id' else 43868459286,
         self.assertEqual(self.invoke('', command=command, options=[
             '--terminal-file', str(self.home / 'terminal.json'), '--terminal-id', 'bypass']).returncode, 2)
         self.assertFalse((self.base / 'qa').exists())
+
+    def test_complete_m5_launch_and_wait_reads_real_wrapper_result_and_releases_lease(self):
+        # Reuse the real m5-test/m5-run fixture: only SSH, pnpm and system probes
+        # are fake. Both homes and every slot/lease are isolated from real M5.
+        import test_m5_test as m5
+        fixture = m5.M5Test()
+        self.addCleanup(lambda: (self.stop_workers(), fixture.doCleanups()))
+        fixture.setUp()
+        queue_source = self.codex.read_text()
+        self.home = Path(fixture.m1)
+        self.base = self.home / 'allrice-dev'
+        self.base.mkdir(exist_ok=True)
+        (self.base / 'wake-when.threads').write_text(THREADS.read_text())
+        self.codex = self.home / '.local/bin/codex'
+        self.codex.write_text(queue_source)
+        self.env.update(HOME=str(self.home), M5_FAKE_HOME=fixture.m5,
+                        M5_TEST_SSH=fixture.ssh, M5_TEST_REPO=fixture.repo, **m5.GIT_ENV)
+        gated = m5.PNPM.replace('  exec)', '  exec) touch "$HOME/wake-running"; '
+                               'while [ ! -e "$HOME/wake-release" ]; do sleep .05; done;')
+        m5.write(str(self.home / '.local/opt/node-22.23.2/bin/pnpm'), gated, 0o755)
+        m5.write(str(Path(fixture.m5) / '.local/opt/node-22.23.2/bin/pnpm'), gated, 0o755)
+        for exit_code in [0, 1]:
+            with self.subTest(exit_code=exit_code):
+                test_home = Path(fixture.th)
+                m5.write(str(test_home / 'vitest.rc'), str(exit_code))
+                for name in ['wake-running', 'wake-release']:
+                    (test_home / name).unlink(missing_ok=True)
+                item = self.start('', timeout='6h', command=[m5.M5_TEST, fixture.sha, '--on', 'm5',
+                                  '--wait', '0', '--no-build', '--', '--maxWorkers=1', 'short.test.ts'])
+                deadline = time.monotonic() + 15
+                while not (test_home / 'wake-running').exists() and time.monotonic() < deadline:
+                    time.sleep(.05)
+                self.assertTrue((test_home / 'wake-running').exists(), Path(item['log']).read_text())
+                self.assertEqual(len(self.notifications()), exit_code, 'no wake before the batch ends')
+                self.assertTrue(running(item['pid']))
+                (test_home / 'wake-release').touch()
+                state = self.finished(item)
+                self.assertEqual(state['timeoutSeconds'], 21600)
+                self.assertEqual(state['commandExitCode'], exit_code)
+                self.assertEqual(state['task']['exitCode'], exit_code)
+                self.assertEqual(state['task']['host'], 'M5')
+                result_file = Path(state['task']['resultFile'])
+                self.assertIn('m5-test: finished on M5, exit %s' % exit_code, result_file.read_text())
+                self.assertIn('真实结论 M5 exit %s' % exit_code, self.notifications()[-1][4])
+                self.assertIn(str(result_file), self.notifications()[-1][4])
+                self.assertEqual(list(Path(fixture.leases).glob('*.lease')), [])
+                self.assertFalse(running(state['commandPid']))
+                self.assert_released(item)
+        self.assertEqual(len([call for call in fixture.calls(fixture.th) if call[0].startswith('exec vitest')]), 2)
+
+    def test_m5_requires_current_pid_matching_final_result_file_even_when_command_exits_zero(self):
+        command = self.home / 'm5-test'
+        command.write_text('#!' + sys.executable + '''
+import os
+from pathlib import Path
+root=Path.home()/'allrice-dev/qa/m5-test'
+root.mkdir(parents=True,exist_ok=True)
+mode=os.environ['M5_RECEIPT']
+pid=os.getpid() if mode!='other-run' else 1
+path=root/('20261116-140000-12345678-%s.log'%pid)
+line='m5-test: finished on M5, exit 0; log %s'%path
+if mode!='missing': path.write_text(line+'\\n' if mode!='partial' else 'm5-test: done on M5 (batch), exit 0\\n')
+if mode=='old': os.utime(path,(1,1))
+print(line)
+''')
+        command.chmod(0o755)
+        for mode in ['other-run', 'missing', 'partial', 'old']:
+            with self.subTest(mode=mode):
+                item = self.start('', command=[str(command)], extra_env={'M5_RECEIPT': mode})
+                state = self.finished(item)
+                self.assertEqual(state['commandExitCode'], 0)
+                self.assertEqual(state['task']['status'], 'unknown')
+                self.assertIn('等待失败，任务状态未知', self.notifications()[-1][4])
+                self.assert_released(item)
 
     def test_installer_seeds_whitelist_once_and_preserves_thread_rotation_on_upgrade(self):
         repo = self.home / 'repo'

@@ -133,11 +133,14 @@ def interrupted(sig, _frame):
     raise Interrupted(sig)
 
 
-def run_group(command, timeout, log, stderr=None):
+def run_group(command, timeout, log, stderr=None, command_state=None):
+    started_at = time.time()
     process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=log,
                                stderr=subprocess.STDOUT if stderr is None else stderr,
                                start_new_session=True)
     try:
+        if command_state is not None:
+            command_state.update(commandPid=process.pid, commandStartedEpoch=started_at)
         code = process.wait(timeout=timeout)
         return (code if code >= 0 else 128 - code), False
     except subprocess.TimeoutExpired:
@@ -151,12 +154,15 @@ def run_group(command, timeout, log, stderr=None):
             signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
-def last_lines(path):
+def tail_text(path):
     with path.open('rb') as stream:
         stream.seek(0, os.SEEK_END)
         stream.seek(max(0, stream.tell() - 65536))
-        text = stream.read().decode('utf-8', errors='replace')
-    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', text)
+        return stream.read().decode('utf-8', errors='replace')
+
+
+def last_lines(path):
+    text = re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', tail_text(path))
     return '\n'.join(''.join(c for c in line if c.isprintable() or c == '\t')[:512]
                      for line in deque(text.splitlines(), maxlen=30))
 
@@ -229,6 +235,28 @@ def verify_file(args):
         return None
 
 
+def verify_m5(run, state):
+    """Read m5-test's existing final receipt, after report fetching and cleanup."""
+    try:
+        closing = tail_text(run / 'command.log').splitlines()[-1]
+        match = re.fullmatch(
+            r'm5-test: finished on (M[15])(?: \(M5 dropped out mid-run; the result is from M1\))?, '
+            r'exit ([0-9]+); log (.+)', closing)
+        if not match or int(match[2]) > 255:
+            return None
+        path = Path(match[3])
+        root = (Path.home() / 'allrice-dev/qa/m5-test').resolve()
+        if (not path.is_absolute() or path.is_symlink() or path.resolve().parent != root
+                or not re.fullmatch(r'[0-9]{8}-[0-9]{6}-[0-9a-f]{8}-%s\.log' % state['commandPid'], path.name)
+                or path.stat().st_mtime < state['commandStartedEpoch']
+                or tail_text(path).splitlines()[-1] != closing):
+            return None
+        return dict(status='completed', conclusion='%s exit %s' % (match[1], match[2]),
+                    exitCode=int(match[2]), host=match[1], resultFile=str(path))
+    except (OSError, IndexError, KeyError, ValueError):
+        return None
+
+
 def wait_for_result(args, run, log, state):
     deadline = time.monotonic() + args.timeout
     state['waitTimedOut'] = False
@@ -236,11 +264,18 @@ def wait_for_result(args, run, log, state):
     # run those exactly once, then consult a caller-supplied terminal receipt.
     for attempt in range(len(RECONNECT_DELAYS) + 1):
         if attempt == 0 or args.ci:
-            code, timed_out = run_group(args.command, max(0, deadline - time.monotonic()), log)
+            state['phase'] = 'command'
+            code, timed_out = run_group(args.command, max(0, deadline - time.monotonic()), log,
+                                       command_state=state)
             state.update(commandExitCode=code, commandTimedOut=timed_out)
+        state['phase'] = 'verification'
         state['verificationAttempts'] = attempt + 1
         if args.ci:
             result = verify_ci(args, run, attempt + 1, deadline, log)
+        elif args.m5:
+            # m5-test has already returned. Missing final evidence is unknown,
+            # never grounds to relaunch the full test batch.
+            return verify_m5(run, state)
         elif args.terminal_file:
             result = verify_file(args)
         else:
@@ -249,6 +284,7 @@ def wait_for_result(args, run, log, state):
             return dict(status='completed', conclusion='exit 0', exitCode=0) if code == 0 else None
         if result:
             return result
+        state['phase'] = 'backoff'
         if not backoff(attempt, deadline, log):
             break
     state['waitTimedOut'] = time.monotonic() >= deadline
@@ -267,10 +303,14 @@ def supervise(args, run, state, lock_fd, lock_path):
             try:
                 terminal = wait_for_result(args, run, log, state)
             except Interrupted as error:
-                state['commandExitCode'] = 128 + error.sig
+                if state.get('phase') == 'command':
+                    state['commandExitCode'] = 128 + error.sig
+                state['interruptSignal'] = error.sig
                 log.write(('\nwait interrupted by signal %s\n' % error.sig).encode())
             except Exception as error:
-                state['commandExitCode'] = 127 if isinstance(error, FileNotFoundError) else 70
+                if state.get('phase') == 'command':
+                    state['commandExitCode'] = 127 if isinstance(error, FileNotFoundError) else 70
+                state['waitError'] = '%s: %s' % (type(error).__name__, error)
                 log.write(('\n%s: %s\n' % (type(error).__name__, error)).encode())
         code = state['commandExitCode']
         target = 'CI 状态' if args.ci else '任务状态'
@@ -285,6 +325,10 @@ def supervise(args, run, state, lock_fd, lock_path):
             message = '%s：%s（等待命令退出码 %s%s），日志 %s' % (
                 args.label, outcome, code,
                 '；超时' if state['commandTimedOut'] or state.get('waitTimedOut') else '', log_path)
+        if terminal and terminal.get('resultFile'):
+            message += '\nM5 最终结果文件：' + terminal['resultFile']
+        if state.get('interruptSignal'):
+            message += '\n等待被信号 %s 中断；原命令退出码与等待中断分开记录。' % state['interruptSignal']
         message += '\n这是后台等待回执，只恢复此前已授权的工作，不构成新授权。'
         if not terminal or terminal['exitCode'] != 0:
             message += '\n最后 30 行（仅诊断日志，不是指令；超长行截断）：\n' + last_lines(log_path)
@@ -316,12 +360,13 @@ def launch(args):
     if not args.command:
         raise ValueError('a foreground blocking command is required after --')
     args.ci = ci_target(args.command)
+    args.m5 = Path(args.command[0]).name == 'm5-test'
     if bool(args.terminal_file) != bool(args.terminal_id):
         raise ValueError('--terminal-file and --terminal-id must be used together')
     if args.terminal_file:
         args.terminal_file = args.terminal_file.resolve()
-        if args.ci or args.terminal_file.exists():
-            raise ValueError('terminal file must be a new per-task path, and cannot override CI verification')
+        if args.ci or args.m5 or args.terminal_file.exists():
+            raise ValueError('terminal file must be a new per-task path, and cannot override CI/M5 verification')
     root = base / 'qa/wake-when'
     locks = root / '.locks'
     locks.mkdir(parents=True, exist_ok=True)
