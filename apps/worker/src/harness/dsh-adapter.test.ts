@@ -1114,7 +1114,7 @@ describe('DshHarnessAdapter', () => {
     }
   }, 30_000);
 
-  it('rechecks an image-bearing model input before the first and every later native dispatch, without sending revoked bytes', async () => {
+  it('rechecks image input before the first execute and the next execute on a reused thread, without sending revoked bytes', async () => {
     // Valid metadata-free 2x2 JPEG; native admission preserves these bytes.
     const jpeg =
       '/9j/2wBDAAUDBAQEAwUEBAQFBQUGBwwIBwcHBw8LCwkMEQ8SEhEPERETFhwXExQaFRERGCEYGh0dHx8fExciJCIeJBweHx7/2wBDAQUFBQcGBw4ICA4eFBEUHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh7/wAARCAACAAIDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABQb/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCEgKAI/9k=';
