@@ -2,6 +2,9 @@ name: CI
 
 on:
   pull_request:
+    branches: [main]
+    # Retargeting a stacked PR to main emits edited; title/body edits also rerun CI.
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
