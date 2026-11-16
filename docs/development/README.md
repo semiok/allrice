@@ -78,7 +78,9 @@ not rewritten. Current private input budgets are 48 MB source-only and 59 MB
 compiled; dependency bundles remain bounded at 12 MB. Only these current
 private proofs select the larger base64 receivers. Memory, tmpfs and execution
 timeouts remain unchanged; the live compiler guard must attest the new input
-budget before admitting a new compiled operation. This capacity change does
+budget before admitting a new compiled operation. Current source receipts must
+state their 48 MB input cap; only historical 12 MB source proofs can replay a
+receipt that omits the input cap. This capacity change does
 not resume frozen repair tasks or authorize a real model Run.
 
 ## Default database: Docker Compose

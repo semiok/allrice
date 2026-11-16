@@ -239,10 +239,15 @@ export function matchesRepositoryExecutionIsolation(
   const tmpfsMiB =
     observed.tmpfsMiB ??
     (proof.version === 1 && proof.tmpfsMiB === 64 ? 64 : undefined);
-  return (
-    tmpfsMiB === proof.tmpfsMiB &&
-    (proof.version === 1 || observed?.inputLimit === proof.inputLimit)
-  );
+  // Historical source receipts omitted inputLimit. Only their frozen 12 MB
+  // proof keeps that fallback; the current 48 MB receiver must attest its cap.
+  const inputLimit =
+    observed.inputLimit === undefined &&
+    proof.version === 1 &&
+    proof.inputLimit === legacyRepositorySourceLimits.archiveBytes
+      ? legacyRepositorySourceLimits.archiveBytes
+      : observed.inputLimit;
+  return tmpfsMiB === proof.tmpfsMiB && inputLimit === proof.inputLimit;
 }
 
 export function isCompiledRepositoryExecution(

@@ -174,13 +174,24 @@ describe('finite compiled repository verification boundaries', () => {
     expect(
       RepositoryExecutionProofSchema.safeParse({ ...v1, tmpfsMiB: 96 }).success,
     ).toBe(false);
-    expect(
-      RepositoryExecutionProofSchema.parse({
-        ...v1,
-        inputLimit: 48_000_000,
-        tmpfsMiB: 128,
-      }).inputLimit,
-    ).toBe(48_000_000);
+    const expanded = RepositoryExecutionProofSchema.parse({
+      ...v1,
+      inputLimit: 48_000_000,
+      tmpfsMiB: 128,
+    });
+    expect(expanded.inputLimit).toBe(48_000_000);
+    for (const proof of [historical, current, expanded])
+      for (const inputLimit of [undefined, 12_000_000, 48_000_000]) {
+        const observed = {
+          commandDigest: common.commandDigest,
+          tmpfsMiB: proof.tmpfsMiB,
+          ...(inputLimit === undefined ? {} : { inputLimit }),
+        };
+        expect(matchesRepositoryExecutionIsolation(proof, observed)).toBe(
+          inputLimit === proof.inputLimit ||
+            (inputLimit === undefined && proof.inputLimit === 12_000_000),
+        );
+      }
     for (const inputLimit of [12_000_001, 24_000_000, 47_999_999, 48_000_001])
       expect(
         RepositoryExecutionProofSchema.safeParse({ ...v1, inputLimit }).success,

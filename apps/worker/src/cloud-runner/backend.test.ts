@@ -18,7 +18,10 @@ import {
   repositoryExpandedSourceSupervisor,
   repositoryExpandedCompiledSupervisor,
 } from './backend.js';
-import { RepositoryExecutionProofSchema } from '@allrice/database/technical-contracts';
+import {
+  RepositoryExecutionProofSchema,
+  matchesRepositoryExecutionIsolation,
+} from '@allrice/database/technical-contracts';
 import { colimaEnvironmentPath, colimaExecutable } from './colima.js';
 
 const command = (script: string, extra: Record<string, unknown> = {}) =>
@@ -139,6 +142,7 @@ describe('P15 cloud contract fail-closed', () => {
       parentUid: 0,
       candidateUid: 1001,
       commandDigest: digest,
+      inputLimit: 12_000_000,
     });
     expect(result.repositoryIsolation?.compilerUid).toBeUndefined();
     expect(result.repositoryIsolation?.tmpfsMiB).toBe(64);
@@ -154,15 +158,15 @@ describe('P15 cloud contract fail-closed', () => {
     Object.assign(container.Config.Labels, {
       'xyz.bplabs.allrice.repository.source-tmpfs-mib': '128',
     });
-    expect(
-      (
-        await new HistoricalContainer().collect(
-          attempt,
-          command('historical typed command'),
-          Date.now(),
-        )
-      ).repositoryIsolation?.tmpfsMiB,
-    ).toBe(128);
+    const historical128 = (
+      await new HistoricalContainer().collect(
+        attempt,
+        command('historical typed command'),
+        Date.now(),
+      )
+    ).repositoryIsolation!;
+    expect(historical128.tmpfsMiB).toBe(128);
+    expect(historical128.inputLimit).toBe(12_000_000);
     for (const size of ['64m', '128m0', '128m,size=128m']) {
       container.HostConfig.Tmpfs['/tmp'] =
         `rw,nosuid,nodev,noexec,size=${size},mode=1777`;
@@ -184,15 +188,32 @@ describe('P15 cloud contract fail-closed', () => {
     Object.assign(container.Config.Labels, {
       'xyz.bplabs.allrice.repository.input-limit': '48000000',
     });
-    expect(
-      (
-        await new HistoricalContainer().collect(
-          attempt,
-          command('current typed command'),
-          Date.now(),
-        )
-      ).repositoryIsolation?.tmpfsMiB,
-    ).toBe(128);
+    const expanded128 = (
+      await new HistoricalContainer().collect(
+        attempt,
+        command('current typed command'),
+        Date.now(),
+      )
+    ).repositoryIsolation!;
+    expect(expanded128.tmpfsMiB).toBe(128);
+    expect(expanded128.inputLimit).toBe(48_000_000);
+    for (const inputLimit of [12_000_000, 48_000_000]) {
+      const proof = RepositoryExecutionProofSchema.parse({
+        version: 1,
+        profileId: 'allrice.output-redaction.v1',
+        inputLimit,
+        commandDigest: digest,
+        tmpfsMiB: 128,
+        baselineId: randomUUID(),
+        candidateChecksum: digest,
+      });
+      expect(matchesRepositoryExecutionIsolation(proof, historical128)).toBe(
+        inputLimit === 12_000_000,
+      );
+      expect(matchesRepositoryExecutionIsolation(proof, expanded128)).toBe(
+        inputLimit === 48_000_000,
+      );
+    }
     for (const label of ['12000000', '24000000', '48000001', undefined]) {
       const labels = container.Config.Labels as Record<string, string>;
       if (label === undefined)
@@ -393,7 +414,7 @@ describe('P15 cloud contract fail-closed', () => {
       }
     },
   );
-  it.each([
+  describe.each([
     [
       48_000_000,
       65_000_000,
@@ -407,42 +428,60 @@ describe('P15 cloud contract fail-closed', () => {
       repositoryExpandedCompiledSupervisor,
     ],
   ] as const)(
-    'receives %i binary bytes with base64/JSON overhead only in the current finite private receiver',
+    '%i-byte private receiver complete payload boundary',
     (inputBytes, characters, historical, current) => {
-      const receive = (supervisor: string, input: string) =>
-        spawnSync(
+      // Keep the complete deployed receiver prefixes unchanged. Preload stdin
+      // and deliver one complete event so this tests parsing/capacity, without
+      // claiming real pipe chunk throughput or physical VM execution.
+      const receive = (supervisor: string, input: string) => {
+        const end = supervisor.indexOf('fs.mkdirSync');
+        if (end < 0) throw Error('REPOSITORY_TEST_RECEIVER_PREFIX');
+        return spawnSync(
           process.execPath,
           [
             '--input-type=module',
             '--eval',
-            supervisor.slice(0, supervisor.indexOf('fs.mkdirSync')) +
-              'process.stdout.write("accepted");process.exit(0);',
+            `import { readFileSync } from 'node:fs'; import { Readable } from 'node:stream';
+const wire=readFileSync(0,'utf8');
+Object.defineProperty(process,'stdin',{value:Readable.from([wire])});
+` +
+              supervisor.slice(0, end) +
+              'process.stdout.write(JSON.stringify({files:input.files.map(f=>({path:f.path,bytes:Buffer.byteLength(f.contentBase64,"base64")})),scriptLength:input.script.length}));process.exit(0);',
           ],
           { input, encoding: 'utf8', maxBuffer: 1024 },
         );
-      const encoded =
+      };
+      const files =
+        inputBytes === 48_000_000
+          ? [{ path: 'repository.json.gz', bytes: 48_000_000 }]
+          : [
+              { path: 'repository.json.gz', bytes: 48_000_000 },
+              { path: 'dependencies.json.gz', bytes: 11_000_000 },
+            ];
+      const envelope = () =>
         JSON.stringify({
-          files: [
-            {
-              path: 'repository.json.gz',
-              contentBase64: Buffer.alloc(48_000_000).toString('base64'),
-            },
-            ...(inputBytes === 59_000_000
-              ? [
-                  {
-                    path: 'dependencies.json.gz',
-                    contentBase64: Buffer.alloc(11_000_000).toString('base64'),
-                  },
-                ]
-              : []),
-          ],
+          files: files.map((f) => ({
+            path: f.path,
+            contentBase64:
+              'AAAA'.repeat(Math.floor(f.bytes / 3)) +
+              Buffer.alloc(f.bytes % 3).toString('base64'),
+          })),
           script: '\u0001'.repeat(100_000),
         }) + '\n';
-      expect(receive(historical, encoded).status).toBe(126);
-      const accepted = receive(current, encoded);
-      expect(accepted.status).toBe(0);
-      expect(accepted.stdout).toBe('accepted');
-      expect(receive(current, ' '.repeat(characters + 1)).status).toBe(126);
+      it('accepts every binary byte and the bounded JSON envelope in one complete stdin event', () => {
+        const accepted = receive(current, envelope());
+        expect(accepted.status).toBe(0);
+        expect(JSON.parse(accepted.stdout)).toEqual({
+          files,
+          scriptLength: 100_000,
+        });
+      });
+      it('rejects the same complete payload in the historical 32 MB receiver', () => {
+        expect(receive(historical, envelope()).status).toBe(126);
+      });
+      it('rejects one character beyond the current finite envelope cap', () => {
+        expect(receive(current, ' '.repeat(characters + 1)).status).toBe(126);
+      });
     },
   );
   it('recognizes watchdog deadline stops from Docker time without guessing or overriding cancellation/unknown', async () => {

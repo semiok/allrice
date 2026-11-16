@@ -184,7 +184,7 @@ export type CloudRunResult = {
     network: 'none';
     compilerUid?: 1002;
     tmpfsMiB?: 64 | 128;
-    inputLimit?: 23000000 | 59000000;
+    inputLimit?: 12000000 | 48000000 | 23000000 | 59000000;
     dependencyChecksum?: string;
     timeoutMs?: number;
     memoryMiB?: number;
@@ -1166,10 +1166,10 @@ export class CloudRunnerBackend {
       readOnlyRoot: true,
       network: 'none',
       tmpfsMiB,
+      inputLimit,
       ...(compiled
         ? {
             compilerUid: 1002 as const,
-            inputLimit: inputLimit as 23000000 | 59000000,
             timeoutMs: Number(
               c.Config.Labels['xyz.bplabs.allrice.repository.timeout'],
             ),

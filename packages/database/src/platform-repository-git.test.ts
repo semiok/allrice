@@ -11,12 +11,26 @@ import { execFileSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import {
   gitBlobId,
+  gitTreeForBlobs,
   repositoryGitTree,
   repositoryCommitIdentity,
 } from './platform-repository-git.ts';
 import { repositoryDigest } from './platform-repository-source.ts';
 
 describe('fixed repository Git identity against native Git', () => {
+  it('hashes the full 8,192-blob contract used by CI and publication, and rejects the 8,193rd blob', () => {
+    const files = Array.from({ length: 8192 }, (_, i) => ({
+      path: `source/${i}.ts`,
+      mode: '100644',
+      sha: 'a'.repeat(40),
+    }));
+    const tree = gitTreeForBlobs(files);
+    expect(tree).toMatch(/^[a-f0-9]{40}$/);
+    expect(gitTreeForBlobs([...files].reverse())).toBe(tree);
+    expect(() =>
+      gitTreeForBlobs([...files, { ...files[0]!, path: 'source/overflow.ts' }]),
+    ).toThrow('REPOSITORY_GIT_PATH_INVALID');
+  });
   it('matches native blobs and trees with directory ordering, UTF-8 and executable modes', () => {
     const root = mkdtempSync(join(tmpdir(), 'allrice-git-identity-'));
     const files = [

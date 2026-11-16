@@ -20,6 +20,8 @@ import {
   PlatformEmployeeDefinitionSchema,
   type RequestContext,
   cloudPlatform,
+  cloudToolchainImageV1,
+  RuntimeOperationSnapshotSchema,
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
@@ -73,15 +75,19 @@ import {
   repairProductPath,
   type RepositoryBaseline,
   RepairReportSchema,
+  RepositoryVerificationSchema,
+  RepositoryExecutionProofSchema,
 } from './platform-repair-contracts.ts';
 import { compiledDependencyFixture } from './platform-repair-compiled.fixture.ts';
 import {
   repairAssertionCases,
   repairHarnessChecksum,
+  repositoryVerificationCommand,
 } from './platform-repair-profile.ts';
 import {
   preparePlatformRepairVerification,
   resolvePlatformRepositoryExecutionProofTx,
+  recordPlatformRepairVerification,
 } from './platform-repair-verification.ts';
 // Keep the real task, source, queue, lease and Worker. Only the physical repair
 // backend is replaced; this input test must not launch cloud verification.
@@ -1265,6 +1271,212 @@ suite('MET167 private repository repair normal Employee Run authority', () => {
     expect(Number(reservation!.capacity)).toBe(600000);
     await cancelPlatformRepairTask(admin, q.id);
   });
+  it.each([
+    ['current48', undefined, 48_000_000, 128],
+    ['historical64', 'legacy_64mb', 12_000_000, 128],
+    ['historical40', 'legacy_40mb', 12_000_000, 64],
+  ] as const)(
+    'binds %s source proof to the stopped input receipt at DB record ingress',
+    async (_name, sourceLimitsVersion, inputLimit, tmpfsMiB) => {
+      const { recordManagedCloudEnvironment } =
+        await import('./tenant-employee-access.ts');
+      // Synthetic DB health only. Never probe or dispatch a physical container.
+      await recordManagedCloudEnvironment(
+        {
+          workerId: randomUUID(),
+          compute: {
+            available: true,
+            reason: null,
+            profile: {
+              backend: 'cloud-gvisor-v1',
+              imageDigest: cloudToolchainImageV1,
+              architecture: cloudPlatform.architecture,
+              runtime: 'runsc',
+              runtimeVersion: 'release-20260831.0',
+              runtimeChecksum: cloudPlatform.runtimeChecksum,
+              network: 'none',
+              maximumConcurrency: 2,
+            },
+          },
+          browser: {
+            available: false,
+            profile: null,
+            reason: 'fixture_not_requested',
+          },
+        },
+        fixture.db,
+      );
+      const q = await submit();
+      try {
+        const workerId = randomUUID(),
+          job = await claimNextJob(workerId, 60000);
+        expect(job?.id).toBe(q.jobId);
+        const lease = {
+          workerId,
+          jobId: job!.id,
+          leaseToken: job!.lease!.token,
+          attempt: job!.attempt,
+        };
+        const execution = await startClaimedJob(
+          workerId,
+          job!.id,
+          lease.leaseToken,
+        );
+        const source = await readPlatformRepairSource(lease);
+        const { acquireConversationRuntime } =
+          await import('./conversation/conversation-runtime.ts');
+        await acquireConversationRuntime({
+          organizationId: source.task.organization_id,
+          workspaceId: source.task.workspace_id,
+          sessionId: source.task.session_id,
+          ownerId: source.task.owner_id,
+          runId: source.task.run_id,
+          workerId,
+          configChecksum: source.task.frozen.fingerprint,
+          compactThresholdTokens: 40000,
+        });
+        const { preparePlatformRepairInput } =
+          await import('./platform-repair.ts');
+        const { runtimeFixtureStorage } = await import('./runtime.fixture.ts');
+        const input = await preparePlatformRepairInput(
+          lease,
+          execution!.context,
+          runtimeFixtureStorage(fixture.db),
+        );
+        const prepared = await preparePlatformRepairVerification(
+          lease,
+          execution!.context,
+          q.candidate.checksum,
+        );
+        const [v] =
+          await fixture.db`select proof from allrice_platform_repair_verifications where operation_id=${prepared.operationId}`;
+        const command = {
+          ...prepared.command,
+          arguments: repositoryVerificationCommand({
+            baseline: source.source.baseline,
+            candidate: source.candidate,
+            object: { id: input.object.id, checksum: input.object.checksum },
+            sourceLimitsVersion,
+          }),
+        };
+        const proof = RepositoryExecutionProofSchema.parse({
+          ...v!.proof,
+          inputLimit,
+          tmpfsMiB,
+          commandDigest: repositoryDigest(JSON.stringify(command)),
+        });
+        await fixture.db`update allrice_platform_repair_verifications set command=${fixture.db.json(command)},command_digest=${proof.commandDigest},proof=${fixture.db.json(proof)} where operation_id=${prepared.operationId}`;
+        expect(
+          (
+            await preparePlatformRepairVerification(
+              lease,
+              execution!.context,
+              q.candidate.checksum,
+            )
+          ).command,
+        ).toEqual(command);
+        const { createCloudCommandOperation } =
+          await import('./cloud-execution.ts');
+        const operation = await createCloudCommandOperation({
+          context: execution!.context,
+          arguments: command.arguments,
+          callId: prepared.callId,
+        });
+        expect(operation.snapshot.binding.attempt.operationId).toBe(
+          prepared.operationId,
+        );
+        const report = RepositoryVerificationSchema.parse({
+          version: 1,
+          profileId: repairProfileId,
+          dependencyMode: 'runtime_builtins_only',
+          baselineId: source.source.baseline.id,
+          sourceSha: source.source.baseline.sourceSha,
+          baselineSourceDigest: source.source.baseline.sourceDigest,
+          restoredDigest: source.source.baseline.sourceDigest,
+          candidateChecksum: q.candidate.checksum,
+          candidateMaterialDigest: source.source.baseline.sourceDigest,
+          actualMaterialDigest: source.source.baseline.sourceDigest,
+          rootLockChecksum: source.source.baseline.rootLockChecksum,
+          dependencyConfigurationDigest:
+            source.source.baseline.dependencyConfigurationDigest,
+          harnessChecksum: repairHarnessChecksum,
+          monorepoDependenciesInstalled: false,
+          nodeVersion: 'v22.23.2',
+          sourceFileCount: source.source.baseline.fileCount,
+          sourceBytes: source.source.baseline.sourceBytes,
+          candidateIdentity: { uid: 1001, gid: 1001, capabilities: 'none' },
+          assertions: repairAssertionCases.map((c, i) => ({
+            id: c.id,
+            passed: i > 0,
+          })),
+          failureKind: 'assertion_failed',
+          exitCode: 1,
+        });
+        // Seed stopped fixture evidence, not a claim that a VM executed. The
+        // public DB record function must enforce the exact persisted proof.
+        const snapshot = RuntimeOperationSnapshotSchema.parse({
+          ...operation.snapshot,
+          status: 'failed',
+          result: {
+            status: 'failed',
+            effects: 'none',
+            evidence: {
+              id: randomUUID(),
+              recordedAt: new Date().toISOString(),
+              digest: proof.commandDigest,
+            },
+          },
+        });
+        await fixture.db`update allrice_runtime_operations set snapshot=${fixture.db.json(snapshot)} where id=${prepared.operationId}`;
+        await fixture.db`insert into allrice_cloud_execution_attempts(operation_id,lease_token,cleanup_confirmed_at) values(${prepared.operationId},${randomUUID()},clock_timestamp())`;
+        const outcome = (observedLimit: number | undefined) => ({
+          stopped: true,
+          reason: 'failed',
+          imageDigest: cloudToolchainImageV1,
+          output: 'ALLRICE_REPOSITORY_VERIFICATION ' + JSON.stringify(report),
+          exitCode: 1,
+          repositoryIsolation: {
+            parentUid: 0,
+            candidateUid: 1001,
+            commandDigest: proof.commandDigest,
+            capabilities: ['KILL', 'SETGID', 'SETUID'],
+            readOnlyRoot: true,
+            network: 'none',
+            tmpfsMiB,
+            ...(observedLimit === undefined
+              ? {}
+              : { inputLimit: observedLimit }),
+          },
+        });
+        for (const observedLimit of inputLimit === 48_000_000
+          ? [undefined, 12_000_000]
+          : [48_000_000]) {
+          await fixture.db`update allrice_cloud_execution_attempts set outcome=${fixture.db.json(outcome(observedLimit))} where operation_id=${prepared.operationId}`;
+          await expect(
+            recordPlatformRepairVerification(lease, prepared.operationId),
+          ).rejects.toThrow('grant_invalid');
+          const [unchanged] =
+            await fixture.db`select observation from allrice_platform_repair_verifications where operation_id=${prepared.operationId}`;
+          expect(unchanged!.observation).toBeNull();
+        }
+        for (const observedLimit of inputLimit === 12_000_000
+          ? [12_000_000, undefined]
+          : [48_000_000]) {
+          await fixture.db`update allrice_cloud_execution_attempts set outcome=${fixture.db.json(outcome(observedLimit))} where operation_id=${prepared.operationId}`;
+          expect(
+            (
+              await recordPlatformRepairVerification(
+                lease,
+                prepared.operationId,
+              )
+            ).report,
+          ).toEqual(report);
+        }
+      } finally {
+        await cancelPlatformRepairTask(admin, q.id);
+      }
+    },
+  );
   (process.env.ALLRICE_RUN_COMPILED_REPAIR_NATIVE === '1' ? it : it.skip)(
     'the real Employee handler reuses accepted data without a model, compiles two packages and completes its own durable Run',
     { tags: ['manual:ALLRICE_RUN_COMPILED_REPAIR_NATIVE'], timeout: 900000 },

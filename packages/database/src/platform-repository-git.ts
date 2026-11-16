@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import { validateRepositoryArchive } from './platform-repository-source.ts';
-import type { RepositoryArchive } from './platform-repair-contracts.ts';
+import {
+  repositorySourceLimits,
+  type RepositoryArchive,
+} from './platform-repair-contracts.ts';
 
 /** Git object SHA-1 is a separate identity from the material's SHA-256. */
 export function gitObjectId(type: 'blob' | 'tree' | 'commit', bytes: Buffer) {
@@ -28,7 +31,7 @@ export function repositoryGitTree(raw: RepositoryArchive) {
 export function gitTreeForBlobs(
   files: Array<{ path: string; mode: string; sha: string }>,
 ) {
-  if (files.length < 1 || files.length > 5000)
+  if (files.length < 1 || files.length > repositorySourceLimits.files)
     throw Error('REPOSITORY_GIT_PATH_INVALID');
   const root: Tree = new Map();
   for (const file of files) {
