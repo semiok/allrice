@@ -65,6 +65,7 @@ import {
   type NativeSubagentSummary,
 } from '@allrice/contracts';
 import { NativeSubagentFixtureFeed } from '../../test/native-subagent-fixture-feed';
+import { observeCdpExceptions } from '../../test/cdp-exception-probe';
 import { appearanceScript, themeScript } from '../../lib/theme/theme-script';
 import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
 import type {
@@ -6523,19 +6524,61 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30_000);
 
+  it('the exception probe preserves caught errors when reload invalidates a pause', async () => {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const cdp = await context.newCDPSession(page);
+    const exceptions: string[] = [];
+    const failures: unknown[] = [];
+    let reload: Promise<unknown> | undefined;
+    const probe = observeCdpExceptions(
+      cdp,
+      (error) => {
+        exceptions.push(error);
+        // Queue reload before the probe's resume, reproducing the navigation
+        // race without delays, retries, React changes or a live model.
+        reload = cdp.send('Page.reload');
+      },
+      (cause) => failures.push(cause),
+    );
+    try {
+      await cdp.send('Debugger.enable');
+      await cdp.send('Debugger.setPauseOnExceptions', { state: 'all' });
+      await page.evaluate(() => {
+        setTimeout(() => {
+          try {
+            throw new Error('Maximum update depth exceeded: probe sentinel');
+          } catch {
+            // Deliberately swallowed: pageerror cannot observe this exception.
+          }
+        }, 0);
+      });
+      await expect.poll(() => exceptions.length).toBe(1);
+      await reload;
+      await page.evaluate(() => document.readyState);
+      expect(exceptions[0]).toContain(
+        'Maximum update depth exceeded: probe sentinel',
+      );
+    } finally {
+      const pending = probe.stop();
+      await context.close();
+      await pending;
+    }
+    expect(failures).toEqual([]);
+  });
+
   it('restores long history without caught React update errors before switching sessions', async ({
     onTestFinished,
   }) => {
     const f = await fixture();
-    let closing = false;
-    let resume: Promise<unknown> = Promise.resolve();
+    let probe: ReturnType<typeof observeCdpExceptions> | undefined;
     onTestFinished(async () => {
-      closing = true;
+      const pending = probe?.stop();
       // Closing the context also detaches CDP, even after a test timeout.
       try {
         await f.close();
       } finally {
-        await resume;
+        await pending;
       }
     });
     const cdp = await f.context.newCDPSession(f.page);
@@ -6546,15 +6589,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     );
     // pageerror alone misses exceptions consumed by a successful fetch's catch.
     // Observe real exceptions without changing React, its scheduler or the store.
-    cdp.on('Debugger.paused', (event) => {
-      const error = event.data?.description ?? '';
-      if (/Maximum update depth exceeded/.test(error)) {
-        internalErrors.push(error);
-      }
-      resume = cdp.send('Debugger.resume').catch((cause: unknown) => {
-        if (!closing) internalErrors.push(String(cause));
-      });
-    });
+    probe = observeCdpExceptions(
+      cdp,
+      (error) => {
+        if (/Maximum update depth exceeded/.test(error)) {
+          internalErrors.push(error);
+        }
+      },
+      (cause) => internalErrors.push(String(cause)),
+    );
     f.page.on('console', (message) => {
       if (/Maximum update depth exceeded/.test(message.text())) {
         internalErrors.push(message.text());
