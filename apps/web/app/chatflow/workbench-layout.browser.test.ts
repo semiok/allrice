@@ -6523,6 +6523,101 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30_000);
 
+  it('restores long history without caught React update errors before switching sessions', async ({
+    onTestFinished,
+  }) => {
+    const f = await fixture();
+    let closing = false;
+    let resume: Promise<unknown> = Promise.resolve();
+    onTestFinished(async () => {
+      closing = true;
+      // Closing the context also detaches CDP, even after a test timeout.
+      try {
+        await f.close();
+      } finally {
+        await resume;
+      }
+    });
+    const cdp = await f.context.newCDPSession(f.page);
+    const internalErrors: string[] = [];
+    const traces = new Set<string>();
+    const expectedTraces = new Set(
+      Array.from({ length: 100 }, (_, i) => id(3000 + i)),
+    );
+    // pageerror alone misses exceptions consumed by a successful fetch's catch.
+    // Observe real exceptions without changing React, its scheduler or the store.
+    cdp.on('Debugger.paused', (event) => {
+      const error = event.data?.description ?? '';
+      if (/Maximum update depth exceeded/.test(error)) {
+        internalErrors.push(error);
+      }
+      resume = cdp.send('Debugger.resume').catch((cause: unknown) => {
+        if (!closing) internalErrors.push(String(cause));
+      });
+    });
+    f.page.on('console', (message) => {
+      if (/Maximum update depth exceeded/.test(message.text())) {
+        internalErrors.push(message.text());
+      }
+    });
+    f.page.on('requestfinished', (request) => {
+      const url = new URL(request.url());
+      const match = url.pathname.match(/^\/api\/v1\/runs\/([^/]+)\/events$/);
+      if (
+        match &&
+        expectedTraces.has(match[1]!) &&
+        url.searchParams.get('format') === 'json'
+      )
+        traces.add(match[1]!);
+    });
+    await cdp.send('Debugger.enable');
+    await cdp.send('Debugger.setPauseOnExceptions', { state: 'all' });
+    f.state.messages = navigationHistory(100, 2);
+    await f.page.reload();
+    const rail = f.page.getByRole('navigation', { name: '轮次导航' });
+    await rail
+      .getByRole('button', { name: '跳转到第 100 轮', exact: true })
+      .waitFor({ timeout: 15_000 });
+    await expect
+      .poll(
+        async () =>
+          internalErrors.length > 0 ||
+          (traces.size === 100 &&
+            (await f.page.getByText('加载过程…', { exact: true }).count()) ===
+              0),
+        { timeout: 5000 },
+      )
+      .toBe(true);
+    expect(internalErrors).toEqual([]);
+    await expect
+      .poll(() => [...traces].sort())
+      .toEqual([...expectedTraces].sort());
+    await expect
+      .poll(() => f.page.getByText('加载过程…', { exact: true }).count())
+      .toBe(0);
+    expect(internalErrors).toEqual([]);
+    expect(await f.page.getByText(/过程加载失败/).count()).toBe(0);
+    expect(await rail.getByRole('button').count()).toBeLessThan(55);
+    await rail
+      .locator('> div')
+      .first()
+      .evaluate((node) => {
+        node.scrollTop = 0;
+      });
+    const first = rail.getByRole('button', {
+      name: '跳转到第 1 轮',
+      exact: true,
+    });
+    await first.hover();
+    await rail.getByRole('tooltip').waitFor();
+    await first.click();
+    await expect.poll(() => first.getAttribute('aria-current')).toBe('true');
+    await f.page.getByRole('treeitem', { name: /研究任务 B/ }).click();
+    await expect.poll(() => rail.count()).toBe(0);
+    expect(await f.page.getByRole('tooltip').count()).toBe(0);
+    expect(internalErrors).toEqual([]);
+  }, 30_000);
+
   it('returning to an old turn holds the reading position when an in-flight answer finishes', async () => {
     const f = await fixture({ running: true });
     try {
