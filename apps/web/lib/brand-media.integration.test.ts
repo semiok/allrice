@@ -15,7 +15,9 @@ import {
   brandMediaModuleV010,
   brandMediaTools,
   brandMediaUsage,
+  cloudProjectCapabilityId,
   EmployeeExecutionSnapshotSchema,
+  EmployeeExecutionSnapshotV1Schema,
   BrandMediaCandidatesResultSchema,
   BrandMediaArticleResultSchema,
   type ExecutionContext,
@@ -67,6 +69,7 @@ import {
 } from '../../../packages/database/src/employees/employee-runtime-content.ts';
 import { acquireConversationRuntime } from '../../../packages/database/src/conversation/conversation-runtime.ts';
 import { resolveEmployeeExecution } from '../../../packages/database/src/employees/employeehub.ts';
+import { updateUserPreferences } from '../../../packages/database/src/user-preferences.ts';
 import {
   publishReference,
   changeReferencePublication,
@@ -83,6 +86,7 @@ import {
 import {
   startClaimedJob,
   cancelRun,
+  completeJob,
 } from '../../../packages/database/src/execution/queue.ts';
 import { readFrozenSkillResource } from '../../../packages/database/src/skill-bundles.ts';
 import * as runtimeStorage from './storage/runtime';
@@ -637,7 +641,7 @@ suite(
       await command(a, topicInput(a), 403);
       for (const release of [
         { ...brandMediaRelease, moduleId: '品牌自媒体' },
-        { ...brandMediaRelease, contentVersion: '0.2.0' },
+        { ...brandMediaRelease, contentVersion: '99.0.0' },
         { ...brandMediaRelease, digest: 'sha256:' + '0'.repeat(64) },
       ]) {
         const response = await catalog.POST(
@@ -1448,6 +1452,7 @@ suite(
         created: boolean;
         delivery: string;
         fallbackRunId: string | null;
+        error?: { code: string; message: string };
       };
     }
     async function execution(
@@ -1567,9 +1572,31 @@ suite(
       });
     }
     async function finish(runId: string) {
-      await f.db`update allrice_jobs set status='succeeded',completed_at=clock_timestamp(),worker_id=null,lease_token=null,lease_expires_at=null where run_id=${runId}`;
-      await f.db`update allrice_runs set state='succeeded',completed_at=clock_timestamp() where id=${runId}`;
-      await f.db`update allrice_employee_runs set status='succeeded',completed_at=clock_timestamp() where run_id=${runId}`;
+      const [job] = await f.db<
+        { id: string; worker_id: string; lease_token: string }[]
+      >`select id,worker_id,lease_token from allrice_jobs where run_id=${runId} and status='running'`;
+      expect(job).toBeDefined();
+      await completeJob({
+        workerId: job!.worker_id,
+        jobId: job!.id,
+        leaseToken: job!.lease_token,
+        result: {},
+      });
+      expect(
+        await f.db`select j.status,j.worker_id,j.lease_token,j.claimed_at,j.heartbeat_at,j.lease_expires_at,r.state,er.status employee_status
+          from allrice_jobs j join allrice_runs r on r.id=j.run_id join allrice_employee_runs er on er.run_id=r.id where r.id=${runId}`,
+      ).toMatchObject([
+        {
+          status: 'succeeded',
+          worker_id: null,
+          lease_token: null,
+          claimed_at: null,
+          heartbeat_at: null,
+          lease_expires_at: null,
+          state: 'succeeded',
+          employee_status: 'succeeded',
+        },
+      ]);
     }
     const sampleCandidates = {
       candidates: [
@@ -1741,12 +1768,21 @@ suite(
       expect(
         await f.db`select * from allrice_conversation_commands where followup_run_id=${next.run.id}`,
       ).toHaveLength(0);
+      const beforeConflicts =
+        await f.db`select id from allrice_runs where owner_id=${a.context.actor.id} order by id`;
       await generate(
         a,
         { ...intent, expectedRevision: article.revision + 1 },
         409,
       );
-      await generate(a, { ...intent, articleId: randomUUID() }, 409);
+      const otherArticle = await draft(a);
+      expect(
+        (await generate(a, { ...intent, articleId: otherArticle.id }, 409))
+          .error,
+      ).toMatchObject({
+        code: 'CONFLICT',
+        message: '相同提交编号已用于另一项生成，请核对原结果。',
+      });
       await generate(
         a,
         {
@@ -1761,6 +1797,9 @@ suite(
         },
         409,
       );
+      expect(
+        await f.db`select id from allrice_runs where owner_id=${a.context.actor.id} order by id`,
+      ).toEqual(beforeConflicts);
     });
     it('fixed no-chat Session retries once, a new request survives previous module Session archival, and normal chat digests are unchanged', async () => {
       const a = await generationActor(),
@@ -1802,16 +1841,18 @@ suite(
         )[0]!.execution_snapshot,
       ).not.toHaveProperty('moduleInvocation');
     });
-    it('keeps all 64 original frozen tools and only exact module overflow slots, with unchanged module-free JSON', async () => {
-      // The old editable contract accepts these synthetic names. They are never
-      // dispatched; one existing export tool supplies the original write grant.
-      const a = await generationActor([
-        'workspace.export.create',
-        ...Array.from(
-          { length: 60 },
-          (_, index) => `fixture.original.${index}`,
-        ),
-      ]);
+    it('freezes the complete registered tool source through HTTP and preserves the separate 64-tool frozen DTO boundary', async () => {
+      // The current source validator knows 56 tools, including this module.
+      // An unknown publication is not a way to reach the DTO's 64-slot limit.
+      const registered = allRiceToolManifest.map((tool) => tool.canonicalName);
+      expect(registered).toHaveLength(56);
+      expect(new Set(registered).size).toBe(56);
+      const a = await generationActor(registered);
+      await updateUserPreferences(a.context, {
+        capabilities: {
+          [cloudProjectCapabilityId]: { configVersion: 1, enabled: true },
+        },
+      });
       const sent = await generate(a);
       const frozen = (
         await resolveEmployeeExecution({
@@ -1823,23 +1864,66 @@ suite(
       ).executionSnapshot!;
       expect(frozen.schemaVersion).toBe(2);
       if (frozen.schemaVersion !== 2) throw Error('Requires V2 freeze');
+      expect(
+        EmployeeDefinitionSchema.parse(frozen.employee.definition)
+          .capabilityBindings.toolNames,
+      ).toEqual(registered);
+      // Owner fixture has no connected Bridge. The general-instance policy
+      // also withholds the custom-only brand-content reader. All other exact
+      // published names, including existing module/Skill names, remain once.
+      const unavailable = new Set([
+        'workspace.brand_content.read',
+        'local.fs.list',
+        'local.fs.search',
+        'local.fs.read',
+        'local.fs.write',
+        'local.fs.mkdir',
+        'local.git.status',
+        'local.git.diff',
+        'local.process.execute',
+        'local.process.status',
+        'local.process.stop',
+        'local.file.inspect',
+        'local.file.derive',
+        'local.file.save',
+        'local.preview.open',
+        'local.browser.workspace',
+      ]);
+      const names = frozen.capabilitySnapshot.bindings.toolNames;
+      expect(names).toHaveLength(40);
+      expect(new Set(names).size).toBe(40);
+      expect([...names].sort()).toEqual(
+        registered.filter((name) => !unavailable.has(name)).sort(),
+      );
       const additions = [
         ...brandMediaTools.map((tool) => tool.canonicalName),
         'workspace.skill.read',
       ];
-      const names = frozen.capabilitySnapshot.bindings.toolNames;
-      const original = names.filter((name) => !additions.includes(name));
+      // Synthetic names are confined to the existing frozen DTO reader. This
+      // asserts its unchanged base capacity, not an admitted employee source.
+      const original = Array.from(
+        { length: 64 },
+        (_, index) => `fixture.frozen.${index}`,
+      );
       expect(original).toHaveLength(64);
-      expect(names).toEqual([...original, ...additions]);
-      const plain = JSON.parse(JSON.stringify(frozen));
+      const boundary = EmployeeExecutionSnapshotSchema.parse({
+        ...frozen,
+        capabilitySnapshot: {
+          ...frozen.capabilitySnapshot,
+          bindings: {
+            ...frozen.capabilitySnapshot.bindings,
+            toolNames: [...original, ...additions],
+          },
+        },
+      });
+      expect(boundary.capabilitySnapshot.bindings.toolNames).toEqual([
+        ...original,
+        ...additions,
+      ]);
+      const plain = JSON.parse(JSON.stringify(boundary));
       delete plain.modules;
       delete plain.moduleInvocation;
       plain.capabilitySnapshot.bindings.toolNames = original;
-      const {
-        EmployeeExecutionSnapshotSchema,
-        EmployeeExecutionSnapshotV1Schema,
-        EmployeeDefinitionSchema,
-      } = await import('@allrice/contracts');
       expect(JSON.stringify(EmployeeExecutionSnapshotSchema.parse(plain))).toBe(
         JSON.stringify(plain),
       );
@@ -1855,11 +1939,11 @@ suite(
           },
         },
         {
-          ...frozen,
+          ...boundary,
           capabilitySnapshot: {
-            ...frozen.capabilitySnapshot,
+            ...boundary.capabilitySnapshot,
             bindings: {
-              ...frozen.capabilitySnapshot.bindings,
+              ...boundary.capabilitySnapshot.bindings,
               toolNames: [
                 ...original,
                 ...additions.slice(1),
@@ -1869,7 +1953,7 @@ suite(
           },
         },
         {
-          ...frozen,
+          ...boundary,
           modules: frozen.modules!.map((module) => ({
             ...module,
             release: { ...module.release, digest: 'sha256:' + '0'.repeat(64) },
@@ -1899,6 +1983,23 @@ suite(
           },
         }).success,
       ).toBe(false);
+    });
+    it('rejects an unknown tool source through HTTP without admitting any Run', async () => {
+      const a = await generationActor([
+        'workspace.export.create',
+        'fixture.unknown.source',
+      ]);
+      const before =
+        await f.db`select id from allrice_runs where owner_id=${a.context.actor.id} order by id`;
+      expect((await generate(a, candidateIntent(a), 500)).error).toMatchObject({
+        code: 'INTERNAL_ERROR',
+      });
+      expect(
+        await f.db`select id from allrice_runs where owner_id=${a.context.actor.id} order by id`,
+      ).toEqual(before);
+      expect(
+        await f.db`select run_id from allrice_employee_runs where owner_id=${a.context.actor.id} and run_id<>${a.base.task.runId}`,
+      ).toHaveLength(0);
     });
     it.each([
       { tools: [] },
@@ -1961,7 +2062,9 @@ suite(
       await generate(moduleOnly, candidateIntent(moduleOnly), 403);
       const a = await generationActor();
       await f.db`update allrice_employee_module_bindings set content_version='0.1.0',digest=${brandMediaModuleV010.digest} where instance_id=${a.scope.instanceId}`;
-      await generate(a, candidateIntent(a), 403);
+      expect((await generate(a, candidateIntent(a), 409)).error).toMatchObject({
+        code: 'VERSION_CONFLICT',
+      });
       expect(
         await f.db`select content_version from allrice_employee_module_bindings where instance_id=${a.scope.instanceId}`,
       ).toMatchObject([{ content_version: '0.1.0' }]);
@@ -2074,7 +2177,14 @@ suite(
           await holder;
         }
         expect(await checking).toBe(true);
+        // Archive preserves owner read access; only an actual file-policy
+        // withdrawal below revokes the fixed input at this same model gate.
         await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${a.base.task.chatSessionId}`;
+        await expect(guard.check()).resolves.toBeUndefined();
+        const other = await actor();
+        await f.db`insert into allrice_workbench_file_policies
+          (object_id,organization_id,workspace_id,owner_id,file_name,scope)
+          values(${firstFile.objectId},${a.context.organizationId},${a.scope.workspaceId},${other.context.actor.id},'已撤权固定参考.txt','personal')`;
         await expect(guard.check()).rejects.toMatchObject({
           code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
         });
@@ -2390,13 +2500,18 @@ suite(
         expect(
           await f.db`select * from allrice_workbench_artifacts where run_id=${sent.run.id}`,
         ).toHaveLength(0);
-        expect(
-          await read(
-            a,
-            { view: 'topics' },
-            kind === 'module' || kind === 'instance' ? 403 : 200,
-          ),
-        ).toBeDefined();
+        const recovered = await read(
+          a,
+          { view: 'topics' },
+          kind === 'module' ? 403 : kind === 'instance' ? 409 : 200,
+        );
+        expect(recovered).toMatchObject(
+          kind === 'module'
+            ? { error: { code: 'AUTHORIZATION_DENIED' } }
+            : kind === 'instance'
+              ? { error: { code: 'EMPLOYEE_INSTANCE_ARCHIVED' } }
+              : { view: 'topics', items: [] },
+        );
       },
     );
     it('rejects browser-forged invocation/steer/actor and cross-origin writes, and gates module Skill resources by current lease/binding', async () => {
@@ -2532,16 +2647,22 @@ suite(
       await f.db`update allrice_storage_objects set retention_until=clock_timestamp()-interval '1 second' where id=${file.objectId}`;
       // Immutable storage bytes still exist; the real production check denies their use.
       expect(await imageBytes()).toMatchObject([{ data: input.contentBase64 }]);
-      await expect(guard.check()).rejects.toThrow();
+      await expect(guard.check()).rejects.toMatchObject({
+        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+      });
       await f.db`update allrice_storage_objects set retention_until=null where id=${file.objectId}`;
       await guard.check();
       await f.db`update allrice_storage_objects set deleted_at=clock_timestamp() where id=${file.objectId}`;
       expect(await imageBytes()).toHaveLength(1);
-      await expect(guard.check()).rejects.toThrow();
+      await expect(guard.check()).rejects.toMatchObject({
+        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+      });
       await f.db`update allrice_storage_objects set deleted_at=null where id=${file.objectId}`;
       await guard.check();
       await f.db`update allrice_employee_module_bindings set revoked_at=clock_timestamp() where instance_id=${a.scope.instanceId}`;
-      await expect(guard.check()).rejects.toThrow();
+      await expect(guard.check()).rejects.toMatchObject({
+        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+      });
       await f.db`update allrice_employee_module_bindings set revoked_at=null where instance_id=${a.scope.instanceId}`;
       await guard.check();
       await generate(

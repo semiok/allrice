@@ -598,6 +598,13 @@ export async function assertFrozenBrandMediaModule(
   checkTarget = true,
 ) {
   if (snapshot.schemaVersion !== 2) return;
+  // Model-use callers also carry Run/Session identity. Only module authority
+  // belongs in the strict binding DTO; those execution fields stay at its gate.
+  const ownerScope = {
+    organizationId: scope.organizationId,
+    workspaceId: scope.workspaceId,
+    ownerId: scope.ownerId,
+  };
   for (const module of snapshot.modules ?? []) {
     if (module.release.moduleId !== brandMediaModule.id) continue;
     if (
@@ -609,7 +616,7 @@ export async function assertFrozenBrandMediaModule(
       throw new DataAccessError('authorization_denied');
     await requireEmployeeModuleBinding(
       tx,
-      { ...scope, instanceId: module.instanceId },
+      { ...ownerScope, instanceId: module.instanceId },
       module.release,
       module.revision,
     );
@@ -625,7 +632,7 @@ export async function assertFrozenBrandMediaModule(
       throw new DataAccessError('authorization_denied');
     await assertBrandMediaInvocation(
       tx,
-      { ...scope, instanceId: snapshot.instance!.id },
+      { ...ownerScope, instanceId: snapshot.instance!.id },
       snapshot.moduleInvocation,
       checkTarget,
     );
@@ -640,7 +647,7 @@ export async function assertFrozenBrandMediaModule(
     const currentScope = await requireBrandContentScope(
       tx,
       identity,
-      { ...scope, instanceId: snapshot.instance!.id },
+      { ...ownerScope, instanceId: snapshot.instance!.id },
       true,
       'workflow',
     );
