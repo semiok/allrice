@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -19,6 +20,64 @@ afterEach(async () => {
 });
 
 describe('AllRice DSH protocol runtime', () => {
+  it('joins image RPC completion past its business deadline and preserves native fault codes', async () => {
+    const client = new DshProtocolClient({
+      command: process.execPath,
+      args: [
+        '-e',
+        `
+        const lines = require('node:readline').createInterface({ input: process.stdin });
+        lines.on('line', line => {
+          const request = JSON.parse(line);
+          const reply = result => process.stdout.write(JSON.stringify({jsonrpc:'2.0', id:request.id, result})+'\\n');
+          if(request.method.endsWith('/route')) reply({failure:{code:'ATTACHMENT_WRITE_FAILED',message:'storage fault',retryable:false}});
+          else if(request.method.endsWith('/save')) setTimeout(() => reply({error:{code:'REFERENCE_READ_TIMEOUT',reason:'operation_budget',message:'timed out',retryable:true}}), 250);
+        });
+        lines.on('close', () => process.exit(0));
+      `,
+      ],
+      cwd: process.cwd(),
+      environment: {},
+      requestTimeoutMs: 20,
+    });
+    clients.push(client);
+    const call = {
+      id: 'image-call',
+      name: 'workspace.reference.read_image',
+      nativeSessionId: 'native-image',
+    };
+    const first = client.referenceImagePort({
+      ...call,
+      deadlineAt: Date.now() + 30_000,
+    });
+    await expect(first.route()).rejects.toMatchObject({
+      code: 'ATTACHMENT_WRITE_FAILED',
+      retryable: false,
+    });
+    const port = client.referenceImagePort({
+      ...call,
+      deadlineAt: Date.now() + 50,
+    });
+    let settled = false;
+    const pending = port
+      .save({
+        data: Buffer.from('image'),
+        mediaType: 'image/png',
+        name: 'x.png',
+      })
+      .finally(() => {
+        settled = true;
+      });
+    await delay(100);
+    expect(settled).toBe(false);
+    expect(await pending).toMatchObject({
+      error: {
+        code: 'REFERENCE_READ_TIMEOUT',
+        reason: 'operation_budget',
+        retryable: true,
+      },
+    });
+  });
   it('notifies termination even with no RPC pending and replays the failure to late subscribers', async () => {
     const client = new DshProtocolClient({
       command: process.execPath,

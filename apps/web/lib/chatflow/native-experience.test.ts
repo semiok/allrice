@@ -6,6 +6,10 @@ import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 
 import { summarizeWorkProcess } from './work-process';
 import { projectNativeExperience } from './native-experience';
+import {
+  referenceReadFailureFixtures,
+  referenceReadErrorFixture,
+} from '../../test/reference-read-failure-fixtures';
 
 function event(
   sequence: number,
@@ -76,6 +80,115 @@ describe('projectNativeExperience', () => {
     expect(rows[1]?.stopped).not.toBe(true);
     expect(rows.map((row) => row.status)).toEqual(['failed', 'failed']);
   });
+  it.each(referenceReadFailureFixtures)(
+    'presents the confirmed R4 $scene failure by code/reason, without changing history',
+    (scenario) => {
+      const failure = referenceReadErrorFixture(scenario);
+      const start = event(1, 'tool.started', {
+        toolCallId: 'read-call',
+        name: scenario.tool,
+      });
+      const failed = event(
+        2,
+        'tool.failed',
+        {
+          toolCallId: 'read-call',
+          name: scenario.tool,
+          summary: '工具执行失败',
+        },
+        { referenceReadError: failure },
+      );
+      const original = structuredClone(failed);
+      const replay = structuredClone(failed);
+      replay.sourceEvent = null;
+      replay.payload.nativePayload = { referenceReadError: failure };
+      for (const receipt of [failed, replay]) {
+        const items = projectNativeExperience([receipt, start]);
+        expect(items).toHaveLength(1);
+        expect(items[0]).toMatchObject({
+          id: 'tool:read-call',
+          status: 'failed',
+          detail: scenario.expected,
+          sequence: 1,
+          lastSequence: 2,
+        });
+        expect(summarizeWorkProcess(items).steps[0]?.error).toBe(
+          scenario.expected,
+        );
+      }
+      expect(failed).toEqual(original);
+    },
+  );
+
+  it('does not infer R4 failures from prose, another tool, a success or malformed projection', () => {
+    const scenario = referenceReadFailureFixtures[2];
+    const failure = referenceReadErrorFixture(scenario);
+    const sample = event(
+      1,
+      'tool.failed',
+      { toolCallId: 'read-call', name: scenario.tool, summary: '真实工具摘要' },
+      { referenceReadError: failure },
+    );
+    const success = structuredClone(sample);
+    success.type = 'tool.completed';
+    const unrelated = structuredClone(sample);
+    unrelated.payload.name = 'web.search';
+    const prose = structuredClone(sample);
+    prose.sourceEvent!.payload = {};
+    prose.payload.summary = JSON.stringify(failure);
+    const invalid = structuredClone(sample);
+    invalid.sourceEvent!.payload.referenceReadError = {
+      ...failure,
+      path: 'private-path',
+    };
+    for (const row of [success, unrelated, prose, invalid])
+      expect(projectNativeExperience([row])[0]?.detail).toBe(
+        row.payload.summary,
+      );
+  });
+
+  it('keeps other structured reasons accurate and isolates a failed call from prior successful reads', () => {
+    const completed = event(1, 'tool.completed', {
+      toolCallId: 'old-read',
+      name: 'workspace.reference.archive_read',
+      summary: '原先读取完成',
+    });
+    const failed = event(
+      2,
+      'tool.failed',
+      {
+        toolCallId: 'new-read',
+        name: 'workspace.reference.archive_read',
+      },
+      {
+        referenceReadError: {
+          code: 'REFERENCE_READ_LIMIT',
+          reason: 'archive_entries',
+          message: 'ZIP 目录条目超过读取限制。',
+          retryable: false,
+        },
+      },
+    );
+    const items = projectNativeExperience([completed, failed]);
+    expect(items).toMatchObject([
+      { id: 'tool:old-read', status: 'completed', detail: '原先读取完成' },
+      {
+        id: 'tool:new-read',
+        status: 'failed',
+        detail: 'ZIP 目录条目超过读取限制。',
+      },
+    ]);
+    failed.sourceEvent!.payload.referenceReadError = {
+      code: 'REFERENCE_READ_INVALID',
+      reason: 'image_pixels',
+      message: '另一种真实失败。',
+      retryable: false,
+    };
+    expect(projectNativeExperience([failed])[0]?.detail).toBe(
+      '另一种真实失败。',
+    );
+  });
+
   it('shows only the memory operation for five native prune events, including historical replay', () => {
     const events = Array.from({ length: 5 }, (_, i) => {
       const row = event(i + 1, 'harness.native', {

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ReferenceReadCapabilitiesSchema } from './reference-image-facts.ts';
 import { TimestampSchema, UuidSchema } from './common.ts';
 import { ChecksumSchema } from './runs.ts';
 import { ContentOwnershipSchema } from './content-maintenance.ts';
@@ -161,6 +162,8 @@ export const ReferenceRevisionSchema = z
     canMaintain: z.boolean(),
     canRetryProcessing: z.boolean().optional(),
     fullTextReady: z.boolean().optional(),
+    canReference: z.boolean().optional(),
+    readCapabilities: ReferenceReadCapabilitiesSchema.optional(),
     publication: z
       .object({
         origin: z.enum(['file', 'upload']),
@@ -198,6 +201,8 @@ export const ReferenceInputSelectionResultSchema = z
     viewerId: UuidSchema,
     workspaceId: UuidSchema,
     selection: ReferenceSelectionSchema,
+    canReference: z.boolean().optional(),
+    readCapabilities: ReferenceReadCapabilitiesSchema.optional(),
   })
   .strict();
 

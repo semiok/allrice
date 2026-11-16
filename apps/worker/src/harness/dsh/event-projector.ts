@@ -4,6 +4,9 @@ import {
   modelFailure,
   modelFailureText,
   type ModelFailureCategory,
+  isBoundedReferenceToolName,
+  readDshToolResult,
+  ReferenceImageFailureSchema,
 } from '@allrice/contracts';
 import { shortText } from '@allrice/contracts/native-runtime';
 export { shortText, visibleModelText } from '@allrice/contracts/native-runtime';
@@ -12,6 +15,48 @@ export function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null;
+}
+
+/** Project the confirmed Broker failure from DSH's public tool/result event.
+ * The native code and strict envelope must agree; arbitrary result text is not
+ * a display receipt. No arguments, paths or publication metadata are copied. */
+export function referenceReadFailure(
+  name: string,
+  data: Record<string, unknown>,
+) {
+  if (!isBoundedReferenceToolName(name)) return null;
+  const result = readDshToolResult(record(data.message));
+  const error = record(data.error);
+  if (result?.isError !== true || typeof error?.code !== 'string') return null;
+  const content = result.content;
+  if (!Array.isArray(content) || content.length !== 1) return null;
+  const block = record(content[0]);
+  if (block?.type !== 'text' || typeof block.text !== 'string') return null;
+  // Pinned public DSH toolErrorResult renders HarnessError with this prefix.
+  if (!block.text.startsWith('Error: ')) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(block.text.slice('Error: '.length));
+  } catch {
+    return null;
+  }
+  const parsed = ReferenceImageFailureSchema.safeParse(value);
+  if (!parsed.success || parsed.data.code !== error.code) return null;
+  const failure = parsed.data;
+  if (failure.code === 'REFERENCE_UNAVAILABLE')
+    return {
+      ...failure,
+      message: '所选资料尚未就绪、已撤回或访问权限已变化，请重新选择资料。',
+    };
+  // v1.8 business messages are user-facing. Infrastructure errors keep their
+  // real code/retryability, while their raw details remain in the native log.
+  if (
+    'reason' in failure ||
+    failure.code === 'TOOL_INPUT_INVALID' ||
+    failure.code === 'EMPLOYEE_CONTENT_UNAVAILABLE'
+  )
+    return failure;
+  return { ...failure, message: '工具执行失败' };
 }
 
 export interface DshSourceMetadata {

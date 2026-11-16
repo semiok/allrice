@@ -84,6 +84,8 @@ export * from './routing.ts';
 export * from './saas.ts';
 export * from './knowledge.ts';
 export * from './reference-reads.ts';
+export * from './reference-image.ts';
+export * from './reference-image-facts.ts';
 export * from './models.ts';
 export * from './operations.ts';
 export * from './office.ts';
@@ -199,3 +201,6 @@ export * from './employee-skill-catalog.ts';
 export * from './personal-skill-browser.ts';
 export * from './skill-package-source.ts';
 export * from './personal-scene-browser.ts';
+
+export * from './reference-archive.ts';
+export * from './reference-member.ts';

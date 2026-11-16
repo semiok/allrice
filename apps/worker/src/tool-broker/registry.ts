@@ -73,8 +73,20 @@ function researchHandler(name: ResearchToolName): RiceToolHandler {
  * a manifest-backed tool without registering its handler fails typecheck.
  */
 export const riceToolHandlerRegistry = Object.freeze({
+  'workspace.reference.archive_list': registration(
+    'workspace',
+    executeReferenceTool,
+  ),
+  'workspace.reference.archive_read': registration(
+    'workspace',
+    executeReferenceTool,
+  ),
   'workspace.reference.search': registration('workspace', executeReferenceTool),
   'workspace.reference.read': registration('workspace', executeReferenceTool),
+  'workspace.reference.read_image': registration(
+    'workspace',
+    executeReferenceTool,
+  ),
   'workspace.brand_content.read': registration('workspace', readBrandContent),
   'workspace.personal_skill.version': registration(
     'workspace',

@@ -16,9 +16,13 @@
 
 `allrice-reference-read-v1` 沿当前 `0.2.1-rc.2` 公开 `defineTool` / register 接缝声明 `workspace_reference_search` 和 `workspace_reference_read`，交给现有 Tool Broker。工具参数验证、调用、取消、结果 render 与 Agent 生命周期继续由 DSH 执行。AllRice 只补 MET-247 已批准的企业资料当前权限、精确 revision/双 checksum、现有 Worker 租约与 `reference_reads` 账本；直接使用 R2 完整正文和 PostgreSQL 字面包含索引，不接向量服务，不自建检索执行框架。
 
-只有具备既有文件读取资格的新普通 Run 衍生两项 storage:read 工具，旧冻结清单与 child 不自动扩权。全文查询、解码、分页和响应预算在内容锁外准备，返回前在现有短事务复核当前权限、冻结授权、generation/lease 与正文版本，追加实际摘录回执；搜索元数据和 coverage 同样判权。超预算不另存普通文件。出处继续沿原 R 标签、Q8 和成果来源投影，没有另一个来源状态机。
+只有具备既有文件读取资格的新普通 Run 衍生 storage:read 资料工具，旧冻结清单与 child 不自动扩权。全文查询、解码、分页和响应预算在内容锁外准备，返回前在现有短事务复核当前权限、冻结授权、generation/lease 与正文版本，追加实际摘录回执；搜索元数据和 coverage 同样判权。超预算不另存普通文件。出处继续沿原 R 标签、Q8 和成果来源投影，没有另一个来源状态机。
 
 回归覆盖真实对话 admission、原生 Host/Worker Broker/隔离 PG、长文末尾命中、权限变化、乐观冲突、未就绪、旧 Run 不扩权、64 条账本与重复读稳定标签。上游若提供可绑定 SaaS 当前资料权限和持久回执的等价业务工具接缝，可替换薄声明；权限与精确来源不能随工具迁移删除。MET-225 登记行由规划线同步，代码适配 id 与本段一一对应。
+
+v1.8 extends `allrice-reference-read-v1` with `workspace_reference_read_image`. It reuses public `llm.resolveModelInfo`, the calling agent/session route, `attachments.saveImages` and native image ContentBlocks. Private Worker RPC binds the original call to the native store; model input cannot supply identity, host paths or attachments. Current publication authority and lease are checked again after persistence. Server-inspected immutable format facts qualify new publications without a text index; selection alone creates no read receipt. Unknown old formats stay in metadata search and can be verified by an exact image read. Approved SaaS differences are static-format/capacity gates, source versus normalized checksums, and V2 call receipts. Existing text receipts and frozen grants remain intact; new ordinary Runs gain the image tool through the existing storage reader rule. MET-225 should extend this existing row with these v1.8 seams.
+
+MET-247 v1.8 失败展示沿上述公开原生工具结果及现有单向显示账本：仅在活跃 R4 工具的 `isError`、原生结构化 code 和严格 Broker 错误相符时，将 `referenceReadError`（原 code、可选 reason、message、retryable）交给 `sourcePayload`，由既有持久化和 ChatFlow `sourceEvent.payload` 传给 Web。`REFERENCE_UNAVAILABLE` 只投影既有脱敏说明，不附来源信息；基础设施错误保留原 code/retryable，原始细节不进入前端。工具参数、一般结果正文及其他工具错误不变，没有新状态或二次授权；升级核对 rc.2 公开 `toolErrorResult` 的文本封装及 `tool/result` 的错误 code。
 
 ## MET195：原生运行关闭观察
 
@@ -854,3 +858,5 @@ MET-223 A2（2026-11-14 获批实施，门禁与发布状态另记）：本批�
 ### MET-249 U1-3b：作者名字接原生 Skill
 
 个人场景 Provider 将精确包的 `name`、`whenToUse`、`metadata`、`invocation` 直接交给 rc.2 公开 Skill Provider；无作者字段的旧包仍用 UUID，历史 Run 和读取账本不改写。SaaS 沿现本人写事务及组织锁拒绝场景/基础/启用个人 Skill 重名，已发布作者名更新不能更名。普通安装/绑定/启用同样检查场景；没有第二套命令解析、阶段凭据或加载状态。`allrice-progressive-scene-provider-v1` 对应 MET-225 E02/L03/L04，精确资源、来源、撤销与使用证据门卫保留。
+
+R4b extends the same `allrice-reference-read-v1` seam with `workspace_reference_archive_list` and `workspace_reference_archive_read` (v1.8). Directory metadata is bounded and never inflates members; the existing ZIP library opens only the selected member and validates its local header, actual size and CRC. Parent publication authority is unchanged. Opaque entry IDs bind the entire pin and central directory identity. Text reuses the existing complete reference/document parser; images use the same public DSH route, attachment store, result renderer and cancellation path as R4a. V2 directory/member receipts remain in `reference_reads`, with no member publication, new table, index or lifecycle. MET-225: extend the existing row with these two approved Broker tools; ordinary computer/Skill ZIP defaults remain unchanged.

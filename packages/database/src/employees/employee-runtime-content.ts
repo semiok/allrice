@@ -1,4 +1,15 @@
 import {
+  prepareReferenceArchive,
+  type PreparedReferenceContent,
+} from '../reference-archive-read.ts';
+import {
+  prepareReferenceImage,
+  requireReferenceImagePin,
+  checkReferenceImageSignal,
+  referenceImageLimit,
+  type ReferenceImageExecution,
+} from '../reference-image-read.ts';
+import {
   BrandContentWorkflowInvocationSchema,
   BrandFeedbackInputSchema,
   BrandContextContentSchema,
@@ -16,6 +27,8 @@ import {
 import { randomUUID, createHash } from 'node:crypto';
 import {
   assertReferenceSelections,
+  readReferenceSelection,
+  referenceCitationLabel,
   retrieveReferenceKnowledgeInTransaction,
   ReferenceRuntimeError,
   ReferencePublicationRuntimeError,
@@ -35,13 +48,22 @@ import {
   EmployeeRuntimeContentSchema,
   EmployeeSceneReadSchema,
   EmployeeSceneStateSchema,
-  ReferenceReadSchema,
+  ReferenceTextReadSchema,
+  ReferenceImageReadSchema,
+  ReferenceReadImageResultSchema,
+  ReferenceReadImageInputSchema,
+  ReferenceArchiveListResultSchema,
+  ReferenceArchiveTextResultSchema,
+  ReferenceArchiveReadSchema,
+  ReferenceContentCallSchema,
+  isBoundedReferenceToolName,
+  referenceImagePolicy,
   ReferenceReadsSchema,
   ReferenceSelectionsSchema,
   ReferenceSearchInputSchema,
   ReferenceReadInputSchema,
   type ReferenceToolName,
-  type ReferenceRead,
+  type ReferenceTextRead,
   type KnowledgeRetrievalResult,
   type EmployeeRuntimeContent,
   type EmployeeResolvedContent,
@@ -1601,7 +1623,7 @@ async function recordReferenceReads(
   generationId: string,
   worker: ContentWorker,
   groups: {
-    origin: ReferenceRead['origin'];
+    origin: ReferenceTextRead['origin'];
     results: KnowledgeRetrievalResult[];
   }[],
 ) {
@@ -1620,7 +1642,8 @@ async function recordReferenceReads(
       const checksum =
         'sha256:' + createHash('sha256').update(result.content).digest('hex');
       let receipt = reads.find(
-        (r) =>
+        (r): r is ReferenceTextRead =>
+          r.citation.type === 'knowledge' &&
           r.citation.reference.digest === result.citation.reference!.digest &&
           r.citation.reference.revisionId ===
             result.citation.reference!.revisionId &&
@@ -1633,7 +1656,7 @@ async function recordReferenceReads(
       if (!receipt) {
         if (reads.length >= 64) return unavailable();
         const id = randomUUID();
-        receipt = ReferenceReadSchema.parse({
+        receipt = ReferenceTextReadSchema.parse({
           receiptId: id,
           origin: group.origin,
           citation: {
@@ -1661,6 +1684,17 @@ async function recordReferenceReads(
 /** Initial common and explicitly selected references share the existing content
  * authority, exact execution lease and native generation. No other scene is read. */
 export async function loadEmployeeRuntimeReferences(
+  scope: RunScope,
+  generationId: string,
+  worker: ContentWorker,
+) {
+  return (
+    await loadEmployeeRuntimeReferenceContext(scope, generationId, worker)
+  ).knowledge;
+}
+
+/** The pin stays unchanged; current server capabilities travel outside it. */
+export async function loadEmployeeRuntimeReferenceContext(
   scope: RunScope,
   generationId: string,
   worker: ContentWorker,
@@ -1698,6 +1732,19 @@ export async function loadEmployeeRuntimeReferences(
       tx,
       true,
     );
+    const references = [];
+    for (const selection of selections) {
+      const current = await readReferenceSelection(
+        identity(scope),
+        selection.revisionId,
+        tx,
+        true,
+      );
+      references.push({
+        reference: selection,
+        readCapabilities: current.readCapabilities,
+      });
+    }
     const explicit = await retrieveReferenceKnowledgeInTransaction(
       {
         context: identity(scope),
@@ -1733,10 +1780,10 @@ export async function loadEmployeeRuntimeReferences(
       ],
     );
     if (!(await validContentLease(scope, worker, tx))) return unavailable();
-    return { knowledge };
+    return { knowledge, references };
   });
   if ('rejected' in result) return unavailable();
-  return result.knowledge;
+  return result;
 }
 
 /** The private Worker closure supplies Run/generation/lease. Tool arguments
@@ -1748,11 +1795,8 @@ export async function executeEmployeeReferenceTool(
   toolName: ReferenceToolName,
   input: unknown,
   signal?: AbortSignal,
+  imageExecution?: ReferenceImageExecution,
 ) {
-  const args =
-    toolName === 'workspace.reference.search'
-      ? ReferenceSearchInputSchema.parse(input)
-      : ReferenceReadInputSchema.parse(input);
   const reader = identity(scope);
   async function authority(tx: ContentSql, locked: boolean) {
     const run = await ownedRun(scope, tx);
@@ -1774,9 +1818,178 @@ export async function executeEmployeeReferenceTool(
       ))
     )
       return unavailable();
-    signal?.throwIfAborted();
+    if (signal) {
+      if (isBoundedReferenceToolName(toolName))
+        checkReferenceImageSignal(signal);
+      else signal.throwIfAborted();
+    }
     return run;
   }
+  if (isBoundedReferenceToolName(toolName)) {
+    if (
+      !imageExecution ||
+      !Number.isSafeInteger(imageExecution.native.deadlineAt) ||
+      imageExecution.native.deadlineAt >
+        Date.now() + referenceImagePolicy.operationMilliseconds
+    )
+      return unavailable();
+    const deadline = AbortSignal.timeout(
+      Math.max(0, imageExecution.native.deadlineAt - Date.now()),
+    );
+    signal = signal ? AbortSignal.any([signal, deadline]) : deadline;
+    await authority(getDatabase(), false);
+    ReferenceContentCallSchema.parse(imageExecution.call);
+    if (imageExecution.call.name !== toolName) return unavailable();
+    const pin = ReferenceReadImageInputSchema.parse(
+      Object.fromEntries(
+        ['sourceId', 'revisionId', 'digest', 'checksum'].map((key) => [
+          key,
+          (input as Record<string, unknown>)[key],
+        ]),
+      ),
+    );
+    const readKind =
+      toolName === 'workspace.reference.read_image' ? 'image' : 'archive';
+    let prepared: PreparedReferenceContent;
+    try {
+      if (toolName === 'workspace.reference.read_image') {
+        const image = await prepareReferenceImage(
+          reader,
+          input,
+          imageExecution,
+          signal,
+        );
+        prepared = {
+          selection: image.selection,
+          readKind: 'image',
+          itemCount: 1,
+          contentChecksum: image.image.attachmentId,
+          locator: {
+            kind: 'image',
+            member: null,
+            sourceChecksum: image.selection.checksum,
+            image: image.image,
+          },
+          value: {
+            kind: 'image',
+            reference: image.selection,
+            image: image.image,
+            sourceChecksum: image.selection.checksum,
+            warnings: [],
+          },
+        };
+      } else
+        prepared = await prepareReferenceArchive(
+          reader,
+          toolName,
+          input,
+          imageExecution,
+          signal,
+          async () => {
+            await authority(getDatabase(), false);
+            await requireReferenceImagePin(
+              reader,
+              pin,
+              getDatabase(),
+              false,
+              'archive',
+            );
+          },
+        );
+    } catch (error) {
+      // Failed reads may also reveal new format/size facts. Revoke/lease/cancel
+      // gates take precedence over those details, just as on the success path.
+      await withContentLocks(scope, async (tx) => {
+        await authority(tx, true);
+        await requireReferenceImagePin(reader, pin, tx, true, readKind);
+        checkReferenceImageSignal(signal!);
+        throw error;
+      });
+      throw error;
+    }
+    const activeSignal = signal;
+    return withContentLocks(scope, async (tx) => {
+      checkReferenceImageSignal(activeSignal);
+      const run = await authority(tx, true);
+      await requireReferenceImagePin(reader, pin, tx, true, readKind);
+      const reads = ReferenceReadsSchema.parse(run.reference_reads ?? []);
+      if (
+        reads.some(
+          (r) => r.runId !== scope.runId || r.generationId !== generationId,
+        )
+      )
+        return unavailable();
+      const locator = prepared.locator;
+      let receipt = reads.find(
+        (r) =>
+          r.citation.type === 'reference' &&
+          runtimePolicyDigest(r.citation.reference) ===
+            runtimePolicyDigest(prepared.selection) &&
+          runtimePolicyDigest(r.citation.locator) ===
+            runtimePolicyDigest(locator) &&
+          r.contentChecksum === prepared.contentChecksum,
+      );
+      if (!receipt && locator) {
+        if (reads.length >= 64)
+          referenceImageLimit(
+            'receipt_budget',
+            '本轮资料读取已达 64 条，请另起一轮读取。',
+          );
+        const id = randomUUID();
+        receipt = (
+          prepared.readKind === 'image'
+            ? ReferenceImageReadSchema
+            : ReferenceArchiveReadSchema
+        ).parse({
+          schemaVersion: 2,
+          readKind: prepared.readKind,
+          receiptId: id,
+          origin: { kind: 'tool', toolName },
+          call: imageExecution.call,
+          citation: {
+            type: 'reference',
+            id,
+            label: referenceCitationLabel(prepared.selection),
+            reference: prepared.selection,
+            referenceLabel: `R${reads.length + 1}`,
+            locator,
+          },
+          contentChecksum: prepared.contentChecksum,
+          runId: scope.runId,
+          generationId,
+          jobId: worker.jobId,
+          workerId: worker.workerId,
+          readAt: new Date().toISOString(),
+        });
+        reads.push(receipt);
+        await tx`update allrice_employee_runs set reference_reads=${tx.json(reads)} where run_id=${scope.runId}`;
+      }
+      const value = {
+        ...prepared.value,
+        citation: receipt?.citation ?? null,
+        receiptId: receipt?.receiptId ?? null,
+      };
+      const result =
+        prepared.readKind === 'image'
+          ? ReferenceReadImageResultSchema.parse(value)
+          : prepared.readKind === 'archive_directory'
+            ? ReferenceArchiveListResultSchema.parse(value)
+            : ReferenceArchiveTextResultSchema.parse(value);
+      const modelContent = boundedReferenceToolResult(result);
+      if (!(await validContentLease(scope, worker, tx))) return unavailable();
+      checkReferenceImageSignal(activeSignal);
+      return {
+        modelContent,
+        ...(receipt ? { referenceReceiptId: receipt.receiptId } : {}),
+        ...(result.kind === 'image' ? { referenceImage: result } : {}),
+        itemCount: prepared.itemCount,
+      };
+    });
+  }
+  const args =
+    toolName === 'workspace.reference.search'
+      ? ReferenceSearchInputSchema.parse(input)
+      : ReferenceReadInputSchema.parse(input);
   await authority(getDatabase(), false);
   // Full scans, extraction decoding, offsets and response formatting are outside
   // content/admission locks. Only exact authority and the receipt append commit.
@@ -1842,6 +2055,8 @@ export async function executeEmployeeReferenceTool(
               purpose: reference.purpose,
               processing: reference.processing,
               fullTextReady: reference.fullTextReady,
+              canReference: reference.canReference,
+              readCapabilities: reference.readCapabilities,
               ...(entry ? { excerpt: excerpt(entry) } : {}),
             };
           }),
