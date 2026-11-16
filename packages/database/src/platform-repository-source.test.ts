@@ -87,6 +87,82 @@ function fixture() {
   return { archive, bytes, baseline };
 }
 describe('operator-owned immutable full repository source boundary', () => {
+  it('accepts the complete 8,192-file source and binds baseline and verification counts to that exact bound', () => {
+    const f = fixture();
+    const archive = validateRepositoryArchive({
+      ...f.archive,
+      files: [
+        ...f.archive.files,
+        ...Array.from({ length: 8192 - f.archive.files.length }, (_, i) =>
+          file(`source/${i}.ts`, 'x'),
+        ),
+      ],
+    });
+    const bytes = gzipSync(Buffer.from(JSON.stringify(archive)));
+    const baseline = RepositoryBaselineSchema.parse({
+      ...f.baseline,
+      sourceDigest: repositoryMaterialDigest(archive.files),
+      archiveChecksum: repositoryDigest(bytes),
+      archiveBytes: bytes.length,
+      sourceBytes: archive.files.reduce((n, entry) => n + entry.sizeBytes, 0),
+      fileCount: 8192,
+    });
+    expect(readRepositoryArchive(bytes, baseline).files).toHaveLength(8192);
+    expect(() =>
+      validateRepositoryArchive({
+        ...archive,
+        files: [...archive.files, file('source/overflow.ts', 'x')],
+      }),
+    ).toThrow();
+    expect(
+      RepositoryBaselineSchema.safeParse({ ...baseline, fileCount: 8193 })
+        .success,
+    ).toBe(false);
+    for (const report of RepositoryVerificationSchema.options) {
+      expect(report.shape.sourceFileCount.safeParse(8192).success).toBe(true);
+      expect(report.shape.sourceFileCount.safeParse(8193).success).toBe(false);
+    }
+  });
+  it('reads an exact 48 MB original gzip through the catalog and rejects overflow or changed original bytes', () => {
+    const f = fixture();
+    // Gzip permits trailing zero padding. Keep source/JSON small while testing
+    // the actual original transport length, hash and bounded catalog read.
+    const bytes = Buffer.alloc(48_000_000);
+    f.bytes.copy(bytes);
+    const baseline = RepositoryBaselineSchema.parse({
+      ...f.baseline,
+      archiveBytes: bytes.length,
+      archiveChecksum: repositoryDigest(bytes),
+    });
+    const root = realpathSync(
+      mkdtempSync(join(tmpdir(), 'allrice-gzip-bound-')),
+    );
+    roots.push(root);
+    const folder = join(root, baseline.id);
+    mkdirSync(folder);
+    writeFileSync(join(folder, 'baseline.json'), JSON.stringify(baseline));
+    writeFileSync(join(folder, 'source.json.gz'), bytes);
+    expect(readRepositoryArchive(bytes, baseline)).toEqual(f.archive);
+    const loaded = loadRepositoryBaseline(root, baseline.id);
+    expect(loaded.bytes.length).toBe(48_000_000);
+    expect(loaded.archive).toEqual(f.archive);
+    expect(() => readRepositoryArchive(bytes, f.baseline)).toThrow(
+      'REPOSITORY_ARCHIVE_CHANGED',
+    );
+    expect(
+      RepositoryBaselineSchema.safeParse({
+        ...baseline,
+        archiveBytes: 48_000_001,
+      }).success,
+    ).toBe(false);
+    expect(() =>
+      readRepositoryArchive(Buffer.concat([bytes, Buffer.alloc(1)]), baseline),
+    ).toThrow('REPOSITORY_ARCHIVE_CHANGED');
+    truncateSync(join(folder, 'source.json.gz'), 48_000_001);
+    expect(() => loadRepositoryBaseline(root, baseline.id)).toThrow(
+      'REPOSITORY_CATALOG_UNSAFE',
+    );
+  });
   it('binds original archive bytes, every source mode/hash, lock and dependency configuration independently', () => {
     const { archive, bytes, baseline } = fixture();
     expect(readRepositoryArchive(bytes, baseline)).toEqual(archive);

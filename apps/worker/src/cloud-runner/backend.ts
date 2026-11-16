@@ -67,6 +67,9 @@ import {
   isCompiledRepositoryExecution,
   matchesRepositoryExecutionIsolation,
   compiledRepairLimits,
+  legacyCompiledRepairInputBytes,
+  repositorySourceLimits,
+  legacyRepositorySourceLimits,
   compiledRepairProfileId,
   CompiledVerificationTimeoutSchema,
   type RepositoryExecutionProof,
@@ -181,7 +184,7 @@ export type CloudRunResult = {
     network: 'none';
     compilerUid?: 1002;
     tmpfsMiB?: 64 | 128;
-    inputLimit?: 23000000;
+    inputLimit?: 12000000 | 48000000 | 23000000 | 59000000;
     dependencyChecksum?: string;
     timeoutMs?: number;
     memoryMiB?: number;
@@ -469,6 +472,28 @@ child.on('close',(code,signal)=>{try{
   clearTimeout(timer);finish(overflow?122:(code??125));
 }catch(error){clearTimeout(timer);console.log(JSON.stringify({type:'output',data:Buffer.from('Sandbox output validation failed: '+String(error.message).slice(0,1000)+'\n').toString('base64')}));finish(123)}});
 `;
+
+// Preserve both deployed supervisors byte-for-byte. Only the current private
+// proofs select these receivers: 48/59 MB of binary input needs 64/78.7 MB of
+// base64 plus the bounded script and JSON envelope. Ordinary cloud stays at 32 MB.
+export const repositoryExpandedSourceSupervisor = cloudSupervisor.replace(
+  'text.length>32_000_000',
+  'text.length>65_000_000',
+);
+export const repositoryExpandedCompiledSupervisor =
+  repositoryCompiledSupervisor.replace(
+    'text.length>32_000_000',
+    'text.length>80_000_000',
+  );
+function repositorySupervisorFor(proof: RepositoryExecutionProof) {
+  return isCompiledRepositoryExecution(proof)
+    ? proof.inputLimit === legacyCompiledRepairInputBytes
+      ? repositoryCompiledSupervisor
+      : repositoryExpandedCompiledSupervisor
+    : proof.inputLimit === legacyRepositorySourceLimits.archiveBytes
+      ? cloudSupervisor
+      : repositoryExpandedSourceSupervisor;
+}
 
 function redact(text: string) {
   return text
@@ -1054,6 +1079,26 @@ export class CloudRunnerBackend {
     const compiled =
       c.Config.Labels['xyz.bplabs.allrice.repository.profile'] ===
       compiledRepairProfileId;
+    const inputLabel =
+      c.Config.Labels['xyz.bplabs.allrice.repository.input-limit'];
+    const inputLimit = compiled
+      ? inputLabel === String(legacyCompiledRepairInputBytes)
+        ? legacyCompiledRepairInputBytes
+        : inputLabel === String(compiledRepairLimits.inputBytes)
+          ? compiledRepairLimits.inputBytes
+          : undefined
+      : inputLabel === undefined
+        ? legacyRepositorySourceLimits.archiveBytes
+        : inputLabel === String(repositorySourceLimits.archiveBytes)
+          ? repositorySourceLimits.archiveBytes
+          : undefined;
+    const supervisor = compiled
+      ? inputLimit === legacyCompiledRepairInputBytes
+        ? repositoryCompiledSupervisor
+        : repositoryExpandedCompiledSupervisor
+      : inputLimit === legacyRepositorySourceLimits.archiveBytes
+        ? cloudSupervisor
+        : repositoryExpandedSourceSupervisor;
     const sourceTmpfs =
       c.Config.Labels['xyz.bplabs.allrice.repository.source-tmpfs-mib'];
     const tmpfsMiB = compiled
@@ -1083,7 +1128,7 @@ export class CloudRunnerBackend {
           ...(compiled ? ['--expose-gc'] : []),
           '--input-type=module',
           '--eval',
-          compiled ? repositoryCompiledSupervisor : cloudSupervisor,
+          supervisor,
         ]) ||
       JSON.stringify([...(c.Config.Env ?? [])].sort()) !==
         JSON.stringify([...(image.Config.Env ?? [])].sort()) ||
@@ -1091,6 +1136,10 @@ export class CloudRunnerBackend {
       !c.HostConfig.Tmpfs?.['/tmp']?.includes('noexec') ||
       !c.HostConfig.Tmpfs?.['/tmp']?.includes('nosuid') ||
       tmpfsMiB === undefined ||
+      inputLimit === undefined ||
+      (!compiled &&
+        inputLimit === repositorySourceLimits.archiveBytes &&
+        tmpfsMiB !== 128) ||
       JSON.stringify(
         c.HostConfig.Tmpfs?.['/tmp']
           ?.split(',')
@@ -1101,8 +1150,6 @@ export class CloudRunnerBackend {
           c.HostConfig.MemorySwap !==
             compiledRepairLimits.memoryMiB * 1024 ** 2 ||
           c.HostConfig.PidsLimit !== 64 ||
-          c.Config.Labels['xyz.bplabs.allrice.repository.input-limit'] !==
-            String(compiledRepairLimits.inputBytes) ||
           !/^sha256:[a-f0-9]{64}$/.test(
             c.Config.Labels['xyz.bplabs.allrice.repository.dependency'] ?? '',
           ) ||
@@ -1119,10 +1166,10 @@ export class CloudRunnerBackend {
       readOnlyRoot: true,
       network: 'none',
       tmpfsMiB,
+      inputLimit,
       ...(compiled
         ? {
             compilerUid: 1002 as const,
-            inputLimit: 23000000 as const,
             timeoutMs: Number(
               c.Config.Labels['xyz.bplabs.allrice.repository.timeout'],
             ),
@@ -2197,7 +2244,11 @@ export class CloudRunnerBackend {
         guard?.profileId !== compiledRepairProfileId ||
         guard?.timeoutStepMs !== compiledRepairLimits.defaultTimeoutMs ||
         guard?.maximumTimeoutMs !== compiledRepairLimits.maximumTimeoutMs ||
-        guard?.memoryMiB !== compiledRepairLimits.memoryMiB
+        guard?.memoryMiB !== compiledRepairLimits.memoryMiB ||
+        (options.repositoryExecution.inputLimit ===
+          compiledRepairLimits.inputBytes &&
+          (!Array.isArray(guard?.inputLimits) ||
+            !guard.inputLimits.includes(compiledRepairLimits.inputBytes)))
       )
         throw new CloudRunnerError('REPOSITORY_COMPILED_WATCHDOG_REQUIRED');
     }
@@ -2352,8 +2403,8 @@ export class CloudRunnerBackend {
             '--eval',
             resolution
               ? cloudResolutionSupervisor
-              : isCompiledRepositoryExecution(options.repositoryExecution)
-                ? repositoryCompiledSupervisor
+              : options.repositoryExecution
+                ? repositorySupervisorFor(options.repositoryExecution)
                 : options.networkLease
                   ? executionBudget
                     ? streamed
@@ -2404,6 +2455,17 @@ export class CloudRunnerBackend {
                   'xyz.bplabs.allrice.cloud.kind': 'repository',
                   'xyz.bplabs.allrice.repository.command':
                     options.repositoryExecution.commandDigest,
+                  ...(!isCompiledRepositoryExecution(
+                    options.repositoryExecution,
+                  ) &&
+                  options.repositoryExecution.inputLimit ===
+                    repositorySourceLimits.archiveBytes
+                    ? {
+                        'xyz.bplabs.allrice.repository.input-limit': String(
+                          options.repositoryExecution.inputLimit,
+                        ),
+                      }
+                    : {}),
                   ...(!isCompiledRepositoryExecution(
                     options.repositoryExecution,
                   ) && options.repositoryExecution.tmpfsMiB === 128

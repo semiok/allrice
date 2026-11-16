@@ -29,6 +29,8 @@ import {
   RepositoryCandidateSchema,
   RepairReportSchema,
   repairProductPath,
+  repositorySourceLimits,
+  compiledRepairLimits,
 } from './platform-repair-contracts.ts';
 import {
   RepairBindingSchema,
@@ -668,7 +670,13 @@ export async function preparePlatformRepairInput(
         file.object,
         new Blob([Uint8Array.from(content)]).stream(),
       );
-    const bytes = await readArtifactBytes(storage, file.object, 12000000);
+    const bytes = await readArtifactBytes(
+      storage,
+      file.object,
+      dependencyInput
+        ? compiledRepairLimits.bundleBytes
+        : repositorySourceLimits.archiveBytes,
+    );
     if (repositoryDigest(bytes) !== checksum) throw new QueueError('conflict');
     file = await db.begin(async (tx) => {
       await assertPlatformRepairLease(tx, lease);

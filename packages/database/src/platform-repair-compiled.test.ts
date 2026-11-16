@@ -9,6 +9,7 @@ import {
   matchesRepositoryExecutionIsolation,
   repairProfileId,
   repairProductPath,
+  maintenanceCompiledProfileId,
 } from './platform-repair-contracts.ts';
 import { compiledRepairProfileId } from './platform-repair-compiled-contracts.ts';
 import {
@@ -113,6 +114,8 @@ describe('finite compiled repository verification boundaries', () => {
       'compilerUid',
       'tmpfsMiB',
       'inputLimit',
+      'sourceLimitsVersion',
+      'limits',
       'modelUsed',
     ])
       expect(
@@ -171,6 +174,28 @@ describe('finite compiled repository verification boundaries', () => {
     expect(
       RepositoryExecutionProofSchema.safeParse({ ...v1, tmpfsMiB: 96 }).success,
     ).toBe(false);
+    const expanded = RepositoryExecutionProofSchema.parse({
+      ...v1,
+      inputLimit: 48_000_000,
+      tmpfsMiB: 128,
+    });
+    expect(expanded.inputLimit).toBe(48_000_000);
+    for (const proof of [historical, current, expanded])
+      for (const inputLimit of [undefined, 12_000_000, 48_000_000]) {
+        const observed = {
+          commandDigest: common.commandDigest,
+          tmpfsMiB: proof.tmpfsMiB,
+          ...(inputLimit === undefined ? {} : { inputLimit }),
+        };
+        expect(matchesRepositoryExecutionIsolation(proof, observed)).toBe(
+          inputLimit === proof.inputLimit ||
+            (inputLimit === undefined && proof.inputLimit === 12_000_000),
+        );
+      }
+    for (const inputLimit of [12_000_001, 24_000_000, 47_999_999, 48_000_001])
+      expect(
+        RepositoryExecutionProofSchema.safeParse({ ...v1, inputLimit }).success,
+      ).toBe(false);
     const v2 = {
       ...common,
       version: 2,
@@ -183,12 +208,45 @@ describe('finite compiled repository verification boundaries', () => {
       memoryMiB: 768,
     };
     expect(RepositoryExecutionProofSchema.parse(v2)).toEqual(v2);
+    for (const inputLimit of [23_000_000, 59_000_000])
+      for (const version of [2, 3]) {
+        const proof = {
+          ...v2,
+          version,
+          inputLimit,
+          ...(version === 3
+            ? {
+                profileId: maintenanceCompiledProfileId,
+                verificationPlanDigest: repositoryDigest('verification plan'),
+                manifestDigest: repositoryDigest('manifest'),
+              }
+            : {}),
+        };
+        const parsed = RepositoryExecutionProofSchema.parse(proof);
+        expect(parsed).toEqual(proof);
+        const receipt = {
+          commandDigest: common.commandDigest,
+          tmpfsMiB: 128,
+          inputLimit,
+        };
+        expect(matchesRepositoryExecutionIsolation(parsed, receipt)).toBe(true);
+        expect(
+          matchesRepositoryExecutionIsolation(parsed, {
+            ...receipt,
+            inputLimit: inputLimit === 23_000_000 ? 59_000_000 : 23_000_000,
+          }),
+        ).toBe(false);
+      }
     expect(
       RepositoryExecutionProofSchema.safeParse({
         ...v2,
         inputLimit: 24_000_000,
       }).success,
     ).toBe(false);
+    for (const inputLimit of [23_000_001, 35_000_000, 58_999_999, 59_000_001])
+      expect(
+        RepositoryExecutionProofSchema.safeParse({ ...v2, inputLimit }).success,
+      ).toBe(false);
     expect(repairHarnessChecksumFor(false)).toBe(repairHarnessChecksum);
     expect(repairHarnessChecksumFor(true)).not.toBe(repairHarnessChecksum);
   });
@@ -276,16 +334,27 @@ describe('finite compiled repository verification boundaries', () => {
       },
     ]) {
       const current = repositoryVerificationCommand(buildInput);
-      const historical = repositoryVerificationCommand({
-        ...buildInput,
-        legacySourceLimits: true,
-      });
-      const originalScript = current.script.replace(
-        '"totalBytes":64000000,"archiveBytes":12000000,"jsonBytes":96000000',
-        '"totalBytes":40000000,"archiveBytes":12000000,"jsonBytes":60000000',
-      );
-      expect(originalScript).not.toBe(current.script);
-      expect(historical).toEqual({ ...current, script: originalScript });
+      for (const [sourceLimitsVersion, originalLimits] of [
+        [
+          'legacy_40mb',
+          '{"files":4096,"fileBytes":2000000,"totalBytes":40000000,"archiveBytes":12000000,"jsonBytes":60000000}',
+        ],
+        [
+          'legacy_64mb',
+          '{"files":4096,"fileBytes":2000000,"totalBytes":64000000,"archiveBytes":12000000,"jsonBytes":96000000}',
+        ],
+      ] as const) {
+        const historical = repositoryVerificationCommand({
+          ...buildInput,
+          sourceLimitsVersion,
+        });
+        const originalScript = current.script.replace(
+          '{"files":8192,"fileBytes":2000000,"totalBytes":64000000,"archiveBytes":48000000,"jsonBytes":96000000}',
+          originalLimits,
+        );
+        expect(originalScript).not.toBe(current.script);
+        expect(historical).toEqual({ ...current, script: originalScript });
+      }
     }
     for (const c of [old, compiled])
       execFileSync(process.execPath, ['--input-type=module', '--check'], {

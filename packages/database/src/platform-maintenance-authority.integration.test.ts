@@ -72,7 +72,10 @@ import { technicalDigest } from './platform-technical-tasks.ts';
 import type { MaintenanceDiagnosisProof } from './platform-maintenance-authority-contracts.ts';
 import { LocalStorageAdapter } from '@allrice/storage';
 import { preparePlatformRepairInput } from './platform-repair.ts';
-import { preparePlatformRepairVerification } from './platform-repair-verification.ts';
+import {
+  preparePlatformRepairVerification,
+  resolvePlatformRepositoryExecutionProofTx,
+} from './platform-repair-verification.ts';
 import { startMaintenanceRepairGrant } from './platform-maintenance-repair.ts';
 import { createCompletedRunFixture } from './completed-run.fixture.ts';
 import {
@@ -826,13 +829,106 @@ suite('immutable report-bound maintenance authority', () => {
       source.candidate.checksum,
     );
     const [v] =
-      await fixture.db`select proof from allrice_platform_repair_verifications where operation_id=${prepared.operationId}`;
+      await fixture.db`select command,command_digest,proof from allrice_platform_repair_verifications where operation_id=${prepared.operationId}`;
     expect(v!.proof.version).toBe(3);
+    expect(v!.proof.inputLimit).toBe(59_000_000);
     expect(v!.proof.verificationPlanDigest).toBe(proof.verificationPlanDigest);
     expect(prepared.arguments.inputs).toHaveLength(2);
     expect(prepared.arguments.script).toContain(
       'config.maintenance.verificationPlan.approvedFiles',
     );
+    const verificationScope = {
+      organizationId: claimed!.context.organizationId,
+      workspaceId: claimed!.context.workspaceId,
+      ownerId: claimed!.context.policySnapshot.subjectId,
+      runId: claimed!.context.runId,
+      jobId: claimed!.context.jobId,
+      workerId: lease.workerId,
+      leaseToken: lease.leaseToken,
+      operationId: prepared.operationId,
+    };
+    const resolve = (command: typeof prepared.command) =>
+      fixture.db.begin((tx) =>
+        resolvePlatformRepositoryExecutionProofTx(
+          tx,
+          verificationScope,
+          command,
+        ),
+      );
+    try {
+      expect(await resolve(prepared.command)).toEqual(v!.proof);
+      for (const [totalBytes, jsonBytes] of [
+        [40_000_000, 60_000_000],
+        [64_000_000, 96_000_000],
+      ]) {
+        const script = prepared.arguments.script.replace(
+          '{"files":8192,"fileBytes":2000000,"totalBytes":64000000,"archiveBytes":48000000,"jsonBytes":96000000}',
+          JSON.stringify({
+            files: 4096,
+            fileBytes: 2_000_000,
+            totalBytes,
+            archiveBytes: 12_000_000,
+            jsonBytes,
+          }),
+        );
+        expect(script).not.toBe(prepared.arguments.script);
+        const command = {
+          ...prepared.command,
+          arguments: { ...prepared.arguments, script },
+        };
+        const historicalProof = {
+          ...v!.proof,
+          commandDigest: repositoryDigest(JSON.stringify(command)),
+          inputLimit: 23_000_000,
+        };
+        await fixture.db`update allrice_platform_repair_verifications set command=${fixture.db.json(command)},command_digest=${historicalProof.commandDigest},proof=${fixture.db.json(historicalProof)} where operation_id=${prepared.operationId}`;
+        expect(
+          (
+            await preparePlatformRepairVerification(
+              lease,
+              claimed!.context,
+              source.candidate.checksum,
+            )
+          ).command,
+        ).toEqual(command);
+        expect(await resolve(command)).toEqual(historicalProof);
+        const [unchanged] =
+          await fixture.db`select command,command_digest,proof from allrice_platform_repair_verifications where operation_id=${prepared.operationId}`;
+        expect(unchanged).toEqual({
+          command,
+          command_digest: historicalProof.commandDigest,
+          proof: historicalProof,
+        });
+        for (const changed of [
+          { command, proof: { ...historicalProof, inputLimit: 59_000_000 } },
+          {
+            command: {
+              ...command,
+              arguments: {
+                ...command.arguments,
+                script: script + '\n// changed frozen verifier',
+              },
+            },
+            proof: historicalProof,
+          },
+        ]) {
+          const digest = repositoryDigest(JSON.stringify(changed.command));
+          await fixture.db`update allrice_platform_repair_verifications set command=${fixture.db.json(changed.command)},command_digest=${digest},proof=${fixture.db.json({ ...changed.proof, commandDigest: digest })} where operation_id=${prepared.operationId}`;
+          await expect(resolve(changed.command)).rejects.toThrow(
+            'authorization_denied',
+          );
+          await expect(
+            preparePlatformRepairVerification(
+              lease,
+              claimed!.context,
+              source.candidate.checksum,
+            ),
+          ).rejects.toThrow('conflict');
+        }
+      }
+    } finally {
+      await fixture.db`update allrice_platform_repair_verifications set command=${fixture.db.json(v!.command)},command_digest=${v!.command_digest},proof=${fixture.db.json(v!.proof)} where operation_id=${prepared.operationId}`;
+    }
     // A comment outside the old regex slot is allowed by this full-file
     // manifest, but is not claimed to fix or pass any physical assertion.
     const next = await applyPlatformRepairCandidate(

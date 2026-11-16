@@ -4,9 +4,10 @@ import { ChecksumSchema, isRuntimeRelativePath } from '@allrice/contracts';
 /** Server-only finite verification profile. Ordinary cloud/Bridge contracts do
  * not acquire its input, writable volume, compiler or candidate permissions. */
 export const compiledRepairProfileId = 'allrice.output-redaction.compiled.v1';
+export const legacyCompiledRepairInputBytes = 23_000_000;
 export const compiledRepairLimits = Object.freeze({
   bundleBytes: 12_000_000,
-  inputBytes: 23_000_000,
+  inputBytes: 59_000_000,
   jsonBytes: 18_000_000,
   tmpfsMiB: 128,
   memoryMiB: 768,

@@ -1,10 +1,16 @@
-import { platformRepository } from '@allrice/database/technical-contracts';
+import {
+  platformRepository,
+  repositorySourceLimits,
+} from '@allrice/database/technical-contracts';
 import { assertMaintenanceWriteAction } from '@allrice/database';
 
 const api = 'https://api.github.com';
 const prefix = `/repos/${platformRepository.fullName}`;
 const shaPattern = /^[a-f0-9]{40}$/;
 const loginPattern = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$/;
+// GitHub caps recursive trees at 100,000 entries / 7 MB; allow JSON framing.
+const treeResponseBytes = 8_000_000;
+const treeEntries = 100_000;
 export class RepositoryRemoteError extends Error {
   constructor(
     public readonly code:
@@ -60,6 +66,7 @@ export class FixedRepositoryGithub {
     path: string,
     method: 'GET' | 'POST' | 'PUT' = 'GET',
     payload?: unknown,
+    responseBytes: 2_000_000 | typeof treeResponseBytes = 2_000_000,
   ) {
     if (this.readOnly && method !== 'GET')
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
@@ -125,11 +132,23 @@ export class FixedRepositoryGithub {
         const next = await reader.read();
         if (next.done) break;
         bytes += next.value.byteLength;
-        if (bytes > 2_000_000)
+        if (bytes > responseBytes)
           throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
         chunks.push(next.value);
       }
-      return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+      const result: unknown = JSON.parse(
+        Buffer.concat(chunks).toString('utf8'),
+      );
+      if (
+        responseBytes === treeResponseBytes &&
+        result &&
+        typeof result === 'object' &&
+        'tree' in result &&
+        Array.isArray(result.tree) &&
+        result.tree.length > treeEntries
+      )
+        throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
+      return result;
     } catch {
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
     } finally {
@@ -189,7 +208,12 @@ export class FixedRepositoryGithub {
     return bytes;
   }
   async tree(id: string) {
-    const raw = await this.request(prefix + '/git/trees/' + sha(id));
+    const raw = await this.request(
+      prefix + '/git/trees/' + sha(id),
+      'GET',
+      undefined,
+      treeResponseBytes,
+    );
     if (raw === null) return null;
     const row = object(raw);
     if (
@@ -202,16 +226,20 @@ export class FixedRepositoryGithub {
   }
   async recursiveTree(id: string) {
     const row = object(
-      await this.request(prefix + '/git/trees/' + sha(id) + '?recursive=1'),
+      await this.request(
+        prefix + '/git/trees/' + sha(id) + '?recursive=1',
+        'GET',
+        undefined,
+        treeResponseBytes,
+      ),
     );
     if (
       sha(row.sha) !== id ||
       row.truncated !== false ||
-      !Array.isArray(row.tree) ||
-      row.tree.length > 10000
+      !Array.isArray(row.tree)
     )
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
-    return row.tree.flatMap((raw) => {
+    const files = row.tree.flatMap((raw) => {
       const e = object(raw);
       if (e.type === 'tree' && e.mode === '040000') return [];
       if (
@@ -222,6 +250,9 @@ export class FixedRepositoryGithub {
         throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
       return [{ path: e.path, mode: String(e.mode), sha: sha(e.sha) }];
     });
+    if (files.length > repositorySourceLimits.files)
+      throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
+    return files;
   }
   async branch(name: string) {
     this.branchName(name);
@@ -361,10 +392,15 @@ export class FixedRepositoryGithub {
     // The path cannot be selected by model or browser input.
     if (path !== 'packages/project-runtime/src/command-output.ts')
       throw new RepositoryRemoteError('REPOSITORY_REMOTE_INVALID');
-    await this.request(prefix + '/git/trees', 'POST', {
-      base_tree: sha(baseTree),
-      tree: [{ path, mode, type: 'blob', sha: sha(blob) }],
-    });
+    await this.request(
+      prefix + '/git/trees',
+      'POST',
+      {
+        base_tree: sha(baseTree),
+        tree: [{ path, mode, type: 'blob', sha: sha(blob) }],
+      },
+      treeResponseBytes,
+    );
   }
   async createCommit(payload: {
     tree: string;

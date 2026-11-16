@@ -15,6 +15,7 @@ import {
   repairProductPath,
   repositorySourceLimits,
   legacyRepositorySourceLimits,
+  previousRepositorySourceLimits,
   compiledRepairProfileId,
   CompiledDependencyDescriptorSchema,
   type CompiledDependencyDescriptor,
@@ -60,8 +61,8 @@ export function repositoryVerificationCommand(input: {
   baseline: RepositoryBaseline;
   candidate: RepositoryCandidate;
   object: { id: string; checksum: string };
-  /** Only fixed original limits, selected against a trusted frozen command. */
-  legacySourceLimits?: boolean;
+  /** Only fixed historical limits, selected against a trusted frozen command. */
+  sourceLimitsVersion?: 'legacy_40mb' | 'legacy_64mb';
   maintenance?: {
     verificationPlan: MaintenanceRepairPlan;
     verificationPlanDigest: string;
@@ -111,9 +112,12 @@ export function repositoryVerificationCommand(input: {
       ? maintenanceVerificationHarnessChecksum
       : repairHarnessChecksumFor(!!input.compiled),
     ...(maintenance ? { maintenance } : {}),
-    limits: input.legacySourceLimits
-      ? legacyRepositorySourceLimits
-      : repositorySourceLimits,
+    limits:
+      input.sourceLimitsVersion === 'legacy_40mb'
+        ? legacyRepositorySourceLimits
+        : input.sourceLimitsVersion === 'legacy_64mb'
+          ? previousRepositorySourceLimits
+          : repositorySourceLimits,
     // PostgreSQL jsonb reorders keys. Schema parsing produces the same ordered
     // descriptor for preparation, lease checks and recovery command digests.
     ...(input.compiled

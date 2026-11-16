@@ -39,11 +39,11 @@ describe('immutable CI material capture and final production inventory', () => {
       fileBytes: repositorySourceLimits.fileBytes,
       totalBytes: repositorySourceLimits.totalBytes,
     });
-    expect(repositorySourceLimits.files).toBe(4096);
+    expect(repositorySourceLimits.files).toBe(8192);
     expect(repositorySourceLimits.fileBytes).toBe(2_000_000);
     expect(repositorySourceLimits.totalBytes).toBe(64_000_000);
     expect(repositorySourceLimits.jsonBytes).toBe(96_000_000);
-    expect(repositorySourceLimits.archiveBytes).toBe(12_000_000);
+    expect(repositorySourceLimits.archiveBytes).toBe(48_000_000);
     const root = mkdtempSync(join(tmpdir(), 'allrice-ci-source-bound-'));
     const git = (...args: string[]) =>
       execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
@@ -142,6 +142,70 @@ describe('immutable CI material capture and final production inventory', () => {
           ],
         }),
       ).toThrow('REPOSITORY_SOURCE_CHANGED');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+  it('retains all 4,097 and 8,192 tracked blobs with long UTF-8 paths and rejects the 8,193rd blob', () => {
+    const root = mkdtempSync(join(tmpdir(), 'allrice-ci-file-bound-'));
+    const git = (...args: string[]) =>
+      execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
+    try {
+      git('init', '-q');
+      git('config', 'user.name', 'Fixture');
+      git('config', 'user.email', 'fixture@example.test');
+      const oid = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+        cwd: root,
+        input: 'x',
+        encoding: 'utf8',
+      }).trim();
+      const prefix = [
+        '中'.repeat(60),
+        '文'.repeat(60),
+        '源'.repeat(60),
+        '码'.repeat(48),
+      ].join('/');
+      const path = (i: number) => `${prefix}/${String(i).padStart(5, '0')}.ts`;
+      expect(path(0)).toHaveLength(240);
+      for (const count of [4097, 8192, 8193]) {
+        git('read-tree', '--empty');
+        execFileSync('git', ['update-index', '--index-info'], {
+          cwd: root,
+          input:
+            `100644 ${oid}\tpnpm-lock.yaml\n` +
+            Array.from(
+              { length: count - 1 },
+              (_, i) => `${i === 0 ? '100755' : '100644'} ${oid}\t${path(i)}\n`,
+            ).join(''),
+        });
+        const tree = git('write-tree');
+        const sha = git('commit-tree', tree, '-m', 'complete long-path tree');
+        if (count === 8193) {
+          expect(() => readRepositoryGitMaterial(root, sha)).toThrow(
+            'REPOSITORY_SOURCE_LIMIT',
+          );
+          continue;
+        }
+        expect(
+          execFileSync('git', ['ls-tree', '-lr', '-z', sha], {
+            cwd: root,
+            maxBuffer: 8_000_000,
+          }).length,
+        ).toBeGreaterThan(2_000_000);
+        const archive = readRepositoryGitMaterial(root, sha);
+        expect(archive.files).toHaveLength(count);
+        expect(validateRepositoryArchive(archive).files).toHaveLength(count);
+        expect(archive.files.find((f) => f.path === path(0))?.mode).toBe(
+          '100755',
+        );
+        expect(archive.files.every((f) => f.contentBase64 === 'eA==')).toBe(
+          true,
+        );
+        expect(ciMaterialDigest(archive.files)).toBe(
+          repositoryMaterialDigest(archive.files),
+        );
+        expect(repositoryGitTree(archive)).toBe(tree);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

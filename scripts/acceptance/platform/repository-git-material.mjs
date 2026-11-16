@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 // Kept usable before dependencies/builds exist. The CI regression verifies
 // these fixed source budgets against the registered product profile.
 export const repositoryGitMaterialLimits = Object.freeze({
-  files: 4096,
+  files: 8192,
   fileBytes: 2_000_000,
   totalBytes: 64_000_000,
 });
@@ -12,7 +12,7 @@ export function readRepositoryGitMaterial(root, sha) {
   if (!/^[a-f0-9]{40}$/.test(sha)) throw Error('REPOSITORY_SHA_INVALID');
   const rows = execFileSync('git', ['ls-tree', '-lr', '-z', sha], {
     cwd: root,
-    maxBuffer: 2_000_000,
+    maxBuffer: 8_000_000,
   })
     .toString('utf8')
     .split('\0')
