@@ -1,7 +1,7 @@
 /** Actual HTTP handlers, login/session/membership checks and PostgreSQL in a
  * migrated random schema. Only Next's cookie transport is substituted. No
  * model, Worker loop, Dev account or external publication is involved. */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -10,6 +10,7 @@ import {
   allRiceToolManifest,
   brandMediaModule,
   brandMediaRelease,
+  makeObjectKey,
   type BrandMediaArticle,
   type BrandMediaMutationResult,
   type BrandMediaReadResult,
@@ -897,15 +898,42 @@ suite(
       const a = await actor();
       await install(a);
       let article = await draft(a);
-      const imageFile = await file(a);
-      const [object] =
-        await f.db`select * from allrice_storage_objects where id=${imageFile.objectId}`;
       const imageId = randomUUID(),
         versionId = randomUUID();
+      const bytes = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==',
+        'base64',
+      );
+      const checksum =
+        'sha256:' + createHash('sha256').update(bytes).digest('hex');
+      const key = makeObjectKey({
+        organizationId: a.context.organizationId,
+        workspaceId: a.scope.workspaceId,
+        ownerId: a.context.actor.id,
+        category: 'artifacts',
+        objectId: imageId,
+      });
+      const imageFile = { objectId: imageId, versionId, checksum };
+      await runtimeFixtureStorage(f.db)!.put(
+        {
+          id: imageId,
+          organizationId: a.context.organizationId,
+          workspaceId: a.scope.workspaceId,
+          ownerId: a.context.actor.id,
+          key,
+          checksum,
+          mediaType: 'image/png',
+          sizeBytes: bytes.length,
+          immutable: true,
+          deletedAt: null,
+          retentionUntil: null,
+        },
+        new Blob([bytes]).stream(),
+      );
       // The file authority uses the real immutable delivery/session records.
       // No image operation or provider is invoked by this synthetic fixture.
       await f.db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,immutable)
-      values(${imageId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${object!.object_key + '-image'},'artifacts','image/png',${object!.size_bytes},${object!.checksum},'ready',true)`;
+      values(${imageId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${key},'artifacts','image/png',${bytes.length},${checksum},'ready',true)`;
       await f.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
       values(${versionId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${imageId},${randomUUID()},1,${a.base.task.chatSessionId},'合成封面.png','png')`;
       await f.db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest)
