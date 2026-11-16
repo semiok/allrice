@@ -160,7 +160,9 @@ suite('R4 conversation source attribution', () => {
                 page
                   .getByRole('tab', { selected: true })
                   .filter({ hasText: label })
-                  .evaluate((tab) => {
+                  .evaluateAll((tabs) => {
+                    if (tabs.length !== 1) return false;
+                    const tab = tabs[0]!;
                     const strip = tab.closest('[data-dockkit-strip-tabs]');
                     const close = tab.querySelector('[data-dockkit-tab-close]');
                     if (!strip || !close) return false;
