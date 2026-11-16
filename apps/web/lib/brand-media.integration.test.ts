@@ -30,7 +30,15 @@ import {
 import {
   createEmployeeInstance,
   ensureGeneralEmployeeInstance,
+  getEmployeeInstance,
 } from '../../../packages/database/src/employees/employee-instances.ts';
+import { isBaseRiceInstance } from '../../../packages/database/src/employees/employee-instance-policy.ts';
+import { createEmployeeAdministrationFixture } from '../../../packages/database/src/employee-administration.fixture.ts';
+import {
+  savePlatformEmployeeDraft,
+  assignPublishedPlatformEmployeeToWorkspace,
+} from '../../../packages/database/src/employees/platform-employees.ts';
+import { getEmployeeWorkspace } from '../../../packages/database/src/workspace/service.ts';
 import {
   EmployeeModuleError,
   requireEmployeeModuleBinding,
@@ -66,7 +74,7 @@ type Fixture = Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
 type Actor = Awaited<ReturnType<typeof actor>>;
 let f: Fixture;
 
-async function actor(baseRice = false) {
+async function actor() {
   const base = await runtimeTaskFixture(f.db),
     currentVersionId = randomUUID();
   const [assignment] = await f.db<
@@ -83,9 +91,6 @@ async function actor(baseRice = false) {
       ${employeeManifestChecksum(manifest)},manifest,provider_snapshot
     from allrice_employee_versions where id=${assignment!.employee_version_id}`;
   await f.db`update allrice_employee_assignments set employee_version_id=${currentVersionId} where id=${assignment!.id}`;
-  if (baseRice)
-    await f.db`update allrice_employees set employee_key='default-assistant',name='Rice'
-    where id=(select employee_id from allrice_employee_assignments where id=${assignment!.id})`;
   await ensureGeneralEmployeeInstance(f.db, assignment!.id);
   const login = await createSession(base.context.actor.id);
   const context = (await authenticateSession(login.token, {
@@ -286,8 +291,8 @@ suite(
       await f?.close();
     }, 30000);
 
-    it('“给 Rice 添加品牌自媒体，选入这个选题，开始写并排周二晚上，发布后改回排期” persists the human chain', async () => {
-      const a = await actor(true);
+    it('“添加品牌自媒体，选入这个选题，开始写并排周二晚上，发布后改回排期” persists the human chain', async () => {
+      const a = await actor();
       const before = await catalog.GET(
         request(a, 'modules'),
         params(a.scope.instanceId),
@@ -350,8 +355,8 @@ suite(
       expect(evidence).toEqual({ requests: 8, audit: 8 });
     });
 
-    it('permits existing/general Rice and new instances without changing their published configuration, frozen admission or native tool directory', async () => {
-      const a = await actor(true);
+    it('permits existing general and new instances without changing their published configuration, frozen admission or native tool directory', async () => {
+      const a = await actor();
       const [before] =
         await f.db`select manifest,capabilities,config_checksum from allrice_employee_versions where id=${a.currentVersionId}`;
       const frozen = {
@@ -402,6 +407,64 @@ suite(
       expect(actualNative.every((name) => known.has(name))).toBe(true);
       expect(brandMediaModule.tools).toEqual([]);
       expect(brandMediaModule.skills).toEqual([]);
+    });
+
+    it('allows the real published platform Rice to self-add without preinstallation or changed capabilities', async () => {
+      const a = await actor(),
+        source = await createEmployeeAdministrationFixture(f.db);
+      const [rice] = await f.db<
+        { id: string }[]
+      >`select id from allrice_platform_employees where employee_key='rice'`;
+      expect(rice).toBeDefined();
+      await savePlatformEmployeeDraft(rice!.id, {
+        definition: {
+          ...source.definition,
+          key: 'rice',
+          name: 'Platform Rice',
+        },
+      });
+      await source.preview(rice!.id);
+      expect((await source.publish(rice!.id)).valid).toBe(true);
+      await assignPublishedPlatformEmployeeToWorkspace(
+        'rice',
+        a.scope.workspaceId,
+      );
+      const assigned = (
+        await getEmployeeWorkspace(a.context, a.scope.workspaceId)
+      ).employees.find((e) => e.employeeKey === 'default-assistant')!;
+      expect(assigned).toBeDefined();
+      await ensureGeneralEmployeeInstance(f.db, assigned.id);
+      const instance = await getEmployeeInstance(a.context, assigned.id);
+      expect(await isBaseRiceInstance(instance, f.db)).toBe(true);
+      const target = {
+        ...a,
+        assignmentId: assigned.id,
+        scope: { ...a.scope, instanceId: instance.id },
+      };
+      const [before] =
+        await f.db`select manifest,capabilities,config_checksum from allrice_employee_versions where id=${instance.source.employeeVersionId}`;
+      const entries = await catalog.GET(
+        request(target, 'modules'),
+        params(instance.id),
+      );
+      expect((await entries.json()).modules[0]).toMatchObject({
+        binding: null,
+        enabled: false,
+        available: true,
+      });
+      const added = await install(target);
+      expect(added.binding).toMatchObject({
+        ...target.scope,
+        release: brandMediaRelease,
+        revision: 1,
+      });
+      expect(await read(target, { view: 'articles' })).toMatchObject({
+        items: [],
+        nextCursor: null,
+      });
+      const [after] =
+        await f.db`select manifest,capabilities,config_checksum from allrice_employee_versions where id=${instance.source.employeeVersionId}`;
+      expect(after).toEqual(before);
     });
 
     it('deduplicates simultaneous add and request replay into one full-scope binding and an existing ledger row', async () => {
