@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { setImmediate } from 'node:timers/promises';
 import { expect, it, vi } from 'vitest';
-import type { CDPSession } from '../../worker/node_modules/playwright-core/index.js';
+import type { CDPSession } from 'playwright-core';
 import { observeCdpExceptions } from './cdp-exception-probe';
 
 const notPaused = new Error(

@@ -1,4 +1,4 @@
-import type { CDPSession } from '../../worker/node_modules/playwright-core/index.js';
+import type { CDPSession } from 'playwright-core';
 
 /** Test-only observer; the caller enables both Runtime and Debugger domains. */
 export function observeCdpExceptions(
