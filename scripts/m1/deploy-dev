@@ -39,6 +39,7 @@ STATE="$HOME/allrice-dev/qa"; LOG="$STATE/deploys.jsonl"; INFLIGHT="$STATE/deplo
 DISABLED="$M1_DEV_DISABLED"
 LOCK="$HOME/allrice-dev/.local/deploy.lock"; SNAPSHOTS="$STATE/pre-migrate"; KEEP_SNAPSHOTS=2
 export PATH="$HOME/.local/opt/node-22.23.2/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+RESULT_FILE=""; RESULT_ID=""
 KEEP_RELEASES=3; BLOG=""; FAIL_REASON=""; INFLIGHT_MINE=""; LOCKED=""; BUILD_DIR=""; BUILT=""
 WEB_LABEL=ai.bplabs.allrice-dev-web; WORKER_LABEL=ai.bplabs.allrice-dev-worker
 WEB_PLIST="$HOME/Library/LaunchAgents/$WEB_LABEL.plist"
@@ -214,10 +215,28 @@ restore() {
   start_both_on "$prev" || { say "previous version ${prev:0:8} did NOT come back healthy (migrations applied by the new version stay)"; return 1; }
   say "previous version ${prev:0:8} is healthy again"
 }
+# Keep a final error/signal handler while the EXIT cleanup runs; replacing an
+# EXIT trap inside itself would not run a second EXIT trap. Publish the actual exit.
+finish_result() {
+  local rc=$1
+  trap - EXIT ERR INT TERM HUP
+  if [ -n "$RESULT_FILE" ]; then
+    "$M1_PY" "$BIN/deploy-result.py" finish "$RESULT_FILE" "$RESULT_ID" "$rc" "${RESULT_INITIAL_EXIT:-$rc}" || {
+      echo "[deploy-dev] could not persist terminal receipt: $RESULT_FILE" >&2
+      [ "$rc" != 0 ] || rc=74
+    }
+    echo "[deploy-dev] terminal result: $RESULT_FILE"
+  fi
+  exit "$rc"
+}
 # One exit path for every way this run can end before success.
 on_exit() { # rc
   local rc=$1
-  trap - EXIT INT TERM HUP
+  RESULT_INITIAL_EXIT=$rc
+  trap - EXIT
+  set -E # inherit the cleanup error handler in shell functions
+  trap 'finish_result $?' ERR
+  trap 'finish_result 130' INT TERM HUP
   # A build that did not get past the pre-stop check is removed; a checked one is kept.
   if [ -n "$BUILD_DIR" ] && [ -z "$BUILT" ]; then discard "$BUILD_DIR" || true; fi
   if [ -n "$INFLIGHT_MINE" ] && [ -f "$INFLIGHT/state" ]; then
@@ -232,7 +251,7 @@ on_exit() { # rc
     fi
   fi
   release_lock
-  exit "$rc"
+  finish_result "$rc"
 }
 trap 'on_exit $?' EXIT
 trap 'exit 130' INT TERM HUP
@@ -510,6 +529,15 @@ need_rm() {
   [ "$RM" = 1 ] || die "only the release manager deploys or rolls back the shared Dev (AGENTS.md §9 at the repository root). If the user appointed you, add --release-manager; otherwise write the deploy request on your MET card and stop." 6
 }
 MODE="${1:-deploy}"
+
+# A unique receipt is prepared before authorization/arguments are checked, so even
+# a refused invocation has a truthful terminal result. Status/help remain read-only.
+if [ "$MODE" != --status ] && [ "$MODE" != -h ] && [ "$MODE" != --help ]; then
+  RESULT_ID="${ALLRICE_DEPLOY_RESULT_ID:-$("$M1_PY" -c 'import uuid; print(uuid.uuid4())')}"
+  candidate="${ALLRICE_DEPLOY_RESULT_FILE:-$STATE/deploy-results/$RESULT_ID.json}"
+  "$M1_PY" "$BIN/deploy-result.py" start "$candidate" "$RESULT_ID"
+  RESULT_FILE="$candidate"
+fi
 
 case "${1:-}" in
   --status) status ;;
