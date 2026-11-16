@@ -311,8 +311,8 @@ export function WorkProcess({
     <>
       {timing ? (
         <>
-          {completed ? '，' : ' · '}
           <span className={styles.processTitle} aria-label="本轮运行时间">
+            {completed ? '，' : ' · '}
             用时{' '}
             <RunElapsedTime
               timing={timing}
@@ -787,7 +787,6 @@ function NativeStepsGroup({
         titleClassName={styles.processTitle}
         collapsedContent={
           <>
-            {titleTiming}
             {keys.map((key) => (
               <span key={key} data-process-control={key} />
             ))}
