@@ -235,6 +235,29 @@ time.sleep(60)
         self.assertFalse(running(int((self.home / 'child.pid').read_text())))
         self.assert_released(item)
 
+    def test_sigint_during_timeout_cleanup_cannot_leave_command_running(self):
+        item = self.start('import os,signal,time; from pathlib import Path; '
+                          'Path("child.pid").write_text(str(os.getpid())); '
+                          'signal.signal(signal.SIGTERM, lambda *_: Path("term-received").touch()); '
+                          'time.sleep(60)', timeout='1s')
+        def release_fixture_child():
+            path = self.home / 'child.pid'
+            if path.exists() and running(int(path.read_text())):
+                try:
+                    os.killpg(int(path.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        self.addCleanup(release_fixture_child)
+        deadline = time.monotonic() + 5
+        while not (self.home / 'term-received').exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue((self.home / 'term-received').exists())
+        os.kill(item['pid'], signal.SIGINT)
+        state = self.finished(item)
+        self.assertEqual((state['commandExitCode'], state['notification']), (130, 'sent'))
+        self.assertFalse(running(int((self.home / 'child.pid').read_text())))
+        self.assert_released(item)
+
     def test_stale_unlocked_file_is_removed_on_next_launch(self):
         directory = self.base / 'qa/wake-when/.locks'
         directory.mkdir(parents=True)

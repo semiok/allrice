@@ -142,11 +142,12 @@ def run_group(command, timeout, log):
     except subprocess.TimeoutExpired:
         return 124, True
     finally:
-        previous = signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        # A second interrupt must not abort cleanup and leave a live child behind.
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
         try:
             stop_group(process)
         finally:
-            signal.signal(signal.SIGTERM, previous)
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 def last_lines(path):
