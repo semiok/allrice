@@ -655,8 +655,7 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
       | 'session_references'
       | 'brand_workflow'
       | 'personal_instance_id'
-      | 'module_snapshot'
-    >,
+    > & { module_file_versions: string[] },
   ) => {
     if (row.personal_instance_id) instances.add(row.personal_instance_id);
     const brand = await brandSourceSessions(scope, row.brand_workflow, sql);
@@ -667,22 +666,12 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
       if (!parsed.success) return unavailable();
       instances.add(parsed.data.instanceId);
     }
-    if (row.module_snapshot) {
-      const frozen = EmployeeExecutionSnapshotSchema.parse(row.module_snapshot);
-      const pins =
-        frozen.schemaVersion === 2
-          ? (frozen.moduleInvocation?.intent.references ?? [])
-          : [];
-      const versionIds = pins.flatMap((pin) =>
-        pin.origin === 'file' ? [pin.file.versionId] : [],
-      );
-      if (versionIds.length) {
-        const sources = await sql<{ session_id: string | null }[]>`
-          select distinct session_id from allrice_deliverable_versions
-          where id in ${sql(versionIds)} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}`;
-        for (const source of sources)
-          if (source.session_id) sessions.add(source.session_id);
-      }
+    if (row.module_file_versions.length) {
+      const sources = await sql<{ session_id: string | null }[]>`
+        select distinct session_id from allrice_deliverable_versions
+        where id in ${sql(row.module_file_versions)} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}`;
+      for (const source of sources)
+        if (source.session_id) sessions.add(source.session_id);
     }
     for (const ref of row.session_references ?? []) {
       sessions.add(ref.sessionId);
@@ -716,7 +705,22 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
       }
     }
   };
-  await add(run);
+  const frozen = run.module_snapshot
+    ? EmployeeExecutionSnapshotSchema.parse(run.module_snapshot)
+    : null;
+  await add({
+    ...run,
+    module_file_versions:
+      frozen?.schemaVersion === 2
+        ? [
+            ...new Set(
+              frozen.moduleInvocation?.intent.references.flatMap((pin) =>
+                pin.origin === 'file' ? [pin.file.versionId] : [],
+              ) ?? [],
+            ),
+          ].sort()
+        : [],
+  });
   for (;;) {
     // A later branch may add another exact predecessor to an already seen
     // generation. Re-discover that union, retaining stable sorted lock sets.
@@ -737,8 +741,10 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
     if (!context) return unavailable();
     owners.add(context.owner_id);
     sessions.add(context.session_id);
+    // DISTINCT covers stable lock dependencies; request-specific facts stay
+    // on the complete current snapshot checked by the model-use authority gate.
     const rows = await sql<
-      Pick<
+      (Pick<
         RunRow,
         | 'content'
         | keyof PersonalProvenance
@@ -746,10 +752,13 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
         | 'session_references'
         | 'reference_selections'
         | 'reference_reads'
-        | 'module_snapshot'
-      >[]
+      > & { module_file_versions: string[] })[]
     >`
-      select distinct case when execution_snapshot ? 'moduleInvocation' then execution_snapshot end module_snapshot,execution_snapshot->'workflowInvocation' brand_workflow,experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
+      select distinct
+        (select coalesce(jsonb_agg(distinct p#>>'{file,versionId}' order by p#>>'{file,versionId}'),'[]'::jsonb)
+          from jsonb_array_elements(coalesce(execution_snapshot#>'{moduleInvocation,intent,references}','[]'::jsonb)) p
+          where p->>'origin'='file') module_file_versions,
+        execution_snapshot->'workflowInvocation' brand_workflow,experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
       from allrice_employee_runs where content_generation_id=${id} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
         and error_code is distinct from 'STEER_CONSUMED'
         ${dependencies ? sql`and run_id in ${sql([...dependencies])}` : sql``} limit 129`;

@@ -1528,6 +1528,9 @@ suite(
           module: ts.ModuleKind.None,
         },
       }).outputText;
+      const { HandlerError } = await import(
+        new URL('../../worker/src/errors.ts', import.meta.url).href
+      );
       return runInNewContext(code, {
         contentRuntime,
         resolved,
@@ -1540,7 +1543,7 @@ suite(
         },
         assertEmployeeContentContext,
         EmployeeRuntimeContentError,
-        HandlerError: Error,
+        HandlerError,
         appendJobEvent: async () => {},
         contentEvidence: undefined,
       }) as { generationId: string; check: () => Promise<void> };
@@ -1968,6 +1971,117 @@ suite(
       );
       expect(response.status).toBe(409);
     });
+    it.each(['same', 'distinct'] as const)(
+      'counts stable module dependencies rather than Run identities across 129 %s-input Runs',
+      async (dependencies) => {
+        const a = await generationActor();
+        const firstFile = await file(a);
+        const pins: BrandMediaTopic['references'] = [
+          { origin: 'file', file: firstFile },
+        ];
+        if (dependencies === 'same')
+          pins.push({ origin: 'file', file: await file(a) });
+        const sent = await generate(
+          a,
+          candidateIntent(a, { references: pins }),
+        );
+        const worker = await execution(a, sent);
+        const guard = await productionContentGuard(a, sent, worker);
+        await guard.check();
+        const [initial] =
+          await f.db`select content_generation_id,execution_snapshot::text frozen from allrice_employee_runs where run_id=${sent.run.id}`;
+        expect(initial!.content_generation_id).toEqual(expect.any(String));
+        const scope = {
+          organizationId: a.context.organizationId,
+          workspaceId: a.scope.workspaceId,
+          ownerId: a.context.actor.id,
+          sessionId: sent.userMessage.sessionId,
+        };
+        for (let index = 1; index < 129; index++) {
+          const references: BrandMediaTopic['references'] =
+            dependencies === 'distinct'
+              ? [{ origin: 'file', file: await file(a) }]
+              : index % 2
+                ? [...pins].reverse()
+                : pins;
+          const next = await generate(
+            a,
+            candidateIntent(a, {
+              sessionId: scope.sessionId,
+              direction: '独立请求 ' + index,
+              references,
+            }),
+          );
+          const runtime = await prepareEmployeeContentContext({
+            ...scope,
+            runId: next.run.id,
+          });
+          expect(runtime?.generationId).toBe(initial!.content_generation_id);
+        }
+        const [counts] =
+          await f.db`select count(distinct er.run_id)::int runs,count(distinct er.execution_snapshot#>>'{moduleInvocation,intent,requestId}')::int requests,
+            count(distinct pin#>>'{file,versionId}')::int files
+          from allrice_employee_runs er cross join lateral jsonb_array_elements(er.execution_snapshot#>'{moduleInvocation,intent,references}') pin
+          where er.content_generation_id=${initial!.content_generation_id}`;
+        expect(counts).toMatchObject({
+          runs: 129,
+          requests: 129,
+          files: dependencies === 'same' ? 2 : 129,
+        });
+        expect(
+          (
+            await f.db`select execution_snapshot::text frozen from allrice_employee_runs where run_id=${sent.run.id}`
+          )[0]!.frozen,
+        ).toBe(initial!.frozen);
+        if (dependencies === 'distinct') {
+          await expect(guard.check()).rejects.toMatchObject({
+            code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+          });
+          return;
+        }
+        await expect(guard.check()).resolves.toBeUndefined();
+        // The same normalized dependency set still locks its actual source Session.
+        let entered!: (pid: number) => void, release!: () => void;
+        const acquired = new Promise<number>((resolve) => {
+          entered = resolve;
+        });
+        const held = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const holder = f.db.begin(async (tx) => {
+          const [backend] = await tx`select pg_backend_pid() pid`;
+          await tx`select id from allrice_chat_sessions where id=${a.base.task.chatSessionId} for update`;
+          entered(backend!.pid);
+          await held;
+        });
+        const holderPid = await acquired;
+        const checking = guard.check().then(
+          () => true,
+          (error: unknown) => error,
+        );
+        try {
+          await expect
+            .poll(
+              async () =>
+                (
+                  await f.db`select count(*)::int n from pg_stat_activity where ${holderPid}::int=any(pg_blocking_pids(pid))`
+                )[0]!.n,
+              { timeout: 5000 },
+            )
+            .toBeGreaterThan(0);
+        } finally {
+          release();
+          await holder;
+        }
+        expect(await checking).toBe(true);
+        await f.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${a.base.task.chatSessionId}`;
+        await expect(guard.check()).rejects.toMatchObject({
+          code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+        });
+      },
+      120000,
+    );
+
     it('rebuilds the exact selected candidate summary, direction and optional requirements for a fresh article Session without trusting client facts', async () => {
       const a = await generationActor(),
         direction = '面向通勤族，写下班后十分钟的真实体验';

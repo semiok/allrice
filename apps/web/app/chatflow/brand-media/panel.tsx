@@ -19,6 +19,7 @@ import {
   ui,
   runActive,
   candidateRequestId,
+  retryRequestId,
   useBrandMediaRunEvents,
   type BrandMediaClient,
   type BrandMediaRun,
@@ -331,11 +332,10 @@ export function BrandMediaPanel({
       instanceId: _instance,
       ...intent
     } = row.invocation.intent;
-    void generate({
-      ...intent,
-      requestId: crypto.randomUUID(),
-      sessionId: row.sessionId,
-    })
+    void retryRequestId(client.scope, row.run.id)
+      .then((requestId) =>
+        generate({ ...intent, requestId, sessionId: row.sessionId }),
+      )
       .catch((cause) => setError(cause.message))
       .finally(() => setBusy(false));
   };

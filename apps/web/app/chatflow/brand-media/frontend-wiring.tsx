@@ -89,24 +89,21 @@ export const runActive = (run: BrandMediaRun) =>
   !['succeeded', 'failed', 'canceled', 'needs_attention'].includes(
     run.run.status,
   );
-/** One immutable candidate selection keeps its identity across host remounts. */
-export async function candidateRequestId(
+async function moduleRequestId(
   scope: BrandMediaClientScope,
-  runId: string,
-  candidate: BrandMediaTopic['candidate'],
+  operation: string,
+  ...identity: string[]
 ) {
   const bytes = await crypto.subtle.digest(
     'SHA-256',
     new TextEncoder().encode(
       JSON.stringify([
-        'brand-media-candidate',
+        operation,
         scope.organizationId,
         scope.workspaceId,
         scope.ownerId,
         scope.instanceId,
-        runId,
-        candidate.title,
-        candidate.summary,
+        ...identity,
       ]),
     ),
   );
@@ -115,6 +112,23 @@ export async function candidateRequestId(
   ).join('');
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-5${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
 }
+/** Immutable selection/retry identities survive uncertain responses and remounts. */
+export const candidateRequestId = (
+  scope: BrandMediaClientScope,
+  runId: string,
+  candidate: BrandMediaTopic['candidate'],
+) =>
+  moduleRequestId(
+    scope,
+    'brand-media-candidate',
+    runId,
+    candidate.title,
+    candidate.summary,
+  );
+export const retryRequestId = (
+  scope: BrandMediaClientScope,
+  failedRunId: string,
+) => moduleRequestId(scope, 'brand-media-retry', failedRunId);
 async function json(
   url: string,
   headers: Record<string, string>,
