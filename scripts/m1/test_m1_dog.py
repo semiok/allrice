@@ -81,10 +81,10 @@ if mode.exists():
         runtime.save(run / 'result.json', state)
         return run, state
 
-    def turn(self, at, text, started=False):
-        path = self.sessions / ('rollout-' + THREAD + '.jsonl')
+    def turn(self, at, text, started=False, turn_id='turn1', thread=THREAD):
+        path = self.sessions / ('rollout-' + thread + '.jsonl')
         rows = [dict(timestamp=datetime.fromtimestamp(at, timezone.utc).isoformat(), type='event_msg',
-                     payload=dict(type='task_complete', turn_id='turn1', last_agent_message=text))]
+                     payload=dict(type='task_complete', turn_id=turn_id, last_agent_message=text))]
         if started:
             rows.append(dict(type='event_msg', payload=dict(type='task_started')))
         path.write_text('\n'.join(json.dumps(row, ensure_ascii=False) for row in rows) + '\n')
@@ -173,16 +173,16 @@ if mode.exists():
         self.assertEqual(len(self.messages), 1)
 
     def test_empty_wait_is_per_finished_turn_and_no_active_work(self):
-        self.turn(self.now-1801, '正在等待 CI 结束。')
+        self.turn(self.now-1801, '本线正在等待 CI run 43921068131 结束。')
         self.dog.check_round(self.now)
         self.dog.check_round(self.now+600)
         self.assertEqual(len(self.notifications()), 1)
         self.assertIn('空等提醒', self.notifications()[0][4])
-        self.turn(self.now-1801, '正在等待 CI 结束。', started=True)
+        self.turn(self.now-1801, '本线正在等待 CI run 43921068131 结束。', started=True)
         self.assertIsNone(self.dog.last_turn(self.sessions / ('rollout-' + THREAD + '.jsonl')))
 
     def test_active_wait_recent_delivery_and_non_wait_text_do_not_page(self):
-        self.turn(self.now-1801, '正在等待 M5 结束。')
+        self.turn(self.now-1801, '本线正在等待 M5 批次 20261116-123456-51f0a066 结束。')
         run, state = self.task(pid=os.getpid(), identity=runtime.process_identity(os.getpid()))
         self.dog.check_round(self.now)
         self.assertEqual(self.notifications(), [])
@@ -193,7 +193,100 @@ if mode.exists():
         self.assertFalse(self.dog.says_waiting('CI 已通过，不再等待。'))
         self.assertFalse(self.dog.says_waiting('等待用户审批。CI 已通过。'))
         self.assertFalse(self.dog.says_waiting('等待用户批准，CI已通过'))
-        self.assertTrue(self.dog.says_waiting('仍在等待新头CI结束'))
+        self.assertFalse(self.dog.says_waiting('仍在等待新头CI结束'))
+        self.assertTrue(self.dog.says_waiting('仍在等待新头 CI run 43921068131 结束'))
+
+    def test_rule_acknowledgements_examples_and_finished_work_never_page(self):
+        messages = [
+            '收到。以后 CI 等待统一加 `gh run watch … --exit-status --interval 60`；正在等待的不重挂。\n\n资源已释放：无。',
+            '收到，以后正在等待 CI run 43921068131 时统一加 --interval 60。',
+            '规则确认：例如本线正在等待 CI run 43921068131。',
+            '确认模板：本线正在等待 CI run 43921068131。',
+            '本线并非正在等待 CI run 43921068131。',
+            '模型线正在等待 CI run 43921068131；本线方案已交付。',
+            '打野正在等待 M5 批次 batch-a。',
+            '本线无待挂等待任务。正在等待 CI run 43921068131 是示例。',
+            'MET-257 只读方案已交付，本线没有执行中任务。',
+            '方案已交付；后续正在等待 M5 批次 20261116-123456 时按规则处理。',
+            '当前没有等待任务。以下是旧回执：正在等待 CI run 43921068131。',
+            '> 本线正在等待 CI run 43921068131\n已确认规则。',
+            '```text\n本线正在等待 CI run 43921068131\n```\n用法已确认。',
+            '正在等待 #889 CI 结束。',
+            '正在等待 M5 结束。',
+            '正在等待部署。',
+            'CI run 43921068131 已通过，不再等待。',
+            '仍在等待 CI run 43921068131。CI run 43921068131 已结束。',
+            '仍在等待 M5 批次 batch-a。M5 批次 batch-a 已完成。',
+            '仍在等待部署 67251a4c。部署 67251a4c 终态 success。',
+        ]
+        for index, message in enumerate(messages):
+            with self.subTest(message=message):
+                self.assertFalse(self.dog.says_waiting(message))
+                self.turn(self.now-1801, message, turn_id='negative-%s' % index)
+                self.dog.check_round(self.now)
+                self.assertEqual(self.notifications(), [])
+
+    def test_explicit_running_tasks_page_and_new_input_cancels_detection(self):
+        for index, message in enumerate([
+            '本线正在等待 CI run 43921068131 结束。',
+            '仍在等待 https://github.com/semiok/allrice/actions/runs/43921068131 的结果。',
+            '已启动 M5 批次 20261116-123456-51f0a066，正在等待结果。',
+            '当前正在等待部署 67251a4c 的 ready 结果。',
+            '本线正在等待部署任务 release-123 的结果。',
+            'Astra 已通过；仍在等待 CI run 43921068131 结束。',
+        ]):
+            with self.subTest(message=message):
+                self.assertTrue(self.dog.says_waiting(message))
+        self.turn(self.now-1801, message)
+        path = self.sessions / ('rollout-' + THREAD + '.jsonl')
+        with path.open('a') as f:
+            f.write(json.dumps(dict(type='response_item', payload=dict(role='user'))) + '\n')
+        self.dog.check_round(self.now)
+        self.assertEqual(self.notifications(), [])
+
+    def check_at(self, now):
+        with patch.object(runtime, 'stamp', return_value=datetime.fromtimestamp(now, timezone.utc).isoformat()):
+            self.dog.check_round(now)
+
+    def test_empty_wait_rolling_24h_survives_new_turn_restart_and_midnight(self):
+        now = datetime(2026, 11, 16, 23, 40, tzinfo=timezone.utc).timestamp()
+        text = '本线正在等待 CI run 43921068131。'
+        self.turn(now-1801, text)
+        self.check_at(now)
+        self.assertEqual(len(self.notifications()), 1)
+        self.turn(now+600, text, turn_id='turn2')
+        self.dog = runtime.load_tool('m1-dog')  # no in-memory cooldown after restart
+        self.check_at(now+2401)  # crossed UTC midnight, still within rolling 24h
+        self.check_at(now+86399)
+        self.assertEqual(len(self.notifications()), 1)
+        self.check_at(now+86400)
+        self.assertEqual(len(self.notifications()), 2)
+        self.turn(now+86401, text, turn_id='turn3')
+        self.check_at(now+90000)
+        self.assertEqual(len(self.notifications()), 2)
+
+    def test_empty_wait_legacy_delivery_cooldown_is_thread_scoped(self):
+        old = runtime.incident('old-version-empty')
+        runtime.save(old / 'delivery.json', dict(thread=THREAD, message='M1-dog 空等提醒：旧版提醒',
+                     sentAt=datetime.fromtimestamp(self.now-600, timezone.utc).isoformat()))
+        text = '本线正在等待 CI run 43921068131。'
+        self.turn(self.now-1801, text)
+        other = next(thread for thread in runtime.threads() if thread != THREAD)
+        self.turn(self.now-1801, text, thread=other)
+        self.check_at(self.now)
+        notices = self.notifications()
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0][2], other)
+
+    def test_empty_wait_queue_failure_does_not_start_another_incident_next_turn(self):
+        (self.home / 'queue-mode').write_text('fail')
+        text = '本线正在等待 CI run 43921068131。'
+        self.turn(self.now-1801, text)
+        self.check_at(self.now)
+        self.assertEqual(len(self.notifications()), 4)
+        self.turn(self.now-1801, text, turn_id='new-turn')
+        self.check_at(self.now+600)
+        self.assertEqual(len(self.notifications()), 4)
 
     def test_failed_tg_persists_backoff_and_daily_is_once_per_day(self):
         directory = runtime.incident('tgfail')
@@ -282,7 +375,7 @@ if mode.exists():
         run, state = self.task()
         incident = runtime.incident('interrupted:' + str(run))
         runtime.save(incident / 'delivery.json', dict(status='sent', sentAt=datetime.fromtimestamp(self.now-3600, timezone.utc).isoformat()))
-        self.turn(self.now-1801, '等待 CI 结束')
+        self.turn(self.now-1801, '正在等待 CI run 43921068131 结束')
         self.dog.check_round(self.now)
         self.assertEqual(len(self.notifications()), 1)
         self.assertIn('空等提醒', self.notifications()[0][4])
@@ -320,7 +413,7 @@ if mode.exists():
         self.dog.check_round(self.now)
         self.assertTrue(any('记录损坏' in m for m in self.messages))
         self.assertTrue(runtime.read(runtime.root() / 'dog/heartbeat.json').get('completedAt'))
-        self.turn(self.now-1801, '等待 CI 结束')
+        self.turn(self.now-1801, '正在等待 CI run 43921068131 结束')
         path = self.sessions / ('rollout-' + THREAD + '.jsonl')
         row = json.loads(path.read_text()); row['timestamp'] = 'invalid'
         path.write_text(json.dumps(row) + '\n')

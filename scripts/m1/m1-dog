@@ -45,14 +45,57 @@ def last_turn(path):
 
 
 def says_waiting(text):
-    # A diagnostic hint only, never an authorization or intent classifier. Require
-    # a positive wait phrase and external target in the SAME line; conservative.
-    for line in re.split(r'[。；;，,\n]', text):
-        if re.search(r'(?:无需|不用|不再|未在|没有|不必).{0,8}(?:等|wait)', line, re.I):
+    # Diagnostic only, never authorization. Prefer missing ambiguous prose to
+    # waking a line for documentation, examples or an acknowledgement of rules.
+    text = re.sub(r'```.*?(?:```|\Z)|~~~.*?(?:~~~|\Z)', '', text, flags=re.S)
+    text = '\n'.join(line for line in text.splitlines() if not line.lstrip().startswith('>'))
+    if re.search(r'(?:本线|当前|现在).{0,8}(?:没有|无).{0,10}(?:执行中|进行中|待挂|等待).{0,5}任务|无待挂等待任务', text):
+        return False
+    pending, settled = set(), set()
+    for line in re.split(r'[。；;\n]', text):
+        if re.search(r'以后|今后|后续|下次|将来|例如|比如|示例|规则|用法|模板|方案|如果|若|假设|收到|确认|请|建议|应该', line):
             continue
-        if re.search(r'(?:等待|正等|仍等|等.{0,6}结束|后台.{0,12}等|waiting\s+(?:for|on))', line, re.I) and re.search(r'(?<![A-Za-z])(?:CI|M5)(?![A-Za-z])|部署|deploy', line, re.I):
-            return True
-    return False
+        targets = wait_targets(line)
+        if re.search(r'已(?:通过|完成|结束|交付|取消)|终态\s*[:：]?\s*(?:success|failure|cancelled|completed)', line, re.I):
+            settled.update(targets)
+            continue
+        if re.search(r'(?:无需|不用|不再|未在|不在|并非|没有|不必|无待挂).{0,12}(?:等|wait)', line, re.I):
+            settled.update(targets)
+            continue
+        status = line.strip().lstrip('-* `')
+        if not re.match(r'(?:本线|我(?:们)?|当前|现在|正在等|仍|继续等待|已启动|已提交|已挂|(?:#\d+\s+)?(?:CI\b|M5\b|部署|deploy\b)|https://|I am\b|we are\b|currently\b|still\b)', status, re.I):
+            continue  # another line's status is not this thread's pending work
+        if not re.search(r'正在等(?:待)?|仍(?:在)?等(?:待)?|继续等待|(?:本线|当前|现在).{0,8}等待|(?:已启动|已提交|已挂).{0,40}等待|\b(?:I am|we are|currently|still) waiting\b', line, re.I):
+            continue
+        pending.update(targets)
+    return bool(pending - settled)
+
+
+def wait_targets(line):
+    # A bare PR number, "CI", or a copied gh command is not a running task.
+    patterns = {
+        'ci': r'(?:(?<![A-Za-z])CI(?![A-Za-z]).{0,12}\brun\s*[:：#]?\s*|/actions/runs/)(\d+)\b',
+        'm5': r'(?<![A-Za-z])M5(?![A-Za-z]).{0,12}(?:批次|batch)\s*[:：#]?\s*[`\[]?([A-Za-z0-9][A-Za-z0-9_.-]*)',
+        'deploy': r'(?:部署|deploy).{0,12}?([0-9a-f]{7,40}\b|(?:任务|批次|版本|id)\s*[:：#]?\s*[`\[]?[A-Za-z0-9][A-Za-z0-9_.-]*)',
+    }
+    return {(kind, match.lower()) for kind, pattern in patterns.items()
+            for match in re.findall(pattern, line, re.I)}
+
+
+def empty_wait_cooldowns():
+    # Reuse durable deliveries, including pre-upgrade notices. A new turn or
+    # wording cannot reset the same thread's rolling 24h empty-wait cooldown.
+    recent = {}
+    for path in (runtime.root() / 'dog/alerts').glob('*/delivery.json'):
+        record = runtime.read(path, {})
+        if not str(record.get('message', '')).startswith('M1-dog 空等提醒：'):
+            continue
+        try:
+            at = runtime.epoch(record.get('sentAt') or record.get('attemptedAt') or record['createdAt'])
+            recent[record['thread']] = max(recent.get(record['thread'], 0), at)
+        except (ValueError, KeyError, TypeError, AttributeError):
+            continue
+    return recent
 
 
 def task_active(state, run, boot, now):
@@ -144,6 +187,7 @@ def check_round(now=None):
         allowed = {}
     active = set()
     recent_delivery = {}
+    empty_cooldowns = empty_wait_cooldowns()
     for path in runtime.root().glob('*/result.json'):
         try:
             scan_task(path, boot, now, wake, active, recent_delivery)
@@ -167,9 +211,11 @@ def check_round(now=None):
                           'M1-dog：回合记录无法解析，请核对 ' + str(path), now)
             continue
         if (now - ended >= 1800 and thread not in active and recent_delivery.get(thread, 0) < ended
+                and now - empty_cooldowns.get(thread, 0) >= 86400
                 and waiting):
             runtime.deliver(runtime.incident('empty:%s:%s' % (thread, turn_id or at)), thread,
-                            'M1-dog 空等提醒：上一回合结束超过30分钟，提到等待 CI/M5/部署，却没有活动 wake-when。'
+                            'M1-dog 空等提醒：上一回合结束超过30分钟，明确有具体 CI run/M5 批次/部署正在等结果，'
+                            '却没有活动 wake-when。'
                             '请核对原任务，不要直接重跑。这不是新增授权。\n回合时间 ' + at,
                             wake.run_group, now)
     for thread in allowed.keys() - runtime.rollout_paths(allowed).keys():
