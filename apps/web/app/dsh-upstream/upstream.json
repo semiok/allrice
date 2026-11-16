@@ -496,16 +496,12 @@
             {
               "path": "lib/client.pdf.js",
               "sha256": "ba16081d7a3d9bb41a0a10eb9b9789b9891c40738d7428a2e06ebfbac0eb542c",
-              "exports": [
-                "PdfBody"
-              ]
+              "exports": ["PdfBody"]
             },
             {
               "path": "lib/client.excel.js",
               "sha256": "15df9ff87028e1befe316fb2e63215ef76690d45ebb85598006affd4de32fc2f",
-              "exports": [
-                "ExcelBody"
-              ]
+              "exports": ["ExcelBody"]
             }
           ],
           "resolvedDependencies": [
@@ -1337,10 +1333,7 @@
             {
               "path": "lib/client.browser.js",
               "sha256": "3043de82334846a3a5654b7317830c5403f90e9aeca692d3c15e30e01d16505d",
-              "exports": [
-                "RemoteStream",
-                "RemoteStreamCarrierError"
-              ]
+              "exports": ["RemoteStream", "RemoteStreamCarrierError"]
             }
           ]
         },
@@ -1351,9 +1344,7 @@
             {
               "path": "lib/client.js",
               "sha256": "f0529cc255e2fe5b5649dc4ae1e158f615d051feb442cd91abddb2a418fece10",
-              "exports": [
-                "ClientTerminals"
-              ]
+              "exports": ["ClientTerminals"]
             }
           ]
         },
@@ -1364,9 +1355,7 @@
             {
               "path": "lib/client.terminal.js",
               "sha256": "0821b155ce820424ff788474fedea3e6f606d95cea6ebe03b580660e7701eb6f",
-              "exports": [
-                "TerminalBody"
-              ]
+              "exports": ["TerminalBody"]
             }
           ]
         }
