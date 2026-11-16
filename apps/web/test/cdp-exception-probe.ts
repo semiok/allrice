@@ -18,7 +18,6 @@ export function observeCdpExceptions(
   };
   cdp.on('Debugger.resumed', invalidate);
   // Reload can destroy a paused context without sending Debugger.resumed.
-  cdp.on('Debugger.globalObjectCleared', invalidate);
   cdp.on('Runtime.executionContextsCleared', invalidate);
   cdp.on('Debugger.paused', (event) => {
     let release!: () => void;

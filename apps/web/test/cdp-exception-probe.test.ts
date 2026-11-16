@@ -36,20 +36,19 @@ it('only resumes an observed pause and retains caught React exceptions', async (
   await f.probe.stop();
 });
 
-it.each([
-  'Debugger.resumed',
-  'Debugger.globalObjectCleared',
-  'Runtime.executionContextsCleared',
-])('does not resume a queued pause invalidated by %s', async (event) => {
-  const f = fixture();
-  f.pause();
-  f.cdp.emit(event);
-  await setImmediate();
-  expect(f.cdp.send).not.toHaveBeenCalled();
-  expect(f.exceptions).toEqual([reactError]);
-  expect(f.failures).toEqual([]);
-  await f.probe.stop();
-});
+it.each(['Debugger.resumed', 'Runtime.executionContextsCleared'])(
+  'does not resume a queued pause invalidated by %s',
+  async (event) => {
+    const f = fixture();
+    f.pause();
+    f.cdp.emit(event);
+    await setImmediate();
+    expect(f.cdp.send).not.toHaveBeenCalled();
+    expect(f.exceptions).toEqual([reactError]);
+    expect(f.failures).toEqual([]);
+    await f.probe.stop();
+  },
+);
 
 it.each([
   { invalidated: true, error: notPaused, expected: [] },
@@ -71,7 +70,7 @@ it.each([
     );
     f.pause();
     await setImmediate();
-    if (invalidated) f.cdp.emit('Debugger.globalObjectCleared');
+    if (invalidated) f.cdp.emit('Runtime.executionContextsCleared');
     reject(error);
     await setImmediate();
     expect(f.exceptions).toEqual([reactError]);
@@ -109,7 +108,7 @@ it('serializes resumes and does not let a new pause hide an earlier failure', as
   );
   f.pause();
   await setImmediate();
-  f.cdp.emit('Debugger.globalObjectCleared');
+  f.cdp.emit('Runtime.executionContextsCleared');
   f.pause();
   await setImmediate();
   expect(f.cdp.send).toHaveBeenCalledTimes(1);
