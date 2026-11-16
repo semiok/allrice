@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { z } from 'zod';
 import {
   ReferenceAudienceSchema,
@@ -70,6 +70,7 @@ function PublicationForm({
   onClose,
   onSaved,
 }: Props) {
+  const purposeLabelId = useId();
   const available = useReferencePublicationOptions({
     workspaceId,
     viewerId,
@@ -374,8 +375,9 @@ function PublicationForm({
             </fieldset>
           )}
           <label className={css.field}>
-            <span>用途</span>
+            <span id={purposeLabelId}>用途</span>
             <textarea
+              aria-labelledby={purposeLabelId}
               value={purpose}
               maxLength={1000}
               disabled={busy || !permitted}

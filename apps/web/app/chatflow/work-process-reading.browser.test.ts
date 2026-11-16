@@ -382,13 +382,12 @@ suite('reading a receipt while late native trace changes its group', () => {
         await page.close();
       }
     });
-    it(`keeps a long result's internal scroll and selected text through regrouping at ${width}px`, async () => {
+    it(`keeps a long result's selected text at the same page reading position through regrouping at ${width}px`, async () => {
       const page = await open(width);
       try {
         await readResult(page);
         const expected = await output(page).evaluate((node) => {
-          node.scrollTop = 900;
-          node.scrollIntoView({ block: 'center' });
+          // Output expands naturally; move the document to the actual text.
           (document.activeElement as HTMLElement)?.blur();
           const text = node.firstChild!;
           const start = text.textContent!.indexOf('结果第 050 行');
@@ -397,13 +396,36 @@ suite('reading a receipt while late native trace changes its group', () => {
           range.setEnd(text, start + 24);
           document.getSelection()!.removeAllRanges();
           document.getSelection()!.addRange(range);
-          return { text: range.toString(), top: node.scrollTop };
+          window.scrollBy(0, range.getBoundingClientRect().top - 200);
+          return {
+            text: range.toString(),
+            y: range.getBoundingClientRect().top,
+          };
+        });
+        expect(
+          await output(page).evaluate(focusedSelectionGeometry),
+        ).toMatchObject({
+          visible: true,
+          contained: true,
+          scrollTop: 0,
         });
         for (const stage of ['prefix', 'split', 'merge', 'append'] as const) {
           await update(page, stage);
-          expect(await output(page).evaluate((node) => node.scrollTop)).toBe(
-            expected.top,
-          );
+          expect(
+            await output(page).evaluate(focusedSelectionGeometry),
+          ).toMatchObject({
+            visible: true,
+            contained: true,
+            scrollTop: 0,
+          });
+          expect(
+            await page.evaluate(
+              () =>
+                document.getSelection()!.getRangeAt(0).getBoundingClientRect()
+                  .top,
+            ),
+            stage,
+          ).toBeCloseTo(expected.y, 0);
           expect(
             await page.evaluate(() => document.getSelection()?.toString()),
           ).toBe(expected.text);
@@ -917,13 +939,9 @@ suite('reading a receipt while late native trace changes its group', () => {
           portBox.x + 10,
           (visiblePort.clip[0]! + visiblePort.clip[1]!) / 2,
         );
-        await page.mouse.wheel(
-          0,
-          (await reading.boundingBox())!.y - visiblePort.clip[0]! - 100,
-        );
-        await page.mouse.move(2, 850);
-        const titleBox = (await title.boundingBox())!;
-        await page.mouse.wheel(0, titleBox.y + titleBox.height + 1);
+        await page.mouse.wheel(0, (await reading.boundingBox())!.y - 200);
+        // The document is now the only scroller. Wait for the wheel frame to
+        // land on the receipt before applying a trace update.
         await expect
           .poll(async () => {
             const header = (await title.boundingBox())!;
@@ -931,7 +949,8 @@ suite('reading a receipt while late native trace changes its group', () => {
             return (
               header.y + header.height < 0 &&
               current.readable &&
-              current.window[0]! > 0
+              current.window[0]! > 0 &&
+              Math.abs(current.box.y - 200) < 0.5
             );
           })
           .toBe(true);
@@ -977,13 +996,7 @@ suite('reading a receipt while late native trace changes its group', () => {
         .first();
       const listBox = (await list.boundingBox())!;
       await page.mouse.move(listBox.x + 10, listBox.y + 30);
-      await page.mouse.wheel(
-        0,
-        (await later.boundingBox())!.y - listBox.y - 100,
-      );
-      await page.mouse.move(2, 850);
-      const groupBox = (await group().boundingBox())!;
-      await page.mouse.wheel(0, groupBox.y + groupBox.height + 1);
+      await page.mouse.wheel(0, (await later.boundingBox())!.y - 200);
       await expect
         .poll(async () => {
           const header = (await group().boundingBox())!;
@@ -1010,7 +1023,9 @@ suite('reading a receipt while late native trace changes its group', () => {
                 clip.top + parent.clientTop + parent.clientHeight,
               );
             }
-            return headerBottom < 0 && bottom > top;
+            return (
+              headerBottom < 0 && bottom > top && Math.abs(box.y - 200) < 0.5
+            );
           }, header.y + header.height);
         })
         .toBe(true);
@@ -1019,6 +1034,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       ).toBe(true);
       const old = (await group().boundingBox())!;
       expect(old.y + old.height).toBeLessThan(0);
+      const before = (await later.boundingBox())!.y;
       for (const stage of ['prefix', 'split', 'merge'] as const) {
         await update(page, stage);
         expect(
@@ -1027,6 +1043,7 @@ suite('reading a receipt while late native trace changes its group', () => {
         const box = (await later.boundingBox())!;
         expect(box.y, stage).toBeLessThan(900);
         expect(box.y + box.height, stage).toBeGreaterThan(0);
+        expect(box.y, stage).toBeCloseTo(before, 0);
       }
     } finally {
       await page.close();
@@ -1775,8 +1792,7 @@ suite('reading a receipt while late native trace changes its group', () => {
         const selected =
           choice === 'open'
             ? await result.evaluate((node) => {
-                node.focus();
-                node.scrollTop = 650;
+                node.focus({ preventScroll: true });
                 document
                   .getSelection()!
                   .setBaseAndExtent(
@@ -1785,9 +1801,25 @@ suite('reading a receipt while late native trace changes its group', () => {
                     node.firstChild!,
                     1030,
                   );
-                return document.getSelection()!.toString();
+                const range = document.getSelection()!.getRangeAt(0);
+                window.scrollBy(0, range.getBoundingClientRect().top - 200);
+                return {
+                  text: range.toString(),
+                  y: range.getBoundingClientRect().top,
+                };
               })
-            : '';
+            : null;
+        const selectionBefore = selected
+          ? await result.evaluate(focusedSelectionGeometry)
+          : null;
+        if (selectionBefore)
+          expect(selectionBefore).toMatchObject({
+            visible: true,
+            contained: true,
+            active: true,
+            anchor: 1000,
+            focus: 1030,
+          });
         if (choice === 'closed') {
           await stepToggle(old).focus();
           expect(await focused(stepToggle(old))).toBe(true);
@@ -1823,8 +1855,18 @@ suite('reading a receipt while late native trace changes its group', () => {
           ).toBe(0);
           expect(
             await page.evaluate(() => document.getSelection()!.toString()),
-          ).toBe(selected);
-          expect(selected.length).toBe(30);
+          ).toBe(selected!.text);
+          expect(selected!.text.length).toBe(30);
+          expect(await result.evaluate(focusedSelectionGeometry)).toEqual(
+            selectionBefore,
+          );
+          expect(
+            await page.evaluate(
+              () =>
+                document.getSelection()!.getRangeAt(0).getBoundingClientRect()
+                  .top,
+            ),
+          ).toBeCloseTo(selected!.y, 0);
         } else {
           expect(await focused(toggle)).toBe(true);
           await toggle.click();
