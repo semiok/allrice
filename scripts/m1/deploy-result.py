@@ -23,6 +23,8 @@ def main():
         if path.is_symlink() or state['id'] != sys.argv[3] or state['status'] != 'running':
             raise ValueError('receipt identity mismatch')
         state.update(status='completed', exitCode=int(sys.argv[4]), endedAt=time.time())
+        if len(sys.argv) > 5:
+            state['initialExitCode'] = int(sys.argv[5])
         temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
         with os.fdopen(os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
             json.dump(state, stream)

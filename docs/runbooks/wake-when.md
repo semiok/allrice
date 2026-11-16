@@ -41,7 +41,7 @@ EOF、5xx、超时等导致 watch／查询不能确认终态时，按 5、15、3
 { "id": "本次任务ID", "status": "completed", "exitCode": 0 }
 ```
 
-直接包住 `~/allrice-dev/bin/deploy-dev <原授权参数>` 时，wake-when 自动设置专用文件及 ID。deploy-dev 在实际退出清理之后写 completed，覆盖参数/权限拒绝、构建失败、回滚收尾、冒烟失败和正常完成；SIGKILL/断电会留下 running，不能误报完成。部署工具单独使用时，也在 `qa/deploy-results/<UUID>.json` 留终态。`--status`/帮助只读，不生成部署终态；不要把它们当成部署调用。此接入不改变发布负责人和部署授权门禁。其他工具仍用上面的可选合同，不能把 SSH／等待命令退出码直接包装成终态文件。文件必须是启动等待时尚不存在的本次专用路径，ID、终态、整数退出码都要匹配；命令退出后按上述退避读取，仍无终态就报“等待失败，任务状态未知”。未提供终态文件的普通命令异常退出时，直接报告等待失败和原退出码，任务结论保持未知。需要 shell 组合语法时显式传 `bash -lc '...'`，工具不解释 shell；CI／M5 仍必须用各自直接命令形式，不能用外部 JSON 覆盖原生核验。
+直接包住 `~/allrice-dev/bin/deploy-dev <原授权参数>` 时，wake-when 自动设置专用文件及 ID。deploy-dev 在实际退出清理之后写 completed，覆盖参数/权限拒绝、构建失败、回滚收尾、冒烟失败和正常完成；清理函数返回非零或收到中断也写终态，`initialExitCode` 保留进入清理前的退出码，`exitCode` 是最终实际退出码；SIGKILL/断电会留下 running，不能误报完成。部署工具单独使用时，也在 `qa/deploy-results/<UUID>.json` 留终态。`--status`/帮助只读，不生成部署终态；不要把它们当成部署调用。此接入不改变发布负责人和部署授权门禁。其他工具仍用上面的可选合同，不能把 SSH／等待命令退出码直接包装成终态文件。文件必须是启动等待时尚不存在的本次专用路径，ID、终态、整数退出码都要匹配；命令退出后按上述退避读取，仍无终态就报“等待失败，任务状态未知”。未提供终态文件的普通命令异常退出时，直接报告等待失败和原退出码，任务结论保持未知。需要 shell 组合语法时显式传 `bash -lc '...'`，工具不解释 shell；CI／M5 仍必须用各自直接命令形式，不能用外部 JSON 覆盖原生核验。
 
 命令必须在前台阻塞直到工作完成，不要在命令里自行 `nohup`、`setsid` 或启动常驻服务。超时退出码为 124；结束时会清理该命令进程组，包括仍运行的子进程。TERM 后留 10 秒清理宽限，覆盖现有 `m5-test relay()` 对其独立子进程组的 5 秒清理流程，再对残留进程组发 KILL；因此回执可比命令时限稍晚。不要传入读取凭据、打印敏感内容的命令：命令输出会进入本机日志，失败尾部会发到本线。
 
@@ -80,7 +80,7 @@ TG 复用已安装 monitor 的 send_telegram，不新增机器人或复制凭据
 
 空等检测只读七个白名单线程的 rollout 尾部（最多2MiB），只识别 `event_msg.task_complete.last_agent_message`，新 task_started/turn_aborted/用户消息会取消旧判断。不读取 auth/配置数据库或其他线程正文。已结束回合提到等待CI/M5/部署、超过30分钟且无活动等待/后续已送终态时，每回合提醒一次。自然语言只是保守诊断提示，可能误报/漏报，绝不作为业务授权。Codex事件格式改变时先补夹具和核验，不猜字段。
 
-UTC01:00后的第一轮发送每天一条平安报告（若当时关机，启动后补当天），包含当日成功/失败、需人工核对和TG待送数。路径 `dog/daily/YYYY-MM-DD/telegram.json`，sentAt只代表TG接收。对已核对的 `dog/alerts/<ID>` 用 `m1-dog ack <ID>` 关闭人工待办，原始证据保留。
+UTC01:00后的第一轮发送每天一条平安报告（若当时关机，启动后补当天），包含当日成功/失败、需人工核对和TG待送数。路径 `dog/daily/YYYY-MM-DD/telegram.json`，sentAt只代表TG接收。对已核对的 `dog/alerts/<ID>` 用 `m1-dog ack <ID>` 关闭人工待办，原始证据保留。普通等待的 queue 告警也计入待办，`m1-dog status` 的 `pendingAlerts` 给出相对路径（任务目录或 `dog/alerts/<ID>`）；可直接 `m1-dog ack <该相对路径>`。TG 送达不等于人工处理，计数跨日保留；跨日平安报告的传输积压也继续按原退避续送。
 
 回滚：先 `m1-dog launchd remove`，只移除本看门狗并备份；若恢复之前已安装的dog，把对应备份plist贴回原 `~/Library/LaunchAgents/ai.bplabs.allrice-m1-dog.plist`，用 `launchctl bootstrap gui/$(id -u) <该plist>` 重新加载。工具版本回滚由已授权维护者用旧提交的 `scripts/m1/install` 切回已保留的版本，不直接改共享bin。重新检查 launchctl、心跳、当日TG；没有旧dog时保持移除即可，wake-when既有任务不受影响。
 

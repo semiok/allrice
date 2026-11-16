@@ -265,6 +265,92 @@ if mode.exists():
         self.assertEqual(len(self.notifications()), 1)
 
 
+    def test_old_interruption_does_not_hide_new_empty_wait(self):
+        run, state = self.task()
+        incident = runtime.incident('interrupted:' + str(run))
+        runtime.save(incident / 'delivery.json', dict(status='sent', sentAt=datetime.fromtimestamp(self.now-3600, timezone.utc).isoformat()))
+        self.turn(self.now-1801, '等待 CI 结束')
+        self.dog.check_round(self.now)
+        self.assertEqual(len(self.notifications()), 1)
+        self.assertIn('空等提醒', self.notifications()[0][4])
+        self.dog.check_round(self.now+600)
+        self.assertEqual(len(self.notifications()), 1)
+
+    def test_normal_wait_escalation_survives_next_day_and_can_be_acknowledged(self):
+        run, state = self.task(commandEndedAt=runtime.stamp(), task=dict(status='completed', conclusion='success'))
+        (self.home / 'queue-mode').write_text('fail')
+        self.dog.check_round(self.now)
+        snapshot = runtime.read(runtime.root() / 'dog/state.json')
+        self.assertEqual(snapshot['escalated'], 1)
+        self.assertEqual(snapshot['pendingAlerts'], ['fixture'])
+        self.assertTrue(runtime.read(run / 'telegram.json').get('sentAt'))
+        self.dog.check_round(self.now + 86400)
+        self.assertEqual(runtime.read(runtime.root() / 'dog/state.json')['escalated'], 1)
+        self.dog.acknowledge('fixture')
+        self.dog.check_round(self.now + 86401)
+        self.assertEqual(runtime.read(runtime.root() / 'dog/state.json')['escalated'], 0)
+        with self.assertRaises(ValueError): self.dog.acknowledge('../outside')
+
+    def test_yesterday_daily_backlog_retries_after_midnight(self):
+        now = datetime(2026, 11, 17, 1, tzinfo=timezone.utc).timestamp()
+        yesterday = runtime.root() / 'dog/daily/2026-11-16'
+        runtime.save(yesterday / 'telegram.json', dict(message='yesterday report', unresolved=True, retryAt=now-1))
+        self.dog.check_round(now)
+        self.assertIn('yesterday report', self.messages)
+        self.assertTrue(runtime.read(yesterday / 'telegram.json').get('sentAt'))
+        self.dog.check_round(now+600)
+        self.assertEqual(self.messages.count('yesterday report'), 1)
+
+    def test_bad_heartbeat_and_rollout_do_not_stop_other_threads_or_daily(self):
+        run, _ = self.task(pid=os.getpid(), identity=runtime.process_identity(os.getpid()))
+        runtime.save(run / 'heartbeat.json', dict(at='not-a-timestamp'))
+        self.dog.check_round(self.now)
+        self.assertTrue(any('记录损坏' in m for m in self.messages))
+        self.assertTrue(runtime.read(runtime.root() / 'dog/heartbeat.json').get('completedAt'))
+        self.turn(self.now-1801, '等待 CI 结束')
+        path = self.sessions / ('rollout-' + THREAD + '.jsonl')
+        row = json.loads(path.read_text()); row['timestamp'] = 'invalid'
+        path.write_text(json.dumps(row) + '\n')
+        self.dog.check_round(self.now)
+        self.assertTrue(any('回合记录无法解析' in m for m in self.messages))
+
+    def test_deploy_cleanup_failure_and_signal_write_actual_terminal_exit(self):
+        for cleanup, expected in [('return 23', 23), ('kill -TERM $$', 130)]:
+            with self.subTest(cleanup=cleanup):
+                receipt = self.home / ('cleanup-%s.json' % expected)
+                subprocess.run([sys.executable, str(HERE / 'deploy-result.py'), 'start', str(receipt), 'deploy1'], check=True)
+                command = ('source "$1"; RESULT_FILE="$2"; RESULT_ID=deploy1; '
+                           'release_lock() { ' + cleanup + '; }; exit 5')
+                proc = subprocess.run(['/bin/bash', '-c', command, 'sh', str(HERE / 'deploy-dev'), str(receipt)], capture_output=True, text=True)
+                self.assertEqual(proc.returncode, expected, proc.stderr)
+                data = json.loads(receipt.read_text())
+                self.assertEqual((data['status'], data['exitCode'], data['initialExitCode']), ('completed', expected, 5))
+
+    def test_launchd_probe_failure_after_bootout_restores_old_service(self):
+        path = self.home / 'Library/LaunchAgents' / (self.dog.LABEL + '.plist')
+        path.parent.mkdir(parents=True)
+        original = plistlib.dumps(dict(Label=self.dog.LABEL, ProgramArguments=['old-dog']))
+        path.write_bytes(original)
+        state = dict(loaded=True, probed=False, restored=False)
+        def command(argv, **kwargs):
+            if argv[:2] == ['launchctl', 'print']:
+                if not state['loaded'] and not state['probed']:
+                    state['probed'] = True
+                    raise subprocess.TimeoutExpired(argv, 5)
+                return subprocess.CompletedProcess(argv, 0 if state['loaded'] else 113, b'old service', b'')
+            if argv[:2] == ['launchctl', 'bootout']:
+                state['loaded'] = False
+            if argv[:2] == ['launchctl', 'bootstrap']:
+                self.assertEqual(path.read_bytes(), original)
+                state.update(loaded=True, restored=True)
+            return subprocess.CompletedProcess(argv, 0, b'', b'')
+        with patch.object(self.dog.sys, 'platform', 'darwin'), patch.object(self.dog.subprocess, 'run', side_effect=command):
+            with self.assertRaises(subprocess.TimeoutExpired): self.dog.launchd('install')
+        self.assertTrue(state['restored'])
+        self.assertTrue(state['loaded'])
+        self.assertEqual(path.read_bytes(), original)
+
+
 
 if __name__ == '__main__':
     unittest.main()

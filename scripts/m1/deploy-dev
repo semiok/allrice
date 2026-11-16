@@ -215,10 +215,28 @@ restore() {
   start_both_on "$prev" || { say "previous version ${prev:0:8} did NOT come back healthy (migrations applied by the new version stay)"; return 1; }
   say "previous version ${prev:0:8} is healthy again"
 }
+# Keep a final error/signal handler while the EXIT cleanup runs; replacing an
+# EXIT trap inside itself would not run a second EXIT trap. Publish the actual exit.
+finish_result() {
+  local rc=$1
+  trap - EXIT ERR INT TERM HUP
+  if [ -n "$RESULT_FILE" ]; then
+    "$M1_PY" "$BIN/deploy-result.py" finish "$RESULT_FILE" "$RESULT_ID" "$rc" "${RESULT_INITIAL_EXIT:-$rc}" || {
+      echo "[deploy-dev] could not persist terminal receipt: $RESULT_FILE" >&2
+      [ "$rc" != 0 ] || rc=74
+    }
+    echo "[deploy-dev] terminal result: $RESULT_FILE"
+  fi
+  exit "$rc"
+}
 # One exit path for every way this run can end before success.
 on_exit() { # rc
   local rc=$1
-  trap - EXIT INT TERM HUP
+  RESULT_INITIAL_EXIT=$rc
+  trap - EXIT
+  set -E # inherit the cleanup error handler in shell functions
+  trap 'finish_result $?' ERR
+  trap 'finish_result 130' INT TERM HUP
   # A build that did not get past the pre-stop check is removed; a checked one is kept.
   if [ -n "$BUILD_DIR" ] && [ -z "$BUILT" ]; then discard "$BUILD_DIR" || true; fi
   if [ -n "$INFLIGHT_MINE" ] && [ -f "$INFLIGHT/state" ]; then
@@ -233,14 +251,7 @@ on_exit() { # rc
     fi
   fi
   release_lock
-  if [ -n "$RESULT_FILE" ]; then
-    "$M1_PY" "$BIN/deploy-result.py" finish "$RESULT_FILE" "$RESULT_ID" "$rc" || {
-      echo "[deploy-dev] could not persist terminal receipt: $RESULT_FILE" >&2
-      [ "$rc" != 0 ] || rc=74
-    }
-    echo "[deploy-dev] terminal result: $RESULT_FILE"
-  fi
-  exit "$rc"
+  finish_result "$rc"
 }
 trap 'on_exit $?' EXIT
 trap 'exit 130' INT TERM HUP

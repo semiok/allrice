@@ -43,7 +43,8 @@ def save(path, value):
 
 def read(path, default=None):
     try:
-        return json.loads(path.read_text())
+        value = json.loads(path.read_text())
+        return value if isinstance(value, dict) else default
     except (OSError, ValueError):
         return default
 
@@ -130,6 +131,19 @@ def telegram(message):
 
 
 def alert(directory, message, now=None):
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(directory / 'telegram.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return read(directory / 'telegram.json', {})
+        return alert_locked(directory, message, now)
+    finally:
+        os.close(fd)
+
+
+def alert_locked(directory, message, now=None):
     now = time.time() if now is None else now
     path = directory / 'telegram.json'
     state = read(path, {})
