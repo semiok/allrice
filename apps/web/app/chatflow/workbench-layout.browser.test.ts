@@ -55,6 +55,7 @@ import {
   WorkflowPackageSchema,
   BrandContentBoardSchema,
   brandContentTemplateKeys,
+  brandMediaModule,
   workspaceCapabilityIds,
   type WorkspaceCapability,
   type InteractionStatus,
@@ -65,6 +66,7 @@ import {
   type NativeSubagentSummary,
 } from '@allrice/contracts';
 import { NativeSubagentFixtureFeed } from '../../test/native-subagent-fixture-feed';
+import { observeCdpExceptions } from '../../test/cdp-exception-probe';
 import { appearanceScript, themeScript } from '../../lib/theme/theme-script';
 import type { ArtifactPreview } from '../../lib/chatflow/workbench-model';
 import type {
@@ -2060,6 +2062,52 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             pending: [],
           }),
         );
+      }
+      const moduleCatalogTarget = path.match(
+        /^\/api\/v1\/employee-instances\/([^/]+)\/modules$/,
+      );
+      if (moduleCatalogTarget && route.request().method() === 'GET') {
+        const instanceId = moduleCatalogTarget[1]!;
+        expect([
+          id(7),
+          id(17),
+          id(99),
+          ...(options.brandContent ? [id(8100)] : []),
+          ...state.createdEmployeeInstances.map((instance) => instance.id),
+        ]).toContain(instanceId);
+        expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+        expect(route.request().headers()['x-allrice-organization-id']).toBe(
+          org,
+        );
+        expect(route.request().headers()['x-allrice-workspace-id']).toBe(
+          url.searchParams.get('workspaceId'),
+        );
+        if (
+          state.viewer !== user ||
+          url.searchParams.get('workspaceId') !== state.workspace
+        )
+          return answer({ error: { message: 'No access' } }, 403);
+        if (options.employeeDetails && state.employeeDetailStatus !== 200)
+          return answer(
+            { error: { message: 'No access' } },
+            state.employeeDetailStatus,
+          );
+        if (instanceId === id(7) && state.employeeInstanceArchived) {
+          const response = employeeHubErrorResponse(
+            new EmployeeInstanceError('instance_archived'),
+          );
+          return answer(await response.json(), response.status);
+        }
+        return answer({
+          modules: [
+            {
+              descriptor: brandMediaModule,
+              binding: null,
+              available: true,
+              enabled: false,
+            },
+          ],
+        });
       }
       const skillCatalogTarget = path.match(
         /^\/api\/v1\/employee-instances\/([^/]+)\/skills$/,
@@ -6523,19 +6571,71 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30_000);
 
+  it('the exception probe preserves caught errors when reload invalidates a pause', async ({
+    onTestFinished,
+  }) => {
+    const context = await browser.newContext();
+    let probe: ReturnType<typeof observeCdpExceptions> | undefined = undefined;
+    onTestFinished(async () => {
+      const pending = probe?.stop();
+      try {
+        await context.close();
+      } finally {
+        await pending;
+      }
+    });
+    const page = await context.newPage();
+    const cdp = await context.newCDPSession(page);
+    const exceptions: string[] = [];
+    const failures: unknown[] = [];
+    let reload: Promise<unknown> | undefined;
+    probe = observeCdpExceptions(
+      cdp,
+      (error) => {
+        exceptions.push(error);
+        // Queue reload before the probe's resume, reproducing the navigation
+        // race without delays, retries, React changes or a live model.
+        reload = cdp.send('Page.reload');
+      },
+      (cause) => failures.push(cause),
+    );
+    await cdp.send('Runtime.enable');
+    await cdp.send('Debugger.enable');
+    await cdp.send('Debugger.setPauseOnExceptions', { state: 'all' });
+    const cleared = new Promise<void>((resolve) => {
+      cdp.once('Runtime.executionContextsCleared', () => resolve());
+    });
+    await page.evaluate(() => {
+      setTimeout(() => {
+        try {
+          throw new Error('Maximum update depth exceeded: probe sentinel');
+        } catch {
+          // Deliberately swallowed: pageerror cannot observe this exception.
+        }
+      }, 0);
+    });
+    await expect.poll(() => exceptions.length).toBe(1);
+    await reload;
+    await cleared;
+    await probe.drain();
+    expect(exceptions[0]).toContain(
+      'Maximum update depth exceeded: probe sentinel',
+    );
+    expect(failures).toEqual([]);
+  });
+
   it('restores long history without caught React update errors before switching sessions', async ({
     onTestFinished,
   }) => {
     const f = await fixture();
-    let closing = false;
-    let resume: Promise<unknown> = Promise.resolve();
+    let probe: ReturnType<typeof observeCdpExceptions> | undefined = undefined;
     onTestFinished(async () => {
-      closing = true;
+      const pending = probe?.stop();
       // Closing the context also detaches CDP, even after a test timeout.
       try {
         await f.close();
       } finally {
-        await resume;
+        await pending;
       }
     });
     const cdp = await f.context.newCDPSession(f.page);
@@ -6546,15 +6646,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     );
     // pageerror alone misses exceptions consumed by a successful fetch's catch.
     // Observe real exceptions without changing React, its scheduler or the store.
-    cdp.on('Debugger.paused', (event) => {
-      const error = event.data?.description ?? '';
-      if (/Maximum update depth exceeded/.test(error)) {
-        internalErrors.push(error);
-      }
-      resume = cdp.send('Debugger.resume').catch((cause: unknown) => {
-        if (!closing) internalErrors.push(String(cause));
-      });
-    });
+    probe = observeCdpExceptions(
+      cdp,
+      (error) => {
+        if (/Maximum update depth exceeded/.test(error)) {
+          internalErrors.push(error);
+        }
+      },
+      (cause) => internalErrors.push(String(cause)),
+    );
     f.page.on('console', (message) => {
       if (/Maximum update depth exceeded/.test(message.text())) {
         internalErrors.push(message.text());
@@ -6570,6 +6670,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       )
         traces.add(match[1]!);
     });
+    await cdp.send('Runtime.enable');
     await cdp.send('Debugger.enable');
     await cdp.send('Debugger.setPauseOnExceptions', { state: 'all' });
     f.state.messages = navigationHistory(100, 2);
@@ -6588,6 +6689,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         { timeout: 5000 },
       )
       .toBe(true);
+    await probe.drain();
     expect(internalErrors).toEqual([]);
     await expect
       .poll(() => [...traces].sort())
@@ -6595,6 +6697,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     await expect
       .poll(() => f.page.getByText('加载过程…', { exact: true }).count())
       .toBe(0);
+    await probe.drain();
     expect(internalErrors).toEqual([]);
     expect(await f.page.getByText(/过程加载失败/).count()).toBe(0);
     expect(await rail.getByRole('button').count()).toBeLessThan(55);
@@ -6615,6 +6718,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     await f.page.getByRole('treeitem', { name: /研究任务 B/ }).click();
     await expect.poll(() => rail.count()).toBe(0);
     expect(await f.page.getByRole('tooltip').count()).toBe(0);
+    await probe.drain();
     expect(internalErrors).toEqual([]);
   }, 30_000);
 
