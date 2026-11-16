@@ -20,6 +20,7 @@ function fixture(
   lostAck?: RepositoryPublicationStep,
   maintenance = false,
   revokeAfter?: RepositoryPublicationStep,
+  capacity?: 'root' | 'directories',
 ) {
   const id = randomUUID(),
     before = Buffer.from('original'),
@@ -36,6 +37,14 @@ function fixture(
       sha: gitBlobId(Buffer.from('CI')),
     },
   ];
+  if (capacity)
+    files.push(
+      ...Array.from({ length: 8190 }, (_, i) => ({
+        path: `${capacity === 'directories' ? `d${i % 2048}/` : ''}${'雪'.repeat(60)}-${i}.ts`,
+        mode: '100644',
+        sha: gitBlobId(Buffer.from(`unchanged-${i}`)),
+      })),
+    );
   const base = 'a'.repeat(40),
     baseTree = gitTreeForBlobs(files),
     tree = gitTreeForBlobs(
@@ -162,13 +171,91 @@ function fixture(
     },
   };
   const json = (body: unknown, status = 200) => Response.json(body, { status });
+  function treeRows(candidate: boolean) {
+    const blobs = files.map((f) => ({
+      ...f,
+      sha: candidate && f.path === source.path ? source.afterBlob : f.sha,
+    }));
+    const rows = blobs.map((f) => ({
+      ...f,
+      type: 'blob',
+      url: `https://api.github.com/repos/semiok/allrice/git/blobs/${f.sha}`,
+    }));
+    if (capacity) {
+      const directories = new Map<string, typeof blobs>();
+      for (const f of blobs) {
+        const parts = f.path.split('/');
+        for (let n = 1; n < parts.length; n++) {
+          const path = parts.slice(0, n).join('/');
+          const children = directories.get(path) ?? [];
+          children.push({ ...f, path: parts.slice(n).join('/') });
+          directories.set(path, children);
+        }
+      }
+      for (const [path, children] of directories) {
+        const sha = gitTreeForBlobs(children);
+        rows.push({
+          path,
+          mode: '040000',
+          type: 'tree',
+          sha,
+          url: 'https://api.github.com/repos/semiok/allrice/git/trees/' + sha,
+        });
+      }
+    }
+    return rows;
+  }
+  const baseRows = treeRows(false),
+    candidateRows = treeRows(true);
+  const treeResponses: Array<{
+    method: string;
+    recursive: boolean;
+    bytes: number;
+    entries: number;
+  }> = [];
+  let corruptTree = false;
+  function treeResponse(
+    candidate: boolean,
+    recursive: boolean,
+    method = 'GET',
+  ) {
+    const rows = (candidate ? candidateRows : baseRows)
+      .filter((f) => !capacity || recursive || !f.path.includes('/'))
+      .map((f) =>
+        corruptTree && candidate && recursive && f.path === files.at(-1)!.path
+          ? { ...f, sha: 'f'.repeat(40) }
+          : f,
+      );
+    const body = {
+      sha: candidate ? tree : baseTree,
+      truncated: false,
+      tree: rows,
+    };
+    if (!capacity) return json(body);
+    const wire = Buffer.from(JSON.stringify(body));
+    treeResponses.push({
+      method,
+      recursive,
+      bytes: wire.length,
+      entries: rows.length,
+    });
+    let offset = 0;
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (offset === wire.length) return controller.close();
+          const end = Math.min(offset + 64_000, wire.length);
+          controller.enqueue(wire.subarray(offset, end));
+          offset = end;
+        },
+      }),
+    );
+  }
   const labels = new Set<string>(['unrelated']);
   const namedLabels = new Set<string>();
   const fetcher = (async (input, init) => {
-    const path = new URL(String(input)).pathname.replace(
-      '/repos/semiok/allrice',
-      '',
-    );
+    const url = new URL(String(input));
+    const path = url.pathname.replace('/repos/semiok/allrice', '');
     if (init?.method === 'POST') {
       const payload = JSON.parse(String(init.body));
       const step: RepositoryPublicationStep =
@@ -222,6 +309,7 @@ function fixture(
         ];
       if (step === revokeAfter) active = false;
       if (step === lostAck) throw Error('response lost after remote commit');
+      if (capacity && step === 'tree') return treeResponse(true, false, 'POST');
       return json({});
     }
     if (path === '')
@@ -261,22 +349,10 @@ function fixture(
           })
         : json({}, 404);
     if (path === `/git/trees/${baseTree}`)
-      return json({
-        sha: baseTree,
-        truncated: false,
-        tree: files.map((f) => ({ ...f, type: 'blob' })),
-      });
+      return treeResponse(false, url.searchParams.get('recursive') === '1');
     if (path === `/git/trees/${tree}`)
       return remote.has('tree')
-        ? json({
-            sha: tree,
-            truncated: false,
-            tree: files.map((f) => ({
-              ...f,
-              sha: f.path === source.path ? source.afterBlob : f.sha,
-              type: 'blob',
-            })),
-          })
+        ? treeResponse(true, url.searchParams.get('recursive') === '1')
         : json({}, 404);
     if (path.startsWith('/git/commits/'))
       return remote.has('commit')
@@ -309,6 +385,10 @@ function fixture(
     postCounts,
     remote,
     files,
+    treeResponses,
+    corruptTree: () => {
+      corruptTree = true;
+    },
     labels,
     corruptPull: () => {
       (pulls[0] as Record<string, unknown>).user = {
@@ -334,6 +414,46 @@ function fixture(
   };
 }
 describe('fixed candidate publication single-write recovery', () => {
+  it.each(['root', 'directories'] as const)(
+    'publishes the complete 8192-blob %s tree with long UTF-8 paths through streamed HTTP responses',
+    async (capacity) => {
+      const f = fixture(undefined, false, undefined, capacity);
+      await f.run();
+      expect(f.files).toHaveLength(8192);
+      expect(f.postCounts).toEqual({
+        blob: 1,
+        tree: 1,
+        commit: 1,
+        branch: 1,
+        pull: 1,
+      });
+      expect(f.action.remote?.tree).toBe(f.action.metadata?.tree);
+      expect(f.treeResponses).toHaveLength(4);
+      if (capacity === 'root')
+        expect(f.treeResponses.every((r) => r.bytes > 2_000_000)).toBe(true);
+      else
+        expect(
+          f.treeResponses
+            .filter((r) => r.recursive)
+            .every((r) => r.entries > 10_000 && r.bytes > 2_000_000),
+        ).toBe(true);
+      expect(f.treeResponses.map((r) => [r.method, r.recursive])).toEqual([
+        ['GET', true],
+        ['POST', false],
+        ['GET', false],
+        ['GET', true],
+      ]);
+    },
+  );
+  it('rejects a changed non-target blob in the full remote candidate tree without later writes', async () => {
+    const f = fixture(undefined, false, undefined, 'directories');
+    f.corruptTree();
+    await expect(f.run()).rejects.toMatchObject({
+      code: 'REPOSITORY_REMOTE_CONFLICT',
+    });
+    expect(f.postCounts).toEqual({ blob: 1, tree: 1 });
+    expect(f.action.remote).toBeNull();
+  });
   it.each(['blob', 'tree', 'commit', 'branch', 'pull'] as const)(
     'reads the exact %s after a lost response and never duplicates the PR',
     async (step) => {
