@@ -172,6 +172,7 @@ export function createBrandMediaClient(scope: BrandMediaClientScope) {
       z
         .object({
           run: RunSnapshotSchema,
+          invocation: BrandMediaInvocationSchema,
           userMessage: z.object({ sessionId: z.uuid() }),
         })
         .parse(

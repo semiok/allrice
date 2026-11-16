@@ -206,6 +206,7 @@ type State = {
   helpGate?: Promise<void>;
   addGate?: Promise<void>;
   failGenerateOnce?: boolean;
+  failRecoveryAfterGenerate?: boolean;
   moreTopics?: boolean;
   moreArticles?: boolean;
 };
@@ -384,7 +385,11 @@ suite('MET-224 main-area brand media text workflow', () => {
               checksum,
             });
           }
-          if (view === 'runs') return reply({ runs: state.runs });
+          if (view === 'runs') {
+            if (state.failRecoveryAfterGenerate && state.runs.length)
+              return reply({ message: '恢复读取暂时失败' }, 503);
+            return reply({ runs: state.runs });
+          }
           if (view === 'topics')
             return reply({
               view,
@@ -438,6 +443,7 @@ suite('MET-224 main-area brand media text workflow', () => {
           state.runs.unshift(row);
           return reply({
             run: row.run,
+            invocation: row.invocation,
             userMessage: { sessionId: row.sessionId },
           });
         }
@@ -571,6 +577,12 @@ suite('MET-224 main-area brand media text workflow', () => {
     });
     await page.goto(origin);
     await page.getByRole('heading', { name: '原聊天' }).waitFor();
+    await page.evaluate(
+      () =>
+        new Promise<void>((done) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => done())),
+        ),
+    );
     const open = async () => {
       await page
         .getByRole('button', { name: '打开 品牌自媒体', exact: true })
@@ -840,6 +852,33 @@ suite('MET-224 main-area brand media text workflow', () => {
       sessionId: id(6),
     });
     expect(generates(f.state)[2]!.body).not.toHaveProperty('deliveryMode');
+    await f.close();
+  });
+
+  it('uses the new native Run receipt to keep generation disabled and cancellable when recovery reading fails', async () => {
+    const f = await fixture({ failRecoveryAfterGenerate: true }),
+      { page } = f;
+    await f.open();
+    await candidatesPage(page);
+    await page
+      .getByLabel('内容方向', { exact: true })
+      .fill('面向上班族的新品选题');
+    const action = page.getByRole('button', {
+      name: '让 Rice 想选题 / 换一批',
+      exact: true,
+    });
+    await action.click();
+    await page.getByText('已排队，等待当前员工', { exact: true }).waitFor();
+    await page.getByText('恢复读取暂时失败', { exact: false }).waitFor();
+    expect(await action.isDisabled()).toBe(true);
+    expect(
+      await page.getByRole('button', { name: '取消', exact: true }).isVisible(),
+    ).toBe(true);
+    expect(generates(f.state)).toHaveLength(1);
+    f.state.failRecoveryAfterGenerate = false;
+    await page.getByRole('button', { name: '取消', exact: true }).click();
+    await page.getByText('已取消生成', { exact: true }).waitFor();
+    expect(await action.isEnabled()).toBe(true);
     await f.close();
   });
 

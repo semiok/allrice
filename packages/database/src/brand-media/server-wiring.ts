@@ -716,7 +716,7 @@ export async function generateBrandMedia(
     return ids;
   });
   const invocation = BrandMediaInvocationSchema.parse({ module, intent });
-  return sendChatMessage(
+  const receipt = await sendChatMessage(
     context,
     intent.workspaceId,
     sessionId,
@@ -733,6 +733,7 @@ export async function generateBrandMedia(
     },
     { moduleInvocation: invocation },
   );
+  return { ...receipt, invocation };
 }
 export async function readBrandMediaUsage(
   context: RequestContext,
