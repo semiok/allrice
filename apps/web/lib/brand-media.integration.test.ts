@@ -238,6 +238,49 @@ async function file(a: Actor) {
     checksum: artifact.digest,
   };
 }
+async function pictureFile(a: Actor) {
+  const imageId = randomUUID(),
+    versionId = randomUUID();
+  const bytes = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==',
+    'base64',
+  );
+  const checksum = 'sha256:' + createHash('sha256').update(bytes).digest('hex');
+  const key = makeObjectKey({
+    organizationId: a.context.organizationId,
+    workspaceId: a.scope.workspaceId,
+    ownerId: a.context.actor.id,
+    category: 'artifacts',
+    objectId: imageId,
+  });
+  const imageFile = { objectId: imageId, versionId, checksum };
+  await runtimeFixtureStorage(f.db)!.put(
+    {
+      id: imageId,
+      organizationId: a.context.organizationId,
+      workspaceId: a.scope.workspaceId,
+      ownerId: a.context.actor.id,
+      key,
+      checksum,
+      mediaType: 'image/png',
+      sizeBytes: bytes.length,
+      immutable: true,
+      deletedAt: null,
+      retentionUntil: null,
+    },
+    new Blob([bytes]).stream(),
+  );
+  // The file authority uses the real immutable delivery/session records.
+  // No image operation or provider is invoked by this synthetic fixture.
+  await f.db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,immutable)
+  values(${imageId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${key},'artifacts','image/png',${bytes.length},${checksum},'ready',true)`;
+  await f.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
+  values(${versionId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${imageId},${randomUUID()},1,${a.base.task.chatSessionId},'合成封面.png','png')`;
+  await f.db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest)
+  values(${versionId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${a.base.task.runId},'file',
+    ${f.db.json({ kind: 'tool_result', runId: a.base.task.runId, operationId: null, stepId: null })},${randomUUID()},${imageFile.checksum})`;
+  return imageFile;
+}
 async function reference(a: Actor) {
   const text = '合成产品规格：A5，48张。';
   const saved = await publishReference(
@@ -270,6 +313,62 @@ async function reference(a: Actor) {
     sourceId: saved.sourceId,
     revisionId: saved.revisionId,
   };
+}
+async function filePolicyCase(kind: 'pin' | 'body' | 'image' | 'replay') {
+  const a = await actor(),
+    b = await actor();
+  await install(a);
+  const pinned = kind === 'image' ? await pictureFile(a) : await file(a);
+  await f.db`insert into allrice_workbench_file_policies
+    (object_id,organization_id,workspace_id,owner_id,file_name,scope)
+    values(${pinned.objectId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},'当前文件权限','personal')`;
+  let input: object;
+  if (kind === 'pin')
+    input = {
+      ...topicInput(a),
+      references: [{ origin: 'file', file: pinned }],
+    };
+  else {
+    const article = await draft(a);
+    if (kind === 'image')
+      input = {
+        operation: 'article.image.add',
+        requestId: randomUUID(),
+        articleId: article.id,
+        expectedRevision: article.revision,
+        image: { file: pinned, source: 'uploaded' },
+      };
+    else {
+      await f.db`update allrice_brand_media_articles set body_file=${f.db.json(pinned)},revision=revision+1
+        where id=${article.id} and revision=${article.revision}`;
+      input = {
+        operation: 'article.publication',
+        requestId: randomUUID(),
+        articleId: article.id,
+        expectedRevision: article.revision + 1,
+        change: { action: 'schedule', schedule },
+      };
+      // No file in this input: replay must validate the retained response body.
+      if (kind === 'replay') await command(a, input);
+    }
+  }
+  return { a, b, pinned, input };
+}
+async function expectBlocked(waiter: number, blocker: number) {
+  await expect
+    .poll(async () => {
+      const [row] =
+        await f.db`select ${blocker}::int=any(pg_blocking_pids(${waiter}::int)) blocked`;
+      return row!.blocked;
+    })
+    .toBe(true);
+}
+async function businessState(a: Actor) {
+  return Promise.all([
+    f.db`select * from allrice_brand_media_topics where instance_id=${a.scope.instanceId} order by id`,
+    f.db`select * from allrice_brand_media_articles where instance_id=${a.scope.instanceId} order by id`,
+    f.db`select * from allrice_brand_content_requests where instance_id=${a.scope.instanceId} order by request_id`,
+  ]);
 }
 const schedule = {
   plannedAt: '2026-11-24T20:00:00+08:00',
@@ -962,47 +1061,9 @@ suite(
       const a = await actor();
       await install(a);
       let article = await draft(a);
-      const imageId = randomUUID(),
-        versionId = randomUUID();
-      const bytes = Buffer.from(
-        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==',
-        'base64',
-      );
-      const checksum =
-        'sha256:' + createHash('sha256').update(bytes).digest('hex');
-      const key = makeObjectKey({
-        organizationId: a.context.organizationId,
-        workspaceId: a.scope.workspaceId,
-        ownerId: a.context.actor.id,
-        category: 'artifacts',
-        objectId: imageId,
-      });
-      const imageFile = { objectId: imageId, versionId, checksum };
-      await runtimeFixtureStorage(f.db)!.put(
-        {
-          id: imageId,
-          organizationId: a.context.organizationId,
-          workspaceId: a.scope.workspaceId,
-          ownerId: a.context.actor.id,
-          key,
-          checksum,
-          mediaType: 'image/png',
-          sizeBytes: bytes.length,
-          immutable: true,
-          deletedAt: null,
-          retentionUntil: null,
-        },
-        new Blob([bytes]).stream(),
-      );
-      // The file authority uses the real immutable delivery/session records.
-      // No image operation or provider is invoked by this synthetic fixture.
-      await f.db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,immutable)
-      values(${imageId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${key},'artifacts','image/png',${bytes.length},${checksum},'ready',true)`;
-      await f.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
-      values(${versionId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${imageId},${randomUUID()},1,${a.base.task.chatSessionId},'合成封面.png','png')`;
-      await f.db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest)
-      values(${versionId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${a.base.task.runId},'file',
-        ${f.db.json({ kind: 'tool_result', runId: a.base.task.runId, operationId: null, stepId: null })},${randomUUID()},${imageFile.checksum})`;
+      const imageFile = await pictureFile(a),
+        imageId = imageFile.objectId,
+        versionId = imageFile.versionId;
       const image = {
         file: { ...imageFile, objectId: imageId, versionId },
         source: 'uploaded',
@@ -1167,6 +1228,107 @@ suite(
         database.mockReturnValue(f.db);
       }
     });
+
+    it.each(['pin', 'body', 'image', 'replay'] as const)(
+      'holds the existing %s file policy through final validation and commit, then denies the revoked request',
+      async (kind) => {
+        const { a, b, pinned, input } = await filePolicyCase(kind);
+        let revocation: Promise<void> | undefined;
+        let revocationError: unknown;
+        let revokeCommitted = false;
+        const writer = createReadPathProbe(f.db, {
+          beforeCommit: async (tx) => {
+            const [writerPid] = await tx`select pg_backend_pid() pid`;
+            let announce!: (pid: number) => void;
+            const started = new Promise<number>((resolve) => {
+              announce = resolve;
+            });
+            revocation = f.db
+              .begin(async (other) => {
+                const [pid] = await other`select pg_backend_pid() pid`;
+                announce(pid!.pid);
+                await other`update allrice_workbench_file_policies set owner_id=${b.context.actor.id},revision=revision+1
+                where object_id=${pinned.objectId} and organization_id=${a.context.organizationId}
+                  and workspace_id=${a.scope.workspaceId} and owner_id=${a.context.actor.id}`;
+              })
+              .then(
+                () => {
+                  revokeCommitted = true;
+                },
+                (error) => {
+                  revocationError = error;
+                },
+              );
+            await expectBlocked(await started, writerPid!.pid);
+            expect(revokeCommitted).toBe(false);
+          },
+        });
+        const database = vi.mocked(client.getDatabase);
+        database.mockReturnValue(writer.db);
+        let result;
+        try {
+          result = await command(a, input);
+        } finally {
+          database.mockReturnValue(f.db);
+          await revocation;
+        }
+        expect(revocationError).toBeUndefined();
+        expect(revokeCommitted).toBe(true);
+        expect(result.replayed).toBe(kind === 'replay');
+        const before = await businessState(a);
+        await command(a, input, 403);
+        expect(await businessState(a)).toEqual(before);
+      },
+    );
+
+    it.each(['pin', 'body', 'image', 'replay'] as const)(
+      'waits for an earlier %s policy revocation and rejects the pending write or replay without persistence',
+      async (kind) => {
+        const { a, b, pinned, input } = await filePolicyCase(kind);
+        const before = await businessState(a);
+        let announce!: (pid: number) => void;
+        const started = new Promise<number>((resolve) => {
+          announce = resolve;
+        });
+        const writer = createReadPathProbe(f.db, {
+          afterStart: async (tx) => {
+            const [pid] = await tx`select pg_backend_pid() pid`;
+            announce(pid!.pid);
+          },
+        });
+        const database = vi.mocked(client.getDatabase);
+        let response: Promise<Response> | undefined;
+        try {
+          await f.db.begin(async (other) => {
+            const [revokerPid] = await other`select pg_backend_pid() pid`;
+            await other`update allrice_workbench_file_policies set owner_id=${b.context.actor.id},revision=revision+1
+              where object_id=${pinned.objectId} and organization_id=${a.context.organizationId}
+                and workspace_id=${a.scope.workspaceId} and owner_id=${a.context.actor.id}`;
+            database.mockReturnValue(writer.db);
+            response = business.POST(
+              request(a, 'brand-media', { ...a.scope, ...input }),
+              params(a.scope.instanceId),
+            );
+            await expectBlocked(
+              await Promise.race([
+                started,
+                response.then(() => {
+                  throw Error(
+                    'request completed before entering its transaction',
+                  );
+                }),
+              ]),
+              revokerPid!.pid,
+            );
+          });
+          expect((await response!).status).toBe(403);
+        } finally {
+          database.mockReturnValue(f.db);
+          await response;
+        }
+        expect(await businessState(a)).toEqual(before);
+      },
+    );
 
     it('keeps core-table access out of the business repository', async () => {
       const repo = await readFile(
