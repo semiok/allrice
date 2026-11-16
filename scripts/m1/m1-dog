@@ -188,6 +188,8 @@ def check_round(now=None):
     success = sum(d.get('sentAt', '').startswith(day) for d in deliveries)
     failed = sum(d.get('attemptedAt', d.get('createdAt', '')).startswith(day) and d.get('status') == 'escalated' for d in deliveries)
     unresolved = sum(bool(d.get('unresolved')) for d in tg)
+    rate_limits = sum(runtime.read(p, {}).get('at', '').startswith(day)
+                      for p in runtime.root().glob('*/github-rate-limit-*.json'))
     # Escalation delivered to the user still needs a person; keep this separate
     # from the transport backlog, so a successful Telegram is not a task fix.
     pending_alerts = [str(p.relative_to(runtime.root())) for p in manual_alerts()
@@ -196,11 +198,13 @@ def check_round(now=None):
     if datetime.fromtimestamp(now, timezone.utc).hour >= 1 and snapshot.get('dailySent') != day:
         report = runtime.alert(dog / 'daily' / day,
                                'M1-dog 平安报告 %s UTC：看门狗存活；今日叫醒成功 %s / 失败 %s；'
-                               '需人工核对 %s，TG待送 %s。维护：打野。' % (day, success, failed, escalated, unresolved), now)
+                               '当日 GitHub 限流次数 %s；需人工核对 %s，TG待送 %s。维护：打野。' %
+                               (day, success, failed, rate_limits, escalated, unresolved), now)
         if report.get('sentAt'):
             snapshot['dailySent'] = day
     snapshot.update(boot=boot, activeThreads=sorted(active), wakeSuccess=success, wakeFailed=failed,
-                    unresolved=unresolved, escalated=escalated, pendingAlerts=sorted(pending_alerts))
+                    githubRateLimitCount=rate_limits, unresolved=unresolved,
+                    escalated=escalated, pendingAlerts=sorted(pending_alerts))
     runtime.save(dog / 'state.json', snapshot)
     heartbeat.update(completedAt=runtime.stamp(), activeWaits=len(active))
     runtime.save(dog / 'heartbeat.json', heartbeat)

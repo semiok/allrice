@@ -289,8 +289,11 @@ from pathlib import Path
 args = sys.argv[1:]
 with Path('gh-calls.jsonl').open('a') as stream:
     stream.write(json.dumps(args) + '\\n')
-assert args[0] == 'run' and args[1] in ('watch', 'view'), args
-assert args[2] == '43868459286' and args[3:5] == ['--repo', 'semiok/allrice'], args
+if args[:2] == ['run', 'watch']:
+    assert args[2:6] == ['43868459286', '--repo', 'semiok/allrice', '--exit-status'], args
+    assert args[6] == '--interval' and int(args[7]) >= 30, args
+else:
+    assert args == ['api', '--include', 'repos/semiok/allrice/actions/runs/43868459286'], args
 mode = os.environ.get('CI_MODE', 'reconnect')
 count_path = Path('watch-count')
 count = int(count_path.read_text()) if count_path.exists() else 0
@@ -302,8 +305,21 @@ if args[1] == 'watch':
         while not Path('ci-done').exists(): time.sleep(.02)
     if mode == 'watch-hang': time.sleep(60)
     if mode == 'watch-zero': sys.exit(0)
+    if mode in ('rate', 'secondary', 'rate-hold') and count == 1:
+        print('HTTP 403: API rate limit exceeded', flush=True)
+        sys.exit(1)
     print('failed to get run: EOF', flush=True)
     sys.exit(1)
+if mode in ('rate', 'secondary', 'rate-hold') and count == 1:
+    if mode == 'secondary':
+        print('HTTP/2.0 429 Too Many Requests\\nRetry-After: 2\\n\\n{}')
+        sys.exit(1)
+    reset = int(time.time()) + (60 if mode == 'rate-hold' else 2)
+    Path('quota-reset').write_text(str(reset))
+    print('HTTP/2.0 403 Forbidden\\nX-Ratelimit-Remaining: 0\\nX-Ratelimit-Reset: %s\\n\\n{"message":"API rate limit exceeded"}' % reset)
+    sys.exit(1)
+if mode == 'rate' and count == 2:
+    assert time.time() > int(Path('quota-reset').read_text())
 if mode == 'query-error' and count == 1:
     print('HTTP 503: temporarily unavailable', file=sys.stderr)
     sys.exit(1)
@@ -311,7 +327,8 @@ if mode == 'malformed':
     print('invalid JSON')
     sys.exit(0)
 status = 'completed' if count >= 2 or mode in ('success', 'failure', 'cancelled', 'wrong-id') else 'in_progress'
-print(json.dumps(dict(databaseId=7 if mode == 'wrong-id' else 43868459286,
+print('HTTP/2.0 200 OK\\nContent-Type: application/json\\n')
+print(json.dumps(dict(id=7 if mode == 'wrong-id' else 43868459286,
                      status=status, conclusion=mode if mode in ('failure','cancelled') else 'success')))
 ''')
         gh.chmod(0o755)
@@ -334,11 +351,135 @@ print(json.dumps(dict(databaseId=7 if mode == 'wrong-id' else 43868459286,
         self.assertEqual(len(self.notifications()), 1)
         self.assertIn('真实结论 success', self.notifications()[0][4])
         calls = [json.loads(line) for line in (self.home / 'gh-calls.jsonl').read_text().splitlines()]
-        self.assertEqual([call[:2] for call in calls], [['run', 'watch'], ['run', 'view']] * 2)
-        self.assertEqual([call for call in calls if call[1] == 'watch'], [command[1:]] * 2)
+        self.assertEqual([call[:2] for call in calls], [['run', 'watch'], ['api', '--include']] * 2)
+        self.assertEqual([call for call in calls if call[1] == 'watch'], [command[1:] + ['--interval', '60']] * 2)
         self.assertIn('EOF', Path(item['log']).read_text())
         self.assertEqual(json.loads((Path(item['result']).parent / 'ci-state-1.json').read_text())['status'], 'in_progress')
         self.assert_released(item)
+
+    def test_ci_interval_default_aliases_and_minimum_before_launch(self):
+        module = self.load_wake()
+        for flags, expected in [([], '60'), (['-i', '30'], '30'),
+                                (['--interval=120'], '120'), (['-i', '3', '--interval', '60'], '60')]:
+            with self.subTest(flags=flags):
+                command = self.fake_ci() + flags
+                target = module.ci_target(command)
+                self.assertEqual(target['interval'], int(expected))
+                self.assertEqual(command[-2:], ['--interval', expected])
+        for flags in [['--interval', '29'], ['-i', '3'], ['--interval', '60', '-i', '3']]:
+            result = self.invoke('', command=self.fake_ci() + flags)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('at least 30 seconds', result.stderr)
+        self.assertFalse((self.base / 'qa/wake-when').exists())
+        self.assertFalse((self.home / 'gh-calls.jsonl').exists())
+
+    def test_rate_limit_waits_until_reset_without_early_notification(self):
+        item = self.start('', command=self.fake_ci(), timeout='12s', extra_env={'CI_MODE': 'rate'})
+        deadline = time.monotonic() + 5
+        run = Path(item['result']).parent
+        while not (run / 'github-rate-limit-1.json').exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        event = json.loads((run / 'github-rate-limit-1.json').read_text())
+        self.assertEqual(event['httpStatus'], 403)
+        self.assertGreater(event['retryAt'], time.time())
+        self.assertTrue(running(item['pid']))
+        self.assertEqual(self.notifications(), [])
+        self.assertEqual(len((self.home / 'gh-calls.jsonl').read_text().splitlines()), 2)
+        state = self.finished(item)
+        self.assertEqual(state['task']['conclusion'], 'success')
+        self.assertEqual(state['githubRateLimitCount'], 1)
+        self.assertEqual(state['verificationAttempts'], 2)
+        self.assertEqual(len(self.notifications()), 1)
+        self.assert_released(item)
+
+    def load_wake(self):
+        loader = importlib.machinery.SourceFileLoader('wake_rate_test', str(TOOL))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(module)
+        return module
+
+    def test_secondary_limit_and_interrupted_cooldown_keep_real_outcomes(self):
+        item = self.start('', command=self.fake_ci(), timeout='12s', extra_env={'CI_MODE': 'secondary'})
+        state = self.finished(item)
+        self.assertEqual(state['task']['conclusion'], 'success')
+        self.assertEqual(state['githubRateLimitCount'], 1)
+        self.assert_released(item)
+        (self.home / 'watch-count').unlink()
+        item = self.start('', command=self.fake_ci(), timeout='120s', extra_env={'CI_MODE': 'rate-hold'})
+        deadline = time.monotonic() + 5
+        path = Path(item['result'])
+        while json.loads(path.read_text()).get('phase') != 'rate-limit' and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertEqual(json.loads(path.read_text())['phase'], 'rate-limit')
+        self.assertEqual(len(self.notifications()), 1)
+        os.kill(item['pid'], signal.SIGTERM)
+        state = self.finished(item)
+        self.assertEqual(state['commandExitCode'], 1)
+        self.assertEqual(state['interruptSignal'], signal.SIGTERM)
+        self.assertEqual(state['task']['status'], 'unknown')
+        self.assert_released(item)
+
+    def test_rate_headers_and_secondary_limits_preserve_deadline_and_heartbeat(self):
+        module = self.load_wake()
+        for headers, expected in [({'retry-after': '90'}, 90),
+                ({'retry-after': 'Thu, 01 Jan 1970 00:18:20 GMT'}, 100),
+                ({'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1100'}, 101),
+                ({'retry-after': '90', 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1100'}, 101),
+                ({'retry-after': 'invalid', 'x-ratelimit-reset': '500'}, 60), ({}, 60)]:
+            with self.subTest(headers=headers):
+                elapsed, state = [0], {}
+                def advance(seconds): elapsed[0] += seconds
+                with patch.object(module.time, 'time', return_value=1000), \
+                     patch.object(module.time, 'monotonic', side_effect=lambda: elapsed[0]), \
+                     patch.object(module.time, 'sleep', side_effect=advance) as sleep, \
+                     patch.object(module, 'beat') as beat:
+                    self.assertTrue(module.cooldown_ci(module.RateLimited(headers, 429),
+                                                       self.home, state, 200, io.BytesIO()))
+                self.assertEqual(elapsed[0], expected)
+                self.assertTrue(all(c.args[0] <= 30 for c in sleep.call_args_list))
+                self.assertEqual(beat.call_count, sleep.call_count + 1)
+                self.assertEqual(state['githubRateLimitCount'], 1)
+        self.assertFalse(module.rate_limited('Forbidden', 403, {'x-ratelimit-remaining': '9'}))
+        self.assertTrue(module.rate_limited('', 429))
+        self.assertTrue(module.rate_limited('API rate limit exceeded', 403))
+        status, headers, body = module.http_response('HTTP/2.0 429 Too Many Requests\r\nRetry-After: 2\r\n\r\n{}')
+        self.assertEqual((status, headers, body), (429, {'retry-after': '2'}, '{}'))
+
+    def test_repeated_limits_do_not_consume_eof_budget_or_reset_deadline(self):
+        module = self.load_wake()
+        command = self.fake_ci()
+        args = SimpleNamespace(command=command, timeout=10000, ci=module.ci_target(command))
+        elapsed, state = [0], {}
+        def advance(seconds): elapsed[0] += seconds
+        success = dict(status='completed', conclusion='success', exitCode=0)
+        # More limits than the EOF retry cap, then all four EOF delays, then success.
+        results = [module.RateLimited({}, 429) for _ in range(6)] + [None] * 4 + [success]
+        with patch.object(module, 'run_group', return_value=(1, False)) as run, \
+             patch.object(module, 'verify_ci', side_effect=results), patch.object(module, 'beat'), \
+             patch.object(module.time, 'time', side_effect=lambda: 1000 + elapsed[0]), \
+             patch.object(module.time, 'monotonic', side_effect=lambda: elapsed[0]), \
+             patch.object(module.time, 'sleep', side_effect=advance):
+            self.assertEqual(module.wait_for_result(args, self.home, io.BytesIO(), state), success)
+        self.assertEqual(run.call_count, 11)
+        self.assertEqual(state['githubRateLimitCount'], 6)
+        self.assertEqual(elapsed[0], 60 + 120 + 240 + 480 + 960 + 1920 + 5 + 15 + 30 + 60)
+        self.assertEqual(run.call_args.args[1], 10000 - elapsed[0])
+
+    def test_rate_limit_total_timeout_keeps_unknown_and_does_not_retry_api(self):
+        module = self.load_wake()
+        command = self.fake_ci()
+        args = SimpleNamespace(command=command, timeout=45, ci=module.ci_target(command))
+        elapsed, state = [0], {}
+        def advance(seconds): elapsed[0] += seconds
+        with patch.object(module, 'run_group', return_value=(1, False)) as run, \
+             patch.object(module, 'verify_ci', side_effect=module.RateLimited({'retry-after': '3600'}, 429)) as verify, \
+             patch.object(module, 'beat'), patch.object(module.time, 'time', return_value=1000), \
+             patch.object(module.time, 'monotonic', side_effect=lambda: elapsed[0]), \
+             patch.object(module.time, 'sleep', side_effect=advance):
+            self.assertIsNone(module.wait_for_result(args, self.home, io.BytesIO(), state))
+        self.assertEqual((run.call_count, verify.call_count, elapsed[0]), (1, 1, 45))
+        self.assertTrue(state['waitTimedOut'])
+        self.assertEqual(state['commandExitCode'], 1)
 
     def test_ci_terminal_failure_and_cancelled_are_not_retried(self):
         for conclusion in ['failure', 'cancelled']:
