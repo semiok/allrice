@@ -221,7 +221,7 @@ export function Images({
           </Button>
         )}
       </div>
-      {error && <p role="alert">{error}</p>}
+      {error && !(active && target && editable) && <p role="alert">{error}</p>}
       <div className={ui.actions}>
         {article.images.map((image, index) => {
           const label = index === 0 ? '封面图' : `配图 ${index}`;
@@ -276,6 +276,7 @@ export function Images({
           closeLabel="关闭加配图"
           onClose={() => setTarget(null)}
         >
+          {error && <p role="alert">{error}</p>}
           <SegmentedTabs
             label="配图来源"
             value={tab}

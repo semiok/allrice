@@ -577,9 +577,17 @@ suite('MET-224 main-area brand media text workflow', () => {
             row.images.push(body.image as BrandMediaArticle['images'][number]);
           else
             row.images = row.images.filter((image) =>
-              'origin' in image
-                ? image.file.objectId !== (body.upload as typeof file).objectId
-                : image.file.versionId !== body.versionId,
+              'upload' in body
+                ? !(
+                    'origin' in image &&
+                    image.origin === 'upload' &&
+                    image.file.objectId ===
+                      (body.upload as typeof file).objectId &&
+                    image.file.checksum ===
+                      (body.upload as typeof file).checksum
+                  )
+                : !('versionId' in image.file) ||
+                  image.file.versionId !== body.versionId,
             );
           row.revision++;
           return reply({
