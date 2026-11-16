@@ -53,6 +53,7 @@ import {
 } from '../../../packages/database/src/employees/employee-instances.ts';
 import { isBaseRiceInstance } from '../../../packages/database/src/employees/employee-instance-policy.ts';
 import { createEmployeeAdministrationFixture } from '../../../packages/database/src/employee-administration.fixture.ts';
+import { approveSyntheticCurrentEmployeeExecution } from '../../../packages/database/src/current-execution.fixture.ts';
 import {
   savePlatformEmployeeDraft,
   assignPublishedPlatformEmployeeToWorkspace,
@@ -422,6 +423,7 @@ suite(
   'MET-224 P2 human module and business API, real session and persistence',
   () => {
     beforeAll(async () => {
+      approveSyntheticCurrentEmployeeExecution();
       vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '0');
       vi.stubEnv('ALLRICE_WORKBENCH_ENABLED', '1');
       f = await createRuntimeFixtureDatabase();
