@@ -57,6 +57,7 @@ import {
   brandContentTemplateKeys,
   brandMediaModule,
   brandMediaRelease,
+  type EmployeeModuleBinding,
   RunSnapshotSchema,
   workspaceCapabilityIds,
   type WorkspaceCapability,
@@ -806,6 +807,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       employeeCount?: number;
       employeeHistory?: boolean;
       employeeDetails?: boolean;
+      brandMediaBinding?: EmployeeModuleBinding;
       employeeHistoryCount?: number;
       officeHistoryCount?: number;
       touch?: boolean;
@@ -2199,13 +2201,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           );
           return answer(await response.json(), response.status);
         }
+        const binding =
+          instanceId === id(7) ? (options.brandMediaBinding ?? null) : null;
         return answer({
           modules: [
             {
               descriptor: brandMediaModule,
-              binding: null,
-              available: true,
-              enabled: false,
+              binding,
+              available: !binding,
+              enabled: !!binding,
             },
           ],
         });
@@ -23002,17 +23006,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
   ] as const)(
     'projects real plugin %s receipts into the authorized host sidebar without changing the selected chat',
     async (kind) => {
-      const f = await fixture({
-        employeeDetails: true,
-        sidebarActivity: true,
-        controlledStream: true,
-      });
-      const { page } = f,
-        changed = kind === 'scope-changed',
-        unlisted = kind === 'unlisted',
-        terminal = kind === 'terminal';
-      const sessionId = unlisted ? id(7401) : A,
-        runId = id(7400);
       const binding = {
         organizationId: org,
         workspaceId: workspace,
@@ -23023,6 +23016,18 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         enabledAt: now,
         revokedAt: null,
       };
+      const f = await fixture({
+        employeeDetails: true,
+        sidebarActivity: true,
+        controlledStream: true,
+        brandMediaBinding: binding,
+      });
+      const { page } = f,
+        changed = kind === 'scope-changed',
+        unlisted = kind === 'unlisted',
+        terminal = kind === 'terminal';
+      const sessionId = unlisted ? id(7401) : A,
+        runId = id(7400);
       const topic = {
         workspaceId: workspace,
         instanceId: id(7),
@@ -23091,36 +23096,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       const gate = new Promise<void>((done) => {
         release = done;
       });
-      await page.route(
-        (url) => url.pathname === `/api/v1/employee-instances/${id(7)}/modules`,
-        async (route) => {
-          const request = route.request(),
-            url = new URL(request.url());
-          if (
-            url.searchParams.get('workspaceId') !== workspace ||
-            f.state.viewer !== user
-          )
-            return route.fallback();
-          expect(request.method()).toBe('GET');
-          expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
-          expect(request.headers()['x-allrice-organization-id']).toBe(org);
-          expect(request.headers()['x-allrice-workspace-id']).toBe(workspace);
-          await route.fulfill({
-            status: 200,
-            contentType: 'application/json',
-            body: JSON.stringify({
-              modules: [
-                {
-                  descriptor: brandMediaModule,
-                  binding,
-                  available: false,
-                  enabled: true,
-                },
-              ],
-            }),
-          });
-        },
-      );
       await page.route(
         (url) =>
           url.pathname === `/api/v1/employee-instances/${id(7)}/brand-media`,
