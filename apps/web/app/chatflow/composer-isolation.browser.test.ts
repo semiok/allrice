@@ -1830,6 +1830,11 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           const spinner = f.page.locator(
             `[data-row-key="session:${A}"] svg[data-state="ongoing"]`,
           );
+          const a = f.page.locator(`[data-row-key="session:${A}"]`);
+          const parentStatus = a.getByText('进行中', { exact: true });
+          const childStatus = a.getByText('1 个子智能体运行中', {
+            exact: true,
+          });
           if (outcome === 'ready') {
             await expect.poll(f.native.startupStreams).toBe(1);
             expect(await spinner.count()).toBe(1);
@@ -1850,10 +1855,13 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           expect(reads().length).toBe(count);
           if (outcome === 'ready') {
             expect(f.native.startupStreams()).toBe(1);
+            await expect.poll(() => parentStatus.count()).toBe(1);
             f.finishRun(A, 'succeeded');
           }
           await expect.poll(f.native.startupStreams).toBe(0);
           if (outcome === 'ready') {
+            await expect.poll(() => parentStatus.count()).toBe(0);
+            await expect.poll(() => childStatus.count()).toBe(1);
             expect(await spinner.count()).toBe(1);
             const summary = f.native.summary(A);
             f.native.push(A, {
@@ -1955,9 +1963,17 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           const spinner = f.page.locator(
             `[data-row-key="session:${A}"] svg[data-state="ongoing"]`,
           );
+          const a = f.page.locator(`[data-row-key="session:${A}"]`);
+          const parentStatus = a.getByText('进行中', { exact: true });
+          const childStatus = a.getByText('1 个子智能体运行中', {
+            exact: true,
+          });
           expect(await spinner.count()).toBe(1);
+          await expect.poll(() => parentStatus.count()).toBe(1);
           f.finishRun(A, 'succeeded');
           await expect.poll(f.native.startupStreams).toBe(0);
+          await expect.poll(() => parentStatus.count()).toBe(0);
+          await expect.poll(() => childStatus.count()).toBe(1);
           expect(await spinner.count()).toBe(1);
           const summary = f.native.summary(A);
           f.native.push(A, {
