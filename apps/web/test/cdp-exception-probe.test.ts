@@ -10,7 +10,7 @@ const notPaused = new Error(
 const reactError = 'Error: Maximum update depth exceeded';
 function fixture() {
   const cdp = Object.assign(new EventEmitter(), {
-    send: vi.fn(async (_method: string) => ({})),
+    send: vi.fn(async () => ({})),
   });
   const exceptions: string[] = [];
   const failures: unknown[] = [];

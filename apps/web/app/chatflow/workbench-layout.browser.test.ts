@@ -6528,7 +6528,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     onTestFinished,
   }) => {
     const context = await browser.newContext();
-    let probe: ReturnType<typeof observeCdpExceptions> | undefined;
+    let probe: ReturnType<typeof observeCdpExceptions> | undefined = undefined;
     onTestFinished(async () => {
       const pending = probe?.stop();
       try {
@@ -6581,7 +6581,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     onTestFinished,
   }) => {
     const f = await fixture();
-    let probe: ReturnType<typeof observeCdpExceptions> | undefined;
+    let probe: ReturnType<typeof observeCdpExceptions> | undefined = undefined;
     onTestFinished(async () => {
       const pending = probe?.stop();
       // Closing the context also detaches CDP, even after a test timeout.
