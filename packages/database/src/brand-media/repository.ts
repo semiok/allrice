@@ -144,8 +144,10 @@ export async function readBrandMediaRecords(
       order by planned_at,id`;
     return { view: 'calendar', items: rows.map(articleDto) };
   }
+  // Bind as text before the PG timestamp cast: postgres.js otherwise selects
+  // its Date serializer for timestamptz parameters and truncates microseconds.
   const cursor = input.cursor
-    ? tx`and (created_at,id)<(${input.cursor.createdAt}::timestamptz,${input.cursor.id}::uuid)`
+    ? tx`and (created_at,id)<(${input.cursor.createdAt}::text::timestamptz,${input.cursor.id}::uuid)`
     : tx``;
   if (input.view === 'topics') {
     const rows = await tx<
@@ -261,9 +263,10 @@ export async function applyBrandMediaUserCommand(
       (image) => image.file.versionId !== action.versionId,
     );
   }
+  // The same text cast preserves an existing schedule on publish/correction.
   const updated = await tx`update allrice_brand_media_articles set
     reference_pins=${tx.json(references)},images=${tx.json(images)},state=${publication.state},
-    planned_at=${publication.schedule?.plannedAt ?? null},timezone=${publication.schedule?.timezone ?? null},
+    planned_at=${publication.schedule?.plannedAt ?? null}::text::timestamptz,timezone=${publication.schedule?.timezone ?? null},
     wechat_url=${publication.links?.wechat ?? null},xiaohongshu_url=${publication.links?.xiaohongshu ?? null},
     revision=revision+1,updated_at=clock_timestamp()
     where ${scopeWhere(tx, scope)} and id=${article.id} and revision=${action.expectedRevision}`;

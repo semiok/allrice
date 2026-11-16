@@ -639,8 +639,8 @@ suite(
       const old = topicInput(b);
       await command(b, old);
       await f.db`update allrice_memberships set active=false where user_id=${b.context.actor.id}`;
-      await read(b, { view: 'topics' }, 401);
-      await command(b, old, 401);
+      await read(b, { view: 'topics' }, 403);
+      await command(b, old, 403);
     });
 
     it('does not authorize a source Run merely from its UUID, another tenant or another instance of the same owner', async () => {
@@ -850,9 +850,13 @@ suite(
       };
       await command(a, input);
       await command(a, input);
-      await f.db`update allrice_storage_objects set deleted_at=clock_timestamp() where id=${pinned.objectId}`;
-      await command(a, input, 409);
-      await read(a, { view: 'topics' }, 409);
+      // Immutable bytes cannot be tombstoned in-place. Change the current file
+      // ACL instead, so both read and cached replay must see that denial.
+      await f.db`insert into allrice_workbench_file_policies
+        (object_id,organization_id,workspace_id,owner_id,file_name,scope)
+        values(${pinned.objectId},${a.context.organizationId},${a.scope.workspaceId},${b.context.actor.id},'已撤权文件.txt','personal')`;
+      await command(a, input, 403);
+      await read(a, { view: 'topics' }, 403);
       const [count] =
         await f.db`select count(*)::int n from allrice_brand_content_requests
       where instance_id=${a.scope.instanceId} and request_id=${'brand-media:' + input.requestId}`;
@@ -882,7 +886,7 @@ suite(
       await changeReferencePublication(a.context, selected.sourceId, {
         workspaceId: a.scope.workspaceId,
         requestId: randomUUID(),
-        action: 'revoke',
+        action: 'delete',
         expectedRevision: policy!.revision,
       });
       await read(a, { view: 'topics' }, 409);
@@ -905,7 +909,7 @@ suite(
       await f.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
       values(${versionId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${imageId},${randomUUID()},1,${a.base.task.chatSessionId},'合成封面.png','png')`;
       await f.db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest)
-      values(${versionId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${a.base.task.runId},'image',
+      values(${versionId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${a.base.task.runId},'file',
         ${f.db.json({ kind: 'tool_result', runId: a.base.task.runId, operationId: null, stepId: null })},${randomUUID()},${imageFile.checksum})`;
       const image = {
         file: { ...imageFile, objectId: imageId, versionId },
