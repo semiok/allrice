@@ -807,7 +807,7 @@ async function resolveImageRetry(
       : undefined;
   if (
     !prior ||
-    prior.state !== 'failed' ||
+    !['failed', 'succeeded'].includes(prior.state) ||
     invocation?.intent.operation !== 'image' ||
     invocation.module.instanceId !== scope.instanceId ||
     !sameEmployeeModuleRelease(invocation.module.release, brandMediaRelease)
@@ -825,7 +825,8 @@ async function resolveImageRetry(
       and a.workspace_id=${scope.workspaceId} and a.owner_id=${scope.ownerId} and v.format='png'`;
   if (
     artifacts.length ||
-    operations.some((operation) => operation.status !== 'failed')
+    operations.some((operation) => operation.status !== 'failed') ||
+    (prior.state === 'succeeded' && operations.length !== 1)
   )
     fail('invalid_state');
   const expected = {
@@ -1141,16 +1142,17 @@ async function readBrandMediaImage(
   context: BrandContentIdentity,
   scope: BrandMediaScope,
   row: { run_id: string; session_id: string },
-  runFailed: boolean,
+  runStatus: Awaited<ReturnType<typeof getRun>>['status'],
 ) {
   const [operation] = await tx<
     {
       id: string;
+      operation_count: number;
       status: 'running' | 'succeeded' | 'failed' | 'unknown';
       result: { modelContent?: string } | null;
     }[]
   >`
-    select i.id,i.result,case when i.status='running' and not exists(select 1 from allrice_jobs j
+    select i.id,i.result,(count(*) over())::integer operation_count,case when i.status='running' and not exists(select 1 from allrice_jobs j
       where j.run_id=i.run_id and j.status='running' and j.cancel_requested_at is null
         and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp()) then 'unknown' else i.status end status
     from allrice_image_operations i where i.run_id=${row.run_id} and i.session_id=${row.session_id}
@@ -1218,7 +1220,12 @@ async function readBrandMediaImage(
     fileName,
     adoptable,
     retryable:
-      runFailed && !output && (!operation || operation.status === 'failed'),
+      !output &&
+      (runStatus === 'failed'
+        ? !operation || operation.status === 'failed'
+        : runStatus === 'succeeded' &&
+          operation?.status === 'failed' &&
+          operation.operation_count === 1),
   };
 }
 export async function readBrandMediaRuns(
@@ -1288,7 +1295,7 @@ export async function readBrandMediaRuns(
                   context,
                   scope,
                   row,
-                  native.run.status === 'failed',
+                  native.run.status,
                 )
               : null;
           const outputs =

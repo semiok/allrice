@@ -1617,35 +1617,42 @@ suite('MET-224 main-area brand media text workflow', () => {
     },
   );
 
-  it('a confirmed failed/no-image retry keeps its frozen original intent and request ID after a lost response and cold reopening', async () => {
-    const failed = recovery('image', 'failed'),
-      f = await fixture({ runs: [failed], loseGenerateResponseOnce: true });
-    const modal = await imagesPage(f),
-      { page } = f;
-    await modal.getByLabel('画面描述').fill('编辑框里的新文字不能替换原重试');
-    await modal.getByRole('button', { name: '重试', exact: true }).click();
-    await modal.getByRole('alert').waitFor();
-    await modal.getByRole('button', { name: '重试', exact: true }).click();
-    await expect.poll(() => generates(f.state).length).toBe(2);
-    expect(generates(f.state)[1]!.body).toEqual(generates(f.state)[0]!.body);
-    expect(generates(f.state)[0]!.body).toMatchObject({
-      retryOfRunId: failed.run.id,
-      description: failed.invocation.intent.description,
-      articleId: failed.invocation.intent.articleId,
-      expectedRevision: failed.invocation.intent.expectedRevision,
-    });
-    expect(f.state.runs).toHaveLength(2);
-    await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: '← 回到对话' }).click();
-    await imagesPage(f);
-    expect(
-      await modal
-        .getByRole('button', { name: '生成中…', exact: true })
-        .isEnabled(),
-    ).toBe(false);
-    expect(generates(f.state)).toHaveLength(2);
-    await f.close();
-  });
+  it.each(['failed', 'succeeded'] as const)(
+    'a confirmed failed image in a %s Run keeps its frozen retry intent and request ID after a lost response and cold reopening',
+    async (terminalStatus) => {
+      const failed = recovery('image', 'failed');
+      failed.run = runSnapshot(300, terminalStatus);
+      const f = await fixture({
+        runs: [failed],
+        loseGenerateResponseOnce: true,
+      });
+      const modal = await imagesPage(f),
+        { page } = f;
+      await modal.getByLabel('画面描述').fill('编辑框里的新文字不能替换原重试');
+      await modal.getByRole('button', { name: '重试', exact: true }).click();
+      await modal.getByRole('alert').waitFor();
+      await modal.getByRole('button', { name: '重试', exact: true }).click();
+      await expect.poll(() => generates(f.state).length).toBe(2);
+      expect(generates(f.state)[1]!.body).toEqual(generates(f.state)[0]!.body);
+      expect(generates(f.state)[0]!.body).toMatchObject({
+        retryOfRunId: failed.run.id,
+        description: failed.invocation.intent.description,
+        articleId: failed.invocation.intent.articleId,
+        expectedRevision: failed.invocation.intent.expectedRevision,
+      });
+      expect(f.state.runs).toHaveLength(2);
+      await page.keyboard.press('Escape');
+      await page.getByRole('button', { name: '← 回到对话' }).click();
+      await imagesPage(f);
+      expect(
+        await modal
+          .getByRole('button', { name: '生成中…', exact: true })
+          .isEnabled(),
+      ).toBe(false);
+      expect(generates(f.state)).toHaveLength(2);
+      await f.close();
+    },
+  );
 
   it('upload waits for “用这张”, freezes its in-flight entry, and treats a Markdown-shaped filename only as an accessible label', async () => {
     let release!: () => void;

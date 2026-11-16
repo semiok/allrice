@@ -3361,6 +3361,51 @@ suite(
         });
         await generate(a, retryIntent(a, canceled, canceledIntent), 409);
         expect(imageProvider.generate).toHaveBeenCalledTimes(3);
+        // DSH may handle the confirmed tool error and finish the overall Run.
+        // That native success does not manufacture a successful image receipt.
+        const handledIntent = imageIntent(a, article),
+          handled = await generate(a, handledIntent),
+          handledRun = await execution(a, handled);
+        imageProvider.generate.mockRejectedValueOnce(
+          new HandlerError(
+            'IMAGE_GENERATION_FAILED',
+            'Synthetic handled image failure',
+            false,
+          ),
+        );
+        await expect(
+          broker(handledRun, 'image.generate', imageArgs),
+        ).rejects.toMatchObject({ code: 'IMAGE_GENERATION_FAILED' });
+        expect((await recoveredImage(a, handled.run.id)).image.retryable).toBe(
+          false,
+        );
+        await generate(a, retryIntent(a, handled, handledIntent), 409);
+        await finish(handled.run.id);
+        const restored = await recoveredImage(a, handled.run.id);
+        expect(restored.run.status).toBe('succeeded');
+        expect(restored.image).toMatchObject({
+          status: 'failed',
+          file: null,
+          retryable: true,
+        });
+        const handledRetry = retryIntent(a, handled, handledIntent),
+          accepted = await generate(a, handledRetry);
+        expect((await generate(a, handledRetry)).run.id).toBe(accepted.run.id);
+        expect(imageProvider.generate).toHaveBeenCalledTimes(4);
+        // An empty successful Run proves no failed image operation at all.
+        const emptyIntent = imageIntent(a, article),
+          empty = await generate(a, emptyIntent);
+        await execution(a, empty);
+        await finish(empty.run.id);
+        expect((await recoveredImage(a, empty.run.id)).image.retryable).toBe(
+          false,
+        );
+        const before =
+          await f.db`select id from allrice_runs where owner_id=${a.context.actor.id} order by id`;
+        await generate(a, retryIntent(a, empty, emptyIntent), 409);
+        expect(
+          await f.db`select id from allrice_runs where owner_id=${a.context.actor.id} order by id`,
+        ).toEqual(before);
       });
 
       it('adopts a real private upload by exact object/checksum only, preserves order/removal and enforces current ACL, old pin, CAS and published readonly boundaries', async () => {
