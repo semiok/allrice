@@ -23247,10 +23247,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await expect.poll(() => !!accepted).toBe(true);
         await page.keyboard.press('Escape');
         await page.locator(`[data-row-key="session:${B}"]`).click();
-        await brand
-          .getByRole('button', { name: '← 回到对话', exact: true })
-          .click();
+        await expect
+          .poll(() =>
+            page.locator('[data-brand-media-host]').getAttribute('data-open'),
+          )
+          .toBe('false');
+        expect(await brand.count()).toBe(0);
         const input = page.getByRole('textbox', { name: '给 Rice 的消息' });
+        await expect.poll(() => input.isEditable()).toBe(true);
         await input.fill('B的草稿保留');
         if (changed) {
           list();
