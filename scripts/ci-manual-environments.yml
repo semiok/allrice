@@ -71,6 +71,7 @@ files:
     - apps/worker/test/project-runtime.integration.test.ts
     - packages/browser-control/src/local-preview.integration.test.ts
   browser:
+    - apps/web/app/chatflow/brand-media.browser.test.ts
     - apps/web/app/chatflow/brand-content-panel.test.tsx
     - scripts/test-proxy.browser.test.mjs
     - apps/web/server/project-preview.test.mjs

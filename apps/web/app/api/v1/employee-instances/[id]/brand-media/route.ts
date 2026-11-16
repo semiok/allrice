@@ -1,11 +1,21 @@
-import { BrandMediaUserCommandSchema, UuidSchema } from '@allrice/contracts';
+import { sameOriginBrowserWrite } from '../../../../../../lib/identity/request-origin';
+import {
+  BrandMediaUserCommandSchema,
+  BrandMediaGenerateInputSchema,
+  UuidSchema,
+} from '@allrice/contracts';
 import {
   DataAccessError,
   commandBrandMediaUser,
   readBrandMedia,
+  generateBrandMedia,
+  readBrandMediaRuns,
+  readBrandMediaUsage,
 } from '@allrice/database';
 import { requireRequestContext } from '../../../../../../lib/identity/session';
 import { brandMediaErrorResponse } from '../../../../../../lib/brand-media/responses';
+
+import { getStorageAdapter } from '../../../../../../lib/storage/runtime';
 
 export const runtime = 'nodejs';
 const headers = { 'Cache-Control': 'private, no-store' };
@@ -19,6 +29,18 @@ export async function GET(request: Request, { params }: Route) {
     const instanceId = UuidSchema.parse((await params).id).toLowerCase();
     if (query.instanceId && query.instanceId.toLowerCase() !== instanceId)
       throw new DataAccessError('authorization_denied');
+    if (query.view === 'runs' || query.view === 'help') {
+      const scope = {
+        workspaceId: query.workspaceId ?? context.workspaceId,
+        instanceId,
+      };
+      return Response.json(
+        query.view === 'help'
+          ? await readBrandMediaUsage(context, scope)
+          : await readBrandMediaRuns(context, scope, getStorageAdapter()),
+        { headers },
+      );
+    }
     return Response.json(
       await readBrandMedia(context, {
         ...query,
@@ -34,15 +56,27 @@ export async function GET(request: Request, { params }: Route) {
 }
 export async function POST(request: Request, { params }: Route) {
   try {
+    if (!sameOriginBrowserWrite(request))
+      throw new DataAccessError('authorization_denied');
     const context = await requireRequestContext(request);
-    const command = BrandMediaUserCommandSchema.parse(await request.json());
+    const raw = await request.json();
+    const generating =
+      raw?.operation === 'candidates' || raw?.operation === 'article';
+    const command = generating
+      ? BrandMediaGenerateInputSchema.parse(raw)
+      : BrandMediaUserCommandSchema.parse(raw);
     if (
       command.instanceId !== UuidSchema.parse((await params).id).toLowerCase()
     )
       throw new DataAccessError('authorization_denied');
-    return Response.json(await commandBrandMediaUser(context, command), {
-      headers,
-    });
+    return Response.json(
+      await (generating
+        ? generateBrandMedia(context, command)
+        : commandBrandMediaUser(context, command)),
+      {
+        headers,
+      },
+    );
   } catch (error) {
     return brandMediaErrorResponse(error);
   }

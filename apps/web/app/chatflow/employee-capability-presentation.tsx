@@ -218,14 +218,25 @@ export function EmployeePluginOpenLink({
   pluginName,
   children,
   disabled,
+  onOpen,
 }: {
   href: string;
   pluginName: string;
   children: string;
   disabled?: boolean;
+  onOpen?: () => void;
 }) {
   return disabled ? (
     <Button variant="primary" className={css.primaryAction} disabled>
+      {children} <span aria-hidden="true">↗</span>
+    </Button>
+  ) : onOpen ? (
+    <Button
+      variant="primary"
+      className={css.primaryAction}
+      onClick={onOpen}
+      aria-label={`${children} ${pluginName}`}
+    >
       {children} <span aria-hidden="true">↗</span>
     </Button>
   ) : (
@@ -281,6 +292,7 @@ export function EmployeePluginSection({
     name: string;
     description: string;
     href: string;
+    onOpen?: () => void;
   }>;
   onDetails?: (id: string) => void;
   onAdd?: () => void;
@@ -316,6 +328,7 @@ export function EmployeePluginSection({
               <div className={css.pluginActions}>
                 <EmployeePluginOpenLink
                   href={plugin.href}
+                  onOpen={plugin.onOpen}
                   pluginName={plugin.name}
                 >
                   打开

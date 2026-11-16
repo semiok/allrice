@@ -1,3 +1,4 @@
+import { brandMediaTools, type BrandMediaInvocation } from '@allrice/contracts';
 import {
   freezeEmployeeMemoryIndexV2,
   freezeEmployeePersonaDocuments,
@@ -209,6 +210,9 @@ export function resolveEmployeeCapabilities(
       .filter(
         (tool) =>
           explicitTools.has(tool.canonicalName) &&
+          !brandMediaTools.some(
+            (moduleTool) => moduleTool.canonicalName === tool.canonicalName,
+          ) &&
           tool.capability !== 'secret:use',
       )
       .map((tool) => tool.capability),
@@ -1199,6 +1203,7 @@ export async function prepareEmployeeRunBinding(
     // The literal requests identity only; it is never a human-data grant.
     employeeDocuments?: boolean | 'persona_only';
     taskPersona?: EmployeePersonaTask;
+    moduleInvocation?: BrandMediaInvocation;
   },
   transaction?: TransactionSql,
 ): Promise<EmployeeRunBinding> {
@@ -1341,6 +1346,23 @@ export async function prepareEmployeeRunBinding(
       ? manifest.data.capabilityBindings.toolNames
       : undefined,
   );
+  const { freezeBrandMediaModule } =
+    await import('../brand-media/server-wiring.ts');
+  const module = instance
+    ? await freezeBrandMediaModule(
+        {
+          organizationId: input.context.organizationId,
+          workspaceId: input.workspaceId,
+          ownerId: actorId,
+          instanceId: instance.id,
+        },
+        grantedCapabilities,
+        input.moduleInvocation,
+        transaction,
+      )
+    : undefined;
+  if (input.moduleInvocation && !module)
+    throw new DataAccessError('authorization_denied');
   // Tenant assignment pointers change on publication. Freeze the exact revision
   // now so dispatch can verify its immutable checksum without following a newer
   // draft, assignment, or revision when this Run resumes.
@@ -1498,9 +1520,11 @@ export async function prepareEmployeeRunBinding(
       ...(skill.bundle ? { bundle: skill.bundle } : {}),
     }),
   );
+  if (module?.skill) originalNativeSkills.push(module.skill);
   const baseSkills = await freezeEmployeeBaseSkills(
     originalNativeSkills,
     transaction,
+    module?.skill,
   );
   const {
     nativeSkills,
@@ -1512,8 +1536,14 @@ export async function prepareEmployeeRunBinding(
         contentIdentity,
         instance,
         baseSkills,
+        module?.skill,
       )
-    : await freezePersonalSkills(contentIdentity, instance, baseSkills);
+    : await freezePersonalSkills(
+        contentIdentity,
+        instance,
+        baseSkills,
+        module?.skill,
+      );
   const mcpEnabled =
     runtimeFeatureEnabled('ALLRICE_CLOUD_MCP_ENABLED') &&
     manifest.data.schemaVersion === 2 &&
@@ -1639,6 +1669,10 @@ export async function prepareEmployeeRunBinding(
         ? { persona: documentProjection.persona }
         : {}),
       content,
+      ...(module ? { modules: [module.binding] } : {}),
+      ...(input.moduleInvocation
+        ? { moduleInvocation: input.moduleInvocation }
+        : {}),
       ...(baseSkillCatalog ? { baseSkillCatalog } : {}),
       ...(personalSkills ? { personalSkills } : {}),
       ...(mcpEnabled ? { mcpTools } : {}),
@@ -1680,7 +1714,22 @@ export async function prepareEmployeeRunBinding(
           ...capabilityBindings(manifest.data),
           // Exact intrinsic bindings are computed from existing grants, never
           // widened by the guidance Skill or shared employee publication.
-          toolNames: boundToolNames,
+          toolNames: module
+            ? [
+                ...new Set([
+                  ...boundToolNames.filter(
+                    (name) =>
+                      !brandMediaTools.some(
+                        (tool) => tool.canonicalName === name,
+                      ),
+                  ),
+                  ...module.tools,
+                ]),
+              ]
+            : boundToolNames.filter(
+                (name) =>
+                  !brandMediaTools.some((tool) => tool.canonicalName === name),
+              ),
           ...(managedPython ? { managedPython } : {}),
           ...(managedPdf ? { managedPdf } : {}),
           skillVersionIds,
@@ -1871,6 +1920,14 @@ export async function resolveEmployeeExecution(input: {
       !executionSnapshot.data.content)
   )
     throw Error('employee_content_snapshot_invalid');
+  if (
+    row.execution_snapshot &&
+    typeof row.execution_snapshot === 'object' &&
+    ('modules' in row.execution_snapshot ||
+      'moduleInvocation' in row.execution_snapshot) &&
+    (!executionSnapshot.success || executionSnapshot.data.schemaVersion !== 2)
+  )
+    throw Error('employee_module_snapshot_invalid');
   // A damaged new catalog cannot fall back to a legacy manifest and derive
   // broader grants from its augmented Skills.
   if (
@@ -1887,6 +1944,11 @@ export async function resolveEmployeeExecution(input: {
     assertFrozenBaseSkillCatalog(
       executionSnapshot.data.baseSkillCatalog,
       nativeSkills,
+      executionSnapshot.data.modules?.length
+        ? (
+            await import('../brand-media/server-wiring.ts')
+          ).brandMediaSnapshotSkill(executionSnapshot.data)
+        : undefined,
     );
   }
   if (

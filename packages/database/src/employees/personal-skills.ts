@@ -53,7 +53,7 @@ import {
   explicitPersonalSkillSelectionIntent,
   explicitPersonalSkillCancelIntent,
 } from './personal-skill-intent.ts';
-import { employeeBaseSkillLimits } from './employee-base-skills.ts';
+import { exceedsEmployeeSkillBudget } from './employee-base-skills.ts';
 import type { ContentSql, ContentTx } from './employee-content-model.ts';
 
 import {
@@ -866,9 +866,10 @@ export async function freezePersonalSkills(
     nativeSkills: DshNativeSkillSnapshot[];
     catalog?: EmployeeBaseSkillCatalog;
   },
+  moduleSkill?: DshNativeSkillSnapshot,
 ) {
   return getDatabase().begin((tx) =>
-    freezePersonalSkillsInTransaction(tx, context, instance, base),
+    freezePersonalSkillsInTransaction(tx, context, instance, base, moduleSkill),
   );
 }
 
@@ -881,6 +882,7 @@ export async function freezePersonalSkillsInTransaction(
     nativeSkills: DshNativeSkillSnapshot[];
     catalog?: EmployeeBaseSkillCatalog;
   },
+  moduleSkill?: DshNativeSkillSnapshot,
 ) {
   const instanceId = instance.id;
   if (!(await readContentPrincipal(context, tx, true))) return unavailable();
@@ -928,11 +930,7 @@ export async function freezePersonalSkillsInTransaction(
   );
   if (new Set(nativeSkills.map((s) => s.name)).size !== nativeSkills.length)
     throw new PersonalSkillError('name_conflict');
-  if (
-    nativeSkills.length > employeeBaseSkillLimits.count ||
-    Buffer.byteLength(JSON.stringify(nativeSkills)) >
-      employeeBaseSkillLimits.snapshotBytes
-  )
+  if (exceedsEmployeeSkillBudget(nativeSkills, moduleSkill))
     throw new PersonalSkillError('limit');
   const index = { schemaVersion: 1 as const, instanceId, skills: pins };
   const personalSkills = PersonalSkillSnapshotSchema.parse({

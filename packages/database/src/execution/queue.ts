@@ -1633,6 +1633,15 @@ async function enqueueRunInTransaction(
       },
       createdAt: new Date().toISOString(),
     });
+    if (executionSnapshot.schemaVersion === 2 && executionSnapshot.modules) {
+      const { assertFrozenBrandMediaModule } =
+        await import('../brand-media/server-wiring.ts');
+      await assertFrozenBrandMediaModule(transaction, executionSnapshot, {
+        organizationId: context.organizationId,
+        workspaceId,
+        ownerId,
+      });
+    }
     const rawDocuments =
       options.employeeBinding.promptSnapshot.employeeDocuments;
     const hasPersonaDocument =

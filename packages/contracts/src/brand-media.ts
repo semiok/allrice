@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
-import { BrandContentVersionRefSchema } from './brand-content.ts';
+import {
+  BrandContentVersionRefSchema,
+  BrandContentFileRefSchema,
+} from './brand-content.ts';
+import { EmployeeModuleBindingSchema } from './employee-modules.ts';
 
 // MET-224 s1.3. Business data only: no Run lifecycle or tool registration.
 const id = UuidSchema.transform((value) => value.toLowerCase());
@@ -19,6 +23,12 @@ export const BrandMediaReferenceSchema = z.discriminatedUnion('origin', [
     .object({ origin: z.literal('reference'), sourceId: id, revisionId: id })
     .strict(),
   z.object({ origin: z.literal('file'), file: BrandMediaFileSchema }).strict(),
+  z
+    .object({
+      origin: z.literal('upload'),
+      file: BrandContentFileRefSchema.pick({ objectId: true, checksum: true }),
+    })
+    .strict(),
 ]);
 export const BrandMediaReferencesSchema = z
   .array(BrandMediaReferenceSchema)
@@ -326,4 +336,40 @@ export type BrandMediaReadInput = z.infer<typeof BrandMediaReadInputSchema>;
 export type BrandMediaReadResult = z.infer<typeof BrandMediaReadResultSchema>;
 export type BrandMediaMutationResult = z.infer<
   typeof BrandMediaMutationResultSchema
+>;
+
+/** Browser intent only. Identity, exact module and binding revision are rebuilt
+ * by the authenticated module endpoint, never read from a chat message. */
+const generate = {
+  ...command,
+  sessionId: id.optional(),
+  references: BrandMediaReferencesSchema,
+};
+export const BrandMediaGenerateInputSchema = z.discriminatedUnion('operation', [
+  z
+    .object({
+      ...generate,
+      operation: z.literal('candidates'),
+      direction: text(8000),
+    })
+    .strict(),
+  z
+    .object({
+      ...generate,
+      operation: z.literal('article'),
+      articleId: id,
+      expectedRevision: revision,
+      instructions: text(8000),
+    })
+    .strict(),
+]);
+export const BrandMediaInvocationSchema = z
+  .object({
+    module: EmployeeModuleBindingSchema,
+    intent: BrandMediaGenerateInputSchema,
+  })
+  .strict();
+export type BrandMediaInvocation = z.infer<typeof BrandMediaInvocationSchema>;
+export type BrandMediaGenerateInput = z.infer<
+  typeof BrandMediaGenerateInputSchema
 >;

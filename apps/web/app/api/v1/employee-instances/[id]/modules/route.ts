@@ -1,3 +1,4 @@
+import { sameOriginBrowserWrite } from '../../../../../../lib/identity/request-origin';
 import { AddEmployeeModuleInputSchema, UuidSchema } from '@allrice/contracts';
 import {
   DataAccessError,
@@ -29,6 +30,8 @@ export async function GET(request: Request, { params }: Route) {
 }
 export async function POST(request: Request, { params }: Route) {
   try {
+    if (!sameOriginBrowserWrite(request))
+      throw new DataAccessError('authorization_denied');
     const context = await requireRequestContext(request);
     const input = AddEmployeeModuleInputSchema.parse(await request.json());
     if (input.instanceId !== UuidSchema.parse((await params).id).toLowerCase())

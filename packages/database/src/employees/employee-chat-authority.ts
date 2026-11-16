@@ -71,14 +71,39 @@ export async function assertEmployeeChatExecution(
     throw new DataAccessError('authorization_denied');
   },
 ) {
-  const { ctx, scope } = employeeChatIdentity(input, fail);
+  employeeChatIdentity(input, fail);
   const operation =
     tool === 'automation.create'
       ? { capability: 'automation:write' as const }
       : employeeCustomizationToolsForInstance(before.kind).find(
           (entry) => entry.name === tool,
         );
-  if (!operation || before.ownerId !== scope.actor.id) fail();
+  if (!operation) fail();
+  return assertEmployeeChatToolExecution(
+    tx,
+    input,
+    before,
+    { name: tool, capability: operation.capability },
+    fail,
+  );
+}
+/** Server-selected tool metadata only; module callers must additionally check
+ * their exact frozen/current binding and trusted invocation. */
+export async function assertEmployeeChatToolExecution(
+  tx: postgres.TransactionSql,
+  input: EmployeeChatCall,
+  before: EmployeeInstance,
+  operation: {
+    name: string;
+    capability: 'storage:read' | 'storage:write' | 'automation:write';
+  },
+  fail: () => never = () => {
+    throw new DataAccessError('authorization_denied');
+  },
+) {
+  const { ctx, scope } = employeeChatIdentity(input, fail);
+  const tool = operation.name;
+  if (before.ownerId !== scope.actor.id) fail();
   await assertWorkbenchSession(tx, scope, input.sessionId, true, 'share');
   // Cancellation takes root/job locks before employee authority. NOWAIT
   // uses the existing bounded transaction retry instead of deadlocking.

@@ -8,7 +8,10 @@ import {
   it,
   vi,
 } from 'vitest';
-import { EmployeeExecutionSnapshotSchema } from '@allrice/contracts';
+import {
+  EmployeeExecutionSnapshotSchema,
+  brandMediaRelease,
+} from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
@@ -21,6 +24,10 @@ import {
 import { loadPlatformContentCatalog } from '../platform-content/catalog.ts';
 import { synchronizePlatformContent } from '../platform-content/sync.ts';
 import { readFrozenSkillResource } from '../skill-bundles.ts';
+import {
+  addEmployeeInstanceModule,
+  freezeBrandMediaModule,
+} from '../brand-media/server-wiring.ts';
 
 import {
   resolveEmployeeExecution,
@@ -30,6 +37,7 @@ import { createEmployeeInstance } from './employee-instances.ts';
 import {
   assertFrozenBaseSkillCatalog,
   freezeEmployeeBaseSkills,
+  exceedsEmployeeSkillBudget,
 } from './employee-base-skills.ts';
 
 const suite =
@@ -275,6 +283,95 @@ suite('foundation Skills: catalog → ordinary Run → frozen execution', () => 
         })),
       ),
     ).rejects.toThrow('base_skill_catalog_budget_exceeded');
+  });
+
+  it('retains the 64 ordinary Skill count and full byte cap while one exact module Skill uses its own slot', async () => {
+    const x = await setup(),
+      scope = {
+        organizationId: x.source.organizationId,
+        workspaceId: x.source.workspaceId,
+        ownerId: x.source.ownerId,
+        instanceId: x.custom.id,
+      };
+    await addEmployeeInstanceModule(x.context, {
+      workspaceId: scope.workspaceId,
+      instanceId: scope.instanceId,
+      requestId: randomUUID(),
+      release: brandMediaRelease,
+    });
+    const moduleSkill = (await freezeBrandMediaModule(scope, ['storage:read']))!
+      .skill!;
+    const basic = await freezeEmployeeBaseSkills([]),
+      extra = basic.nativeSkills.find((skill) => !skill.bundle)!;
+    const originals = Array.from(
+      { length: 64 - basic.nativeSkills.length },
+      (_, index) => ({
+        ...extra,
+        id: randomUUID(),
+        name: `ordinary-slot-${index}`,
+      }),
+    );
+    const atLimit = await freezeEmployeeBaseSkills(originals);
+    expect(atLimit.nativeSkills).toHaveLength(64);
+    const exact = await freezeEmployeeBaseSkills(
+      [...originals, moduleSkill],
+      undefined,
+      moduleSkill,
+    );
+    expect(exact.nativeSkills).toHaveLength(65);
+    expect(exact.catalog!.skills).toEqual(atLimit.catalog!.skills);
+    expect(() =>
+      assertFrozenBaseSkillCatalog(
+        exact.catalog!,
+        exact.nativeSkills,
+        moduleSkill,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      assertFrozenBaseSkillCatalog(exact.catalog!, exact.nativeSkills),
+    ).toThrow('base_skill_catalog_budget_exceeded');
+    await expect(
+      freezeEmployeeBaseSkills([
+        ...originals,
+        { ...extra, id: randomUUID(), name: 'ordinary-overflow' },
+      ]),
+    ).rejects.toThrow('base_skill_catalog_budget_exceeded');
+    const forged = { ...moduleSkill, id: randomUUID() };
+    await expect(
+      freezeEmployeeBaseSkills([...originals, forged], undefined, forged),
+    ).rejects.toThrow('base_skill_catalog_budget_exceeded');
+    expect(
+      exceedsEmployeeSkillBudget(
+        [
+          ...exact.nativeSkills,
+          { ...extra, id: randomUUID(), name: 'another-overflow' },
+        ],
+        moduleSkill,
+      ),
+    ).toBe(true);
+    expect(
+      exceedsEmployeeSkillBudget(
+        [
+          ...atLimit.nativeSkills,
+          { ...moduleSkill, content: moduleSkill.content + 'changed' },
+        ],
+        moduleSkill,
+      ),
+    ).toBe(true);
+    expect(
+      exceedsEmployeeSkillBudget(
+        [
+          ...Array.from({ length: 64 }, (_, index) => ({
+            ...extra,
+            id: randomUUID(),
+            name: `large-${index}`,
+            content: 'x'.repeat(140_000),
+          })),
+          moduleSkill,
+        ],
+        moduleSkill,
+      ),
+    ).toBe(true);
   });
 
   it('reads pre-catalog snapshots without adding fields or defaults', async () => {
