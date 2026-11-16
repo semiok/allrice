@@ -17,6 +17,7 @@ import {
   type BrandMediaTopic,
 } from '@allrice/contracts';
 import * as client from '../../../packages/database/src/core/client.ts';
+import { createReadPathProbe } from '../../../packages/database/src/read-path-probe.fixture.ts';
 import {
   createRuntimeFixtureDatabase,
   runtimeFixtureStorage,
@@ -1048,6 +1049,60 @@ suite(
         items: [],
         nextCursor: null,
       });
+    });
+
+    it('reads populated module/topic/article/reference/file paths without row locks while human writes still hold the binding gate', async () => {
+      const a = await actor();
+      await install(a);
+      const pinned = await file(a),
+        selected = await reference(a);
+      const references: BrandMediaTopic['references'] = [
+        { origin: 'file', file: pinned },
+        selected,
+      ];
+      await topic(a, { references });
+      const article = await draft(a, references);
+      await f.db`update allrice_brand_media_articles set body_file=${f.db.json(pinned)},revision=revision+1
+        where id=${article.id} and revision=1`;
+      const reader = createReadPathProbe(f.db);
+      const database = vi.mocked(client.getDatabase);
+      database.mockReturnValue(reader.db);
+      try {
+        expect(
+          (await catalog.GET(request(a, 'modules'), params(a.scope.instanceId)))
+            .status,
+        ).toBe(200);
+        const queries: Record<string, string>[] = [
+          { view: 'topics' },
+          { view: 'articles' },
+          { view: 'article', articleId: article.id },
+          { view: 'calendar', month: '2026-11', timezone: 'Asia/Shanghai' },
+        ];
+        for (const query of queries) await read(a, query);
+        reader.expectNoRowLocks();
+        expect(reader.transactions).toHaveLength(5);
+      } finally {
+        database.mockReturnValue(f.db);
+      }
+      const writer = createReadPathProbe(f.db, {
+        beforeCommit: async () => {
+          await expect(
+            f.db.begin(async (tx) => {
+              await tx`select module_id from allrice_employee_module_bindings
+            where organization_id=${a.context.organizationId} and workspace_id=${a.scope.workspaceId}
+              and owner_id=${a.context.actor.id} and instance_id=${a.scope.instanceId}
+              and module_id=${brandMediaRelease.moduleId} for update nowait`;
+            }),
+          ).rejects.toMatchObject({ code: '55P03' });
+        },
+      });
+      database.mockReturnValue(writer.db);
+      try {
+        await command(a, topicInput(a));
+        expect(writer.transactions.some((t) => t.xid !== null)).toBe(true);
+      } finally {
+        database.mockReturnValue(f.db);
+      }
     });
 
     it('keeps core-table access out of the business repository', async () => {

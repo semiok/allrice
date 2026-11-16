@@ -55,16 +55,17 @@ async function assertReferences(
   context: RequestContext,
   scope: BrandMediaScope,
   references: BrandMediaTopic['references'],
+  lock = true,
 ) {
   for (const pin of references) {
     if (pin.origin === 'file')
-      await assertBrandContentFile(tx, context, scope, pin.file);
+      await assertBrandContentFile(tx, context, scope, pin.file, false, lock);
     else {
       const selected = await readReferenceSelection(
         { ...context, workspaceId: scope.workspaceId },
         pin.revisionId,
         tx,
-        true,
+        lock,
       );
       if (selected.selection.sourceId !== pin.sourceId)
         fail('source_reference_invalid');
@@ -76,6 +77,7 @@ async function assertSourceRun(
   context: RequestContext,
   scope: BrandMediaScope,
   runId: string,
+  lock = true,
 ) {
   const [row] = await tx<{ session_id: string }[]>`
     select er.session_id from allrice_employee_runs er
@@ -86,19 +88,27 @@ async function assertSourceRun(
     where er.run_id=${runId} and er.organization_id=${scope.organizationId}
       and er.workspace_id=${scope.workspaceId} and er.owner_id=${scope.ownerId}
       and coalesce(s.employee_instance_id,s.employee_assignment_id)=${scope.instanceId}
-      for share of er,r`;
+      ${lock ? tx`for share of er,r` : tx``}`;
   if (!row) fail('source_unavailable');
-  await assertBrandContentSession(tx, context, scope, row.session_id);
+  await assertBrandContentSession(
+    tx,
+    context,
+    scope,
+    row.session_id,
+    false,
+    lock,
+  );
 }
 async function assertArticle(
   tx: Tx,
   context: RequestContext,
   scope: BrandMediaScope,
   article: BrandMediaArticle,
+  lock = true,
 ) {
-  await assertReferences(tx, context, scope, article.references);
+  await assertReferences(tx, context, scope, article.references, lock);
   if (article.body)
-    await assertBrandContentFile(tx, context, scope, article.body);
+    await assertBrandContentFile(tx, context, scope, article.body, false, lock);
   await assertBrandContentImages(
     tx,
     context,
@@ -110,6 +120,7 @@ async function assertArticle(
       slotKey: String(index),
       caption: '',
     })),
+    lock,
   );
 }
 async function assertResult(
@@ -117,17 +128,26 @@ async function assertResult(
   context: RequestContext,
   scope: BrandMediaScope,
   result: BrandMediaMutationResult,
+  lock = true,
 ) {
   if (result.kind === 'article')
-    await assertArticle(tx, context, scope, result.article);
+    await assertArticle(tx, context, scope, result.article, lock);
   if (result.kind === 'topic') {
-    await assertReferences(tx, context, scope, result.topic.references);
-    await assertSourceRun(tx, context, scope, result.topic.sourceRunId);
+    await assertReferences(tx, context, scope, result.topic.references, lock);
+    await assertSourceRun(tx, context, scope, result.topic.sourceRunId, lock);
   }
 }
-async function transaction<T>(db: Db, run: (tx: Tx) => Promise<T>) {
+async function transaction<T>(
+  db: Db,
+  run: (tx: Tx) => Promise<T>,
+  snapshot = false,
+) {
   try {
-    return await employeeAccessTransaction(db, run);
+    return await employeeAccessTransaction(
+      db,
+      run,
+      snapshot ? { mode: 'isolation level repeatable read' } : {},
+    );
   } catch (error) {
     // Translate only known core source failures. Database/programming errors
     // keep their original identity and surface as 500, never a false conflict.
@@ -190,29 +210,41 @@ export async function listEmployeeInstanceModules(
   db: Db = getDatabase(),
 ) {
   const input = EmployeeModuleScopeSchema.parse(raw);
-  return transaction(db, async (tx) => {
-    const scope = await requireBrandContentScope(tx, context, input, false);
-    const binding = await readEmployeeModuleBinding(
-      tx,
-      scope,
-      brandMediaModule.id,
-    );
-    // Static assembly, no second registration or mutable catalog authority.
-    return {
-      modules: [
-        {
-          descriptor: brandMediaModule,
-          binding,
-          available: !binding,
-          enabled:
-            !!binding &&
-            !binding.revokedAt &&
-            Date.parse(binding.enabledAt) <= Date.now() &&
-            sameEmployeeModuleRelease(binding.release, brandMediaRelease),
-        },
-      ],
-    };
-  });
+  return transaction(
+    db,
+    async (tx) => {
+      const scope = await requireBrandContentScope(
+        tx,
+        context,
+        input,
+        false,
+        'user',
+        false,
+      );
+      const binding = await readEmployeeModuleBinding(
+        tx,
+        scope,
+        brandMediaModule.id,
+        false,
+      );
+      // Static assembly, no second registration or mutable catalog authority.
+      return {
+        modules: [
+          {
+            descriptor: brandMediaModule,
+            binding,
+            available: !binding,
+            enabled:
+              !!binding &&
+              !binding.revokedAt &&
+              Date.parse(binding.enabledAt) <= Date.now() &&
+              sameEmployeeModuleRelease(binding.release, brandMediaRelease),
+          },
+        ],
+      };
+    },
+    true,
+  );
 }
 export async function addEmployeeInstanceModule(
   context: RequestContext,
@@ -288,20 +320,43 @@ export async function readBrandMedia(
   db: Db = getDatabase(),
 ) {
   const input = BrandMediaReadInputSchema.parse(raw);
-  return transaction(db, async (tx) => {
-    const scope = await requireBrandContentScope(tx, context, input, false);
-    await requireEmployeeModuleBinding(tx, scope, brandMediaRelease);
-    const result = BrandMediaReadResultSchema.parse(
-      await readBrandMediaRecords(tx, scope, input),
-    );
-    if (result.view === 'article')
-      await assertArticle(tx, context, scope, result.article);
-    else if (result.view === 'topics') {
-      for (const topic of result.items)
-        await assertResult(tx, context, scope, { kind: 'topic', topic });
-    } else
-      for (const article of result.items)
-        await assertArticle(tx, context, scope, article);
-    return result;
-  });
+  return transaction(
+    db,
+    async (tx) => {
+      const scope = await requireBrandContentScope(
+        tx,
+        context,
+        input,
+        false,
+        'user',
+        false,
+      );
+      await requireEmployeeModuleBinding(
+        tx,
+        scope,
+        brandMediaRelease,
+        undefined,
+        false,
+      );
+      const result = BrandMediaReadResultSchema.parse(
+        await readBrandMediaRecords(tx, scope, input),
+      );
+      if (result.view === 'article')
+        await assertArticle(tx, context, scope, result.article, false);
+      else if (result.view === 'topics') {
+        for (const topic of result.items)
+          await assertResult(
+            tx,
+            context,
+            scope,
+            { kind: 'topic', topic },
+            false,
+          );
+      } else
+        for (const article of result.items)
+          await assertArticle(tx, context, scope, article, false);
+      return result;
+    },
+    true,
+  );
 }

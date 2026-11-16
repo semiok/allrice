@@ -32,11 +32,12 @@ export async function readEmployeeModuleBinding(
   tx: postgres.TransactionSql,
   scope: EmployeeModuleScope,
   moduleId: string,
+  lock = true,
 ): Promise<EmployeeModuleBinding | null> {
   const [row] = await tx`select * from allrice_employee_module_bindings
     where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
       and owner_id=${scope.ownerId} and instance_id=${scope.instanceId}
-      and module_id=${moduleId} for share`;
+      and module_id=${moduleId} ${lock ? tx`for share` : tx``}`;
   return row
     ? EmployeeModuleBindingSchema.parse({
         ...scope,
@@ -59,8 +60,14 @@ export async function requireEmployeeModuleBinding(
   scope: EmployeeModuleScope,
   release: EmployeeModuleRelease,
   expectedBindingRevision?: number,
+  lock = true,
 ) {
-  const binding = await readEmployeeModuleBinding(tx, scope, release.moduleId);
+  const binding = await readEmployeeModuleBinding(
+    tx,
+    scope,
+    release.moduleId,
+    lock,
+  );
   if (
     !binding ||
     binding.revokedAt ||
