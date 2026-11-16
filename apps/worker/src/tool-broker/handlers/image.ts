@@ -10,6 +10,8 @@ import {
   getToolBrokerFile,
   publishWorkbenchArtifact,
   workbenchEnabled,
+  authorizeBrandMediaImage,
+  recordBrandMediaDelivery,
 } from '@allrice/database';
 import { LocalStorageAdapter } from '@allrice/storage';
 import {
@@ -88,6 +90,18 @@ export const generateImage: RiceToolHandler = async ({
       '修改图片请使用 image.edit',
       false,
     );
+  const moduleCall = {
+    context: input.context,
+    sessionId: input.sessionId,
+    userMessageId: input.userMessageId ?? '',
+    callId: input.call.id,
+    arguments: args,
+    worker: {
+      attempt: input.managedBrowserJobAttempt ?? -1,
+      leaseToken: input.managedBrowserJobLeaseToken,
+    },
+  };
+  const module = await authorizeBrandMediaImage(moduleCall, input.call.name);
   let source;
   if (args.source) {
     const file = await getToolBrokerFile(input.context, args.source.objectId);
@@ -117,6 +131,7 @@ export const generateImage: RiceToolHandler = async ({
     callId: input.call.id,
     arguments: args,
     leaseToken: input.managedBrowserJobLeaseToken,
+    ...(module ? { module } : {}),
   });
   if (!claimed.execute) {
     if (claimed.status === 'succeeded' && claimed.result)
@@ -193,6 +208,21 @@ export const generateImage: RiceToolHandler = async ({
           : {}),
       },
       new LocalStorageAdapter(input.storageRoot),
+      undefined,
+      module
+        ? {
+            runId: input.context.runId,
+            admit: (tx) => module.beforeCommit(tx),
+            replayed: (tx) => module.beforeCommit(tx),
+            registered: (tx, artifactId) =>
+              recordBrandMediaDelivery(
+                tx,
+                moduleCall,
+                input.call.name,
+                artifactId,
+              ),
+          }
+        : undefined,
     );
     const result = {
       modelContent: JSON.stringify({

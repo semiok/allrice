@@ -11,6 +11,8 @@ import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
 import { runtimeLedgerInputDigest } from './runtime-ledger/ledger.ts';
 import { requirePlatformAdmin } from './platform-authority.ts';
+import { employeeAccessTransaction } from './employees/employee-access-cancellation.ts';
+import type { TransactionSql } from 'postgres';
 
 /** Both tenant scope and the frozen Run determine image authority. Never read
  * current platform defaults here: an admin update cannot change an active Run. */
@@ -49,6 +51,10 @@ export async function claimImageOperation(input: {
   callId: string;
   arguments: ImageToolInput;
   leaseToken: string;
+  /** Server-only module gate, never provider/model arguments. */
+  module?: {
+    beforeCommit: (tx: TransactionSql, checkTarget?: boolean) => Promise<void>;
+  };
 }) {
   const { context } = input;
   const frozen = await imageRunConfiguration(context, input.sessionId);
@@ -63,7 +69,8 @@ export async function claimImageOperation(input: {
     imageModel: configuration.imageModel,
   });
   const db = getDatabase();
-  return db.begin(async (tx) => {
+  const claim = async (tx: TransactionSql) => {
+    await input.module?.beforeCommit(tx);
     const [job] =
       await tx`select id from allrice_jobs where id=${context.jobId} and run_id=${context.runId}
       and organization_id=${context.organizationId} and worker_id=${context.worker.id}
@@ -71,6 +78,7 @@ export async function claimImageOperation(input: {
       and timeout_at>clock_timestamp() and cancel_requested_at is null for share`;
     if (!job) throw new DataAccessError('authorization_denied');
     await tx`select pg_advisory_xact_lock(hashtextextended(${`image:${context.runId}`},0))`;
+    await input.module?.beforeCommit(tx);
     const [existing] = await tx<
       {
         id: string;
@@ -81,7 +89,7 @@ export async function claimImageOperation(input: {
       }[]
     >`
       select id,input_digest,status,result,error_code from allrice_image_operations where run_id=${context.runId}
-        and (call_id=${input.callId} or input_digest=${digest})`;
+        and (${!!input.module} or call_id=${input.callId} or input_digest=${digest})`;
     if (existing) {
       if (existing.input_digest !== digest)
         throw new DataAccessError('grant_invalid');
@@ -94,6 +102,9 @@ export async function claimImageOperation(input: {
         configuration,
       };
     }
+    // A valid old receipt survives later article edits. Only a new provider
+    // attempt needs the originally selected target revision to remain current.
+    await input.module?.beforeCommit(tx, true);
     const id = randomUUID();
     await tx`insert into allrice_image_operations(id,organization_id,workspace_id,owner_id,run_id,session_id,call_id,input_digest,operation,work_model,image_model,source_object_id,source_checksum,status)
       values (${id},${context.organizationId},${context.workspaceId!},${context.policySnapshot.subjectId},${context.runId},${input.sessionId},${input.callId},${digest},
@@ -106,7 +117,10 @@ export async function claimImageOperation(input: {
       errorCode: null,
       configuration,
     };
-  });
+  };
+  // No provider effect belongs in this SQL-only retry. Ordinary claims retain
+  // their existing transaction, digest deduplication and multi-image behavior.
+  return input.module ? employeeAccessTransaction(db, claim) : db.begin(claim);
 }
 
 export async function recordImageReceipt(input: {

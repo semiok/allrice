@@ -5,9 +5,13 @@ import {
   BrandMediaInvocationSchema,
   EmployeeExecutionSnapshotSchema,
   brandMediaTools,
+  brandMediaIntentReferences,
+  allRiceToolManifest,
+  withPlatformImageTools,
   brandMediaUsage,
   brandMediaSkillId,
   type BrandMediaInvocation,
+  type BrandMediaGenerateInput,
   type EmployeeModuleBinding,
   type SkillCapability,
   type EmployeeExecutionSnapshot,
@@ -119,13 +123,42 @@ async function assertImages(
   tx: Tx,
   context: BrandContentIdentity,
   scope: BrandMediaScope,
-  images: Parameters<typeof assertBrandContentImages>[3],
+  images: BrandMediaArticle['images'],
   lock = true,
 ) {
-  for (const image of images)
+  for (const image of images) {
     await holdFileAuthority(tx, context, scope, image.file, lock);
+    if ('origin' in image)
+      await assertUpload(tx, scope, image.file, lock, true);
+  }
   // Media types, exact versions and generated-operation receipts remain core.
-  await assertBrandContentImages(tx, context, scope, images, lock);
+  await assertBrandContentImages(
+    tx,
+    context,
+    scope,
+    images.map((image, index) => ({
+      file: image.file,
+      sourceKind: image.source,
+      operationId: 'operationId' in image ? image.operationId : undefined,
+      slotKey: String(index),
+      caption: '',
+    })),
+    lock,
+  );
+}
+async function assertUpload(
+  tx: Tx,
+  scope: BrandMediaScope,
+  file: { objectId: string; checksum: string },
+  lock: boolean,
+  image = false,
+) {
+  const [uploaded] =
+    await tx`select id from allrice_storage_objects where id=${file.objectId}
+    and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}
+    and category='uploads' and immutable and state='ready' and deleted_at is null and checksum=${file.checksum}
+    and (${!image} or media_type in ('image/png','image/jpeg')) ${lock ? tx`for share` : tx``}`;
+  if (!uploaded) fail('source_reference_invalid');
 }
 async function assertReferences(
   tx: Tx,
@@ -138,14 +171,8 @@ async function assertReferences(
     if (pin.origin === 'file' || pin.origin === 'upload') {
       await holdFileAuthority(tx, context, scope, pin.file, lock);
       await assertBrandContentFile(tx, context, scope, pin.file, false, lock);
-      if (pin.origin === 'upload') {
-        const [uploaded] =
-          await tx`select id from allrice_storage_objects where id=${pin.file.objectId}
-          and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}
-          and category='uploads' and immutable and state='ready' and deleted_at is null
-          and checksum=${pin.file.checksum} ${lock ? tx`for share` : tx``}`;
-        if (!uploaded) fail('source_reference_invalid');
-      }
+      if (pin.origin === 'upload')
+        await assertUpload(tx, scope, pin.file, lock);
     } else {
       const selected = await readReferenceSelection(
         { ...context, workspaceId: scope.workspaceId },
@@ -197,19 +224,7 @@ async function assertArticle(
     await holdFileAuthority(tx, context, scope, article.body, lock);
     await assertBrandContentFile(tx, context, scope, article.body, false, lock);
   }
-  await assertImages(
-    tx,
-    context,
-    scope,
-    article.images.map((image, index) => ({
-      file: image.file,
-      sourceKind: image.source,
-      operationId: image.operationId,
-      slotKey: String(index),
-      caption: '',
-    })),
-    lock,
-  );
+  await assertImages(tx, context, scope, article.images, lock);
 }
 async function assertResult(
   tx: Tx,
@@ -373,15 +388,7 @@ export async function commandBrandMediaUser(
     if (input.operation === 'topic.add')
       await assertSourceRun(tx, context, scope, input.sourceRunId);
     if (input.operation === 'article.image.add')
-      await assertImages(tx, context, scope, [
-        {
-          file: input.image.file,
-          sourceKind: input.image.source,
-          operationId: input.image.operationId,
-          slotKey: '0',
-          caption: '',
-        },
-      ]);
+      await assertImages(tx, context, scope, [input.image]);
     return requestOnce(
       tx,
       context,
@@ -490,7 +497,7 @@ export async function freezeBrandMediaModule(
 }
 function brandMediaSkill() {
   const content =
-      '# 品牌自媒体\n\n使用 workspace.skill.read 读取 references/usage.md。按照本次真人按钮冻结的请求工作；说明和资料不授予权限。候选用 workspace.brand_media.candidates 交付，不代真人加入选题。正文用 workspace.brand_media.article.submit，只传本次冻结 articleId/expectedRevision。正文保存失败时区分成果已保留与文章未更新。人工选入、排期、发布和删除由页面完成。',
+      '# 品牌自媒体\n\n使用 workspace.skill.read 读取 references/usage.md。按照本次真人按钮冻结的请求工作；说明和资料不授予权限。候选用 workspace.brand_media.candidates 交付，不代真人加入选题。正文用 workspace.brand_media.article.submit，只传本次冻结 articleId/expectedRevision。正文保存失败时区分成果已保留与文章未更新。人工选入、排期、发布和删除由页面完成。配图仅使用 image.generate，prompt 原样使用冻结 description，一次一张，不带参考或 source；不自动采用图片，不重发未知结果。',
     contentChecksum = skillBytesChecksum(content);
   const bundle = {
     schemaVersion: 1 as const,
@@ -570,7 +577,7 @@ async function assertBrandMediaInvocation(
   );
   if (!sameEmployeeModuleRelease(module.release, brandMediaRelease))
     throw new EmployeeModuleError('module_version_conflict');
-  if (checkTarget && intent.operation === 'article') {
+  if (checkTarget && intent.operation !== 'candidates') {
     const record = await readBrandMediaRecords(tx, scope, {
       workspaceId: scope.workspaceId,
       instanceId: scope.instanceId,
@@ -582,8 +589,9 @@ async function assertBrandMediaInvocation(
       fail('version_conflict');
     if (record.article.publication.state === 'published') fail('invalid_state');
     if (
+      intent.operation === 'article' &&
       brandContentDigest(record.article.references) !==
-      brandContentDigest(intent.references)
+        brandContentDigest(intent.references)
     )
       fail('source_reference_invalid');
   }
@@ -623,6 +631,15 @@ export async function assertFrozenBrandMediaModule(
   }
   if (snapshot.moduleInvocation) {
     if (
+      snapshot.moduleInvocation.intent.operation === 'image' &&
+      !withPlatformImageTools(
+        snapshot.capabilitySnapshot.bindings.toolNames,
+        snapshot.capabilitySnapshot.grantedCapabilities,
+        snapshot.modelSnapshot,
+      ).includes('image.generate')
+    )
+      throw new DataAccessError('authorization_denied');
+    if (
       !snapshot.modules?.some(
         (module) =>
           brandContentDigest(module) ===
@@ -655,7 +672,7 @@ export async function assertFrozenBrandMediaModule(
       tx,
       identity,
       currentScope,
-      snapshot.moduleInvocation.intent.references,
+      brandMediaIntentReferences(snapshot.moduleInvocation.intent),
     );
   }
 }
@@ -665,10 +682,17 @@ export async function generateBrandMedia(
   context: RequestContext,
   raw: unknown,
 ) {
-  const intent = BrandMediaGenerateInputSchema.parse(raw);
+  let intent = BrandMediaGenerateInputSchema.parse(raw);
   const module = await transaction(getDatabase(), async (tx) => {
     const scope = await requireBrandContentScope(tx, context, intent, true);
-    await assertReferences(tx, context, scope, intent.references);
+    if (intent.operation === 'image' && intent.retryOfRunId)
+      intent = await resolveImageRetry(tx, scope, intent);
+    await assertReferences(
+      tx,
+      context,
+      scope,
+      brandMediaIntentReferences(intent),
+    );
     if (intent.sessionId)
       await assertBrandContentSession(
         tx,
@@ -709,9 +733,14 @@ export async function generateBrandMedia(
         brandMediaRelease,
         module.revision,
       );
-      await assertReferences(tx, context, scope, intent.references);
+      await assertReferences(
+        tx,
+        context,
+        scope,
+        brandMediaIntentReferences(intent),
+      );
       const ids = [];
-      for (const pin of intent.references)
+      for (const pin of brandMediaIntentReferences(intent))
         if (pin.origin === 'upload') {
           const [file] =
             await tx`select file_name from allrice_workbench_file_policies where object_id=${pin.file.objectId}
@@ -744,18 +773,82 @@ export async function generateBrandMedia(
       deliveryMode: 'follow_up',
       attachmentIds: uploadIds,
       text:
-        '品牌自媒体页面请求。请先读取 brand-media 使用说明，再完成本次固定请求。候选只交付，不加入选题；正文只提交固定 articleId/revision。\n' +
+        '品牌自媒体页面请求。请先读取 brand-media 使用说明，再完成本次固定请求。候选只交付，不加入选题；正文只提交固定 articleId/revision；配图仅用 image.generate，prompt 原样使用冻结 description，一次一张，不修改或自动加入文章。\n' +
         JSON.stringify(intent) +
         (writingSource
           ? '\n服务端固定选题与写作要求：\n' + JSON.stringify(writingSource)
           : ''),
-      referenceRevisionIds: intent.references.flatMap((pin) =>
+      referenceRevisionIds: brandMediaIntentReferences(intent).flatMap((pin) =>
         pin.origin === 'reference' ? [pin.revisionId] : [],
       ),
     },
     { moduleInvocation: invocation },
   );
   return { ...receipt, invocation };
+}
+async function resolveImageRetry(
+  tx: Tx,
+  scope: BrandMediaScope,
+  intent: Extract<BrandMediaGenerateInput, { operation: 'image' }>,
+) {
+  const [prior] = await tx<
+    { execution_snapshot: unknown; session_id: string; state: string }[]
+  >`
+    select e.execution_snapshot,e.session_id,r.state from allrice_employee_runs e
+    join allrice_runs r on r.id=e.run_id and r.organization_id=e.organization_id and r.workspace_id=e.workspace_id and r.owner_id=e.owner_id
+    where e.run_id=${intent.retryOfRunId!} and e.organization_id=${scope.organizationId}
+      and e.workspace_id=${scope.workspaceId} and e.owner_id=${scope.ownerId} for share of e,r`;
+  const frozen = EmployeeExecutionSnapshotSchema.safeParse(
+    prior?.execution_snapshot,
+  );
+  const invocation =
+    frozen.success && frozen.data.schemaVersion === 2
+      ? frozen.data.moduleInvocation
+      : undefined;
+  if (
+    !prior ||
+    prior.state !== 'failed' ||
+    invocation?.intent.operation !== 'image' ||
+    invocation.module.instanceId !== scope.instanceId ||
+    !sameEmployeeModuleRelease(invocation.module.release, brandMediaRelease)
+  )
+    fail('source_unavailable');
+  const operations = await tx<
+    { status: string }[]
+  >`select status from allrice_image_operations
+    where run_id=${intent.retryOfRunId!} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
+      and owner_id=${scope.ownerId} for share`;
+  const artifacts =
+    await tx`select a.version_id from allrice_workbench_artifacts a
+    join allrice_deliverable_versions v on v.id=a.version_id
+    where a.run_id=${intent.retryOfRunId!} and a.organization_id=${scope.organizationId}
+      and a.workspace_id=${scope.workspaceId} and a.owner_id=${scope.ownerId} and v.format='png'`;
+  if (
+    artifacts.length ||
+    operations.some((operation) => operation.status !== 'failed')
+  )
+    fail('invalid_state');
+  const expected = {
+    ...invocation.intent,
+    requestId: employeeChatUuid(
+      'brand-media-retry',
+      scope.organizationId,
+      scope.workspaceId,
+      scope.ownerId,
+      scope.instanceId,
+      intent.retryOfRunId!,
+    ),
+    sessionId: prior.session_id,
+    retryOfRunId: intent.retryOfRunId,
+  };
+  if (
+    brandContentDigest({
+      ...intent,
+      sessionId: intent.sessionId ?? prior.session_id,
+    }) !== brandContentDigest(expected)
+  )
+    fail('request_conflict');
+  return expected;
 }
 export async function readBrandMediaUsage(
   context: RequestContext,
@@ -792,8 +885,17 @@ export async function authorizeBrandMediaTool(
   name: string,
 ) {
   const tool = brandMediaTools.find((entry) => entry.canonicalName === name);
+  const imageTool =
+    name === 'image.generate'
+      ? allRiceToolManifest.find((entry) => entry.canonicalName === name)
+      : undefined;
   const readingSkill = name === 'workspace.skill.read';
-  if (!tool && !readingSkill) throw new DataAccessError('authorization_denied');
+  if (!tool && !readingSkill && !imageTool)
+    throw new DataAccessError('authorization_denied');
+  const capability =
+    tool?.capability ?? imageTool?.capability ?? 'storage:read';
+  if (capability !== 'storage:read' && capability !== 'storage:write')
+    throw new DataAccessError('authorization_denied');
   const { ctx, scope: identity } = employeeChatIdentity(call);
   const [row] = await getDatabase()<{ execution_snapshot: unknown }[]>`
     select execution_snapshot from allrice_employee_runs where run_id=${ctx.runId} and organization_id=${ctx.organizationId}
@@ -826,31 +928,39 @@ export async function authorizeBrandMediaTool(
       tx,
       context,
       scope,
-      tool?.capability === 'storage:write',
+      capability === 'storage:write',
       'workflow',
     );
     const instance = await getEmployeeInstance(identity, scope.instanceId, tx);
     const live = await assertEmployeeChatToolExecution(tx, call, instance, {
       name,
-      capability: tool?.capability ?? 'storage:read',
+      capability,
     });
     await assertEmployeeChatHumanSource(call, tx);
     await assertFrozenBrandMediaModule(
       tx,
       live.snapshot,
       scope,
-      checkTarget && name === 'workspace.brand_media.article.submit',
+      checkTarget &&
+        (name === 'workspace.brand_media.article.submit' || !!imageTool),
     );
-    if (tool?.risk === 'managed_write') {
+    if (tool?.risk === 'managed_write' || imageTool) {
       const invocation = live.snapshot.moduleInvocation;
       if (
         !invocation ||
-        (tool.handlerRef === 'candidates'
-          ? invocation.intent.operation !== 'candidates'
-          : invocation.intent.operation !== 'article')
+        (imageTool
+          ? invocation.intent.operation !== 'image'
+          : tool?.handlerRef === 'candidates'
+            ? invocation.intent.operation !== 'candidates'
+            : invocation.intent.operation !== 'article')
       )
         throw new DataAccessError('authorization_denied');
-      await assertReferences(tx, context, scope, invocation.intent.references);
+      await assertReferences(
+        tx,
+        context,
+        scope,
+        brandMediaIntentReferences(invocation.intent),
+      );
     }
   };
   await transaction(getDatabase(), (tx) => beforeCommit(tx));
@@ -860,6 +970,35 @@ export async function authorizeBrandMediaTool(
     invocation: snapshot.moduleInvocation,
     beforeCommit,
   };
+}
+/** Only a real frozen module invocation activates the additional gate. Ordinary
+ * image generation/editing keeps the original native authority and semantics. */
+export async function authorizeBrandMediaImage(
+  call: EmployeeChatCall,
+  name: string,
+) {
+  const { context } = call;
+  const [row] = await getDatabase()<{ invocation: unknown }[]>`
+    select execution_snapshot->'moduleInvocation' invocation from allrice_employee_runs
+    where run_id=${context.runId} and organization_id=${context.organizationId}
+      and workspace_id=${context.workspaceId!} and owner_id=${context.policySnapshot.subjectId}`;
+  if (!row?.invocation) return undefined;
+  if (
+    !call.userMessageId ||
+    !Number.isSafeInteger(call.worker.attempt) ||
+    call.worker.attempt < 0
+  )
+    throw new DataAccessError('authorization_denied');
+  const { intent } = BrandMediaInvocationSchema.parse(row.invocation);
+  const args = call.arguments as { prompt?: unknown; source?: unknown };
+  if (
+    intent.operation !== 'image' ||
+    name !== 'image.generate' ||
+    args.prompt !== intent.description ||
+    args.source !== undefined
+  )
+    throw new DataAccessError('authorization_denied');
+  return authorizeBrandMediaTool(call, name);
 }
 export async function readBrandMediaTool(
   call: EmployeeChatCall,
@@ -997,6 +1136,91 @@ export async function readBrandMediaSkill(
 }
 /** Cold recovery projects existing Run/artifact facts, including failed/cancelled
  * Runs whose immutable delivery survived a business CAS conflict. */
+async function readBrandMediaImage(
+  tx: Tx,
+  context: BrandContentIdentity,
+  scope: BrandMediaScope,
+  row: { run_id: string; session_id: string },
+  runFailed: boolean,
+) {
+  const [operation] = await tx<
+    {
+      id: string;
+      status: 'running' | 'succeeded' | 'failed' | 'unknown';
+      result: { modelContent?: string } | null;
+    }[]
+  >`
+    select i.id,i.result,case when i.status='running' and not exists(select 1 from allrice_jobs j
+      where j.run_id=i.run_id and j.status='running' and j.cancel_requested_at is null
+        and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp()) then 'unknown' else i.status end status
+    from allrice_image_operations i where i.run_id=${row.run_id} and i.session_id=${row.session_id}
+      and i.organization_id=${scope.organizationId} and i.workspace_id=${scope.workspaceId} and i.owner_id=${scope.ownerId}
+    order by i.created_at,i.id limit 1`;
+  const [output] = operation
+    ? await tx<{ version_id: string }[]>`
+    select version_id from allrice_workbench_artifacts where run_id=${row.run_id}
+      and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}
+      and request_id=${'image:' + operation.id}`
+    : [];
+  let file: BrandMediaArticle['body'] = null,
+    fileName: string | null = null,
+    adoptable = false;
+  if (output) {
+    const artifact = await readArtifact(
+      tx,
+      context,
+      row.session_id,
+      output.version_id,
+    );
+    file = {
+      objectId: artifact.object.id,
+      versionId: artifact.id,
+      checksum: artifact.object.checksum,
+    };
+    await assertBrandContentFile(tx, context, scope, file, true, false);
+    if (
+      artifact.version.format !== 'png' ||
+      artifact.provenance.kind !== 'tool_result' ||
+      artifact.provenance.runId !== row.run_id
+    )
+      fail('source_reference_invalid');
+    fileName = artifact.version.fileName;
+    let receipt: {
+      objectId?: string;
+      artifactId?: string;
+      checksum?: string;
+    } | null = null;
+    try {
+      receipt = JSON.parse(operation?.result?.modelContent ?? 'null');
+    } catch {
+      /* Incomplete receipt is not a grant. */
+    }
+    if (
+      operation?.status === 'succeeded' &&
+      receipt?.objectId === file.objectId &&
+      receipt.artifactId === file.versionId &&
+      receipt.checksum === file.checksum
+    ) {
+      await assertImages(
+        tx,
+        context,
+        scope,
+        [{ source: 'generated', operationId: operation.id, file }],
+        false,
+      );
+      adoptable = true;
+    }
+  }
+  return {
+    operationId: operation?.id ?? null,
+    status: operation?.status ?? null,
+    file,
+    fileName,
+    adoptable,
+    retryable:
+      runFailed && !output && (!operation || operation.status === 'failed'),
+  };
+}
 export async function readBrandMediaRuns(
   context: RequestContext,
   raw: unknown,
@@ -1043,22 +1267,36 @@ export async function readBrandMediaRuns(
           invocation: snapshot.moduleInvocation,
         };
         try {
-          if (snapshot.moduleInvocation.intent.operation === 'article')
+          const intent = snapshot.moduleInvocation.intent;
+          if (intent.operation !== 'candidates')
             await readBrandMediaRecords(tx, scope, {
               ...input,
               view: 'article',
-              articleId: snapshot.moduleInvocation.intent.articleId,
+              articleId: intent.articleId,
             });
           await assertReferences(
             tx,
             context,
             scope,
-            snapshot.moduleInvocation.intent.references,
+            brandMediaIntentReferences(intent),
             false,
           );
-          const outputs = await tx<
-            { version_id: string }[]
-          >`select a.version_id from allrice_workbench_artifacts a
+          const image =
+            intent.operation === 'image'
+              ? await readBrandMediaImage(
+                  tx,
+                  context,
+                  scope,
+                  row,
+                  native.run.status === 'failed',
+                )
+              : null;
+          const outputs =
+            intent.operation === 'image'
+              ? []
+              : await tx<
+                  { version_id: string }[]
+                >`select a.version_id from allrice_workbench_artifacts a
         join allrice_audit_events e on e.resource_id=a.version_id and e.action='brand.media.delivery'
         where a.run_id=${row.run_id} and a.organization_id=${scope.organizationId} and a.workspace_id=${scope.workspaceId} and a.owner_id=${scope.ownerId}
           and e.organization_id=a.organization_id and e.workspace_id=a.workspace_id and e.actor_id=a.owner_id
@@ -1109,7 +1347,6 @@ export async function readBrandMediaRuns(
             articleUpdated: boolean;
             revision: number | null;
           } | null = null;
-          const intent = snapshot.moduleInvocation.intent;
           if (intent.operation === 'article' && deliveries.length) {
             const [receipt] = await tx<
               { response: unknown }[]
@@ -1154,6 +1391,7 @@ export async function readBrandMediaRuns(
           });
           results.push({
             ...native,
+            image,
             submission,
             deliveries,
             addedCandidates,
@@ -1171,6 +1409,7 @@ export async function readBrandMediaRuns(
             throw error;
           results.push({
             ...native,
+            image: null,
             submission: null,
             deliveries: [],
             addedCandidates: [],

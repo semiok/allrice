@@ -5,7 +5,16 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { runInNewContext } from 'node:vm';
 import ts from 'typescript';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 import {
   BrandMediaReadResultSchema,
   EmployeeDefinitionSchema,
@@ -13,6 +22,7 @@ import {
   brandMediaModule,
   brandMediaRelease,
   brandMediaModuleV010,
+  brandMediaModuleV020,
   brandMediaTools,
   brandMediaUsage,
   cloudProjectCapabilityId,
@@ -88,19 +98,31 @@ import {
   readBrandMedia,
   readBrandMediaRuns,
   freezeBrandMediaModule,
+  assertFrozenBrandMediaModule,
 } from '../../../packages/database/src/brand-media/server-wiring.ts';
+import { employeeChatUuid } from '../../../packages/database/src/employees/employee-chat-authority.ts';
 import {
   startClaimedJob,
   cancelRun,
   completeJob,
+  failJob,
 } from '../../../packages/database/src/execution/queue.ts';
 import { readFrozenSkillResource } from '../../../packages/database/src/skill-bundles.ts';
 import * as runtimeStorage from './storage/runtime';
 import * as uploadHttp from '../app/api/v1/workbench/files/route';
+import * as imagePreviewHttp from '../app/api/v1/workbench/files/[id]/preview/route';
+import * as imageDownloadHttp from '../app/api/v1/workbench/files/[id]/download/route';
 import * as catalog from '../app/api/v1/employee-instances/[id]/modules/route';
 import * as business from '../app/api/v1/employee-instances/[id]/brand-media/route';
 
+const jpeg =
+  '/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAqADAAQAAAABAAAAAgAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAgACAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A/Neiiiv1A/Oz/9k=';
 const browser = vi.hoisted(() => ({ token: '' }));
+const imageProvider = vi.hoisted(() => ({ generate: vi.fn() }));
+vi.mock('../../worker/src/codex-image-broker.ts', async (original) => ({
+  ...(await original<Record<string, unknown>>()),
+  requestCodexImage: imageProvider.generate,
+}));
 vi.mock('next/headers', () => ({
   cookies: async () => ({
     get: (key: string) =>
@@ -1564,7 +1586,7 @@ suite(
       input: Awaited<ReturnType<typeof execution>>,
       name: string,
       args: Record<string, unknown>,
-      callId = randomUUID(),
+      callId: string = randomUUID(),
     ) {
       const path = new URL('../../worker/src/tool-broker.ts', import.meta.url)
         .href;
@@ -2049,7 +2071,7 @@ suite(
         expect(resource.checksum).toBe(brandMediaUsage.checksum);
       },
     );
-    it('read-only and explicit denied write employees cannot gain write by installing; old 0.1 bindings never hot-upgrade', async () => {
+    it('read-only and explicit denied write employees cannot gain write by installing; old 0.1/0.2 bindings never hot-upgrade', async () => {
       for (const a of [
         await generationActor(['workspace.document.read']),
         await generationActor(undefined, ['storage:write']),
@@ -2067,19 +2089,23 @@ suite(
         'workspace.brand_media.candidates',
       ]);
       await generate(moduleOnly, candidateIntent(moduleOnly), 403);
-      const a = await generationActor();
-      await f.db`update allrice_employee_module_bindings set content_version='0.1.0',digest=${brandMediaModuleV010.digest} where instance_id=${a.scope.instanceId}`;
-      expect((await generate(a, candidateIntent(a), 409)).error).toMatchObject({
-        code: 'VERSION_CONFLICT',
-      });
-      expect(
-        await f.db`select content_version from allrice_employee_module_bindings where instance_id=${a.scope.instanceId}`,
-      ).toMatchObject([{ content_version: '0.1.0' }]);
-      const response = await catalog.POST(
-        request(a, 'modules', installInput(a)),
-        params(a.scope.instanceId),
-      );
-      expect(response.status).toBe(409);
+      for (const old of [brandMediaModuleV010, brandMediaModuleV020]) {
+        const a = await generationActor();
+        await f.db`update allrice_employee_module_bindings set content_version=${old.contentVersion},digest=${old.digest} where instance_id=${a.scope.instanceId}`;
+        expect(
+          (await generate(a, candidateIntent(a), 409)).error,
+        ).toMatchObject({
+          code: 'VERSION_CONFLICT',
+        });
+        expect(
+          await f.db`select content_version from allrice_employee_module_bindings where instance_id=${a.scope.instanceId}`,
+        ).toMatchObject([{ content_version: old.contentVersion }]);
+        const response = await catalog.POST(
+          request(a, 'modules', installInput(a)),
+          params(a.scope.instanceId),
+        );
+        expect(response.status).toBe(409);
+      }
     });
     it.each(['same', 'distinct'] as const)(
       'counts stable module dependencies rather than Run identities across 129 %s-input Runs',
@@ -2569,8 +2595,7 @@ suite(
         requestId: randomUUID(),
         fileName: '品牌参考.jpg',
         mediaType: 'image/jpeg',
-        contentBase64:
-          '/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAqADAAQAAAABAAAAAgAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAgACAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A/Neiiiv1A/Oz/9k=',
+        contentBase64: jpeg,
       };
       const http = (url: string, body: unknown) =>
         new Request(url, {
@@ -2774,6 +2799,677 @@ suite(
           await f.db`select id from allrice_runs where owner_id=${a.context.actor.id} order by id`,
         ).toEqual(runsBefore);
       }
+    });
+    describe('P4 single image — real login, frozen Run, native Broker and immutable delivery', () => {
+      const png =
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+      const providerReceipt = {
+        imageBase64: png,
+        requestId: 'synthetic-image',
+        workModel: 'gpt-5.6-luna',
+        imageModel: 'gpt-image-2.5-flare',
+        usage: { inputTokens: 10, outputTokens: 2, cachedInputTokens: null },
+      };
+      let previousConfiguration: Parameters<Fixture['db']['json']>[0];
+      beforeEach(async () => {
+        const [settings] =
+          await f.db`select configuration from allrice_platform_model_settings where singleton`;
+        previousConfiguration = settings!.configuration;
+        await f.db`update allrice_platform_model_settings set configuration=jsonb_set(jsonb_set(configuration,'{imagesEnabled}','true'::jsonb),'{imageModel}','"auto"'::jsonb)`;
+        imageProvider.generate.mockReset().mockResolvedValue(providerReceipt);
+      });
+      afterEach(async () => {
+        await f.db`update allrice_platform_model_settings set configuration=${f.db.json(previousConfiguration)} where singleton`;
+      });
+      const imageIntent = (
+        a: Actor,
+        article: BrandMediaArticle,
+        patch: object = {},
+      ) => ({
+        ...a.scope,
+        requestId: randomUUID(),
+        operation: 'image',
+        articleId: article.id,
+        expectedRevision: article.revision,
+        description: '给新品文章画一张蓝色封面，不加文字',
+        ...patch,
+      });
+      const imageArgs = {
+        prompt: '给新品文章画一张蓝色封面，不加文字',
+        fileName: '新品封面.png',
+      };
+      async function recoveredImage(a: Actor, runId: string) {
+        const response = await business.GET(
+          request(a, 'brand-media', undefined, '?view=runs'),
+          params(a.scope.instanceId),
+        );
+        expect(response.status).toBe(200);
+        const row = (await response.json()).runs.find(
+          (row: { run: RunSnapshot }) => row.run.id === runId,
+        );
+        expect(row).toBeDefined();
+        return row;
+      }
+      async function failImageRun(run: Awaited<ReturnType<typeof execution>>) {
+        await failJob({
+          workerId: run.context.worker.id,
+          jobId: run.context.jobId,
+          leaseToken: run.managedBrowserJobLeaseToken,
+          code: 'IMAGE_GENERATION_FAILED',
+          message: 'Synthetic terminal image failure',
+          retryable: false,
+        });
+      }
+      const retryIntent = (
+        a: Actor,
+        sent: Awaited<ReturnType<typeof generate>>,
+        intent: ReturnType<typeof imageIntent>,
+      ) => ({
+        ...intent,
+        sessionId: sent.userMessage.sessionId,
+        retryOfRunId: sent.run.id,
+        requestId: employeeChatUuid(
+          'brand-media-retry',
+          a.context.organizationId,
+          a.scope.workspaceId,
+          a.context.actor.id,
+          a.scope.instanceId,
+          sent.run.id,
+        ),
+      });
+      function workbenchRequest(
+        a: Actor,
+        objectId: string,
+        action: 'preview' | 'download',
+      ) {
+        browser.token = a.token;
+        return new Request(
+          `https://example.test/api/v1/workbench/files/${objectId}/${action}?workspaceId=${a.scope.workspaceId}`,
+          { headers: request(a, 'brand-media').headers },
+        );
+      }
+      async function uploadedImage(a: Actor, mediaType = 'image/png') {
+        const contentBase64 = mediaType === 'image/jpeg' ? jpeg : png;
+        browser.token = a.token;
+        const response = await uploadHttp.POST(
+          new Request('https://example.test/api/v1/workbench/files', {
+            method: 'POST',
+            headers: request(a, 'brand-media').headers,
+            body: JSON.stringify({
+              workspaceId: a.scope.workspaceId,
+              requestId: randomUUID(),
+              fileName:
+                mediaType === 'image/jpeg'
+                  ? '自己的封面.jpg'
+                  : '自己的封面.png',
+              mediaType,
+              contentBase64,
+            }),
+          }),
+        );
+        expect(response.status).toBe(201);
+        const { objectId } = await response.json();
+        return {
+          source: 'uploaded' as const,
+          origin: 'upload' as const,
+          file: {
+            objectId,
+            checksum:
+              'sha256:' +
+              createHash('sha256')
+                .update(Buffer.from(contentBase64, 'base64'))
+                .digest('hex'),
+          },
+        };
+      }
+
+      it('“给这篇加一张封面，我看后再用” freezes the target and delivers one native image without adopting; exact replay survives later article edits', async () => {
+        const a = await generationActor(),
+          article = await draft(a),
+          intent = imageIntent(a, article);
+        const sent = await generate(a, intent),
+          duplicate = await generate(a, intent),
+          run = await execution(a, sent);
+        expect(duplicate.run.id).toBe(sent.run.id);
+        const [frozen] =
+          await f.db`select execution_snapshot from allrice_employee_runs where run_id=${sent.run.id}`;
+        expect(frozen!.execution_snapshot.moduleInvocation.intent).toEqual(
+          intent,
+        );
+        expect(
+          frozen!.execution_snapshot.capabilitySnapshot.bindings.toolNames,
+        ).not.toContain('image.generate');
+        const output = await broker(
+          run,
+          'image.generate',
+          imageArgs,
+          'cover-first',
+        );
+        expect(imageProvider.generate).toHaveBeenCalledTimes(1);
+        expect(imageProvider.generate.mock.calls[0]![0]).toMatchObject({
+          prompt: intent.description,
+          configuration: { imagesEnabled: true },
+        });
+        expect(imageProvider.generate.mock.calls[0]![0]).not.toHaveProperty(
+          'source',
+        );
+        const receipt = JSON.parse(output.modelContent),
+          cold = await recoveredImage(a, sent.run.id);
+        expect(cold.deliveries).toEqual([]);
+        expect(cold.image).toMatchObject({
+          status: 'succeeded',
+          adoptable: true,
+          retryable: false,
+          operationId: receipt.operationId,
+          file: {
+            objectId: receipt.objectId,
+            versionId: receipt.artifactId,
+            checksum: receipt.checksum,
+          },
+          fileName: '新品封面.png',
+        });
+        expect((await articleRead(a, article.id)).images).toEqual([]);
+        const download = await imageDownloadHttp.GET(
+          workbenchRequest(a, receipt.objectId, 'download'),
+          params(receipt.objectId),
+        );
+        expect(download.status).toBe(200);
+        expect(download.headers.get('content-disposition')).toContain(
+          encodeURIComponent('新品封面.png'),
+        );
+        expect(Buffer.from(await download.arrayBuffer())).toEqual(
+          Buffer.from(png, 'base64'),
+        );
+        const preview = await imagePreviewHttp.GET(
+          workbenchRequest(a, receipt.objectId, 'preview'),
+          params(receipt.objectId),
+        );
+        expect(preview.status).toBe(200);
+        expect(await preview.json()).toMatchObject({
+          kind: 'image',
+          mediaType: 'image/png',
+          base64: png,
+        });
+        await command(a, {
+          operation: 'article.references',
+          articleId: article.id,
+          expectedRevision: article.revision,
+          references: [],
+        });
+        expect(
+          await broker(
+            run,
+            'image.generate',
+            imageArgs,
+            'new-call-same-intent',
+          ),
+        ).toEqual(output);
+        expect((await recoveredImage(a, sent.run.id)).image).toEqual(
+          cold.image,
+        );
+        expect(imageProvider.generate).toHaveBeenCalledTimes(1);
+        await command(
+          a,
+          {
+            operation: 'article.image.add',
+            articleId: article.id,
+            expectedRevision: article.revision,
+            image: {
+              source: 'generated',
+              operationId: receipt.operationId,
+              file: cold.image.file,
+            },
+          },
+          409,
+        );
+        const current = await articleRead(a, article.id),
+          requestId = randomUUID();
+        const use = {
+          operation: 'article.image.add',
+          requestId,
+          articleId: article.id,
+          expectedRevision: current.revision,
+          image: {
+            source: 'generated',
+            operationId: receipt.operationId,
+            file: cold.image.file,
+          },
+        };
+        await command(a, use);
+        expect((await command(a, use)).replayed).toBe(true);
+        expect((await articleRead(a, article.id)).images).toEqual([use.image]);
+        expect(
+          await f.db`select id from allrice_image_operations where run_id=${sent.run.id}`,
+        ).toHaveLength(1);
+        await finish(sent.run.id);
+        expect((await recoveredImage(a, sent.run.id)).image.adoptable).toBe(
+          true,
+        );
+      });
+
+      it.each(['disabled', 'model:invoke', 'storage:write', 'missing-export'])(
+        'rejects unavailable %s before enqueue, with no image/provider/Run side effect',
+        async (reason) => {
+          const a = await generationActor(
+              reason === 'missing-export'
+                ? ['workspace.skill.read']
+                : undefined,
+              reason.includes(':') ? [reason] : [],
+            ),
+            article = await draft(a);
+          if (reason === 'disabled')
+            await f.db`update allrice_platform_model_settings set configuration=jsonb_set(configuration,'{imagesEnabled}','false'::jsonb)`;
+          const before =
+            await f.db`select id from allrice_runs where owner_id=${a.context.actor.id} order by id`;
+          expect(
+            (await generate(a, imageIntent(a, article), 403)).error,
+          ).toMatchObject({ code: 'AUTHORIZATION_DENIED' });
+          expect(
+            await f.db`select id from allrice_runs where owner_id=${a.context.actor.id} order by id`,
+          ).toEqual(before);
+          expect(
+            await f.db`select id from allrice_image_operations where owner_id=${a.context.actor.id}`,
+          ).toHaveLength(0);
+          expect(imageProvider.generate).not.toHaveBeenCalled();
+        },
+      );
+
+      it('uses the full frozen availability gate at enqueue and the real model-use boundary, including unsupported provider/auth and current module withdrawal', async () => {
+        const a = await generationActor(),
+          article = await draft(a),
+          sent = await generate(a, imageIntent(a, article));
+        const run = await execution(a, sent),
+          frozen = (
+            await resolveEmployeeExecution({
+              organizationId: a.context.organizationId,
+              workspaceId: a.scope.workspaceId,
+              ownerId: a.context.actor.id,
+              runId: sent.run.id,
+            })
+          ).executionSnapshot!;
+        if (frozen.schemaVersion !== 2)
+          throw Error('Requires a real V2 image freeze');
+        const authority = {
+          organizationId: a.context.organizationId,
+          workspaceId: a.scope.workspaceId,
+          ownerId: a.context.actor.id,
+        };
+        await f.db.begin((tx) =>
+          assertFrozenBrandMediaModule(tx, frozen, authority),
+        );
+        for (const model of [
+          { ...frozen.modelSnapshot, provider: 'deepseek' },
+          { ...frozen.modelSnapshot, authMode: 'api_key' as const },
+          { ...frozen.modelSnapshot, platformSettings: undefined },
+        ]) {
+          const unsupported = EmployeeExecutionSnapshotSchema.parse({
+            ...frozen,
+            modelSnapshot: model,
+          });
+          await expect(
+            f.db.begin((tx) =>
+              assertFrozenBrandMediaModule(tx, unsupported, authority),
+            ),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
+        }
+        const guard = await productionContentGuard(a, sent, run);
+        await expect(guard.check()).resolves.toBeUndefined();
+        await f.db`update allrice_employee_module_bindings set revoked_at=clock_timestamp() where instance_id=${a.scope.instanceId}`;
+        await expect(guard.check()).rejects.toMatchObject({
+          code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+        });
+        await expect(
+          broker(run, 'image.generate', imageArgs),
+        ).rejects.toMatchObject({ code: 'module_unavailable' });
+        expect(imageProvider.generate).not.toHaveBeenCalled();
+      });
+
+      it('serializes the original Run claim while the provider is pending, refuses altered images/edit/source, and requires real human message/attempt/lease', async () => {
+        const a = await generationActor(),
+          article = await draft(a),
+          sent = await generate(a, imageIntent(a, article)),
+          run = await execution(a, sent);
+        for (const bad of [
+          { ...run, userMessageId: undefined },
+          { ...run, managedBrowserJobAttempt: undefined },
+          { ...run, managedBrowserJobAttempt: -1 },
+          { ...run, userMessageId: randomUUID() },
+          { ...run, managedBrowserJobLeaseToken: randomUUID() },
+        ])
+          await expect(
+            broker(bad as typeof run, 'image.generate', imageArgs),
+          ).rejects.toThrow();
+        for (const args of [
+          { ...imageArgs, prompt: '未经本次真人选择的画面' },
+          {
+            ...imageArgs,
+            source: {
+              objectId: randomUUID(),
+              checksum: 'sha256:' + '0'.repeat(64),
+            },
+          },
+        ])
+          await expect(broker(run, 'image.generate', args)).rejects.toThrow();
+        await expect(
+          broker(run, 'image.edit', {
+            ...imageArgs,
+            source: {
+              objectId: randomUUID(),
+              checksum: 'sha256:' + '0'.repeat(64),
+            },
+          }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        expect(imageProvider.generate).not.toHaveBeenCalled();
+        let enter!: () => void, release!: () => void;
+        const entered = new Promise<void>((resolve) => {
+            enter = resolve;
+          }),
+          gate = new Promise<void>((resolve) => {
+            release = resolve;
+          });
+        imageProvider.generate.mockImplementationOnce(async () => {
+          enter();
+          await gate;
+          return providerReceipt;
+        });
+        const first = broker(
+          run,
+          'image.generate',
+          imageArgs,
+          'concurrent-first',
+        );
+        try {
+          await entered;
+          await expect(
+            broker(run, 'image.generate', imageArgs, 'concurrent-second'),
+          ).rejects.toMatchObject({ code: 'IMAGE_RESULT_UNKNOWN' });
+          await expect(
+            broker(
+              run,
+              'image.generate',
+              { ...imageArgs, imageModel: 'gpt-image-2.5-sunburst' },
+              'different-image',
+            ),
+          ).rejects.toMatchObject({ code: 'grant_invalid' });
+          expect(imageProvider.generate).toHaveBeenCalledTimes(1);
+        } finally {
+          release();
+        }
+        await first;
+        expect(
+          await f.db`select id from allrice_image_operations where run_id=${sent.run.id}`,
+        ).toHaveLength(1);
+      });
+
+      it('rechecks current module authority after provider return and before publication, retaining usage without adopting or silently regenerating', async () => {
+        const a = await generationActor(),
+          article = await draft(a),
+          sent = await generate(a, imageIntent(a, article)),
+          run = await execution(a, sent);
+        imageProvider.generate.mockImplementationOnce(async () => {
+          await f.db`update allrice_employee_module_bindings set revoked_at=clock_timestamp() where instance_id=${a.scope.instanceId}`;
+          return providerReceipt;
+        });
+        await expect(
+          broker(run, 'image.generate', imageArgs),
+        ).rejects.toMatchObject({ code: 'module_unavailable' });
+        expect(imageProvider.generate).toHaveBeenCalledTimes(1);
+        expect(
+          await f.db`select status,usage,provider_request_id from allrice_image_operations where run_id=${sent.run.id}`,
+        ).toMatchObject([
+          {
+            status: 'unknown',
+            usage: providerReceipt.usage,
+            provider_request_id: providerReceipt.requestId,
+          },
+        ]);
+        expect(
+          await f.db`select version_id from allrice_workbench_artifacts where run_id=${sent.run.id}`,
+        ).toHaveLength(0);
+        await f.db`update allrice_employee_module_bindings set revoked_at=null where instance_id=${a.scope.instanceId}`;
+        await expect(
+          broker(run, 'image.generate', imageArgs),
+        ).rejects.toMatchObject({ code: 'IMAGE_RESULT_UNKNOWN' });
+        expect((await articleRead(a, article.id)).images).toEqual([]);
+        expect(imageProvider.generate).toHaveBeenCalledTimes(1);
+      });
+
+      it.each(['unknown', 'succeeded'] as const)(
+        'keeps a verifiable original artifact for %s even when the Run fails; unknown is preview/download only and cannot spend another image',
+        async (status) => {
+          const a = await generationActor(),
+            article = await draft(a),
+            intent = imageIntent(a, article),
+            sent = await generate(a, intent),
+            run = await execution(a, sent);
+          const result = JSON.parse(
+            (await broker(run, 'image.generate', imageArgs)).modelContent,
+          );
+          if (status === 'unknown')
+            // Simulate a missing final receipt after durable publication. Never fabricate success.
+            await f.db`update allrice_image_operations set status='unknown',result=null where id=${result.operationId}`;
+          await failImageRun(run);
+          const cold = await recoveredImage(a, sent.run.id);
+          expect(cold.run.status).toBe('failed');
+          expect(cold.image).toMatchObject({
+            status,
+            retryable: false,
+            adoptable: status === 'succeeded',
+            file: {
+              objectId: result.objectId,
+              versionId: result.artifactId,
+              checksum: result.checksum,
+            },
+          });
+          const original = await imageDownloadHttp.GET(
+            workbenchRequest(a, result.objectId, 'download'),
+            params(result.objectId),
+          );
+          expect(original.status).toBe(200);
+          expect(Buffer.from(await original.arrayBuffer())).toEqual(
+            Buffer.from(png, 'base64'),
+          );
+          await command(
+            a,
+            {
+              operation: 'article.image.add',
+              articleId: article.id,
+              expectedRevision: article.revision,
+              image: {
+                source: 'generated',
+                file: cold.image.file,
+                operationId: result.operationId,
+              },
+            },
+            status === 'succeeded' ? 200 : 409,
+          );
+          const before =
+            await f.db`select id from allrice_runs where owner_id=${a.context.actor.id} order by id`;
+          expect(
+            (await generate(a, retryIntent(a, sent, intent), 409)).error,
+          ).toMatchObject({ code: 'CONFLICT' });
+          expect(
+            await f.db`select id from allrice_runs where owner_id=${a.context.actor.id} order by id`,
+          ).toEqual(before);
+          expect(imageProvider.generate).toHaveBeenCalledTimes(1);
+        },
+      );
+
+      it('retries only a proven failed/no-image Run using its original intent and one stable request; unknown, canceled and forged retry targets create no Run', async () => {
+        const a = await generationActor(),
+          article = await draft(a),
+          intent = imageIntent(a, article),
+          sent = await generate(a, intent),
+          run = await execution(a, sent);
+        const { HandlerError } = await import(
+          new URL('../../worker/src/errors.ts', import.meta.url).href
+        );
+        imageProvider.generate.mockRejectedValueOnce(
+          new HandlerError(
+            'IMAGE_GENERATION_FAILED',
+            'Synthetic known failure',
+            false,
+          ),
+        );
+        await expect(
+          broker(run, 'image.generate', imageArgs),
+        ).rejects.toMatchObject({ code: 'IMAGE_GENERATION_FAILED' });
+        await failImageRun(run);
+        expect((await recoveredImage(a, sent.run.id)).image).toMatchObject({
+          status: 'failed',
+          file: null,
+          retryable: true,
+        });
+        const retry = retryIntent(a, sent, intent);
+        await generate(a, { ...retry, description: '换掉原始指令' }, 409);
+        await generate(a, { ...retry, requestId: randomUUID() }, 409);
+        const next = await generate(a, retry),
+          replay = await generate(a, retry);
+        expect(next.run.id).not.toBe(sent.run.id);
+        expect(replay.run.id).toBe(next.run.id);
+        const [snapshot] =
+          await f.db`select execution_snapshot from allrice_employee_runs where run_id=${next.run.id}`;
+        expect(snapshot!.execution_snapshot.moduleInvocation.intent).toEqual(
+          retry,
+        );
+        await generate(a, { ...retry, retryOfRunId: randomUUID() }, 409);
+        const nextRun = await execution(a, next);
+        await broker(nextRun, 'image.generate', imageArgs);
+        expect(imageProvider.generate).toHaveBeenCalledTimes(2);
+        const unknownIntent = imageIntent(a, article),
+          unknown = await generate(a, unknownIntent),
+          unknownRun = await execution(a, unknown);
+        imageProvider.generate.mockRejectedValueOnce(
+          new HandlerError(
+            'IMAGE_RESULT_UNKNOWN',
+            'Synthetic unknown response',
+            false,
+          ),
+        );
+        await expect(
+          broker(unknownRun, 'image.generate', imageArgs),
+        ).rejects.toMatchObject({ code: 'IMAGE_RESULT_UNKNOWN' });
+        await failImageRun(unknownRun);
+        expect((await recoveredImage(a, unknown.run.id)).image.retryable).toBe(
+          false,
+        );
+        await generate(a, retryIntent(a, unknown, unknownIntent), 409);
+        const canceledIntent = imageIntent(a, article),
+          canceled = await generate(a, canceledIntent);
+        await cancelRun(a.context, a.scope.workspaceId, canceled.run.id, {
+          reason: '取消图片',
+        });
+        await generate(a, retryIntent(a, canceled, canceledIntent), 409);
+        expect(imageProvider.generate).toHaveBeenCalledTimes(3);
+      });
+
+      it('adopts a real private upload by exact object/checksum only, preserves order/removal and enforces current ACL, old pin, CAS and published readonly boundaries', async () => {
+        const a = await generationActor(),
+          b = await generationActor(),
+          article = await draft(a),
+          first = await uploadedImage(a, 'image/jpeg'),
+          second = await uploadedImage(a),
+          foreign = await uploadedImage(b);
+        expect(first.file.objectId).not.toBe(second.file.objectId);
+        expect(first.file).not.toHaveProperty('versionId');
+        const owned = await uploadHttp.GET(
+          new Request(
+            `https://example.test/api/v1/workbench/files?view=deliverables&objectId=${first.file.objectId}&workspaceId=${a.scope.workspaceId}`,
+            { headers: request(a, 'brand-media').headers },
+          ),
+        );
+        expect(owned.status).toBe(200);
+        expect((await owned.json()).files[0]).toMatchObject({
+          origin: 'user-upload',
+          ownedByMe: true,
+          reference: null,
+        });
+        const add = (image: unknown, revision = article.revision) => ({
+          operation: 'article.image.add',
+          articleId: article.id,
+          expectedRevision: revision,
+          image,
+        });
+        for (const image of [
+          foreign,
+          {
+            ...first,
+            file: { ...first.file, checksum: 'sha256:' + '0'.repeat(64) },
+          },
+          { source: 'uploaded', file: first.file },
+        ])
+          await command(a, add(image), 'origin' in image ? 409 : 422);
+        const original = await file(a);
+        await command(
+          a,
+          add({
+            ...first,
+            file: { objectId: original.objectId, checksum: original.checksum },
+          }),
+          409,
+        );
+        const input = { ...add(first), requestId: randomUUID() };
+        const selected = await command(a, input);
+        expect((await command(a, input)).replayed).toBe(true);
+        await command(a, add(second), 409);
+        const secondInput = {
+          ...add(
+            second,
+            selected.result.kind === 'article'
+              ? selected.result.article.revision
+              : -1,
+          ),
+          requestId: randomUUID(),
+        };
+        await command(a, secondInput);
+        let current = await articleRead(a, article.id);
+        expect(current.images).toEqual([first, second]);
+        await command(a, {
+          operation: 'article.image.remove',
+          articleId: current.id,
+          expectedRevision: current.revision,
+          upload: first.file,
+        });
+        current = await articleRead(a, article.id);
+        expect(current.images).toEqual([second]);
+        const download = await imageDownloadHttp.GET(
+          workbenchRequest(a, first.file.objectId, 'download'),
+          params(first.file.objectId),
+        );
+        expect(download.status).toBe(200);
+        expect(Buffer.from(await download.arrayBuffer())).toEqual(
+          Buffer.from(jpeg, 'base64'),
+        );
+        await f.db`update allrice_workbench_file_policies set owner_id=${b.context.actor.id},scope='personal' where object_id=${second.file.objectId}`;
+        await read(a, { view: 'article', articleId: article.id }, 403);
+        await command(a, secondInput, 403);
+        await f.db`update allrice_workbench_file_policies set owner_id=${a.context.actor.id} where object_id=${second.file.objectId}`;
+        const body = await file(a);
+        await f.db`update allrice_brand_media_articles set body_file=${f.db.json(body)} where id=${article.id}`;
+        current = await publication(a, await articleRead(a, article.id), {
+          action: 'schedule',
+          schedule,
+        });
+        current = await publication(a, current, {
+          action: 'publish',
+          links: { wechat: null, xiaohongshu: null },
+        });
+        await command(a, add(first, current.revision), 409);
+        await command(
+          a,
+          {
+            operation: 'article.image.remove',
+            articleId: current.id,
+            expectedRevision: current.revision,
+            upload: second.file,
+          },
+          409,
+        );
+        expect(
+          await f.db`select id from allrice_knowledge_sources where organization_id=${a.context.organizationId} and publication_kind is not null`,
+        ).toHaveLength(0);
+        expect(imageProvider.generate).not.toHaveBeenCalled();
+      });
     });
   },
 );

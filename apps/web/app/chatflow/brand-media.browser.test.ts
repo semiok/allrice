@@ -1,5 +1,5 @@
 import { createServer, type Server } from 'node:http';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -32,6 +32,10 @@ const scope = {
 const stamp = '2026-11-16T12:00:00.000Z',
   checksum = 'sha256:' + 'a'.repeat(64);
 const file = { objectId: id(8), versionId: id(9), checksum };
+const png =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+const imageFile = { objectId: id(80), versionId: id(81), checksum };
+type ImageFile = { fileName: string; mediaType: string; base64: string };
 const cursor = { createdAt: stamp, id: id(200) };
 const topic = (n = 10): BrandMediaTopic => ({
   workspaceId: scope.workspaceId,
@@ -140,10 +144,18 @@ type Recovery = {
   submission: { articleUpdated: boolean; revision: number | null } | null;
   addedCandidates: BrandMediaTopic['candidate'][];
   unavailable: boolean;
+  image?: {
+    operationId: string | null;
+    status: 'running' | 'succeeded' | 'failed' | 'unknown' | null;
+    file: typeof file | null;
+    fileName: string | null;
+    adoptable: boolean;
+    retryable: boolean;
+  } | null;
   deliveries: Array<{ file: typeof file; format: string; content: string }>;
 };
 function recovery(
-  operation: 'candidates' | 'article',
+  operation: 'candidates' | 'article' | 'image',
   status: RunSnapshot['status'] = 'succeeded',
   n = 300,
 ): Recovery {
@@ -157,16 +169,26 @@ function recovery(
           direction: '面向通勤族',
           references: [],
         }
-      : {
-          operation,
-          workspaceId: scope.workspaceId,
-          instanceId: scope.instanceId,
-          requestId: id(n + 1),
-          articleId: id(20),
-          expectedRevision: 1,
-          instructions: '写完整',
-          references: [],
-        };
+      : operation === 'image'
+        ? {
+            operation,
+            workspaceId: scope.workspaceId,
+            instanceId: scope.instanceId,
+            requestId: id(n + 1),
+            articleId: id(20),
+            expectedRevision: 1,
+            description: '一张蓝色新品封面',
+          }
+        : {
+            operation,
+            workspaceId: scope.workspaceId,
+            instanceId: scope.instanceId,
+            requestId: id(n + 1),
+            articleId: id(20),
+            expectedRevision: 1,
+            instructions: '写完整',
+            references: [],
+          };
   return {
     run: runSnapshot(n, status),
     sessionId: id(6),
@@ -174,8 +196,24 @@ function recovery(
     submission: null,
     addedCandidates: [],
     unavailable: false,
+    image:
+      operation === 'image'
+        ? {
+            operationId: id(n + 50),
+            status:
+              status === 'succeeded'
+                ? 'succeeded'
+                : status === 'failed'
+                  ? 'failed'
+                  : 'running',
+            file: status === 'succeeded' ? imageFile : null,
+            fileName: status === 'succeeded' ? '原生封面.png' : null,
+            adoptable: status === 'succeeded',
+            retryable: status === 'failed',
+          }
+        : null,
     deliveries:
-      status === 'succeeded'
+      status === 'succeeded' && operation !== 'image'
         ? [
             {
               file,
@@ -216,6 +254,9 @@ type State = {
   failRecoveryAfterGenerate?: boolean;
   moreTopics?: boolean;
   moreArticles?: boolean;
+  imageFiles: Record<string, ImageFile>;
+  uploadGate?: Promise<void>;
+  bodyGate?: Promise<void>;
 };
 
 suite('MET-224 main-area brand media text workflow', () => {
@@ -334,6 +375,13 @@ suite('MET-224 main-area brand media text workflow', () => {
       articles: [article()],
       runs: [],
       requests: [],
+      imageFiles: {
+        [imageFile.objectId]: {
+          fileName: '原生封面.png',
+          mediaType: 'image/png',
+          base64: png,
+        },
+      },
       ...options,
     };
     const context = await browser.newContext({
@@ -445,7 +493,11 @@ suite('MET-224 main-area brand media text workflow', () => {
             });
           }
         }
-        if (body?.operation === 'candidates' || body?.operation === 'article') {
+        if (
+          body?.operation === 'candidates' ||
+          body?.operation === 'article' ||
+          body?.operation === 'image'
+        ) {
           if (state.failGenerateOnce) {
             state.failGenerateOnce = false;
             return reply({ message: '网络中断，请重试' }, 503);
@@ -514,6 +566,27 @@ suite('MET-224 main-area brand media text workflow', () => {
             replayed: false,
           });
         }
+        if (
+          body?.operation === 'article.image.add' ||
+          body?.operation === 'article.image.remove'
+        ) {
+          const row = state.articles.find((row) => row.id === body.articleId)!;
+          if (row.revision !== body.expectedRevision)
+            return reply({ message: '记录已更新，本次没有覆盖' }, 409);
+          if (body.operation === 'article.image.add')
+            row.images.push(body.image as BrandMediaArticle['images'][number]);
+          else
+            row.images = row.images.filter((image) =>
+              'origin' in image
+                ? image.file.objectId !== (body.upload as typeof file).objectId
+                : image.file.versionId !== body.versionId,
+            );
+          row.revision++;
+          return reply({
+            result: { kind: 'article', article: row },
+            replayed: false,
+          });
+        }
       }
       if (path.endsWith('/cancel')) {
         const row = state.runs.find((row) => path.includes(row.run.id))!;
@@ -526,12 +599,35 @@ suite('MET-224 main-area brand media text workflow', () => {
           contentType: 'text/event-stream',
           body: '',
         });
-      if (path.endsWith('/download'))
+      if (
+        path.startsWith('/api/v1/workbench/files/') &&
+        (path.endsWith('/preview') || path.endsWith('/download'))
+      ) {
+        const stored = state.imageFiles[path.split('/')[5]!];
+        if (!stored) return reply({ message: '图片已不可用' }, 403);
+        if (path.endsWith('/preview'))
+          return reply({
+            kind: 'image',
+            mediaType: stored.mediaType,
+            base64: stored.base64,
+          });
+        return route.fulfill({
+          status: 200,
+          contentType: stored.mediaType,
+          headers: {
+            'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(stored.fileName)}`,
+          },
+          body: Buffer.from(stored.base64, 'base64'),
+        });
+      }
+      if (path.endsWith('/download')) {
+        if (state.bodyGate) await state.bodyGate;
         return route.fulfill({
           status: 200,
           contentType: 'text/plain',
           body: '不可直接改写的正文\n第二段',
         });
+      }
       if (path === '/api/v1/references/publications') {
         const query = url.searchParams.get('query') ?? '';
         return reply({
@@ -570,17 +666,35 @@ suite('MET-224 main-area brand media text workflow', () => {
         });
       }
       if (path === '/api/v1/workbench/files') {
-        if (body) return reply({ objectId: id(90) }, 201);
+        if (body) {
+          const objectId = id(
+            90 +
+              Object.keys(state.imageFiles).filter(
+                (key) => Number(key.slice(-12)) >= 90,
+              ).length,
+          );
+          state.imageFiles[objectId] = {
+            fileName: String(body.fileName),
+            mediaType: String(body.mediaType),
+            base64: String(body.contentBase64),
+          };
+          if (state.uploadGate) await state.uploadGate;
+          return reply({ objectId }, 201);
+        }
+        const uploadedId = url.searchParams.get('objectId') ?? id(90),
+          uploaded = state.imageFiles[uploadedId];
         return reply({
           viewerId: scope.ownerId,
           files: [
             {
-              objectId: id(90),
+              objectId: uploadedId,
               workspaceId: scope.workspaceId,
-              fileName: '品牌参考.jpg',
-              mediaType: 'image/jpeg',
+              fileName: uploaded?.fileName ?? '品牌参考.jpg',
+              mediaType: uploaded?.mediaType ?? 'image/jpeg',
               checksum,
-              sizeBytes: 4,
+              sizeBytes: uploaded
+                ? Buffer.from(uploaded.base64, 'base64').length
+                : 4,
               createdAt: stamp,
               ownedByMe: true,
               canMaintain: true,
@@ -647,7 +761,8 @@ suite('MET-224 main-area brand media text workflow', () => {
     state.requests.filter(
       (req) =>
         req.body?.operation === 'candidates' ||
-        req.body?.operation === 'article',
+        req.body?.operation === 'article' ||
+        req.body?.operation === 'image',
     );
 
   it('opening only the main area preserves the original draft/attachment, sidebar geometry and visible focus across all tabs', async () => {
@@ -1368,4 +1483,458 @@ suite('MET-224 main-area brand media text workflow', () => {
     ).toBe(true);
     await f.close();
   });
+  async function imagesPage(f: Awaited<ReturnType<typeof fixture>>) {
+    await f.open();
+    await f.page.getByRole('tab', { name: '文章库', exact: true }).click();
+    await f.page
+      .getByRole('button', { name: '＋ 加配图', exact: true })
+      .click();
+    return f.page.getByRole('dialog', { name: '加配图', exact: true });
+  }
+  const imageCommands = (state: State) =>
+    state.requests.filter((req) => req.body?.operation === 'article.image.add');
+
+  it('creates one target-bound image without adopting, disables a running request, then restores the exact native preview and explicitly uses it', async () => {
+    const f = await fixture(),
+      modal = await imagesPage(f),
+      { page } = f;
+    expect(
+      await modal
+        .getByRole('button', { name: '生成', exact: true })
+        .isEnabled(),
+    ).toBe(false);
+    await modal.getByLabel('画面描述').fill('一张蓝色新品封面');
+    await modal.getByRole('button', { name: '生成', exact: true }).click();
+    await expect.poll(() => generates(f.state).length).toBe(1);
+    expect(generates(f.state)[0]!.body).toMatchObject({
+      operation: 'image',
+      articleId: id(20),
+      expectedRevision: 1,
+      description: '一张蓝色新品封面',
+    });
+    for (const field of ['references', 'source', 'imageModel', 'module'])
+      expect(generates(f.state)[0]!.body).not.toHaveProperty(field);
+    await expect
+      .poll(() =>
+        modal.getByRole('button', { name: '生成中…', exact: true }).isEnabled(),
+      )
+      .toBe(false);
+    expect(
+      await modal.getByRole('button', { name: '取消', exact: true }).count(),
+    ).toBe(2);
+    expect(imageCommands(f.state)).toEqual([]);
+    const row = f.state.runs[0]!,
+      done = recovery('image');
+    row.run = runSnapshot(Number(row.run.id.slice(-12)));
+    row.image = done.image;
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: '← 回到对话' }).click();
+    await imagesPage(f);
+    await modal
+      .getByRole('button', { name: '查看原图: 配图预览', exact: true })
+      .click();
+    await page.getByRole('dialog', { name: '配图原图', exact: true }).waitFor();
+    await page.keyboard.press('Escape');
+    await expect
+      .poll(() => page.getByRole('dialog', { name: '配图原图' }).count())
+      .toBe(0);
+    expect(imageCommands(f.state)).toHaveLength(0);
+    await modal.getByRole('button', { name: '用这张', exact: true }).click();
+    await expect.poll(() => page.getByRole('dialog').count()).toBe(0);
+    expect(imageCommands(f.state)).toHaveLength(1);
+    expect(imageCommands(f.state)[0]!.body!.image).toEqual({
+      source: 'generated',
+      file: imageFile,
+      operationId: done.image!.operationId,
+    });
+    expect(f.state.articles[0]!.images).toHaveLength(1);
+    await page.getByRole('button', { name: '＋ 加配图' }).click();
+    expect(
+      await modal
+        .getByRole('button', { name: '已加入', exact: true })
+        .isEnabled(),
+    ).toBe(false);
+    expect(generates(f.state)).toHaveLength(1);
+    await f.close();
+  });
+
+  it.each(['unknown', 'succeeded'] as const)(
+    'a failed Run with an existing %s original restores preview/download without enabling a fee retry; external host closure releases both native layers',
+    async (status) => {
+      const row = recovery('image', 'failed');
+      row.image = {
+        ...recovery('image').image!,
+        status,
+        adoptable: status === 'succeeded',
+        retryable: false,
+      };
+      const f = await fixture({ runs: [row] }),
+        modal = await imagesPage(f),
+        { page } = f;
+      await modal
+        .getByRole('button', { name: '查看原图: 配图预览', exact: true })
+        .waitFor();
+      expect(
+        await modal
+          .getByRole('button', { name: '用这张', exact: true })
+          .isEnabled(),
+      ).toBe(status === 'succeeded');
+      expect(
+        await modal.getByRole('button', { name: '重试', exact: true }).count(),
+      ).toBe(0);
+      const download = page.waitForEvent('download');
+      await modal
+        .getByRole('button', { name: '下载原图', exact: true })
+        .click();
+      const original = await download;
+      expect(original.suggestedFilename()).toBe('原生封面.png');
+      expect(await readFile((await original.path())!)).toEqual(
+        Buffer.from(png, 'base64'),
+      );
+      await modal
+        .getByRole('button', { name: '查看原图: 配图预览', exact: true })
+        .click();
+      await page
+        .getByRole('dialog', { name: '配图原图', exact: true })
+        .waitFor();
+      await page.evaluate(() =>
+        window.dispatchEvent(new Event('fixture-employee-navigation')),
+      );
+      await expect.poll(() => page.getByRole('dialog').count()).toBe(0);
+      await expect
+        .poll(() =>
+          page
+            .getByLabel('聊天草稿')
+            .evaluate((el) => document.activeElement === el),
+        )
+        .toBe(true);
+      expect(await page.getByLabel('聊天草稿').inputValue()).toBe(
+        '未发送的聊天草稿',
+      );
+      expect(imageCommands(f.state)).toHaveLength(0);
+      expect(generates(f.state)).toHaveLength(0);
+      await f.close();
+    },
+  );
+
+  it('a confirmed failed/no-image retry keeps its frozen original intent and request ID after a lost response and cold reopening', async () => {
+    const failed = recovery('image', 'failed'),
+      f = await fixture({ runs: [failed], loseGenerateResponseOnce: true });
+    const modal = await imagesPage(f),
+      { page } = f;
+    await modal.getByLabel('画面描述').fill('编辑框里的新文字不能替换原重试');
+    await modal.getByRole('button', { name: '重试', exact: true }).click();
+    await modal.getByRole('alert').waitFor();
+    await modal.getByRole('button', { name: '重试', exact: true }).click();
+    await expect.poll(() => generates(f.state).length).toBe(2);
+    expect(generates(f.state)[1]!.body).toEqual(generates(f.state)[0]!.body);
+    expect(generates(f.state)[0]!.body).toMatchObject({
+      retryOfRunId: failed.run.id,
+      description: failed.invocation.intent.description,
+      articleId: failed.invocation.intent.articleId,
+      expectedRevision: failed.invocation.intent.expectedRevision,
+    });
+    expect(f.state.runs).toHaveLength(2);
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: '← 回到对话' }).click();
+    await imagesPage(f);
+    expect(
+      await modal
+        .getByRole('button', { name: '生成中…', exact: true })
+        .isEnabled(),
+    ).toBe(false);
+    expect(generates(f.state)).toHaveLength(2);
+    await f.close();
+  });
+
+  it('upload waits for “用这张”, freezes its in-flight entry, and treats a Markdown-shaped filename only as an accessible label', async () => {
+    let release!: () => void;
+    const f = await fixture(),
+      modal = await imagesPage(f),
+      { page } = f;
+    await modal.getByRole('tab', { name: '自己上传', exact: true }).click();
+    const input = modal.getByLabel('选择配图'),
+      name =
+        '封面 ](https://invalid.example)\n![注入](https://invalid.example/x).png';
+    await input.setInputFiles({
+      name,
+      mimeType: 'image/png',
+      buffer: Buffer.from(png, 'base64'),
+    });
+    await modal
+      .getByRole('button', { name: '查看原图: 配图预览', exact: true })
+      .waitFor();
+    expect(await modal.getByRole('link').count()).toBe(0);
+    expect(await modal.getByRole('img').count()).toBe(1);
+    expect(
+      f.state.requests.some(
+        (req) =>
+          req.method === 'POST' &&
+          req.path.startsWith('/api/v1/workbench/files'),
+      ),
+    ).toBe(false);
+    f.state.uploadGate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await modal.getByRole('button', { name: '用这张', exact: true }).click();
+    await expect
+      .poll(
+        () =>
+          f.state.requests.filter(
+            (req) =>
+              req.method === 'POST' &&
+              req.path.startsWith('/api/v1/workbench/files'),
+          ).length,
+      )
+      .toBe(1);
+    expect(await input.isDisabled()).toBe(true);
+    // Exercise a late change event as well as the real disabled user control.
+    await input.setInputFiles({
+      name: '另一张.png',
+      mimeType: 'image/png',
+      buffer: Buffer.from(png, 'base64'),
+    });
+    f.state.uploadGate = undefined;
+    release();
+    await expect.poll(() => page.getByRole('dialog').count()).toBe(0);
+    expect(imageCommands(f.state)[0]!.body!.image).toEqual({
+      source: 'uploaded',
+      origin: 'upload',
+      file: { objectId: id(90), checksum },
+    });
+    expect(f.state.imageFiles[id(90)]!.fileName).toBe(name);
+    await page.getByRole('button', { name: '＋ 加配图' }).click();
+    await modal.getByRole('button', { name: '用这张', exact: true }).click();
+    await expect.poll(() => imageCommands(f.state).length).toBe(2);
+    expect(f.state.imageFiles[id(91)]!.fileName).toBe('另一张.png');
+    expect(imageCommands(f.state)[1]!.body!.image).toMatchObject({
+      file: { objectId: id(91) },
+    });
+    expect(
+      f.state.requests.some(
+        (req) =>
+          req.method === 'POST' && req.path.startsWith('/api/v1/references'),
+      ),
+    ).toBe(false);
+    expect(generates(f.state)).toHaveLength(0);
+    await f.close();
+  });
+
+  it('downloads originals sequentially in article order without a ZIP, labels the first as cover, and removal leaves the private original intact', async () => {
+    const document = article();
+    document.images = [
+      { source: 'generated', operationId: id(350), file: imageFile },
+      {
+        source: 'uploaded',
+        origin: 'upload',
+        file: { objectId: id(90), checksum },
+      },
+    ];
+    const f = await fixture({
+        articles: [document],
+        imageFiles: {
+          [id(80)]: {
+            fileName: '封面原图.png',
+            mediaType: 'image/png',
+            base64: png,
+          },
+          [id(90)]: {
+            fileName: '第二张原图.png',
+            mediaType: 'image/png',
+            base64: png,
+          },
+        },
+      }),
+      { page } = f;
+    await f.open();
+    await page.getByRole('tab', { name: '文章库', exact: true }).click();
+    const section = page.getByRole('region', { name: '文章配图' });
+    await section
+      .getByLabel('封面图', { exact: true })
+      .getByRole('button', { name: '下载', exact: true })
+      .waitFor();
+    const downloads: Array<Promise<{ name: string; bytes: Buffer }>> = [];
+    page.on('download', (item) => {
+      downloads.push(
+        (async () => ({
+          name: item.suggestedFilename(),
+          bytes: await readFile((await item.path())!),
+        }))(),
+      );
+    });
+    await section
+      .getByRole('button', { name: '下载全部', exact: true })
+      .click();
+    await expect.poll(() => downloads.length).toBe(2);
+    expect(await Promise.all(downloads)).toEqual([
+      { name: '封面原图.png', bytes: Buffer.from(png, 'base64') },
+      { name: '第二张原图.png', bytes: Buffer.from(png, 'base64') },
+    ]);
+    expect(
+      f.state.requests
+        .filter(
+          (req) =>
+            req.path.startsWith('/api/v1/workbench/files/') &&
+            req.path.includes('/download'),
+        )
+        .map((req) => req.path.split('/')[5]),
+    ).toEqual([id(80), id(90)]);
+    await section
+      .getByLabel('封面图', { exact: true })
+      .getByRole('button', { name: '删除', exact: true })
+      .click();
+    await expect.poll(() => f.state.articles[0]!.images.length).toBe(1);
+    expect(f.state.articles[0]!.images[0]!.file.objectId).toBe(id(90));
+    expect(f.state.imageFiles[id(80)]!.base64).toBe(png);
+    await expect
+      .poll(() =>
+        section.getByLabel('封面图', { exact: true }).getByRole('img').count(),
+      )
+      .toBe(1);
+    await f.close();
+  });
+
+  it('published articles retain image preview/download but expose no copy/add/remove controls', async () => {
+    const document = article();
+    document.publication = {
+      state: 'published',
+      schedule: { plannedAt: stamp, timezone: 'Asia/Shanghai' },
+      links: { wechat: null, xiaohongshu: null },
+    };
+    document.images = [
+      { source: 'generated', operationId: id(350), file: imageFile },
+    ];
+    const f = await fixture({ articles: [document] }),
+      { page } = f;
+    await f.open();
+    await page.getByRole('tab', { name: '文章库', exact: true }).click();
+    const section = page.getByRole('region', { name: '文章配图' });
+    await section
+      .getByRole('button', { name: '查看原图: 配图预览', exact: true })
+      .waitFor();
+    for (const name of ['复制正文', '＋ 加配图', '删除'])
+      expect(
+        await panel(page).getByRole('button', { name, exact: true }).count(),
+      ).toBe(0);
+    expect(
+      await section
+        .getByRole('button', { name: '下载', exact: true })
+        .isEnabled(),
+    ).toBe(true);
+    await f.close();
+  });
+
+  it('copies only the exact plain body and reports clipboard rejection without claiming success', async () => {
+    const f = await fixture(),
+      { page } = f;
+    await page
+      .context()
+      .grantPermissions(['clipboard-read', 'clipboard-write']);
+    await f.open();
+    await page.getByRole('tab', { name: '文章库', exact: true }).click();
+    const copy = page.getByRole('button', { name: '复制正文', exact: true });
+    await expect.poll(() => copy.isEnabled()).toBe(true);
+    await copy.click();
+    await page.getByText('正文已复制', { exact: true }).waitFor();
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+      '不可直接改写的正文\n第二段',
+    );
+    await page.getByRole('button', { name: '← 回到对话' }).click();
+    await f.open();
+    await page.getByRole('tab', { name: '文章库', exact: true }).click();
+    await page.evaluate(() => {
+      Object.defineProperty(navigator.clipboard, 'writeText', {
+        configurable: true,
+        value: async () => {
+          throw new Error('Synthetic clipboard rejection');
+        },
+      });
+    });
+    await expect.poll(() => copy.isEnabled()).toBe(true);
+    await copy.click();
+    await page.getByRole('alert').filter({ hasText: '未能复制正文' }).waitFor();
+    expect(await page.getByText('正文已复制', { exact: true }).count()).toBe(0);
+    await f.close();
+  });
+
+  it.each(['body-pin', 'host-hidden', 'scope-unmount'] as const)(
+    'a delayed copy read cannot overwrite the clipboard after %s changes',
+    async (change) => {
+      const f = await fixture(),
+        { page } = f;
+      await page
+        .context()
+        .grantPermissions(['clipboard-read', 'clipboard-write']);
+      await page.evaluate(() => navigator.clipboard.writeText('保留原剪贴板'));
+      await f.open();
+      await page.getByRole('tab', { name: '文章库', exact: true }).click();
+      const copy = page.getByRole('button', { name: '复制正文', exact: true });
+      await expect.poll(() => copy.isEnabled()).toBe(true);
+      let release!: () => void;
+      f.state.bodyGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const before = f.state.requests.filter((req) =>
+        req.path.startsWith('/api/v1/files/'),
+      ).length;
+      await copy.click();
+      await expect
+        .poll(
+          () =>
+            f.state.requests.filter((req) =>
+              req.path.startsWith('/api/v1/files/'),
+            ).length,
+        )
+        .toBe(before + 1);
+      if (change === 'body-pin') {
+        f.state.articles[0] = {
+          ...article(),
+          revision: 2,
+          title: '同一文章的新正文版本',
+          body: {
+            ...file,
+            versionId: id(200),
+            checksum: 'sha256:' + 'b'.repeat(64),
+          },
+        };
+        await page.getByRole('button', { name: '草稿', exact: true }).click();
+        await page
+          .getByRole('heading', { name: '同一文章的新正文版本', exact: true })
+          .waitFor();
+      } else if (change === 'host-hidden') {
+        await page.evaluate(() =>
+          window.dispatchEvent(new Event('fixture-employee-navigation')),
+        );
+        await expect
+          .poll(() =>
+            page.locator('[data-brand-media-host]').getAttribute('data-open'),
+          )
+          .toBe('false');
+      } else
+        await page
+          .getByRole('button', { name: '另一个员工', exact: true })
+          .click();
+      const response = page.waitForResponse(
+        (res) =>
+          res.url().includes('/api/v1/files/') &&
+          res.url().includes('/download'),
+      );
+      f.state.bodyGate = undefined;
+      release();
+      await response;
+      await page.evaluate(
+        () =>
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+          ),
+      );
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+        '保留原剪贴板',
+      );
+      expect(await page.getByText('正文已复制', { exact: true }).count()).toBe(
+        0,
+      );
+      await f.close();
+    },
+  );
 });

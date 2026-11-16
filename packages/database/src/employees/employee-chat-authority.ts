@@ -5,6 +5,7 @@ import {
   EmployeeExecutionSnapshotSchema,
   UuidSchema,
   employeeCustomizationToolsForInstance,
+  withPlatformImageTools,
   type ExecutionContext,
   type EmployeeInstance,
 } from '@allrice/contracts';
@@ -144,13 +145,21 @@ export async function assertEmployeeChatToolExecution(
   )
     fail();
   const capability = operation.capability;
+  const toolNames =
+    tool === 'image.generate'
+      ? withPlatformImageTools(
+          frozen.capabilitySnapshot.bindings.toolNames,
+          frozen.capabilitySnapshot.grantedCapabilities,
+          frozen.modelSnapshot,
+        )
+      : frozen.capabilitySnapshot.bindings.toolNames;
   if (
     frozen.tenantContext.organizationId !== ctx.organizationId ||
     frozen.tenantContext.workspaceId !== ctx.workspaceId ||
     frozen.tenantContext.actorId !== ctx.policySnapshot.subjectId ||
     frozen.tenantContext.policySnapshotId !== ctx.policySnapshot.id ||
     !frozen.capabilitySnapshot.grantedCapabilities.includes(capability) ||
-    !frozen.capabilitySnapshot.bindings.toolNames.includes(tool)
+    !toolNames.includes(tool)
   )
     fail();
   return { text: live.text, snapshot: frozen };

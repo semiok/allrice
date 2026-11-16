@@ -20,10 +20,13 @@ import {
   runActive,
   candidateRequestId,
   retryRequestId,
+  imageRequestId,
+  writeClipboard,
   useBrandMediaRunEvents,
   type BrandMediaClient,
   type BrandMediaRun,
 } from './frontend-wiring';
+import { Images } from './images';
 type Tab = 'calendar' | 'topics' | 'articles';
 type References = BrandMediaTopic['references'];
 type Cursor = { createdAt: string; id: string };
@@ -139,6 +142,35 @@ export function BrandMediaPanel({
     detail?.id === selectedId
       ? detail
       : articles.find((article) => article.id === selectedId);
+  const copyKey = JSON.stringify([
+    client.scope,
+    selected?.id,
+    selected?.body,
+    active,
+  ]);
+  const copyLifetime = useRef({
+    key: copyKey,
+    client,
+    revision: 0,
+    alive: true,
+  });
+  if (
+    copyLifetime.current.key !== copyKey ||
+    copyLifetime.current.client !== client
+  )
+    copyLifetime.current = {
+      key: copyKey,
+      client,
+      revision: copyLifetime.current.revision + 1,
+      alive: true,
+    };
+  useEffect(() => {
+    copyLifetime.current.alive = true;
+    return () => {
+      copyLifetime.current.alive = false;
+      copyLifetime.current.revision++;
+    };
+  }, []);
   const reload = useCallback(async () => {
     const version = ++generation.current;
     try {
@@ -246,13 +278,20 @@ export function BrandMediaPanel({
         ? previous
         : {
             requestId:
-              input.operation === 'topic.add'
-                ? await candidateRequestId(
+              input.operation === 'article.image.add'
+                ? await imageRequestId(
                     client.scope,
-                    input.sourceRunId,
-                    input.candidate,
+                    input.articleId,
+                    String(input.expectedRevision),
+                    JSON.stringify(input.image),
                   )
-                : crypto.randomUUID(),
+                : input.operation === 'topic.add'
+                  ? await candidateRequestId(
+                      client.scope,
+                      input.sourceRunId,
+                      input.candidate,
+                    )
+                  : crypto.randomUUID(),
             input: { ...input, requestId: '' } as Scoped<BrandMediaUserCommand>,
           };
     request.input = {
@@ -318,6 +357,7 @@ export function BrandMediaPanel({
         submission: null,
         addedCandidates: [],
         unavailable: false,
+        image: null,
       },
       ...old.filter((row) => row.run.id !== result.run.id),
     ]);
@@ -348,6 +388,26 @@ export function BrandMediaPanel({
     selectedIdRef.current = article.id;
     setSelectedId(article.id);
     setTab('articles');
+  };
+  const copyBody = async () => {
+    if (!selected?.body || !active) return;
+    const owner = copyLifetime.current,
+      revision = owner.revision;
+    const current = () =>
+      copyLifetime.current === owner &&
+      owner.alive &&
+      owner.revision === revision;
+    const id = selected.id,
+      file = selected.body;
+    try {
+      const text = await client.body(file);
+      if (!current() || selectedIdRef.current !== id) return;
+      if (!(await writeClipboard(text))) throw Error('未能复制正文，请重试。');
+      if (current()) setNotice('正文已复制');
+    } catch (cause) {
+      if (current())
+        setError(cause instanceof Error ? cause.message : '复制失败');
+    }
   };
   const pageMore = async (view: 'topics' | 'articles') => {
     const cursor = view === 'topics' ? topicCursor : articleCursor;
@@ -736,6 +796,14 @@ export function BrandMediaPanel({
                     <header className={ui.header}>
                       <h3>{selected.title}</h3>
                       <Tag>{stateNames[selected.publication.state]}</Tag>
+                      {selected.publication.state !== 'published' && (
+                        <Button
+                          disabled={busy || !body || !selected.body}
+                          onClick={() => void copyBody()}
+                        >
+                          复制正文
+                        </Button>
+                      )}
                       {selected.publication.state === 'published' ? (
                         <Button
                           disabled={busy}
@@ -815,6 +883,20 @@ export function BrandMediaPanel({
                       {body ||
                         (selected.body ? '正在读取正文…' : '正文还未生成')}
                     </div>
+                    <Images
+                      key={selected.id}
+                      article={selected}
+                      client={client}
+                      sessionId={sessionId}
+                      active={active}
+                      row={runs.find(
+                        (row) =>
+                          row.invocation.intent.operation === 'image' &&
+                          row.invocation.intent.articleId === selected.id,
+                      )}
+                      generate={generate}
+                      command={command}
+                    />
                     {articleRun?.deliveries.map((delivery) => (
                       <p key={delivery.file.versionId}>
                         <a
@@ -1373,7 +1455,7 @@ function ReferencePicker({
             },
           };
         }
-        const uploaded = await client.uploadReference(upload.current.request);
+        const uploaded = await client.upload(upload.current.request);
         await onSave([
           ...selected.filter(
             (pin) =>

@@ -18,6 +18,8 @@ import {
   SegmentedTabs,
   Tag,
   MarkdownText,
+  MarkdownDelegateProvider,
+  writeClipboard,
   useModalLayer,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
@@ -45,6 +47,7 @@ import { EmployeePluginSection } from '../employee-capability-presentation';
 import { createSessionRunStream } from '../session-run-stream';
 import css from './frontend-wiring.module.css';
 export { Button, Checkbox, Input, InlineEditor, Modal, SegmentedTabs, Tag };
+export { writeClipboard };
 export const ui = css;
 const labels = {
   code: { copyLabel: '复制', copiedLabel: '已复制' },
@@ -68,6 +71,19 @@ const runsSchema = z.object({
       invocation: BrandMediaInvocationSchema,
       addedCandidates: z.array(BrandMediaCandidateSchema),
       unavailable: z.boolean(),
+      image: z
+        .object({
+          operationId: z.uuid().nullable(),
+          status: z
+            .enum(['running', 'succeeded', 'failed', 'unknown'])
+            .nullable(),
+          file: BrandMediaFileSchema.nullable(),
+          fileName: z.string().nullable(),
+          adoptable: z.boolean(),
+          retryable: z.boolean(),
+        })
+        .nullable()
+        .optional(),
       submission: z
         .object({
           articleUpdated: z.boolean(),
@@ -129,6 +145,10 @@ export const retryRequestId = (
   scope: BrandMediaClientScope,
   failedRunId: string,
 ) => moduleRequestId(scope, 'brand-media-retry', failedRunId);
+export const imageRequestId = (
+  scope: BrandMediaClientScope,
+  ...identity: string[]
+) => moduleRequestId(scope, 'brand-media-image', ...identity);
 async function json(
   url: string,
   headers: Record<string, string>,
@@ -302,7 +322,7 @@ export function createBrandMediaClient(scope: BrandMediaClientScope) {
         revisionId: result.selection.revisionId,
       };
     },
-    uploadReference: async (request: {
+    upload: async (request: {
       requestId: string;
       fileName: string;
       mediaType: string;
@@ -333,9 +353,108 @@ export function createBrandMediaClient(scope: BrandMediaClientScope) {
         throw Error('文件已保存，暂时无法读取上传回执，请重试同一上传。');
       return file;
     },
+    previewImage: async (objectId: string, signal?: AbortSignal) => {
+      const preview = z
+        .object({
+          kind: z.literal('image'),
+          mediaType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+          base64: z.string(),
+        })
+        .parse(
+          await json(
+            `/api/v1/workbench/files/${objectId}/preview${q}`,
+            scope.headers,
+            { signal },
+          ),
+        );
+      return `data:${preview.mediaType};base64,${preview.base64}`;
+    },
+    downloadImage: async (objectId: string) => {
+      const response = await fetch(
+        `/api/v1/workbench/files/${objectId}/download${q}`,
+        { headers: scope.headers, cache: 'no-store' },
+      );
+      if (!response.ok) throw Error('原图暂时不可下载，请核对权限后重试。');
+      const disposition = response.headers.get('Content-Disposition') ?? '';
+      const name = disposition.split("filename*=UTF-8''")[1];
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name ? decodeURIComponent(name) : '配图.png';
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    },
   };
 }
 export type BrandMediaClient = ReturnType<typeof createBrandMediaClient>;
+const imageLabels = {
+  dialog: '配图原图',
+  close: '关闭原图',
+  open: '查看原图',
+  loading: '正在读取图片',
+  failed: '图片读取失败',
+};
+/** Public Markdown owns image containment/lightbox; only this owner's exact
+ * key can resolve to the authorized bytes. No private ImagePreview import. */
+export function Image({
+  client,
+  objectId,
+  localFile,
+  label,
+  active,
+}: {
+  client: BrandMediaClient;
+  objectId?: string;
+  localFile?: File | null;
+  label: string;
+  active: boolean;
+}) {
+  const [source, setSource] = useState(''),
+    [error, setError] = useState('');
+  useEffect(() => {
+    const abort = new AbortController();
+    setSource('');
+    setError('');
+    const local = localFile ? URL.createObjectURL(localFile) : '';
+    if (active) {
+      if (local) setSource(local);
+      else if (objectId)
+        void client
+          .previewImage(objectId, abort.signal)
+          .then((value) => {
+            if (!abort.signal.aborted) setSource(value);
+          })
+          .catch((cause) => {
+            if (!abort.signal.aborted) setError(cause.message);
+          });
+    }
+    return () => {
+      abort.abort();
+      if (local) URL.revokeObjectURL(local);
+    };
+  }, [client, objectId, localFile, active]);
+  const key = 'brand-media-image.png';
+  const resolve = useCallback(
+    (path: string) => (path === key && source ? source : undefined),
+    [source],
+  );
+  if (!active) return null;
+  return error ? (
+    <p role="alert">{error}</p>
+  ) : source ? (
+    <div aria-label={`${label}预览`}>
+      <MarkdownDelegateProvider fileImages={{ resolve, labels: imageLabels }}>
+        <MarkdownText
+          text={`![配图预览](${key})`}
+          pathImages={{ resolve }}
+          labels={labels}
+        />
+      </MarkdownDelegateProvider>
+    </div>
+  ) : (
+    <p role="status">正在读取图片…</p>
+  );
+}
 export function useBrandMediaEntry(scope: BrandMediaClientScope | null) {
   const key = scope
     ? `${scope.organizationId}/${scope.workspaceId}/${scope.ownerId}/${scope.instanceId}`

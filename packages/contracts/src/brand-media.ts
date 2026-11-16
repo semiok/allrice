@@ -47,7 +47,7 @@ export const BrandMediaReferencesSchema = z
 export const BrandMediaCandidateSchema = z
   .object({ title: text(240), summary: text(2000) })
   .strict();
-export const BrandMediaImageSchema = z
+export const BrandMediaVersionedImageSchema = z
   .object({
     file: BrandMediaFileSchema,
     source: z.enum(['uploaded', 'generated']),
@@ -57,6 +57,18 @@ export const BrandMediaImageSchema = z
   .refine((image) => (image.source === 'generated') === !!image.operationId, {
     message: 'Only generated images carry the existing image operation ID.',
   });
+/** Uploads have immutable bytes, but no deliverable version. Keep the old
+ * versioned shape strict instead of making its versionId optional. */
+export const BrandMediaImageSchema = z.union([
+  BrandMediaVersionedImageSchema,
+  z
+    .object({
+      source: z.literal('uploaded'),
+      origin: z.literal('upload'),
+      file: BrandContentFileRefSchema.pick({ objectId: true, checksum: true }),
+    })
+    .strict(),
+]);
 export const BrandMediaImagesSchema = z
   .array(BrandMediaImageSchema)
   .refine(
@@ -165,7 +177,7 @@ export const BrandMediaPublicationChangeSchema = z.discriminatedUnion(
     z.object({ action: z.literal('unpublish') }).strict(),
   ],
 );
-export const BrandMediaUserCommandSchema = z.discriminatedUnion('operation', [
+const versionedCommands = z.discriminatedUnion('operation', [
   z
     .object({
       ...command,
@@ -215,6 +227,19 @@ export const BrandMediaUserCommandSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({ ...articleCommand, operation: z.literal('article.delete') })
+    .strict(),
+]);
+export const BrandMediaUserCommandSchema = z.union([
+  versionedCommands,
+  z
+    .object({
+      ...articleCommand,
+      operation: z.literal('article.image.remove'),
+      upload: BrandContentFileRefSchema.pick({
+        objectId: true,
+        checksum: true,
+      }),
+    })
     .strict(),
 ]);
 /** Worker result shape, not a browser command or an implemented tool. */
@@ -362,6 +387,17 @@ export const BrandMediaGenerateInputSchema = z.discriminatedUnion('operation', [
       instructions: text(8000),
     })
     .strict(),
+  z
+    .object({
+      ...command,
+      operation: z.literal('image'),
+      sessionId: id.optional(),
+      articleId: id,
+      expectedRevision: revision,
+      description: text(4000),
+      retryOfRunId: id.optional(),
+    })
+    .strict(),
 ]);
 export const BrandMediaInvocationSchema = z
   .object({
@@ -373,3 +409,5 @@ export type BrandMediaInvocation = z.infer<typeof BrandMediaInvocationSchema>;
 export type BrandMediaGenerateInput = z.infer<
   typeof BrandMediaGenerateInputSchema
 >;
+export const brandMediaIntentReferences = (intent: BrandMediaGenerateInput) =>
+  intent.operation === 'image' ? [] : intent.references;

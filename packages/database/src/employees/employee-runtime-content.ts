@@ -15,6 +15,7 @@ import {
   BrandFeedbackInputSchema,
   BrandContextContentSchema,
   BrandContentFileRefSchema,
+  brandMediaIntentReferences,
   type Membership,
 } from '@allrice/contracts';
 import { BrandContentError } from '../brand-content/rules.ts';
@@ -714,9 +715,12 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
       frozen?.schemaVersion === 2
         ? [
             ...new Set(
-              frozen.moduleInvocation?.intent.references.flatMap((pin) =>
+              (frozen.moduleInvocation
+                ? brandMediaIntentReferences(frozen.moduleInvocation.intent)
+                : []
+              ).flatMap((pin) =>
                 pin.origin === 'file' ? [pin.file.versionId] : [],
-              ) ?? [],
+              ),
             ),
           ].sort()
         : [],

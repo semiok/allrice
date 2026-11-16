@@ -277,11 +277,16 @@ export async function applyBrandMediaUserCommand(
   else if (action.operation === 'article.image.add')
     images = BrandMediaImagesSchema.parse([...images, action.image]);
   else {
-    if (!images.some((image) => image.file.versionId === action.versionId))
-      fail('source_reference_invalid');
-    images = images.filter(
-      (image) => image.file.versionId !== action.versionId,
-    );
+    const matches = (image: BrandMediaArticle['images'][number]) =>
+      'upload' in action
+        ? 'origin' in image &&
+          image.origin === 'upload' &&
+          image.file.objectId === action.upload.objectId &&
+          image.file.checksum === action.upload.checksum
+        : 'versionId' in image.file &&
+          image.file.versionId === action.versionId;
+    if (!images.some(matches)) fail('source_reference_invalid');
+    images = images.filter((image) => !matches(image));
   }
   // The same text cast preserves an existing schedule on publish/correction.
   const updated = await tx`update allrice_brand_media_articles set

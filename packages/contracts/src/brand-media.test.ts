@@ -368,7 +368,7 @@ describe('P3 exact module contracts', () => {
       skills: [],
       views: [],
     });
-    expect(brandMediaRelease.contentVersion).toBe('0.2.0');
+    expect(brandMediaRelease.contentVersion).toBe('0.3.0');
     expect(brandMediaRelease.digest).not.toBe(brandMediaModuleV010.digest);
     expect(brandMediaModule.tools).toEqual(
       brandMediaTools.map((entry) => entry.canonicalName),
@@ -403,6 +403,85 @@ describe('P3 exact module contracts', () => {
     expect(BrandMediaInvocationSchema.safeParse({ intent }).success).toBe(
       false,
     );
+  });
+  it('keeps every old version pin strict and admits only a tagged immutable upload image nomination', () => {
+    const upload = {
+      source: 'uploaded',
+      origin: 'upload',
+      file: { objectId: file.objectId, checksum: file.checksum },
+    };
+    expect(BrandMediaImagesSchema.parse([upload])).toEqual([upload]);
+    for (const image of [
+      { source: 'uploaded', file: upload.file },
+      { ...upload, source: 'generated', operationId: id(8) },
+      { ...upload, operationId: id(8) },
+      { ...upload, file },
+      { file: upload.file, source: 'generated', operationId: id(8) },
+    ])
+      expect(BrandMediaImagesSchema.safeParse([image]).success).toBe(false);
+    expect(
+      BrandMediaImagesSchema.safeParse([upload, { source: 'uploaded', file }])
+        .success,
+    ).toBe(false);
+    const remove = {
+      ...command,
+      operation: 'article.image.remove',
+      upload: upload.file,
+    };
+    expect(BrandMediaUserCommandSchema.parse(remove)).toEqual(remove);
+    expect(
+      BrandMediaUserCommandSchema.parse({
+        ...command,
+        operation: 'article.image.remove',
+        versionId: file.versionId,
+      }),
+    ).toMatchObject({ versionId: file.versionId });
+    for (const patch of [
+      { versionId: file.versionId },
+      { objectId: file.objectId },
+      { upload: { objectId: file.objectId } },
+    ])
+      expect(
+        BrandMediaUserCommandSchema.safeParse({ ...remove, ...patch }).success,
+      ).toBe(false);
+    expect(
+      BrandMediaArticleSubmissionSchema.safeParse({
+        ...command,
+        title: '正文',
+        body: upload.file,
+      }).success,
+    ).toBe(false);
+  });
+  it('freezes one description and target for image generation, with no references, edit source or browser authority', () => {
+    const intent = {
+      ...command,
+      operation: 'image',
+      description: '暖光下的冬日门店',
+    };
+    expect(BrandMediaGenerateInputSchema.parse(intent)).toEqual(intent);
+    expect(
+      BrandMediaGenerateInputSchema.parse({ ...intent, retryOfRunId: id(10) }),
+    ).toMatchObject({ retryOfRunId: id(10) });
+    for (const patch of [
+      { references: [] },
+      { source: file },
+      { count: 2 },
+      { imageModel: 'auto' },
+      { module: brandMediaRelease },
+      { humanSource: true },
+      { description: '' },
+      { description: 'x'.repeat(4001) },
+    ])
+      expect(
+        BrandMediaGenerateInputSchema.safeParse({ ...intent, ...patch })
+          .success,
+      ).toBe(false);
+    expect(
+      BrandMediaGenerateInputSchema.safeParse({
+        ...intent,
+        articleId: undefined,
+      }).success,
+    ).toBe(false);
   });
   it('models nominate text only and actual immutable delivery receipts have a strict success/conflict contract', () => {
     const candidate = {

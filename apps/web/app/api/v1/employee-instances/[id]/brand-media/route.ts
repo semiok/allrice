@@ -61,7 +61,9 @@ export async function POST(request: Request, { params }: Route) {
     const context = await requireRequestContext(request);
     const raw = await request.json();
     const generating =
-      raw?.operation === 'candidates' || raw?.operation === 'article';
+      raw?.operation === 'candidates' ||
+      raw?.operation === 'article' ||
+      raw?.operation === 'image';
     const command = generating
       ? BrandMediaGenerateInputSchema.parse(raw)
       : BrandMediaUserCommandSchema.parse(raw);

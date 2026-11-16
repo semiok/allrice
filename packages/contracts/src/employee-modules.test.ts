@@ -10,6 +10,8 @@ import {
   brandMediaModuleV010,
   brandMediaRelease,
   brandMediaUsage,
+  brandMediaModuleV020,
+  brandMediaUsageV020,
 } from './brand-media-module.ts';
 import { brandMediaTools } from './brand-media-tools.ts';
 
@@ -54,6 +56,30 @@ describe('published brand module contracts', () => {
     expect(brandMediaModuleV010.enablement.preinstalled).toBe(false);
   });
   it('pins the new 0.2.0 declaration, exact guide bytes and complete tool schemas in its new digest', () => {
+    const brandMediaModule = brandMediaModuleV020,
+      brandMediaUsage = brandMediaUsageV020;
+    const brandMediaRelease = {
+      moduleId: brandMediaModule.id,
+      contractVersion: brandMediaModule.contractVersion,
+      contentVersion: brandMediaModule.contentVersion,
+      digest: brandMediaModule.digest,
+    };
+    // Restore only the newly explicit upload-image union to its original exact
+    // versioned branch. The pinned 0.2 digest below witnesses all old schemas.
+    const oldImages = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(oldImages);
+      if (!value || typeof value !== 'object') return value;
+      const node = value as Record<string, any>;
+      if (
+        node.anyOf?.length === 2 &&
+        node.anyOf[1]?.properties?.origin?.const === 'upload' &&
+        node.anyOf[0]?.properties?.source
+      )
+        return oldImages(node.anyOf[0]);
+      return Object.fromEntries(
+        Object.entries(node).map(([key, child]) => [key, oldImages(child)]),
+      );
+    };
     expect(brandMediaRelease).toEqual({
       moduleId: 'allrice.brand-media',
       contractVersion: 1,
@@ -80,7 +106,7 @@ describe('published brand module contracts', () => {
       tools: brandMediaTools.map(({ input, output, ...tool }) => ({
         ...tool,
         input: z.toJSONSchema(input, { io: 'input' }),
-        output: z.toJSONSchema(output, { io: 'input' }),
+        output: oldImages(z.toJSONSchema(output, { io: 'input' })),
       })),
     };
     expect(brandMediaModule.digest).toBe(
@@ -92,6 +118,43 @@ describe('published brand module contracts', () => {
       brandMediaRelease,
     );
     expect(brandMediaModule.enablement.preinstalled).toBe(false);
+  });
+  it('publishes 0.3.0 with exact current schemas and one versioned guide, without adding image aliases or changing 0.2 bytes', () => {
+    expect(brandMediaRelease).toEqual({
+      moduleId: 'allrice.brand-media',
+      contractVersion: 1,
+      contentVersion: '0.3.0',
+      digest:
+        'sha256:908f4b65d995fa7424468a1c64df32e78d7141ade5177e0d68fe6ed5b5d481c7',
+    });
+    expect(brandMediaModule.tools).toEqual(brandMediaModuleV020.tools);
+    expect(
+      brandMediaUsage.content.startsWith(brandMediaUsageV020.content),
+    ).toBe(true);
+    expect(brandMediaUsageV020.checksum).toBe(
+      'sha256:cc6caaf412f3eb3e2148b86516ed4b2441b7dc707a504177a20ede5ae2d2e6ea',
+    );
+    expect(brandMediaUsage.checksum).toBe(
+      'sha256:' +
+        createHash('sha256').update(brandMediaUsage.content).digest('hex'),
+    );
+    expect(brandMediaModule.resources).toEqual([
+      { path: brandMediaUsage.path, checksum: brandMediaUsage.checksum },
+    ]);
+    const material = {
+      descriptor: { ...brandMediaModule, digest: undefined },
+      tools: brandMediaTools.map(({ input, output, ...tool }) => ({
+        ...tool,
+        input: z.toJSONSchema(input, { io: 'input' }),
+        output: z.toJSONSchema(output, { io: 'input' }),
+      })),
+    };
+    expect(brandMediaModule.digest).toBe(
+      'sha256:' +
+        createHash('sha256').update(JSON.stringify(material)).digest('hex'),
+    );
+    expect(brandMediaModule.skills).toEqual(['brand-media']);
+    expect(brandMediaModule.digest).not.toBe(brandMediaModuleV020.digest);
   });
   it.each([legacyRelease, brandMediaRelease])(
     'accepts only a target, exact $contentVersion release and request identity, never client authorization',
