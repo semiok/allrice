@@ -6524,14 +6524,25 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30_000);
 
-  it('the exception probe preserves caught errors when reload invalidates a pause', async () => {
+  it('the exception probe preserves caught errors when reload invalidates a pause', async ({
+    onTestFinished,
+  }) => {
     const context = await browser.newContext();
+    let probe: ReturnType<typeof observeCdpExceptions> | undefined;
+    onTestFinished(async () => {
+      const pending = probe?.stop();
+      try {
+        await context.close();
+      } finally {
+        await pending;
+      }
+    });
     const page = await context.newPage();
     const cdp = await context.newCDPSession(page);
     const exceptions: string[] = [];
     const failures: unknown[] = [];
     let reload: Promise<unknown> | undefined;
-    const probe = observeCdpExceptions(
+    probe = observeCdpExceptions(
       cdp,
       (error) => {
         exceptions.push(error);
@@ -6541,34 +6552,28 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       },
       (cause) => failures.push(cause),
     );
-    try {
-      await cdp.send('Runtime.enable');
-      await cdp.send('Debugger.enable');
-      await cdp.send('Debugger.setPauseOnExceptions', { state: 'all' });
-      const cleared = new Promise<void>((resolve) => {
-        cdp.once('Runtime.executionContextsCleared', () => resolve());
-      });
-      await page.evaluate(() => {
-        setTimeout(() => {
-          try {
-            throw new Error('Maximum update depth exceeded: probe sentinel');
-          } catch {
-            // Deliberately swallowed: pageerror cannot observe this exception.
-          }
-        }, 0);
-      });
-      await expect.poll(() => exceptions.length).toBe(1);
-      await reload;
-      await cleared;
-      await probe.drain();
-      expect(exceptions[0]).toContain(
-        'Maximum update depth exceeded: probe sentinel',
-      );
-    } finally {
-      const pending = probe.stop();
-      await context.close();
-      await pending;
-    }
+    await cdp.send('Runtime.enable');
+    await cdp.send('Debugger.enable');
+    await cdp.send('Debugger.setPauseOnExceptions', { state: 'all' });
+    const cleared = new Promise<void>((resolve) => {
+      cdp.once('Runtime.executionContextsCleared', () => resolve());
+    });
+    await page.evaluate(() => {
+      setTimeout(() => {
+        try {
+          throw new Error('Maximum update depth exceeded: probe sentinel');
+        } catch {
+          // Deliberately swallowed: pageerror cannot observe this exception.
+        }
+      }, 0);
+    });
+    await expect.poll(() => exceptions.length).toBe(1);
+    await reload;
+    await cleared;
+    await probe.drain();
+    expect(exceptions[0]).toContain(
+      'Maximum update depth exceeded: probe sentinel',
+    );
     expect(failures).toEqual([]);
   });
 
