@@ -23026,6 +23026,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               new URL(value.url()).pathname.endsWith('/modules') &&
               new URL(value.url()).searchParams.get('workspaceId') === id(998),
           );
+          const historyDenied = f.page.waitForResponse((value) => {
+            const url = new URL(value.url());
+            return (
+              value.request().method() === 'GET' &&
+              url.pathname === '/api/v1/employee-instances' &&
+              url.searchParams.get('workspaceId') === id(998) &&
+              url.searchParams.get('view') === 'history'
+            );
+          });
           f.state.employeeDetailStatus = 403;
           f.state.viewer = id(999);
           f.state.workspace = id(998);
@@ -23034,6 +23043,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .getByRole('button', { name: '查看Rice详情', exact: true })
             .click();
           await (await scoped).finished();
+          expect((await historyDenied).status()).toBe(403);
           await f.page
             .getByRole('dialog', { name: /员工详情/ })
             .getByRole('button', { name: '关闭', exact: true })
@@ -23041,7 +23051,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await f.page
             .locator('[data-composer-seat]')
             .getByRole('alert')
-            .getByText('没有权限，如需使用请联系管理员', { exact: true })
+            .getByText('归档列表读取失败，请重试。', { exact: true })
             .waitFor();
         }
         const response = f.page.waitForResponse(
