@@ -677,9 +677,7 @@ suite('reading a receipt while late native trace changes its group', () => {
         );
         expect(metrics).toHaveLength(2);
         expect(metrics[0]!.scrollHeight).toBe(metrics[0]!.clientHeight);
-        expect(metrics[1]!.scrollHeight).toBeGreaterThan(
-          metrics[1]!.clientHeight,
-        );
+        expect(metrics[1]!.scrollHeight).toBe(metrics[1]!.clientHeight);
         expect(metrics.every((port) => port.scrollTop === 0)).toBe(true);
         const row = stepToggle(card(page, 1));
         expect(
@@ -1300,7 +1298,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.close();
     }
   });
-  it('keeps the approved 260px group, inherits expansion after split and releases choices for a Run or unmount', async () => {
+  it('keeps naturally growing groups, inherits expansion after split and releases choices for a Run or unmount', async () => {
     const page = await open(390, false);
     try {
       const group = () =>
@@ -1317,7 +1315,7 @@ suite('reading a receipt while late native trace changes its group', () => {
           height: getComputedStyle(node.parentElement!).maxHeight,
           overflow: getComputedStyle(node.parentElement!).overflowY,
         })),
-      ).toEqual({ height: '260px', overflow: 'auto' });
+      ).toEqual({ height: 'none', overflow: 'visible' });
       await update(page, 'split');
       for (const row of await group().all())
         expect(await row.getAttribute('aria-expanded')).toBe('true');
@@ -2575,8 +2573,8 @@ suite('reading a receipt while late native trace changes its group', () => {
                 : 'header, [aria-label="这次要做的事"] > div:first-child, [aria-label="这次要做的事"] > div:nth-child(2), [aria-label="参数"]',
             );
             const overviewFraming = [];
-            // Approved 260px scroller: verify every field remains fully readable
-            // after scrolling it into view, rather than requiring all fields at once.
+            // Naturally growing groups use the page scroll to reach each field;
+            // no process frame may clip it after it enters the viewport.
             for (const anchor of await overviewAnchors.all()) {
               if (view === 'history')
                 await anchor.evaluate((node) =>
@@ -3227,32 +3225,20 @@ suite('reading a receipt while late native trace changes its group', () => {
           expect(geometry.valueX - geometry.labelRight).toBeCloseTo(8, 0);
           expect(geometry.valueY).toBeCloseTo(geometry.labelY, 0);
           expect(geometry.contained).toBe(true);
-          const title = await textBox(
-            searchStep(page).locator('[class*="processStepLabel"]'),
-          );
-          const status = searchStep(page).locator(
-            '[class*="processStepStatus"]',
-          );
-          expect(await status.innerText()).toBe('0.8秒');
-          const statusBox = await textBox(status);
           expect(
-            Math.abs(
-              statusBox.y + statusBox.height / 2 - title.y - title.height / 2,
-            ),
-          ).toBeLessThanOrEqual(2);
+            await searchStep(page)
+              .locator('[class*="processStepStatus"]')
+              .count(),
+          ).toBe(0);
           // Action + description now uses native single-line ellipsis. A text
           // Range includes the hidden tail; compare the actual clipped label.
           const label = searchStep(page).locator('[class*="processStepLabel"]');
-          const labelBox = (await label.boundingBox())!;
           expect(
             await label.evaluate((node) => ({
               overflow: getComputedStyle(node).overflow,
               ellipsis: getComputedStyle(node).textOverflow,
             })),
           ).toEqual({ overflow: 'hidden', ellipsis: 'ellipsis' });
-          expect(statusBox.x).toBeGreaterThanOrEqual(
-            labelBox.x + labelBox.width,
-          );
           expect(
             await page.evaluate(
               () => document.documentElement.scrollWidth <= innerWidth,

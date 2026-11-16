@@ -61,7 +61,7 @@ describe('native work display over accepted AllRice facts', () => {
       }),
     ).toMatchObject({ open: true, canFold: false });
   });
-  it.each(['running', 'failed', 'canceled'] as const)(
+  it.each(['failed', 'canceled'] as const)(
     'keeps %s outcomes visible even after the next input',
     (state) => {
       expect(
@@ -72,6 +72,15 @@ describe('native work display over accepted AllRice facts', () => {
       ).toMatchObject({ open: true, canFold: false });
     },
   );
+  it('starts running expanded but allows manual folding without dropping steps', () => {
+    expect(display({ running: true })).toMatchObject({
+      open: true,
+      canFold: true,
+    });
+    expect(
+      display({ running: true, disclosure: { presentation, open: false } }),
+    ).toMatchObject({ open: false, canFold: true });
+  });
   it('honors manual disclosure for this answer while a later answer resets it', () => {
     const disclosure = { presentation, open: true };
     expect(display({ disclosure }).open).toBe(true);

@@ -101,8 +101,7 @@ export function workProcessDisplayState({
   hasHistory: boolean;
   disclosure?: WorkProcessDisclosure;
 }) {
-  const alwaysOpen =
-    running || failed || canceled || presentation.hasInterleavedInput;
+  const alwaysOpen = failed || canceled || presentation.hasInterleavedInput;
   const canFold = policy.foldCompletedTurns && !alwaysOpen && hasHistory;
   const deferCollapse =
     policy.collapseTiming === 'next-input' && !presentation.hasNextInput;
@@ -125,7 +124,7 @@ export function workProcessDisplayState({
           : [],
       },
       { turn: 0, answerStep: 0 },
-      deferCollapse,
+      running || deferCollapse,
     );
   return {
     canFold,

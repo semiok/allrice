@@ -1,4 +1,5 @@
 import { isBoundedReferenceToolName } from '@allrice/contracts/native-runtime';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   referenceImageOperation,
   referenceImageFailure,
@@ -857,6 +858,15 @@ export async function createAllRiceRuntime(
 
     installUserQuestionProvider() {
       if (!this.ctx.userQuestions) return;
+      // The native legacy tool does not pass request.wait. Preserve its exact
+      // public execution identity only for presentation; the native answerer
+      // and AllRice's existing answer authority remain unchanged.
+      const questionCalls = new AsyncLocalStorage();
+      this.ctx.on('tools/execute', (exec, next) =>
+        exec.name === 'ask_user_question'
+          ? questionCalls.run({ agent: exec.agent, callId: exec.callId }, next)
+          : next(),
+      );
       this.ctx.on('user-questions/request', async (request) => {
         const session = [...this.roots.entries()].find(
           ([, record]) => record.agent === request.agent,
@@ -915,11 +925,12 @@ export async function createAllRiceRuntime(
           if (this.requireRoot(sessionId).agent !== request.agent)
             throw Error('INPUT_SESSION_NOT_LIVE');
           const questions = request.questions;
+          const call = questionCalls.getStore();
           const callId =
-            process.env.ALLRICE_ASK_USER_MODE === 'timed'
-              ? request.wait?.callId
-              : undefined;
+            request.wait?.callId ??
+            (call?.agent === request.agent ? call?.callId : undefined);
           const durable =
+            process.env.ALLRICE_ASK_USER_MODE === 'timed' &&
             !!callId &&
             nativeUserQuestions(this, sessionId).questions?.some(
               (q) => q.callId === callId,

@@ -85,7 +85,7 @@ function PublicationForm({
   const [departmentIds, setDepartmentIds] = useState<string[]>(
     publication?.audience.departmentIds ?? [],
   );
-  const [purpose, setPurpose] = useState('');
+  const [purpose, setPurpose] = useState(reference?.purpose ?? '');
   const [upload, setUpload] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -105,7 +105,7 @@ function PublicationForm({
   const title = {
     file: '添加为企业资料',
     upload: '上传企业资料',
-    audience: '修改范围',
+    audience: '编辑资料',
     revoke: '撤销这份企业资料？',
     delete: '删除这份企业资料？',
   }[target.kind];
@@ -183,8 +183,8 @@ function PublicationForm({
         value = {
           workspaceId,
           expectedRevision: publication.audienceRevision,
-          action: target.kind,
-          ...(target.kind === 'audience' ? { audience } : {}),
+          action: target.kind === 'audience' ? 'edit' : target.kind,
+          ...(target.kind === 'audience' ? { audience, purpose } : {}),
         };
       } else return;
 
@@ -373,18 +373,16 @@ function PublicationForm({
               </div>
             </fieldset>
           )}
-          {target.kind !== 'audience' && (
-            <label className={css.field}>
-              <span>用途</span>
-              <textarea
-                value={purpose}
-                maxLength={1000}
-                disabled={busy || !permitted}
-                onChange={(event) => setPurpose(event.target.value)}
-                placeholder="例如：每月经营报告的格式参考"
-              />
-            </label>
-          )}
+          <label className={css.field}>
+            <span>用途</span>
+            <textarea
+              value={purpose}
+              maxLength={1000}
+              disabled={busy || !permitted}
+              onChange={(event) => setPurpose(event.target.value)}
+              placeholder="例如：每月经营报告的格式参考"
+            />
+          </label>
           <p className={css.hint}>
             {scope === 'personal'
               ? '只有你能看到和下载，AI 员工为你工作时也会查到它。'

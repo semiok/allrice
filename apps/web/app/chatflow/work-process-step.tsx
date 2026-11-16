@@ -1,9 +1,16 @@
 'use client';
 
-import { Children, Fragment, useLayoutEffect, type ReactNode } from 'react';
+import {
+  Children,
+  Fragment,
+  useLayoutEffect,
+  useRef,
+  type ReactNode,
+} from 'react';
 import { DisclosureRow } from '@deepseek-ai/dsh-client-ui-primitives';
 import { useProcessDisclosure } from './work-process-reading-state';
 import styles from './dsh-saas.module.css';
+import { useWorkProcessPulse } from './work-process-pulse';
 
 /** Shared main/child process chrome. The caller supplies authorized facts;
  * this view owns only disclosure and container-responsive layout. */
@@ -12,8 +19,8 @@ export function WorkProcessStepView({
   icon,
   title,
   status,
-  elapsedMs,
   running,
+  pulse = running,
   failed,
   stopped,
   initialOpen = false,
@@ -29,6 +36,7 @@ export function WorkProcessStepView({
   status?: string;
   elapsedMs?: number;
   running?: boolean;
+  pulse?: boolean;
   failed?: boolean;
   stopped?: boolean;
   initialOpen?: boolean;
@@ -38,6 +46,8 @@ export function WorkProcessStepView({
   details?: readonly { label: string; value: ReactNode }[];
   children?: ReactNode;
 }) {
+  const root = useRef<HTMLDivElement>(null);
+  useWorkProcessPulse(root);
   const keys = [...new Set([id, ...disclosureIds])].map((id) => `step:${id}`);
   const [manualOpen, setOpen] = useProcessDisclosure(
     disclosureIds.length ? keys : keys[0]!,
@@ -51,8 +61,8 @@ export function WorkProcessStepView({
   useLayoutEffect(() => {
     if (reveal && !manualOpen) setOpen(true);
   });
-  // Native ToolRow has no success tail; running uses TextShimmer plus an
-  // accessible state. Keep reliable elapsed time and unresolved SaaS states.
+  // Native ToolRow has no success tail. Keep unresolved states; timing remains
+  // in the recorded facts and the turn's total, not each step's display.
   // r1-exempt(display): Hide only duplicate display labels; execution status and authorized facts remain unchanged.
   const displayedStatus =
     failed ||
@@ -60,13 +70,9 @@ export function WorkProcessStepView({
     ['已完成', '已回答', '运行中', '进行中', '准备中'].includes(status ?? '')
       ? undefined
       : status;
-  const tenths = elapsedMs !== undefined ? Math.round(elapsedMs / 100) : 0;
-  const elapsed =
-    elapsedMs !== undefined && Number.isFinite(elapsedMs) && elapsedMs >= 0
-      ? `${tenths >= 600 ? `${Math.floor(tenths / 600)}分 ` : ''}${(tenths % 600) / 10}秒`
-      : undefined;
   return (
     <div
+      ref={root}
       className={styles.processStep}
       data-step-id={id}
       data-status={status}
@@ -77,21 +83,18 @@ export function WorkProcessStepView({
       <DisclosureRow
         icon={icon}
         title={title}
-        running={!!running}
         open={open}
         expandable={expandable}
         expandOnRowClick
         keepContentWhenOpen
         onToggle={() => setOpen(!open)}
-        rowClassName={styles.processStepRow}
+        rowClassName={`${styles.processStepRow} ${pulse ? styles.processPulse : ''}`}
         titleClassName={styles.processStepLabel}
         contentClassName={styles.processStepContent}
         contentLayoutClassName={styles.processStepText}
         headerAccessory={
-          displayedStatus || elapsed ? (
-            <span className={styles.processStepStatus}>
-              {[displayedStatus, elapsed].filter(Boolean).join(' · ')}
-            </span>
+          displayedStatus ? (
+            <span className={styles.processStepStatus}>{displayedStatus}</span>
           ) : undefined
         }
         collapsedContent={

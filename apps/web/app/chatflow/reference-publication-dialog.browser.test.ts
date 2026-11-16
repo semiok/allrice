@@ -508,7 +508,7 @@ suite(
       60000,
     );
 
-    it('changes audience using its revision rather than content revision and downloads the exact upload before delete', async () => {
+    it('edits purpose and audience atomically using their revision, then downloads the exact upload before delete', async () => {
       const page = await pageFor({ kind: 'upload' }, a, 390);
       try {
         await uploadFile(page, '范围与删除.txt');
@@ -516,16 +516,85 @@ suite(
         const saved = await receipt(page);
         for (const [index, label] of ['全公司', '仅自己'].entries()) {
           await open(page, { kind: 'audience', sourceId: saved.sourceId });
+          await page
+            .getByRole('dialog', { name: '编辑资料', exact: true })
+            .waitFor();
+          expect(await purposeInput(page).inputValue()).toBe(
+            index === 0 ? '' : '核对经营指标',
+          );
+          await purposeInput(page).fill(index === 0 ? '  核对经营指标  ' : '');
           await page.getByRole('radio', { name: label, exact: true }).check();
           await submit(page, '保存', 200);
+          expect(writes.at(-1)!.body).toMatchObject({
+            action: 'edit',
+            purpose: index === 0 ? '核对经营指标' : '',
+          });
           expect(writes.at(-1)!.body.expectedRevision).toBe(index + 1);
           expect(
             (await directory(a, saved.sourceId)).references[0],
           ).toMatchObject({
             revision: 1,
             revisionId: saved.revisionId,
+            purpose: index === 0 ? '核对经营指标' : '',
             publication: { audienceRevision: index + 2 },
           });
+
+          for (const width of [1440, 390])
+            for (const theme of ['light', 'dark'])
+              it(`prefills edit purpose and cancels without writes at ${width}px ${theme}`, async () => {
+                const page = await pageFor({ kind: 'upload' }, a, width);
+                try {
+                  await uploadFile(page, `用途-${width}-${theme}.txt`);
+                  await purposeInput(page).fill('每月经营报告的格式参考');
+                  await submit(page, '发布');
+                  const saved = await receipt(page);
+                  await open(page, {
+                    kind: 'audience',
+                    sourceId: saved.sourceId,
+                  });
+                  await page.evaluate((theme) => {
+                    document.documentElement.setAttribute('data-theme', theme);
+                    if (theme === 'dark')
+                      document.body.setAttribute('data-ds-dark-theme', '');
+                    else document.body.removeAttribute('data-ds-dark-theme');
+                  }, theme);
+                  expect(await purposeInput(page).inputValue()).toBe(
+                    '每月经营报告的格式参考',
+                  );
+                  expect(
+                    await purposeInput(page).getAttribute('maxlength'),
+                  ).toBe('1000');
+                  const dir = process.env.ALLRICE_CONFIRMED_UI_SCREENSHOTS;
+                  if (dir) {
+                    await mkdir(dir, { recursive: true });
+                    await page.screenshot({
+                      path: resolve(
+                        dir,
+                        `enterprise-${width}-${theme}-edit.png`,
+                      ),
+                      animations: 'disabled',
+                    });
+                  }
+                  const before = writes.length;
+                  await purposeInput(page).fill('取消不保存');
+                  await page
+                    .getByRole('button', { name: '取消', exact: true })
+                    .click();
+                  expect(writes).toHaveLength(before);
+                  await open(page, {
+                    kind: 'audience',
+                    sourceId: saved.sourceId,
+                  });
+                  expect(await purposeInput(page).inputValue()).toBe(
+                    '每月经营报告的格式参考',
+                  );
+                  const box = (await page.getByRole('dialog').boundingBox())!;
+                  expect(box.x).toBeGreaterThanOrEqual(0);
+                  expect(box.x + box.width).toBeLessThanOrEqual(width);
+                } finally {
+                  await page.context().close();
+                }
+              });
         }
         await open(page, { kind: 'delete', sourceId: saved.sourceId });
         const href = `/api/v1/references/revisions/${saved.revisionId}/download?workspaceId=${a.context.workspaceId}`;

@@ -184,7 +184,7 @@ async function preparePublicationQuery(
       join allrice_knowledge_processing p on p.revision_id=r.id
       where r.id in ${sql(authorized.map((reference) => reference.revisionId))}
         and s.publication_kind is not null and s.status='active' and r.status='published'
-        and (r.file_name ilike ${pattern} or r.description ilike ${pattern}
+        and (r.file_name ilike ${pattern} or s.description ilike ${pattern}
           or (p.state='ready' and o.state='ready' and o.immutable and o.deleted_at is null
             and (o.retention_until is null or o.retention_until>clock_timestamp()) and exists(
               select 1 from allrice_knowledge_documents d

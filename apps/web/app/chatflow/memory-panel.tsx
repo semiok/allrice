@@ -18,6 +18,8 @@ import {
   type MemoryWriteStore,
 } from '../../lib/memory/employee-memory-client';
 import { EmployeeMemoryDeleteConfirmation } from './employee-memory-delete-confirmation';
+import { MemoryWriteReceipt } from './memory-write-receipt';
+import receiptCss from './memory-write-receipt.module.css';
 import css from './memory-panel.module.css';
 
 const MemoryViewSchema = EmployeeMemoryRowSchema.extend({
@@ -76,6 +78,7 @@ export function MemoryCard(props: {
   const [settled, setSettled] = useState(false);
   const [deleting, setDeleting] = useState<MemoryRow | null>(null);
   const [error, setError] = useState('');
+  const [uncertain, setUncertain] = useState(false);
   const [completePair, setCompletePair] = useState<EmployeeMemoryRecord | null>(
     null,
   );
@@ -177,6 +180,7 @@ export function MemoryCard(props: {
     pendingWrite.current = true;
     setBusy(true);
     setError('');
+    setUncertain(false);
     props.onPending(true);
     try {
       const row =
@@ -210,6 +214,7 @@ export function MemoryCard(props: {
     pendingWrite.current = true;
     setBusy(true);
     setError('');
+    setUncertain(false);
     props.onPending(true);
     let acknowledged = false;
     try {
@@ -234,10 +239,12 @@ export function MemoryCard(props: {
         props.onAccessLost();
       if (cause instanceof MemoryClientError && cause.definitive)
         frozen.current = null;
-      if (live.current)
+      if (live.current) {
+        setUncertain(!(cause instanceof MemoryClientError && cause.definitive));
         setError(
           cause instanceof MemoryClientError ? cause.message : memoryUnknown,
         );
+      }
     } finally {
       pendingWrite.current = false;
       props.onPending(false);
@@ -250,6 +257,50 @@ export function MemoryCard(props: {
     }
   }
   const candidate = memory.state === 'pending';
+  const deleteConfirmation = (
+    <EmployeeMemoryDeleteConfirmation
+      memory={deleting}
+      busy={busy}
+      error={error}
+      onCancel={() => {
+        if (!pendingWrite.current) {
+          setDeleting(null);
+          if (!props.inline) setError('');
+        }
+      }}
+      onDelete={() => void mutate('delete')}
+    />
+  );
+  if (props.inline)
+    return (
+      <MemoryWriteReceipt
+        id={memory.id}
+        phase={
+          busy
+            ? 'confirming'
+            : error
+              ? uncertain
+                ? 'unknown'
+                : 'failed'
+              : !candidate || settled
+                ? 'remembered'
+                : 'candidate'
+        }
+        content={
+          visiblePair?.details == null
+            ? memory.summary
+            : `${memory.summary}\n${visiblePair.details}`
+        }
+        error={error}
+        canWrite={!props.readOnly && ownedByMe}
+        canConfirm={!settled && (!memory.hasDetails || !!visiblePair)}
+        onConfirm={() => void mutate('promote')}
+        onDelete={() => void askDelete()}
+        onRefresh={props.onRefresh}
+      >
+        {deleteConfirmation}
+      </MemoryWriteReceipt>
+    );
   return (
     <article className={css.card} data-memory-id={memory.id} aria-busy={busy}>
       <strong>{candidate ? '已记为候选，确认后才生效' : '长期记忆'}</strong>
@@ -298,18 +349,7 @@ export function MemoryCard(props: {
           </Button>
         </p>
       )}
-      <EmployeeMemoryDeleteConfirmation
-        memory={deleting}
-        busy={busy}
-        error={error}
-        onCancel={() => {
-          if (!pendingWrite.current) {
-            setDeleting(null);
-            setError('');
-          }
-        }}
-        onDelete={() => void mutate('delete')}
-      />
+      {deleteConfirmation}
     </article>
   );
 }
@@ -335,6 +375,12 @@ export function MemoryPanel(props: {
   const operationRevision = useRef(0);
   const writes = useRef<MemoryWriteStore>(new Map());
   const [attempt, setAttempt] = useState(0);
+  // An acknowledged discard has no record to fetch. Keep only its ID in this
+  // mounted scope, never deleted content or a new persisted memory state.
+  const [discarded, setDiscarded] = useState<{
+    scope: string;
+    ids: string[];
+  } | null>(null);
   const [snapshot, setSnapshot] = useState<{
     scope: string;
     memories?: MemoryView[];
@@ -413,6 +459,7 @@ export function MemoryPanel(props: {
       })
       .catch((cause) => {
         if (!current()) return;
+        if (cause instanceof MemoryAccessLost) setDiscarded(null);
         setSnapshot((value) => {
           if (!current()) return value;
           return {
@@ -450,6 +497,7 @@ export function MemoryPanel(props: {
         onAccessLost={() => {
           if (active.current !== scope) return;
           operationRevision.current += 1;
+          setDiscarded(null);
           setSnapshot({ scope, error: '记忆读取失败，请重新读取。' });
         }}
         onPending={(busy) => {
@@ -461,7 +509,17 @@ export function MemoryPanel(props: {
         }}
         onChange={(action) => {
           if (active.current !== scope) return;
-          if (action === 'delete')
+          if (action === 'delete') {
+            if (inline)
+              setDiscarded((value) => ({
+                scope,
+                ids: [
+                  ...new Set([
+                    ...(value?.scope === scope ? value.ids : []),
+                    memory.id,
+                  ]),
+                ],
+              }));
             setSnapshot((value) =>
               value?.scope === scope
                 ? {
@@ -472,6 +530,7 @@ export function MemoryPanel(props: {
                   }
                 : value,
             );
+          }
           window.dispatchEvent(
             new CustomEvent(changedEvent, {
               detail: { scopeId: props.scopeId },
@@ -480,10 +539,17 @@ export function MemoryPanel(props: {
         }}
       />
     ));
-  if (inline && current?.memories?.length === 0 && !current.error) return null;
+  const discardedIds = discarded?.scope === scope ? discarded.ids : [];
+  if (
+    inline &&
+    current?.memories?.length === 0 &&
+    !current.error &&
+    !discardedIds.length
+  )
+    return null;
   return (
     <section
-      className={css.panel}
+      className={inline ? receiptCss.panel : css.panel}
       aria-label={inline ? '本次记忆回执' : '个人记忆'}
     >
       {!inline && (
@@ -534,6 +600,10 @@ export function MemoryPanel(props: {
           })}
         </>
       )}
+      {inline &&
+        discardedIds.map((id) => (
+          <MemoryWriteReceipt key={id} id={id} phase="discarded" />
+        ))}
     </section>
   );
 }

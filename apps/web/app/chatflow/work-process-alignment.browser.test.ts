@@ -1,6 +1,8 @@
 /** Normal transcript updates in Chrome; synthetic HTTP, no DB/auth/model. */
 import { createRequire } from 'node:module';
 import { createServer, type Server } from 'node:http';
+import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ids } from '../../test/technical-details-fixtures';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
@@ -77,7 +79,7 @@ suite('approved DSH process alignment', () => {
     return page;
   };
   it('keeps durable answered questions in their exact process even before start or with a live tail', async () => {
-    for (const suffix of ['', '&request-first', '&live-tail']) {
+    for (const suffix of ['', '&request-first', '&live-tail', '&blocking']) {
       const page = await openPage(`scene=answered${suffix}`);
       const receipt = page.getByRole('article', { name: '用户确认结果' });
       await receipt.waitFor();
@@ -106,7 +108,7 @@ suite('approved DSH process alignment', () => {
     );
     expect(
       await page.locator('[data-step-id="tool:skill-1"]').innerText(),
-    ).toContain('0.3秒');
+    ).not.toContain('0.3秒');
     await page.close();
   });
   it('never flashes a standalone computation card when material or call arrives first', async () => {
@@ -151,14 +153,16 @@ suite('approved DSH process alignment', () => {
         const timing = document.querySelector('[aria-label="本轮运行时间"]')!;
         return {
           step: getComputedStyle(
-            step.querySelector('[data-disclosure-row] [data-shimmer]')!,
+            step.querySelector('[class*="processStepLabel"]')!,
           ).color,
           header: getComputedStyle(
             header.querySelector('[class*="processTitle"]')!,
           ).color,
           outside: !timing.closest('[data-process-scrollport]'),
           font: getComputedStyle(step).fontSize,
-          animated: !!step.querySelector('[data-shimmer] > [aria-hidden]'),
+          animated:
+            step.querySelector('[data-disclosure-row]')!.getAnimations()
+              .length === 1,
         };
       });
       expect(result.outside).toBe(true);
@@ -171,6 +175,139 @@ suite('approved DSH process alignment', () => {
       await page.close();
     }
   });
+  for (const theme of ['light', 'dark'])
+    for (const width of [1440, 390]) {
+      it(`keeps icon/text aligned, multiple details fully open and pulse synchronized at ${width}px ${theme}`, async () => {
+        const page = await openPage(
+          `scene=running&blocking&theme=${theme}&employee=文章哥`,
+        );
+        try {
+          await page.setViewportSize({ width, height: 960 });
+          const header = page.locator('[data-executing]');
+          await expect.poll(() => header.count()).toBe(1);
+          const result = await page.evaluate(async () => {
+            await document.fonts.ready;
+            await new Promise<void>((done) =>
+              requestAnimationFrame(() => requestAnimationFrame(() => done())),
+            );
+            const avatar = document.querySelector(
+              '[class*="assistantIdentity"] i',
+            )!;
+            const header = document.querySelector(
+              '[data-executing] [data-disclosure-row]',
+            )!;
+            const step = document.querySelector(
+              '[data-step-id="tool:cloud"] [data-disclosure-row]',
+            )!;
+            const title = header.querySelector('[class*="processTitle"]')!;
+            return {
+              colors: [
+                getComputedStyle(avatar).backgroundColor,
+                getComputedStyle(title).color,
+                getComputedStyle(
+                  title.querySelector('[aria-label="本轮运行时间"]')!,
+                ).color,
+              ],
+              clocks: [avatar, header, step].map((node) =>
+                node.getAnimations().map((a) => ({
+                  start: a.startTime,
+                  duration: a.effect!.getTiming().duration,
+                  easing: a.effect!.getTiming().easing,
+                })),
+              ),
+              children: [...step.querySelectorAll('*')].flatMap((node) =>
+                node.getAnimations(),
+              ).length,
+              rows: [
+                ...document.querySelectorAll(
+                  '[data-step-id] [data-disclosure-row]',
+                ),
+              ].map((node) => {
+                const icon = node.firstElementChild!.getBoundingClientRect();
+                const text = node
+                  .querySelector('[class*="processStepLabel"]')
+                  ?.getBoundingClientRect();
+                return text
+                  ? Math.abs(
+                      icon.y + icon.height / 2 - text.y - text.height / 2,
+                    )
+                  : 0;
+              }),
+            };
+          });
+          expect(new Set(result.colors).size).toBe(1);
+          expect(result.clocks.every((clocks) => clocks.length === 1)).toBe(
+            true,
+          );
+          expect(new Set(result.clocks.flat().map((a) => a.start)).size).toBe(
+            1,
+          );
+          expect(
+            result.clocks
+              .flat()
+              .every((a) => a.duration === 1400 && a.easing === 'ease-in-out'),
+          ).toBe(true);
+          expect(result.children).toBe(0);
+          expect(result.rows.every((delta) => delta <= 0.5)).toBe(true);
+          const group = page.locator('[data-process-scrollport]').first();
+          const before = (await group.boundingBox())!.height;
+          await page
+            .locator('[data-step-id="tool:skill-1"] [data-disclosure-row]')
+            .click();
+          await page
+            .locator('[data-step-id="tool:cloud"] [data-disclosure-row]')
+            .click();
+          const expansion = await group.evaluate((node) => ({
+            height: node.getBoundingClientRect().height,
+            scroll: node.scrollHeight,
+            client: node.clientHeight,
+            overflow: getComputedStyle(node).overflowY,
+          }));
+          expect(expansion.height).toBeGreaterThan(before);
+          expect(expansion.scroll - expansion.client).toBeLessThanOrEqual(1);
+          expect(['auto', 'scroll']).not.toContain(expansion.overflow);
+          expect(
+            await page.locator('[data-step-id="tool:skill-1"] dl').isVisible(),
+          ).toBe(true);
+          expect(
+            await page
+              .locator('[data-step-id="tool:cloud"] dl')
+              .first()
+              .isVisible(),
+          ).toBe(true);
+          const dir = process.env.ALLRICE_CONFIRMED_UI_SCREENSHOTS;
+          if (dir) {
+            await mkdir(dir, { recursive: true });
+            await page.screenshot({
+              path: join(dir, `process-${width}-${theme}-expanded.png`),
+              fullPage: true,
+            });
+          }
+        } finally {
+          await page.close();
+        }
+      });
+      it(`keeps the message anchor when the first timing arrives at ${width}px ${theme}`, async () => {
+        const page = await openPage(`scene=running&preparing&theme=${theme}`);
+        try {
+          await page.setViewportSize({ width, height: 960 });
+          const identity = page.locator('[class*="assistantIdentity"]');
+          await identity.waitFor();
+          await page.evaluate(() => document.fonts.ready);
+          const top = (await identity.boundingBox())!.y;
+          await page.evaluate(() => window.alignTiming());
+          await page.getByLabel('本轮运行时间').waitFor();
+          expect((await identity.boundingBox())!.y).toBe(top);
+          expect(
+            await page
+              .locator('[aria-label="本地命令审批与执行"]:empty')
+              .count(),
+          ).toBe(0);
+        } finally {
+          await page.close();
+        }
+      });
+    }
   it('keeps cloud approval reachable inside its process in every display mode', async () => {
     for (const mode of ['compact', 'standard', 'detailed']) {
       const page = await openPage(`scene=running&approval&mode=${mode}`);

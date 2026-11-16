@@ -1921,9 +1921,9 @@ export class DshHarnessAdapter implements HarnessAdapter {
                 },
               }
             : {}),
-          ...(durable
+          ...(notification.params.callId && notification.params.nativeSessionId
             ? {
-                durable: true,
+                durable,
                 callId: notification.params.callId,
                 nativeSessionId: notification.params.nativeSessionId,
               }

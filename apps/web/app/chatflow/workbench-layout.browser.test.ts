@@ -16469,7 +16469,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await captureF3(f.page, 'upload');
       await upload.getByRole('button', { name: '取消', exact: true }).click();
       for (const [reference, action, title] of [
-        [owned!, '修改范围', '修改范围'],
+        [owned!, '编辑资料', '编辑资料'],
         [owned!, '删除资料', '删除这份企业资料？'],
         [file!, '撤销资料', '撤销这份企业资料？'],
       ] as const) {
@@ -16484,7 +16484,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .click();
         const dialog = f.page.getByRole('dialog', { name: title, exact: true });
         await dialog.waitFor();
-        if (action === '修改范围')
+        if (action === '编辑资料')
           expect(
             await dialog
               .getByRole('radio', { name: '全公司', exact: true })
@@ -16499,7 +16499,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ).toContain(`/references/revisions/${reference.revisionId}/download`);
         await captureF3(
           f.page,
-          action === '修改范围'
+          action === '编辑资料'
             ? 'update-scope'
             : action === '撤销资料'
               ? 'revoke'
@@ -16526,7 +16526,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .waitFor();
       expect(
         await panel
-          .getByRole('button', { name: /^(修改范围|撤销资料|删除资料)$/ })
+          .getByRole('button', { name: /^(编辑资料|撤销资料|删除资料)$/ })
           .count(),
       ).toBe(0);
       expect(

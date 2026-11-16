@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import type { TaskRuntimeTiming } from '@allrice/contracts';
-import { LIVE_RUN_CLOCK_INTERVAL_MS } from './dsh-upstream/feedback/message-chrome';
+import {
+  LIVE_RUN_CLOCK_INTERVAL_MS,
+  formatRunDuration as nativeRunDuration,
+} from './dsh-upstream/feedback/message-chrome';
 
 export function formatRunDuration(ms: number) {
   const seconds = Math.floor(Math.max(0, ms) / 1000);
@@ -15,9 +18,11 @@ export function formatRunDuration(ms: number) {
 export function RunElapsedTime({
   timing,
   running,
+  nativeFormat = false,
 }: {
   timing: TaskRuntimeTiming;
   running: boolean;
+  nativeFormat?: boolean;
 }) {
   const ticking =
     running && (timing.phase === 'active' || timing.phase === 'waiting');
@@ -50,7 +55,18 @@ export function RunElapsedTime({
     return () => window.clearInterval(timer);
   }, [ticking]);
 
-  return formatRunDuration(
-    ticking ? Math.max(timing.wallMs, displayMs) : timing.wallMs,
-  );
+  const ms = ticking ? Math.max(timing.wallMs, displayMs) : timing.wallMs;
+  return nativeFormat
+    ? nativeRunDuration(
+        ms,
+        (key) =>
+          ({
+            'duration.hourUnit': '小时',
+            'duration.minuteUnit': '分',
+            'duration.secondUnit': '秒',
+          })[key],
+      )
+        .map((part) => part.text)
+        .join('')
+    : formatRunDuration(ms);
 }

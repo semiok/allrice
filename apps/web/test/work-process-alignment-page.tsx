@@ -29,7 +29,7 @@ const request = {
   questionId,
   nativeSessionId,
   callId: 'question',
-  durable: true,
+  durable: !params.has('blocking'),
   questions: [
     {
       id: 'scope',
@@ -229,18 +229,21 @@ declare global {
   interface Window {
     alignTrace: () => void;
     alignMaterial: () => void;
+    alignTiming: () => void;
   }
 }
 const root = createRef<HTMLDivElement>();
 function Fixture() {
   const [traceReady, setTraceReady] = useState(!params.has('material-first'));
   const [revision, setRevision] = useState(0);
+  const [timingReady, setTimingReady] = useState(!params.has('preparing'));
+  window.alignTiming = () => setTimingReady(true);
   window.alignTrace = () => setTraceReady(true);
   window.alignMaterial = () => {
     materialReady = true;
     setRevision((n) => n + 1);
   };
-  const events = eventsFor(traceReady);
+  const events = timingReady ? eventsFor(traceReady) : [];
   const wallMs = live ? 18000 : failed ? 21000 : 34000;
   const timing: TaskRuntimeTiming = {
     activeMs: wallMs,
@@ -255,7 +258,10 @@ function Fixture() {
   return (
     <main
       style={{
-        ...employeeAccentStyle(params.get('employee') ?? 'Rice'),
+        ...employeeAccentStyle(
+          params.get('employee') ?? 'Rice',
+          params.has('amber') ? 'amber' : 'blue',
+        ),
         maxWidth: 820,
         margin: '32px auto',
         padding: 20,
@@ -275,7 +281,7 @@ function Fixture() {
         }
         collapseTiming="next-input"
         employeeName={params.get('employee') ?? 'Rice'}
-        runTimings={[{ runId: ids.run, timing }]}
+        runTimings={timingReady ? [{ runId: ids.run, timing }] : []}
         messages={[
           {
             id: 'assistant',

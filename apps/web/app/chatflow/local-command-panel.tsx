@@ -335,362 +335,350 @@ export function LocalCommandPanel({
       </button>
     </p>
   );
-  const interaction = (
-    <section className={styles.root} aria-label="本地命令审批与执行">
-      {!children && feedback}
-      {operations.map((op) => {
-        const id = op.snapshot.binding.attempt.operationId,
-          request = op.approval?.request;
-        const pending =
-          request &&
-          !op.approval?.response &&
-          !op.approval?.revokedAt &&
-          Date.parse(request.expiresAt) > Date.now() &&
-          op.snapshot.status === 'waiting_user';
-        const result = RuntimeLocalCommandResultSchema.safeParse(
-          op.evidence?.output,
-        );
-        const active = !['succeeded', 'failed', 'canceled', 'partial'].includes(
-          op.snapshot.status,
-        );
-        const currentMaterial =
-          pending || op.command?.candidate || op.command?.background;
-        if (children && !active && !currentMaterial) return null;
-        return (
-          <article
-            key={id}
-            id={`operation-${id}`}
-            data-status={op.snapshot.status}
-          >
-            <header>
-              <strong>
-                {op.command?.diagnostics
-                  ? '项目环境诊断 · 操作授权'
-                  : op.command?.dependencies || op.command?.projectPreparation
-                    ? '依赖准备与验证 · 操作授权'
-                    : op.file
-                      ? '本地文件 · 操作授权'
-                      : '本地命令 · 操作授权'}
-              </strong>
-              <span>
-                {statusLabels[op.snapshot.status] ?? op.snapshot.status}
-              </span>
-            </header>
-            {op.file && (!children || currentMaterial) ? (
-              <section aria-label="文件操作范围">
-                <p>
-                  {op.file.capability === 'local.fs.mkdir'
-                    ? '新建文件夹'
-                    : '写入文件'}
-                  ：<code>{op.file.arguments.path}</code>
-                </p>
-                {op.file.capability === 'local.fs.write' ? (
-                  <>
-                    <small>
-                      {op.file.arguments.expectedSha256
-                        ? `仅覆盖此版本：${op.file.arguments.expectedSha256}`
-                        : '仅新建，不覆盖已有文件'}
-                    </small>
-                    <details open={children && pending ? true : undefined}>
-                      <summary>查看写入内容</summary>
-                      <pre>{op.file.arguments.content}</pre>
-                    </details>
-                  </>
-                ) : null}
-              </section>
-            ) : null}
-            {op.command && (!children || currentMaterial) ? (
+  const cards = operations.map((op) => {
+    const id = op.snapshot.binding.attempt.operationId,
+      request = op.approval?.request;
+    const pending =
+      request &&
+      !op.approval?.response &&
+      !op.approval?.revokedAt &&
+      Date.parse(request.expiresAt) > Date.now() &&
+      op.snapshot.status === 'waiting_user';
+    const result = RuntimeLocalCommandResultSchema.safeParse(
+      op.evidence?.output,
+    );
+    const active = !['succeeded', 'failed', 'canceled', 'partial'].includes(
+      op.snapshot.status,
+    );
+    const currentMaterial =
+      pending || op.command?.candidate || op.command?.background;
+    if (children && !active && !currentMaterial) return null;
+    return (
+      <article key={id} id={`operation-${id}`} data-status={op.snapshot.status}>
+        <header>
+          <strong>
+            {op.command?.diagnostics
+              ? '项目环境诊断 · 操作授权'
+              : op.command?.dependencies || op.command?.projectPreparation
+                ? '依赖准备与验证 · 操作授权'
+                : op.file
+                  ? '本地文件 · 操作授权'
+                  : '本地命令 · 操作授权'}
+          </strong>
+          <span>{statusLabels[op.snapshot.status] ?? op.snapshot.status}</span>
+        </header>
+        {op.file && (!children || currentMaterial) ? (
+          <section aria-label="文件操作范围">
+            <p>
+              {op.file.capability === 'local.fs.mkdir'
+                ? '新建文件夹'
+                : '写入文件'}
+              ：<code>{op.file.arguments.path}</code>
+            </p>
+            {op.file.capability === 'local.fs.write' ? (
               <>
-                <p>
-                  在你的电脑的 Linux
-                  隔离副本中执行；项目进程无网络，不会写回原工作区。
-                </p>
-                {op.command.background && (
-                  <LocalServiceCard
-                    config={op.command.background}
-                    service={op.service}
-                    runId={runId}
-                    workspaceId={workspaceId}
-                    tenantHeaders={tenantHeaders}
-                    onChanged={() => {
-                      setRevision((v) => v + 1);
-                      onServiceChanged?.();
-                    }}
-                  />
-                )}
-                {op.command.dependencies && (
-                  <section aria-label="依赖安装授权范围">
-                    <p>
-                      先运行 npm
-                      ci，再执行下方验证命令；安装位置为本次临时隔离副本，结束后销毁，不安装到本机全局或原工作区。
-                    </p>
-                    <p>
-                      安装生命周期脚本：
-                      {op.command.dependencies.scripts === 'disabled'
-                        ? '禁止（--ignore-scripts）'
-                        : '明确允许在隔离副本执行；仍无网络和主机权限'}
-                      。最多 8 个锁定包，归档合计不超过 128 KiB。
-                    </p>
-                    <ul>
-                      {op.command.dependencies.packages.map((p) => (
-                        <li key={`${p.name}@${p.version}`}>
-                          <code>
-                            {p.name}@{p.version}
-                          </code>
-                          <small>
-                            {p.archivePath
-                              ? `使用已授权归档：${p.archivePath}`
-                              : '由 AllRice 助手从 registry.npmjs.org 下载；不传送源码或凭证'}
-                          </small>
-                          <small>{p.integrity}</small>
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                )}
-                {op.command.project && (
-                  <p>
-                    项目源码：
-                    <code>{op.command.project.snapshot.id.slice(0, 8)}</code> ·
-                    {'version' in op.command.project.snapshot
-                      ? `版本 ${op.command.project.snapshot.version}`
-                      : '指定不可变版本'}{' '}
-                    · 在私有副本中执行
-                  </p>
-                )}
-                {op.command.projectPreparation && (
-                  <section aria-label="项目依赖准备范围">
-                    <p>
-                      使用 {op.command.projectPreparation.manager}{' '}
-                      {op.command.projectPreparation.managerVersion}，按锁文件{' '}
-                      <code>{op.command.projectPreparation.lockPath}</code>{' '}
-                      安装依赖，再执行下方命令；原文件保持不变。
-                    </p>
-                    <p>
-                      {op.command.projectPreparation.offline
-                        ? '仅使用已校验的离线缓存，缺包时停止。'
-                        : '优先复用已校验的归档；缺包时由 AllRice 助手校验并下载公开依赖，依赖安装阶段不联网。'}
-                    </p>
-                    <p>
-                      安装脚本：
-                      {op.command.projectPreparation.scripts === 'disabled'
-                        ? '禁止执行'
-                        : '允许在隔离副本执行，不访问宿主环境'}
-                    </p>
-                    <details open={children && pending ? true : undefined}>
-                      <summary>
-                        查看 {op.command.projectPreparation.packages.length}{' '}
-                        个依赖及锁定版本
-                      </summary>
-                      <ul>
-                        {op.command.projectPreparation.packages.map((pkg) => (
-                          <li key={`${pkg.name}@${pkg.version}`}>
-                            <code>
-                              {pkg.name}@{pkg.version}
-                            </code>
-                            <small>
-                              {pkg.archivePath ?? '由 AllRice 助手下载公开归档'}
-                            </small>
-                            <small>
-                              {'integrity' in pkg ? pkg.integrity : pkg.sha256}
-                            </small>
-                          </li>
-                        ))}
-                      </ul>
-                      <small>
-                        锁文件校验：{op.command.projectPreparation.lockChecksum}
-                      </small>
-                    </details>
-                  </section>
-                )}
-                {op.command?.candidate && (
-                  <CommandCandidatePreview
-                    key={op.command.candidate.checksum}
-                    candidate={op.command.candidate}
-                    state={op.candidateState}
-                  />
-                )}
-                <pre aria-label="待执行命令">
-                  {op.command.executable}
-                  {op.command.args
-                    .map((arg) => ` ${JSON.stringify(arg)}`)
-                    .join('')}
-                </pre>
-                <LocalCommandRuntimeScope
-                  command={op.command}
-                  executionBudget={op.executionBudget}
-                />
+                <small>
+                  {op.file.arguments.expectedSha256
+                    ? `仅覆盖此版本：${op.file.arguments.expectedSha256}`
+                    : '仅新建，不覆盖已有文件'}
+                </small>
                 <details open={children && pending ? true : undefined}>
-                  <summary>
-                    查看 {op.command.files.length} 个输入文件及精确版本
-                  </summary>
-                  <ul>
-                    {op.command.files.map((f) => (
-                      <li key={f.path}>
-                        <code>{f.path}</code>
-                        <small>{f.sha256}</small>
-                      </li>
-                    ))}
-                  </ul>
-                  <small>工具链 {op.command.imageDigest}</small>
+                  <summary>查看写入内容</summary>
+                  <pre>{op.file.arguments.content}</pre>
                 </details>
               </>
             ) : null}
-            {pending && (
-              <div className={styles.actions}>
-                <button
-                  disabled={
-                    busy !== null ||
-                    (!!op.command?.candidate && op.candidateState !== 'current')
-                  }
-                  type="button"
-                  onClick={() => void act(op, 'approved')}
-                >
-                  批准这一次执行
-                </button>
-                <button
-                  disabled={busy !== null}
-                  type="button"
-                  onClick={() => void act(op, 'rejected')}
-                >
-                  拒绝
-                </button>
-                <small>此授权仅适用于上面显示的操作、文件版本和环境。</small>
-              </div>
+          </section>
+        ) : null}
+        {op.command && (!children || currentMaterial) ? (
+          <>
+            <p>
+              在你的电脑的 Linux
+              隔离副本中执行；项目进程无网络，不会写回原工作区。
+            </p>
+            {op.command.background && (
+              <LocalServiceCard
+                config={op.command.background}
+                service={op.service}
+                runId={runId}
+                workspaceId={workspaceId}
+                tenantHeaders={tenantHeaders}
+                onChanged={() => {
+                  setRevision((v) => v + 1);
+                  onServiceChanged?.();
+                }}
+              />
             )}
-            {op.approval?.response && (
-              <p>
-                你的决定：
-                {op.approval.response.decision === 'approved'
-                  ? '已批准这一次执行（不等于已完成）'
-                  : '已拒绝'}
-              </p>
-            )}
-            {!pending &&
-              ['running', 'dispatched', 'ready', 'waiting_user'].includes(
-                op.snapshot.status,
-              ) && (
-                <button
-                  disabled={busy !== null}
-                  type="button"
-                  onClick={() => void act(op, 'cancel')}
-                >
-                  停止本轮本地操作
-                </button>
-              )}
-            {!children && op.evidence && <p>{op.evidence.summary}</p>}
-            {!children && result.success && result.data.candidate && (
-              <p>
-                已运行的候选版本：
-                <code>{result.data.candidate.artifactId}</code> · 输入摘要{' '}
-                <code>{result.data.candidate.inputDigest}</code>
-                。此回执只说明指定命令的结果，不代表测试覆盖充分或已完成代码审查。
-              </p>
-            )}
-            {!children && result.success && result.data.dependencies && (
-              <p role="status">
-                依赖准备：
-                {result.data.dependencies.status ===
-                'installed_and_verification_succeeded'
-                  ? '安装及指定验证命令成功'
-                  : '安装或指定验证命令未成功'}
-                ；临时环境已停止，原工作区未修改。
-              </p>
-            )}
-            {!children && result.success && result.data.projectPreparation && (
-              <p role="status">
-                依赖安装：
-                {result.data.projectPreparation.installation === 'succeeded'
-                  ? '已完成'
-                  : result.data.projectPreparation.installation ===
-                      'interrupted'
-                    ? '已中断'
-                    : '未完成'}
-                ；复用已校验归档 {result.data.projectPreparation.archiveHits} /{' '}
-                {result.data.projectPreparation.packageCount}。命令退出码{' '}
-                {result.data.exitCode}；原工作区未修改。
-              </p>
-            )}
-            {!children && result.success && result.data.diagnostics && (
-              <section aria-label="项目环境诊断结果">
+            {op.command.dependencies && (
+              <section aria-label="依赖安装授权范围">
                 <p>
-                  实际目标：本机 Linux 隔离副本 ·{' '}
-                  {result.data.diagnostics.architecture} ·{' '}
-                  {result.data.diagnostics.directory}
+                  先运行 npm
+                  ci，再执行下方验证命令；安装位置为本次临时隔离副本，结束后销毁，不安装到本机全局或原工作区。
                 </p>
                 <p>
-                  Node {result.data.diagnostics.node.version}：
-                  {projectDiagnosticLabels[result.data.diagnostics.node.status]}
-                  ；npm {result.data.diagnostics.npm.version ?? '未知'}：
-                  {projectDiagnosticLabels[result.data.diagnostics.npm.status]}
+                  安装生命周期脚本：
+                  {op.command.dependencies.scripts === 'disabled'
+                    ? '禁止（--ignore-scripts）'
+                    : '明确允许在隔离副本执行；仍无网络和主机权限'}
+                  。最多 8 个锁定包，归档合计不超过 128 KiB。
                 </p>
-                <p>
-                  项目：
-                  {projectDiagnosticLabels[result.data.diagnostics.project]}
-                  ；包管理器：{result.data.diagnostics.packageManager}；锁文件：
-                  {projectDiagnosticLabels[result.data.diagnostics.lockfile] ??
-                    result.data.diagnostics.lockfile}
-                </p>
-                <p>
-                  依赖：
-                  {
-                    projectDiagnosticLabels[
-                      result.data.diagnostics.dependencies
-                    ]
-                  }
-                  。未检查主机工具链，未安装或修复任何内容。
-                </p>
-                {result.data.diagnostics.engineStatus === 'requires_review' && (
-                  <p>
-                    项目 Node engines 声明：
-                    {result.data.diagnostics.nodeEngine ?? '无法安全展示'}
-                    （声明尚需核对，不代表版本已满足）
-                  </p>
-                )}
+                <ul>
+                  {op.command.dependencies.packages.map((p) => (
+                    <li key={`${p.name}@${p.version}`}>
+                      <code>
+                        {p.name}@{p.version}
+                      </code>
+                      <small>
+                        {p.archivePath
+                          ? `使用已授权归档：${p.archivePath}`
+                          : '由 AllRice 助手从 registry.npmjs.org 下载；不传送源码或凭证'}
+                      </small>
+                      <small>{p.integrity}</small>
+                    </li>
+                  ))}
+                </ul>
               </section>
             )}
-            {!children && (op.output.length > 0 || result.success) && (
-              <details open={op.snapshot.status === 'running'}>
-                <summary>
-                  stdout / stderr
-                  {result.success
-                    ? ` · 退出码 ${result.data.exitCode}${result.data.truncated ? ' · 输出已截断' : ''}`
-                    : ''}
-                </summary>
-                {result.success ? (
-                  <>
-                    <pre aria-label="stdout">{result.data.stdout}</pre>
-                    <pre aria-label="stderr" className={styles.stderr}>
-                      {result.data.stderr}
-                    </pre>
-                  </>
-                ) : (
-                  <pre>
-                    {op.output.map((chunk) => (
-                      <span
-                        key={chunk.sequence}
-                        className={
-                          chunk.stream === 'stderr' ? styles.stderr : undefined
-                        }
-                      >
-                        {chunk.content}
-                      </span>
-                    ))}
-                  </pre>
-                )}
-              </details>
-            )}
-            {op.snapshot.status === 'unknown' && (
-              <p role="status">
-                尚未取得可信完成回执，不会自动重跑；请恢复 AllRice
-                助手连接后核实。
+            {op.command.project && (
+              <p>
+                项目源码：
+                <code>{op.command.project.snapshot.id.slice(0, 8)}</code> ·
+                {'version' in op.command.project.snapshot
+                  ? `版本 ${op.command.project.snapshot.version}`
+                  : '指定不可变版本'}{' '}
+                · 在私有副本中执行
               </p>
             )}
-          </article>
-        );
-      })}
-    </section>
-  );
+            {op.command.projectPreparation && (
+              <section aria-label="项目依赖准备范围">
+                <p>
+                  使用 {op.command.projectPreparation.manager}{' '}
+                  {op.command.projectPreparation.managerVersion}，按锁文件{' '}
+                  <code>{op.command.projectPreparation.lockPath}</code>{' '}
+                  安装依赖，再执行下方命令；原文件保持不变。
+                </p>
+                <p>
+                  {op.command.projectPreparation.offline
+                    ? '仅使用已校验的离线缓存，缺包时停止。'
+                    : '优先复用已校验的归档；缺包时由 AllRice 助手校验并下载公开依赖，依赖安装阶段不联网。'}
+                </p>
+                <p>
+                  安装脚本：
+                  {op.command.projectPreparation.scripts === 'disabled'
+                    ? '禁止执行'
+                    : '允许在隔离副本执行，不访问宿主环境'}
+                </p>
+                <details open={children && pending ? true : undefined}>
+                  <summary>
+                    查看 {op.command.projectPreparation.packages.length}{' '}
+                    个依赖及锁定版本
+                  </summary>
+                  <ul>
+                    {op.command.projectPreparation.packages.map((pkg) => (
+                      <li key={`${pkg.name}@${pkg.version}`}>
+                        <code>
+                          {pkg.name}@{pkg.version}
+                        </code>
+                        <small>
+                          {pkg.archivePath ?? '由 AllRice 助手下载公开归档'}
+                        </small>
+                        <small>
+                          {'integrity' in pkg ? pkg.integrity : pkg.sha256}
+                        </small>
+                      </li>
+                    ))}
+                  </ul>
+                  <small>
+                    锁文件校验：{op.command.projectPreparation.lockChecksum}
+                  </small>
+                </details>
+              </section>
+            )}
+            {op.command?.candidate && (
+              <CommandCandidatePreview
+                key={op.command.candidate.checksum}
+                candidate={op.command.candidate}
+                state={op.candidateState}
+              />
+            )}
+            <pre aria-label="待执行命令">
+              {op.command.executable}
+              {op.command.args.map((arg) => ` ${JSON.stringify(arg)}`).join('')}
+            </pre>
+            <LocalCommandRuntimeScope
+              command={op.command}
+              executionBudget={op.executionBudget}
+            />
+            <details open={children && pending ? true : undefined}>
+              <summary>
+                查看 {op.command.files.length} 个输入文件及精确版本
+              </summary>
+              <ul>
+                {op.command.files.map((f) => (
+                  <li key={f.path}>
+                    <code>{f.path}</code>
+                    <small>{f.sha256}</small>
+                  </li>
+                ))}
+              </ul>
+              <small>工具链 {op.command.imageDigest}</small>
+            </details>
+          </>
+        ) : null}
+        {pending && (
+          <div className={styles.actions}>
+            <button
+              disabled={
+                busy !== null ||
+                (!!op.command?.candidate && op.candidateState !== 'current')
+              }
+              type="button"
+              onClick={() => void act(op, 'approved')}
+            >
+              批准这一次执行
+            </button>
+            <button
+              disabled={busy !== null}
+              type="button"
+              onClick={() => void act(op, 'rejected')}
+            >
+              拒绝
+            </button>
+            <small>此授权仅适用于上面显示的操作、文件版本和环境。</small>
+          </div>
+        )}
+        {op.approval?.response && (
+          <p>
+            你的决定：
+            {op.approval.response.decision === 'approved'
+              ? '已批准这一次执行（不等于已完成）'
+              : '已拒绝'}
+          </p>
+        )}
+        {!pending &&
+          ['running', 'dispatched', 'ready', 'waiting_user'].includes(
+            op.snapshot.status,
+          ) && (
+            <button
+              disabled={busy !== null}
+              type="button"
+              onClick={() => void act(op, 'cancel')}
+            >
+              停止本轮本地操作
+            </button>
+          )}
+        {!children && op.evidence && <p>{op.evidence.summary}</p>}
+        {!children && result.success && result.data.candidate && (
+          <p>
+            已运行的候选版本：
+            <code>{result.data.candidate.artifactId}</code> · 输入摘要{' '}
+            <code>{result.data.candidate.inputDigest}</code>
+            。此回执只说明指定命令的结果，不代表测试覆盖充分或已完成代码审查。
+          </p>
+        )}
+        {!children && result.success && result.data.dependencies && (
+          <p role="status">
+            依赖准备：
+            {result.data.dependencies.status ===
+            'installed_and_verification_succeeded'
+              ? '安装及指定验证命令成功'
+              : '安装或指定验证命令未成功'}
+            ；临时环境已停止，原工作区未修改。
+          </p>
+        )}
+        {!children && result.success && result.data.projectPreparation && (
+          <p role="status">
+            依赖安装：
+            {result.data.projectPreparation.installation === 'succeeded'
+              ? '已完成'
+              : result.data.projectPreparation.installation === 'interrupted'
+                ? '已中断'
+                : '未完成'}
+            ；复用已校验归档 {result.data.projectPreparation.archiveHits} /{' '}
+            {result.data.projectPreparation.packageCount}。命令退出码{' '}
+            {result.data.exitCode}；原工作区未修改。
+          </p>
+        )}
+        {!children && result.success && result.data.diagnostics && (
+          <section aria-label="项目环境诊断结果">
+            <p>
+              实际目标：本机 Linux 隔离副本 ·{' '}
+              {result.data.diagnostics.architecture} ·{' '}
+              {result.data.diagnostics.directory}
+            </p>
+            <p>
+              Node {result.data.diagnostics.node.version}：
+              {projectDiagnosticLabels[result.data.diagnostics.node.status]}
+              ；npm {result.data.diagnostics.npm.version ?? '未知'}：
+              {projectDiagnosticLabels[result.data.diagnostics.npm.status]}
+            </p>
+            <p>
+              项目：
+              {projectDiagnosticLabels[result.data.diagnostics.project]}
+              ；包管理器：{result.data.diagnostics.packageManager}；锁文件：
+              {projectDiagnosticLabels[result.data.diagnostics.lockfile] ??
+                result.data.diagnostics.lockfile}
+            </p>
+            <p>
+              依赖：
+              {projectDiagnosticLabels[result.data.diagnostics.dependencies]}
+              。未检查主机工具链，未安装或修复任何内容。
+            </p>
+            {result.data.diagnostics.engineStatus === 'requires_review' && (
+              <p>
+                项目 Node engines 声明：
+                {result.data.diagnostics.nodeEngine ?? '无法安全展示'}
+                （声明尚需核对，不代表版本已满足）
+              </p>
+            )}
+          </section>
+        )}
+        {!children && (op.output.length > 0 || result.success) && (
+          <details open={op.snapshot.status === 'running'}>
+            <summary>
+              stdout / stderr
+              {result.success
+                ? ` · 退出码 ${result.data.exitCode}${result.data.truncated ? ' · 输出已截断' : ''}`
+                : ''}
+            </summary>
+            {result.success ? (
+              <>
+                <pre aria-label="stdout">{result.data.stdout}</pre>
+                <pre aria-label="stderr" className={styles.stderr}>
+                  {result.data.stderr}
+                </pre>
+              </>
+            ) : (
+              <pre>
+                {op.output.map((chunk) => (
+                  <span
+                    key={chunk.sequence}
+                    className={
+                      chunk.stream === 'stderr' ? styles.stderr : undefined
+                    }
+                  >
+                    {chunk.content}
+                  </span>
+                ))}
+              </pre>
+            )}
+          </details>
+        )}
+        {op.snapshot.status === 'unknown' && (
+          <p role="status">
+            尚未取得可信完成回执，不会自动重跑；请恢复 AllRice 助手连接后核实。
+          </p>
+        )}
+      </article>
+    );
+  });
+  const interaction =
+    cards.some(Boolean) || (!children && feedback) ? (
+      <section className={styles.root} aria-label="本地命令审批与执行">
+        {!children && feedback}
+        {cards}
+      </section>
+    ) : null;
   return children
     ? children({
         history: operations.map(localCommandMaterial),

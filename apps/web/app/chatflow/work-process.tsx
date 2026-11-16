@@ -57,6 +57,7 @@ import {
 import { IconThinkOutline14 } from './dsh-upstream/ProgressIcons';
 import reasoning from './dsh-upstream/ReasoningRow.module.css';
 import { RunElapsedTime } from './run-timing';
+import { useWorkProcessPulse } from './work-process-pulse';
 import { WorkProcessStepView } from './work-process-step';
 import {
   UserQuestionReceipt,
@@ -158,6 +159,7 @@ export function WorkProcess({
   presentation?: WorkProcessPresentation;
 }) {
   const root = useRef<HTMLDivElement>(null);
+  useWorkProcessPulse(root);
   const processId = useId();
   const [disclosure, setDisclosure] = useState<WorkProcessDisclosure>();
   const [settledOnMount] = useState(!running);
@@ -293,7 +295,7 @@ export function WorkProcess({
               : process.active === '正在整理上下文'
                 ? '正在整理对话…'
                 : process.active
-                  ? '执行中…'
+                  ? '思考中…'
                   : streaming
                     ? '回复中…'
                     : '思考中…'
@@ -301,9 +303,28 @@ export function WorkProcess({
           ? (failureTitle ?? '未完成')
           : canceled
             ? '已停止'
-            : '工作过程';
-  // r1-exempt(own-text): This title is produced immediately above; it selects only the approved employee color.
-  const executingTitle = title === '执行中…';
+            : '已完成';
+  const executingTitle =
+    acceptingAnswers && !waiting && !waitingQuestion && !submittedQuestion;
+  const completed = !running && !failed && !canceled;
+  const titleWithTiming = (
+    <>
+      {title}
+      {timing ? (
+        <>
+          {completed ? '，' : ' · '}
+          <span aria-label="本轮运行时间">
+            用时{' '}
+            <RunElapsedTime
+              timing={timing}
+              running={running}
+              nativeFormat={completed}
+            />
+          </span>
+        </>
+      ) : null}
+    </>
+  );
   const expandable = Boolean(
     (process.steps.length && !onlyLiveThinking(process.steps, running)) ||
     Children.toArray(children).length ||
@@ -468,21 +489,13 @@ export function WorkProcess({
       >
         <DisclosureRow
           icon={<IconThinkOutline14 />}
-          title={title}
-          headerAccessory={
-            timing ? (
-              <span className={styles.processTiming} aria-label="本轮运行时间">
-                用时 <RunElapsedTime timing={timing} running={running} />
-              </span>
-            ) : undefined
-          }
-          running={running && !waiting}
+          title={titleWithTiming}
           open={display.canFold && display.open}
           expandable={display.canFold}
           expandOnRowClick
           keepContentWhenOpen
           onToggle={toggle}
-          rowClassName={`${styles.processHeader} ${executingTitle ? styles.processExecuting : ''}`}
+          rowClassName={`${styles.processHeader} ${executingTitle ? `${styles.processExecuting} ${styles.processPulse}` : ''}`}
           titleClassName={styles.processTitle}
           collapsedContent={
             <>
@@ -558,20 +571,12 @@ export function WorkProcess({
     >
       <DisclosureRow
         icon={<IconThinkOutline14 />}
-        title={title}
-        headerAccessory={
-          timing ? (
-            <span className={styles.processTiming} aria-label="本轮运行时间">
-              用时 <RunElapsedTime timing={timing} running={running} />
-            </span>
-          ) : undefined
-        }
-        running={microStatus && !waiting}
+        title={titleWithTiming}
         open={display.canFold && display.open}
         expandable={display.canFold}
         expandOnRowClick
         keepContentWhenOpen
-        rowClassName={`${reasoning.row} ${styles.processHeader} ${executingTitle ? styles.processExecuting : ''}`}
+        rowClassName={`${reasoning.row} ${styles.processHeader} ${executingTitle ? `${styles.processExecuting} ${styles.processPulse}` : ''}`}
         leadingClassName={reasoning.leading}
         titleClassName={`${reasoning.title} ${styles.processTitle} ${microStatus ? styles.processStatus : ''}`}
         chevronClassName={reasoning.chevron}
@@ -826,6 +831,9 @@ function WorkProcessSteps({
   const [materialReveal] = useProcessMaterialReveal();
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length) return null;
+  const latestActive = steps.findLast((step) =>
+    ['started', 'updated'].includes(step.status),
+  );
   return (
     <ul className={styles.processSteps} aria-label="工作步骤">
       {steps.map((step) => {
@@ -897,12 +905,7 @@ function WorkProcessSteps({
                     workProcessReferenceKey(ref) === materialReveal,
                 )}
                 icon={
-                  <span
-                    className={
-                      pending && stepRunning ? styles.processPulse : undefined
-                    }
-                    aria-hidden
-                  >
+                  <span className={styles.processStepIcon} aria-hidden>
                     {stepIcons[step.category]}
                   </span>
                 }
@@ -922,6 +925,7 @@ function WorkProcessSteps({
                 status={status}
                 elapsedMs={unassigned ? unassigned.elapsedMs : step.elapsedMs}
                 running={pending && stepRunning}
+                pulse={pending && stepRunning && step.id === latestActive?.id}
                 failed={step.status === 'failed' && !item?.stopped}
                 stopped={item?.stopped}
                 initialOpen={
