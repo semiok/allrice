@@ -388,6 +388,9 @@ export function BrandMediaPanel({
       instanceId: _instance,
       ...intent
     } = row.invocation.intent;
+    // Retry uses the client's current scope, never the frozen scope fields.
+    void _workspace;
+    void _instance;
     void retryRequestId(client.scope, row.run.id)
       .then((requestId) =>
         generate({ ...intent, requestId, sessionId: row.sessionId }),

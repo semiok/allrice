@@ -69,9 +69,10 @@ describe('published brand module contracts', () => {
     const oldImages = (value: unknown): unknown => {
       if (Array.isArray(value)) return value.map(oldImages);
       if (!value || typeof value !== 'object') return value;
-      const node = value as Record<string, any>;
+      const node = value as Record<string, unknown>;
       if (
-        node.anyOf?.length === 2 &&
+        Array.isArray(node.anyOf) &&
+        node.anyOf.length === 2 &&
         node.anyOf[1]?.properties?.origin?.const === 'upload' &&
         node.anyOf[0]?.properties?.source
       )

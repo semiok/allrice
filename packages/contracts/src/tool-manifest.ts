@@ -75,15 +75,13 @@ export function withEmployeeCustomizationTools(
  * and the Tool Broker remains the final validation and authorization boundary.
  */
 export const allRiceToolManifest = [
-  ...brandMediaTools.map(
-    ({
-      input: _input,
-      output: _output,
-      handlerRef: _handler,
-      description: _description,
-      ...metadata
-    }) => metadata,
-  ),
+  ...brandMediaTools.map((tool) => ({
+    canonicalName: tool.canonicalName,
+    dshWireName: tool.dshWireName,
+    capability: tool.capability,
+    risk: tool.risk,
+    transport: tool.transport,
+  })),
   {
     canonicalName: 'workspace.brand_content.read',
     capability: 'storage:read',

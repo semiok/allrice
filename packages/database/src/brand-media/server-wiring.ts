@@ -12,7 +12,6 @@ import {
   brandMediaSkillId,
   type BrandMediaInvocation,
   type BrandMediaGenerateInput,
-  type EmployeeModuleBinding,
   type SkillCapability,
   type EmployeeExecutionSnapshot,
   BrandMediaMutationResultSchema,

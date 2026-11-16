@@ -139,6 +139,9 @@ export function Images({
       instanceId: _instance,
       ...intent
     } = row.invocation.intent;
+    // Retry uses the client's current scope, never the frozen scope fields.
+    void _workspace;
+    void _instance;
     await generate({
       ...intent,
       sessionId: row.sessionId,
