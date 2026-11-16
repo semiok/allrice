@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useState } from 'react';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 import {
@@ -375,7 +376,7 @@ function InvestmentEditor({
     disabled = false,
   ) => (
     <Field label={label}>
-      <select
+      <SelectField
         value={values[key]}
         disabled={busy || disabled}
         onChange={(e) => {
@@ -388,7 +389,7 @@ function InvestmentEditor({
             {text}
           </option>
         ))}
-      </select>
+      </SelectField>
     </Field>
   );
   const fees = entries.filter(
@@ -512,7 +513,7 @@ function InvestmentEditor({
             {allocations.map((a, i) => (
               <div className={forms.slot} key={i}>
                 <Field label="分摊公司">
-                  <select
+                  <SelectField
                     required
                     value={a.organizationId}
                     onChange={(e) =>
@@ -539,7 +540,7 @@ function InvestmentEditor({
                         {o.name}
                       </option>
                     ))}
-                  </select>
+                  </SelectField>
                 </Field>
                 <Field label="分摊金额">
                   <input

@@ -8,10 +8,10 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react';
+import { SelectField } from '../../components/select-field';
 import { SubagentPreferencesSchema } from '@allrice/contracts';
 import {
   Button,
-  IconChevronDownOutlineRegular,
   IconPlusOutlineRegular,
   IconSettingsOutlineMedium,
   Input,
@@ -196,40 +196,38 @@ function PersonalPreferencesSettings({
               <label htmlFor={`${id}-appearance`}>外观</label>
             </h3>
           </div>
-          <div className={preferenceStyles.select}>
-            <select
-              id={`${id}-appearance`}
-              value={appearance}
-              disabled={disabled}
-              onChange={(event) => {
-                const option = appearanceOptions.find(
-                  (item) => item.value === event.target.value,
-                );
-                if (!option || option.value === appearance) return;
-                // As DSH: switch this page now; if the save fails, go back to
-                // what the server holds.
-                const previous = appearance;
-                setAppearance(option.value);
-                void preferences
-                  .setPreferences({ appearance: option.value })
-                  .then((saved) => {
-                    // Saved: also drops any read that started before it.
-                    if (saved) setAppearance(option.value);
-                    else {
-                      setAppearance(previous);
-                      void reloadAppearance();
-                    }
-                  });
-              }}
-            >
-              {appearanceOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <IconChevronDownOutlineRegular size={12} />
-          </div>
+          <SelectField
+            className={preferenceStyles.select}
+            id={`${id}-appearance`}
+            value={appearance}
+            disabled={disabled}
+            onChange={(event) => {
+              const option = appearanceOptions.find(
+                (item) => item.value === event.target.value,
+              );
+              if (!option || option.value === appearance) return;
+              // As DSH: switch this page now; if the save fails, go back to
+              // what the server holds.
+              const previous = appearance;
+              setAppearance(option.value);
+              void preferences
+                .setPreferences({ appearance: option.value })
+                .then((saved) => {
+                  // Saved: also drops any read that started before it.
+                  if (saved) setAppearance(option.value);
+                  else {
+                    setAppearance(previous);
+                    void reloadAppearance();
+                  }
+                });
+            }}
+          >
+            {appearanceOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </SelectField>
         </div>
         <div className={preferenceStyles.row}>
           <div className={preferenceStyles.copy}>
@@ -299,30 +297,28 @@ function PersonalPreferencesSettings({
             </h3>
             <p id={`${id}-view-help`}>选择工具调用过程的详细程度。</p>
           </div>
-          <div className={preferenceStyles.select}>
-            <select
-              id={`${id}-transcript-view`}
-              aria-describedby={`${id}-view-help`}
-              value={preferences.value.transcriptView}
-              disabled={disabled}
-              onChange={(event) => {
-                const option = transcriptViewOptions.find(
-                  (item) => item.value === event.target.value,
-                );
-                if (option && option.value !== preferences.value.transcriptView)
-                  void preferences.setPreferences({
-                    transcriptView: option.value,
-                  });
-              }}
-            >
-              {transcriptViewOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <IconChevronDownOutlineRegular size={12} />
-          </div>
+          <SelectField
+            className={preferenceStyles.select}
+            id={`${id}-transcript-view`}
+            aria-describedby={`${id}-view-help`}
+            value={preferences.value.transcriptView}
+            disabled={disabled}
+            onChange={(event) => {
+              const option = transcriptViewOptions.find(
+                (item) => item.value === event.target.value,
+              );
+              if (option && option.value !== preferences.value.transcriptView)
+                void preferences.setPreferences({
+                  transcriptView: option.value,
+                });
+            }}
+          >
+            {transcriptViewOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </SelectField>
         </div>
         <div className={preferenceStyles.row}>
           <div className={preferenceStyles.copy}>
@@ -335,30 +331,28 @@ function PersonalPreferencesSettings({
                 : '选择何时自动收起已完成的步骤。'}
             </p>
           </div>
-          <div className={preferenceStyles.select}>
-            <select
-              id={`${id}-collapse-timing`}
-              aria-describedby={`${id}-timing-help`}
-              value={preferences.value.collapseTiming}
-              disabled={disabled || expanded}
-              onChange={(event) => {
-                const option = collapseTimingOptions.find(
-                  (item) => item.value === event.target.value,
-                );
-                if (option && option.value !== preferences.value.collapseTiming)
-                  void preferences.setPreferences({
-                    collapseTiming: option.value,
-                  });
-              }}
-            >
-              {collapseTimingOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <IconChevronDownOutlineRegular size={12} />
-          </div>
+          <SelectField
+            className={preferenceStyles.select}
+            id={`${id}-collapse-timing`}
+            aria-describedby={`${id}-timing-help`}
+            value={preferences.value.collapseTiming}
+            disabled={disabled || expanded}
+            onChange={(event) => {
+              const option = collapseTimingOptions.find(
+                (item) => item.value === event.target.value,
+              );
+              if (option && option.value !== preferences.value.collapseTiming)
+                void preferences.setPreferences({
+                  collapseTiming: option.value,
+                });
+            }}
+          >
+            {collapseTimingOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </SelectField>
         </div>
         {subagentOptions.map(
           ({ field, label, minimum, defaultValue, help }) => (

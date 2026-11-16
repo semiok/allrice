@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   RepositoryPublicationSchema,
@@ -318,7 +319,7 @@ export function PlatformRepositoryPublications({
       {rows.length > 0 && (
         <label>
           发布记录{' '}
-          <select
+          <SelectField
             value={selected ?? ''}
             onChange={(e) => setSelected(e.target.value || null)}
           >
@@ -329,7 +330,7 @@ export function PlatformRepositoryPublications({
                 {p.createdAt}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
       )}
       {current && (

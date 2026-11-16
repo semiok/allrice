@@ -1,5 +1,7 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { SelectField } from '../../components/select-field';
+import { SearchField } from '../../components/search-field';
 import {
   UuidSchema,
   type ReferenceRevision,
@@ -7,12 +9,9 @@ import {
   type WorkbenchDeliverable,
 } from '@allrice/contracts';
 import {
-  FileTypeIcon,
   Menu,
   IconEllipsisOutlineRegular,
   IconPlusOutlineRegular,
-  IconChevronDownOutlineRegular,
-  IconSearchOutlineRegular,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
@@ -24,6 +23,9 @@ import { WorkbenchIcon } from './workbench-modules';
 import { useWorkbenchFileReference } from './use-workbench-file-reference';
 import { useWorkbenchFileFavorite } from './use-workbench-file-favorite';
 import css from './workbench-files-panel.module.css';
+import nativeFiles from './dsh-upstream/files/FilesBody.module.css';
+import { FileRow } from './dsh-upstream/files/FileRow';
+import { formatFileListDate } from '../../lib/chatflow/file-list-date';
 import { useReferencePublicationOptions } from './use-reference-publication-options';
 function message(error: unknown) {
   return error instanceof Error ? error.message : '操作未完成，请重试。';
@@ -237,38 +239,33 @@ export function WorkbenchFilesPanel(props: {
   return (
     <section className={css.panel} aria-label="交付成果">
       <div className={css.toolbar}>
-        <div className={css.scopePicker}>
-          <select
-            aria-label="按员工筛选"
-            disabled={category === 'favorite'}
-            value={employeeId}
-            onChange={(event) =>
-              setEmployeeChoice({
-                scope: employeeScope,
-                id: event.target.value,
-              })
-            }
-          >
-            <option value="">全部员工</option>
-            {employees.map((employee) => (
-              <option value={employee.id} key={employee.id}>
-                {employee.name}
-              </option>
-            ))}
-          </select>
-          <IconChevronDownOutlineRegular size={14} />
-        </div>
-        <div className={css.search}>
-          <IconSearchOutlineRegular size={18} />
-          <input
-            type="search"
-            aria-label="查找文件"
-            placeholder="查找文件"
-            value={query}
-            maxLength={200}
-            onChange={(event) => setQuery(event.target.value)}
-          />
-        </div>
+        <SelectField
+          className={css.scopePicker}
+          aria-label="按员工筛选"
+          disabled={category === 'favorite'}
+          value={employeeId}
+          onChange={(event) =>
+            setEmployeeChoice({
+              scope: employeeScope,
+              id: event.target.value,
+            })
+          }
+        >
+          <option value="">全部员工</option>
+          {employees.map((employee) => (
+            <option value={employee.id} key={employee.id}>
+              {employee.name}
+            </option>
+          ))}
+        </SelectField>
+        <SearchField
+          className={css.search}
+          aria-label="查找文件"
+          placeholder="查找文件"
+          value={query}
+          maxLength={200}
+          onChange={(event) => setQuery(event.target.value)}
+        />
       </div>
       <nav className={css.tabs} aria-label="文件类型">
         {(
@@ -319,7 +316,7 @@ export function WorkbenchFilesPanel(props: {
         </p>
       )}
       <div
-        className={css.list}
+        className={nativeFiles.body}
         ref={list}
         aria-busy={loading}
         onScroll={() => {
@@ -334,79 +331,70 @@ export function WorkbenchFilesPanel(props: {
             setPage({ key, cursor: catalog.nextCursor });
         }}
       >
-        {files.map((file) => (
-          <article
-            className={css.file}
-            key={file.objectId}
-            data-file-id={file.objectId}
-          >
-            <button
-              type="button"
-              className={css.fileMain}
-              onClick={() => {
-                props.onOpen(file);
-              }}
-              title={file.fileName}
-              aria-label={file.fileName}
-            >
-              <span className={css.fileIcon}>
-                <FileTypeIcon path={file.fileName} size={28} />
-              </span>
-              <span className={css.fileName}>
-                {file.favorite && (
+        {files.map((file) => {
+          const created = formatFileListDate(file.createdAt);
+          const scope = file.publication
+            ? file.publication.audience.scope === 'company'
+              ? '全公司'
+              : file.publication.audience.scope === 'personal'
+                ? '仅自己'
+                : publicationOptions?.departments
+                    ?.filter((department) =>
+                      file.publication!.audience.departmentIds.includes(
+                        department.id,
+                      ),
+                    )
+                    .map((department) => department.name)
+                    .join('、')
+            : '';
+          return (
+            <FileRow
+              key={file.objectId}
+              fileId={file.objectId}
+              fileName={file.fileName}
+              onOpen={() => props.onOpen(file)}
+              titleLeading={
+                file.favorite ? (
                   <span className={css.favorite} aria-label="已收藏">
                     <WorkbenchIcon kind="star" filled size={13} />
                   </span>
-                )}
-                {file.fileName}
-              </span>
-              <small>
-                {new Date(file.createdAt).toLocaleString('zh-CN', {
-                  month: 'numeric',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-                {file.publication && (
-                  <>
-                    <span aria-hidden="true">·</span>
-                    <WorkbenchIcon kind="materials" size={13} />
-                    {file.publication.audience.scope === 'company'
-                      ? '全公司'
-                      : file.publication.audience.scope === 'personal'
-                        ? '仅自己'
-                        : publicationOptions?.departments
-                            ?.filter((department) =>
-                              file.publication!.audience.departmentIds.includes(
-                                department.id,
-                              ),
-                            )
-                            .map((department) => department.name)
-                            .join('、')}
-                  </>
-                )}
-              </small>
-            </button>
-            <FileMenu
-              file={file}
-              disabled={
-                !!props.readOnly ||
-                referenceActions.using !== null ||
-                !catalog?.quotableFileIds.includes(file.objectId)
+                ) : undefined
               }
-              onUse={() => void referenceActions.useFile(file)}
-              favoriteDisabled={favorite.disabled || !!favorite.using}
-              onFavorite={() =>
-                void favorite.setFavorite(file.objectId, !file.favorite)
+              subtitle={
+                <>
+                  {created}
+                  {file.publication && (
+                    <>
+                      {' '}
+                      · <WorkbenchIcon kind="materials" size={13} /> {scope}
+                    </>
+                  )}
+                </>
               }
-              onPublish={
-                props.onPublish && catalog?.viewerId === props.viewerId
-                  ? () => props.onPublish?.(file)
-                  : undefined
+              subtitleTitle={[created, scope].filter(Boolean).join(' · ')}
+              actions={
+                <FileMenu
+                  file={file}
+                  disabled={
+                    !!props.readOnly ||
+                    referenceActions.using !== null ||
+                    !catalog?.quotableFileIds.includes(file.objectId)
+                  }
+                  onUse={() => void referenceActions.useFile(file)}
+                  favoriteDisabled={favorite.disabled || !!favorite.using}
+                  onFavorite={() =>
+                    void favorite.setFavorite(file.objectId, !file.favorite)
+                  }
+                  onPublish={
+                    props.onPublish && catalog?.viewerId === props.viewerId
+                      ? () => props.onPublish?.(file)
+                      : undefined
+                  }
+                />
               }
             />
-          </article>
-        ))}
+          );
+        })}
         {!files.length && !loading && !error && (
           <div className={css.empty}>
             <WorkbenchIcon kind="files" size={36} />
@@ -450,17 +438,17 @@ function FileMenu({
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className={css.fileActions}>
+    <>
       <Tooltip label="引用到对话" side="bottom" portal>
         <span>
           <button
             type="button"
-            className={css.fileMenu}
+            className={nativeFiles.tool}
             aria-label={`引用到对话 ${file.fileName}`}
             disabled={disabled}
             onClick={onUse}
           >
-            <IconPlusOutlineRegular size={20} />
+            <IconPlusOutlineRegular size={15} />
           </button>
         </span>
       </Tooltip>
@@ -470,13 +458,13 @@ function FileMenu({
           <Tooltip label="更多操作" side="bottom" disabled={open} portal>
             <button
               type="button"
-              className={css.fileMenu}
+              className={nativeFiles.tool}
               aria-label={`文件选项 ${file.fileName}`}
               aria-haspopup="menu"
               aria-expanded={open}
               onClick={() => setOpen(!open)}
             >
-              <IconEllipsisOutlineRegular size={20} />
+              <IconEllipsisOutlineRegular size={15} />
             </button>
           </Tooltip>
         }
@@ -517,6 +505,6 @@ function FileMenu({
         align="end"
         portal
       />
-    </div>
+    </>
   );
 }

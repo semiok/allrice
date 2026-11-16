@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useEffect, useRef, useState } from 'react';
 import {
   canonicalRuntimeBridgeJson,
@@ -267,7 +268,7 @@ export function LocalMcpSettings({
         </label>
         <label>
           执行设备
-          <select
+          <SelectField
             aria-label="执行设备"
             required
             value={deviceId}
@@ -284,11 +285,11 @@ export function LocalMcpSettings({
                 {d.status === 'online' ? '在线' : '离线'}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <label>
           授权目录
-          <select
+          <SelectField
             aria-label="授权目录"
             required
             value={grantId}
@@ -303,7 +304,7 @@ export function LocalMcpSettings({
                   {g.label}
                 </option>
               ))}
-          </select>
+          </SelectField>
         </label>
         <label>
           目录内相对路径
@@ -432,7 +433,7 @@ export function LocalMcpSettings({
             )}
             <label>
               绑定员工版本
-              <select
+              <SelectField
                 aria-label={`绑定员工版本 ${c.name}`}
                 value={selected[c.id] ?? ''}
                 onChange={(e) =>
@@ -450,7 +451,7 @@ export function LocalMcpSettings({
                     {e.eligible ? '' : ` · ${e.reasons.join('；')}`}
                   </option>
                 ))}
-              </select>
+              </SelectField>
             </label>
             <button
               disabled={

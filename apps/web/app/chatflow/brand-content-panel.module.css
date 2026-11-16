@@ -30,10 +30,6 @@
   font-size: 12px;
 }
 
-.brandSelect select {
-  width: 100%;
-}
-
 .tabs {
   display: grid;
   flex: 0 0 auto;
@@ -75,9 +71,7 @@
 }
 
 .content input:not([type='checkbox']),
-.content textarea,
-.content select,
-.brandSelect select {
+.content textarea {
   min-width: 0;
   max-width: 100%;
   min-height: 36px;
@@ -102,18 +96,21 @@
 }
 
 .content button:focus-visible,
-.content input:focus-visible,
-.content select:focus-visible,
-.content textarea:focus-visible,
+.content input[type='checkbox']:focus-visible,
+.content input[type='radio']:focus-visible,
 .tabs button:focus-visible,
 .toolbar button:focus-visible,
 .content summary:focus-visible {
   outline: 2px solid var(--dsw-alias-brand-primary, #4268e9);
   outline-offset: 2px;
 }
+.content input:not([type='checkbox'], [type='radio'], [type='file']):focus,
+.content textarea:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+}
 
 .content input:disabled,
-.content select:disabled,
 .content textarea:disabled {
   opacity: 0.65;
 }

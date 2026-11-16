@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { SelectField } from '../../components/select-field';
 import {
   Button,
   Input,
@@ -428,7 +429,7 @@ export function TaskSuggestions({
                   {slot.label}
                   {slot.required ? '（必填）' : ''}
                   {slot.options ? (
-                    <select
+                    <SelectField
                       aria-label={slot.label}
                       value={values[slot.name] ?? ''}
                       onChange={(event) =>
@@ -446,7 +447,7 @@ export function TaskSuggestions({
                           {option}
                         </option>
                       ))}
-                    </select>
+                    </SelectField>
                   ) : (
                     <Input
                       aria-label={slot.label}

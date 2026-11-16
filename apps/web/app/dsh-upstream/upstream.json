@@ -24,6 +24,18 @@
   ],
   "adaptations": [
     {
+      "source": "packages/client/ui-sidebar-files/src/client/FilesBody.tsx (Entry file branch); FilesBody.module.css (body/row/fileIcon/name/tool)",
+      "target": "apps/web/app/chatflow/dsh-upstream/files/FileRow.tsx; apps/web/app/chatflow/file-row.module.css",
+      "reuse": "Reuse the pinned rc.2 Entry file branch and the already-synced unmodified FilesBody stylesheet: native source icon is 16px, with native spacing, name ellipsis and 28px tools.",
+      "productChanges": "User approved 28px FileTypeIcon for the double-line host rows on 2026-11-15, without a private icon box; the user later requested subtle separators between the two-line file rows, without changing their geometry. Shared deliverables/materials row has sibling open/action buttons and favorite, audience, subtitle and search-excerpt slots. Keep permissions, callbacks and purpose/publication contracts unchanged."
+    },
+    {
+      "source": "packages/client/ui-settings-general/src/client/SettingsRoot.tsx",
+      "target": "apps/web/app/chatflow/dsh-upstream/settings/SettingsRoot.tsx",
+      "reuse": "Keep the native settings Modal, navigation buttons, focus trap and restoration.",
+      "productChanges": "The existing host-added mobile section dropdown uses shared SelectField, like all ordinary host selects. Native rc.2 exposes no general Select; browser options, values and keyboard behavior remain native."
+    },
+    {
       "source": "packages/client/ui-layout/src/client/AppFrame.tsx",
       "target": "apps/web/app/chatflow/workbench-splitter.tsx",
       "reuse": "DragHandle pointer capture, animation-frame throttling, frozen drag origin and frame ResizeObserver; native AppFrame handle/detailsCol CSS",
@@ -401,6 +413,14 @@
           "patchSha256": "f58bab15bdce591de89d88af4eab25d21fe95311f69bf96b5ddd8229c8818e64"
         },
         {
+          "source": "packages/client/ui-sidebar-files/src/client/FilesBody.tsx",
+          "target": "apps/web/app/chatflow/dsh-upstream/files/FileRow.tsx",
+          "upstreamSha256": "52ac73a7a921b9702096331c29dd4a8b7f559da6e9d92ea3a225a62f826f52ee",
+          "sha256": "8753a1a836e418c95de9d19447b03008fa6db246ecadfaaada10a641aaa02457",
+          "patch": "scripts/dsh-ui-patches/native-files-FileRow.tsx.patch",
+          "patchSha256": "92f4e1249934ad9fb7ddfbbf4a20367e71500efc3ba4b9336f48c8ae4f81802a"
+        },
+        {
           "source": "packages/client/ui-sidebar-files/src/client/FilesBody.module.css",
           "target": "apps/web/app/chatflow/dsh-upstream/files/FilesBody.module.css",
           "upstreamSha256": "7ac1f0f136195ad639128394edb4355133071b9ff510b7d2caefed51773a8522",
@@ -442,6 +462,22 @@
     },
     {
       "id": "native-document",
+      "adaptations": [
+        {
+          "target": "apps/web/app/chatflow/dsh-upstream/document/image/ImageBody.tsx; native-image-preview.tsx; native-pdf-preview.tsx",
+          "reuse": "Native image/PDF ZoomViewport fit-width, actual-size cap, zoom controls, anchoring and scroll ownership.",
+          "productChanges": "User-approved deliverable canvas inset reduction: image host supplies optional horizontalInset 16 for native padding 8 per side, while other ImageBody callers retain the native default 24. Delivery PDF/converted Word/PPT supply horizontalInset 12 through the public ZoomViewport injection seat for padding 6 per side. Host CSS aligns PDF/Word/PPT top spacing, including Office image pages, with Markdown/Excel at desktop 12px and mobile 8px; side spacing, native zoom and centering remain unchanged. Markdown/Excel/image outer padding is halved without changing paper content padding or TXT/JSON.",
+          "upgradeChecks": "Replay the existing ImageBody source adapter patch; verify default horizontalInset 24 and forwarding to native ZoomViewport. workbench-layout.browser.test.ts checks six delivery types in light/dark desktop/phone, actual paper geometry within 0.5px and image zoom percentage against displayed width.",
+          "removalCriteria": "Remove the ImageBody inset source adaptation when native ImageBody exposes an equivalent host sizing prop; keep user-approved host canvas spacing."
+        },
+        {
+          "target": "apps/web/app/chatflow/native-excel-scroll.ts; native-excel-preview.tsx",
+          "reuse": "Unmodified ExcelBody 0.2.1-rc.2, including Fortune Sheet 1.0.4 internal scrolling and existing zoom buttons; XLSX/XLS/CSV share this host.",
+          "productChanges": "MET-225 user-approved private DOM exception: capture ordinary wheel only within [data-excel-preview] .fortune-sheet-container, read its unique .luckysheet-scrollbar-x/y boundaries, and stop propagation without preventing the default at an edge or without overflow. The browser scrolls the outer reader. Ctrl/Meta wheel stays native; no zoom, layout or package patch.",
+          "upgradeChecks": "The pinned client.excel.js asset hash is verified by dsh-ui:verify. workbench-layout.browser.test.ts mounts real XLSX and CSV, asserts the private grid and both scrollbar selectors, verifies inner scrolling, bidirectional edge chaining, fit-content forwarding, footer buttons and native button zoom. Review this contract on every DSH upgrade.",
+          "removalCriteria": "Remove the private DOM adapter when ExcelBody exposes native scroll chaining or a public boundary configuration."
+        }
+      ],
       "version": "0.2.1-rc.2",
       "commit": "687f282e8625c6b8d11ff58211a90524be2e4317",
       "license": "MIT",
@@ -645,9 +681,9 @@
           "source": "packages/client/ui-sidebar-documentpreview/src/client/image/ImageBody.tsx",
           "target": "apps/web/app/chatflow/dsh-upstream/document/image/ImageBody.tsx",
           "upstreamSha256": "2d478bc45d304a1198cc275a587027da3096af87813b65cdab00dd02a00031f3",
-          "sha256": "a66ea228ffc007bcfa6de26c5089b0a2a20fde9f19b22921735a3de67399e2e5",
+          "sha256": "acfd78bbba9a78c2c56c0974baca92a1ea38c4482f40db26a1a425f63010e15c",
           "patch": "scripts/dsh-ui-patches/preview-image-ImageBody.tsx.patch",
-          "patchSha256": "839e46e8f2aea13fdf8101ce969c714c300310a887dc3a690704b1dc20b29e32"
+          "patchSha256": "3f054fd9e8db20d747220c99debd677979690fad1134669521c9c5586c559ad1"
         },
         {
           "source": "packages/client/ui-sidebar-documentpreview/src/client/html/pack.ts",
@@ -691,9 +727,9 @@
           "source": "packages/client/ui-settings-general/src/client/SettingsRoot.tsx",
           "target": "apps/web/app/chatflow/dsh-upstream/settings/SettingsRoot.tsx",
           "upstreamSha256": "01966a7299b66d16b2f80106c72dd1f37c541bbfe2d3a0397ca9edd96c21f466",
-          "sha256": "73ce9ca4265f9148f6c1f82b83c5372b0d44a4581515d36563cec839006a1583",
+          "sha256": "e26e48a23e486b6bbdf533d60de4a876490da0c6dad1b935a06f89a49b8b9527",
           "patch": "scripts/dsh-ui-patches/native-settings-SettingsRoot.tsx.patch",
-          "patchSha256": "cc6a4f6655128b188fc744b0ee32b9c10f98aa1458208164eccb31cfc056c900"
+          "patchSha256": "9f4a4745431036c504167d08186bb72ad702f3fcbd0edd1a176b561070afb6d4"
         },
         {
           "source": "packages/client/ui-settings-general/src/client/SettingsRoot.module.css",

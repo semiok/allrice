@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   AdminTenantEmployee,
@@ -135,7 +136,7 @@ export function TenantEmployeeEditor({
       <div className={styles.selectors}>
         <label>
           选择已发布员工
-          <select
+          <SelectField
             aria-label="选择已发布员工"
             value={selected}
             disabled={busy || loading}
@@ -147,7 +148,7 @@ export function TenantEmployeeEditor({
                 {e.name} · {e.role} · 发布 v{e.revision}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <button
           disabled={!selected || busy || loading}

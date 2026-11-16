@@ -1,5 +1,6 @@
 'use client';
 
+import { SelectField } from '../../components/select-field';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ManagedOrganization,
@@ -162,7 +163,7 @@ export function OrganizationAiAssignments({
         organization.workspaces.length > 1 && (
           <label className={styles.workspaceSelector}>
             历史工作区
-            <select
+            <SelectField
               aria-label="历史工作区"
               value={workspaceId}
               disabled={busy}
@@ -173,7 +174,7 @@ export function OrganizationAiAssignments({
                   {w.name}
                 </option>
               ))}
-            </select>
+            </SelectField>
           </label>
         )}
       {error && (

@@ -60,18 +60,19 @@
 }
 
 .fontStepper {
+  box-sizing: border-box;
   display: grid;
   grid-template-columns: 32px minmax(0, 1fr) 24px 32px;
   align-items: center;
   width: 136px;
   height: 36px;
   border-radius: 9px;
+  border: 0.5px solid var(--dsw-alias-border-l4);
   background: var(--dsw-alias-bg-module-platform);
 }
 
 .fontStepper:focus-within {
-  outline: 2px solid var(--dsw-alias-border-focus, #3b82f6);
-  outline-offset: 3px;
+  border-color: var(--dsw-alias-state-business-primary);
 }
 
 .fontStepper .stepButton {
@@ -145,7 +146,6 @@
 }
 
 .select {
-  position: relative;
   width: 137px;
   max-width: 100%;
 }
@@ -153,38 +153,6 @@
 .subagentInput {
   width: 137px;
   max-width: 100%;
-}
-
-.select select {
-  box-sizing: border-box;
-  width: 100%;
-  height: 36px;
-  padding: 0 28px 0 12px;
-  border: 0;
-  border-radius: 9px;
-  appearance: none;
-  background: var(--dsw-alias-bg-module-platform);
-  color: var(--dsw-alias-label-primary);
-  font: inherit;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.select select:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover);
-}
-
-.select select:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
-
-.select > svg {
-  position: absolute;
-  top: 12px;
-  right: 10px;
-  color: var(--dsw-alias-label-secondary);
-  pointer-events: none;
 }
 
 .status {
@@ -230,11 +198,6 @@
   .subagentInput {
     width: 126px;
   }
-
-  .select select {
-    padding-left: 10px;
-    font-size: 12px;
-  }
 }
 
 @media (pointer: coarse) {
@@ -255,14 +218,5 @@
 
   .fontInput > input {
     font-size: 16px;
-  }
-
-  .select select {
-    height: 44px;
-    font-size: 14px;
-  }
-
-  .select > svg {
-    top: 16px;
   }
 }

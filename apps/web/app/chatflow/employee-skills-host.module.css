@@ -118,7 +118,11 @@
   border-color: var(--ar-border-strong);
 }
 
-.input:focus-visible,
+.input:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+}
+
 .tabs button:focus-visible {
   outline: 2px solid var(--ar-focus-ring);
   outline-offset: 2px;

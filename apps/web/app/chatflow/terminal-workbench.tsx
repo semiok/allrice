@@ -9,6 +9,7 @@ import {
   useSyncExternalStore,
   type ComponentType,
 } from 'react';
+import { SelectField } from '../../components/select-field';
 import {
   Button,
   PluginArtworkTerminal,
@@ -266,7 +267,7 @@ export function TerminalGuide(props: {
         </span>
       </div>
       {targets.length > 1 && (
-        <select
+        <SelectField
           className={css.targetPicker}
           aria-label="终端电脑与文件夹"
           disabled={launching}
@@ -295,7 +296,7 @@ export function TerminalGuide(props: {
                   : '（需更新）'}
             </option>
           ))}
-        </select>
+        </SelectField>
       )}
       {notice && (
         <div className={css.notice}>

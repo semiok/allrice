@@ -47,9 +47,14 @@
   width: 100%;
   resize: vertical;
 }
-.body :is(button, input, textarea, summary):focus-visible {
+.body :is(button, summary):focus-visible {
   outline: 2px solid var(--ar-focus-ring);
   outline-offset: 2px;
+}
+.body input:not([type='file']):focus,
+.body textarea:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
 }
 .hint {
   color: var(--ar-text-secondary);

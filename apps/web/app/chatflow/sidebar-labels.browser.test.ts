@@ -310,25 +310,31 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
       it(`reads the create-employee dialog at ${at}`, () =>
         measure(`${at} create-employee`, width, async (page) => {
           await page.goto(`${origin}/?theme=${theme}&dialog=create`);
-          const dialog = page.getByRole('dialog', { name: '创建一位 AI 员工' });
+          const dialog = page.getByRole('dialog', { name: '创建 AI 员工' });
           await readable(
             'dialog title',
             dialog.getByRole('heading', {
-              name: '创建一位 AI 员工（员工由人设、技能、工作场景、插件、记忆五部分组成）',
+              name: '创建 AI 员工 员工由人设、技能、工作场景、插件、记忆五部分组成',
               exact: true,
             }),
           );
           await readable(
             'creation guidance',
             dialog.getByText(
-              '（员工由人设、技能、工作场景、插件、记忆五部分组成）',
+              '员工由人设、技能、工作场景、插件、记忆五部分组成',
               { exact: true },
             ),
           );
-          await readable(
-            'required fields guidance',
-            dialog.getByText('名字和使命填好后才能创建', { exact: true }),
-          );
+          expect(
+            await dialog
+              .getByText('名字和使命填好后才能创建', { exact: true })
+              .count(),
+          ).toBe(0);
+          expect(
+            await dialog
+              .getByRole('button', { name: '确认创建', exact: true })
+              .isDisabled(),
+          ).toBe(true);
           expect(await dialog.getByText('默认', { exact: true }).count()).toBe(
             0,
           );
@@ -342,6 +348,86 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
               `${name} description heading`,
               dialog.getByRole('heading', { name, exact: true }),
             );
+          for (const [title, status] of [
+            ['技能 Skills', '自带基础技能，可再添加'],
+            ['工作场景 Workflow', '默认没有，可添加'],
+            ['插件 Plugins', '默认没有，可添加'],
+            ['记忆 Memory', '最多 100 条'],
+          ] as const)
+            await readable(
+              `${title} status`,
+              dialog
+                .getByRole('heading', { name: title, exact: true })
+                .locator('..')
+                .locator('..')
+                .getByText(status, { exact: true }),
+            );
+          const expression = dialog.getByRole('combobox', {
+            name: '表达偏好',
+            exact: true,
+          });
+          const geometry = await expression.evaluate((node) => {
+            const shell = node.parentElement!;
+            const input = node
+              .closest('form')!
+              .querySelector('[data-employee-name]')!;
+            const css = getComputedStyle(shell);
+            const nativeCss = getComputedStyle(node);
+            const inputCss = getComputedStyle(input);
+            const box = shell.getBoundingClientRect();
+            const nativeBox = node.getBoundingClientRect();
+            return {
+              appearance: nativeCss.appearance,
+              height: box.height,
+              left:
+                nativeBox.left -
+                box.left -
+                parseFloat(css.borderLeftWidth) +
+                parseFloat(nativeCss.borderLeftWidth),
+              right:
+                box.right -
+                nativeBox.right -
+                parseFloat(css.borderRightWidth) +
+                parseFloat(nativeCss.borderRightWidth),
+              inputLeft: parseFloat(inputCss.paddingLeft),
+              inputRight: parseFloat(inputCss.paddingRight),
+            };
+          });
+          expect(geometry.appearance).not.toBe('none');
+          expect(
+            Math.abs(geometry.height - (width > 700 ? 40 : 44)),
+          ).toBeLessThanOrEqual(0.5);
+          expect(Math.abs(geometry.left - 12)).toBeLessThanOrEqual(0.5);
+          expect(Math.abs(geometry.right - 12)).toBeLessThanOrEqual(0.5);
+          expect(
+            Math.abs(geometry.left - geometry.inputLeft),
+          ).toBeLessThanOrEqual(0.5);
+          expect(
+            Math.abs(geometry.right - geometry.inputRight),
+          ).toBeLessThanOrEqual(0.5);
+          await expression.selectOption('concise');
+          expect(await expression.inputValue()).toBe('concise');
+          await expression.focus();
+          // macOS headless Chrome cannot drive its OS select popup with arrows.
+          // A trusted character key uses the native Chinese option typeahead;
+          // keyboard.type would insert Unicode text instead of dispatching it.
+          const keyboard = await page.context().newCDPSession(page);
+          try {
+            await keyboard.send('Input.dispatchKeyEvent', {
+              type: 'char',
+              text: '结',
+              unmodifiedText: '结',
+            });
+          } finally {
+            await keyboard.detach();
+          }
+          await expect.poll(() => expression.inputValue()).toBe('structured');
+          await dialog
+            .getByRole('textbox', { name: '员工名字', exact: true })
+            .fill('焦点验证');
+          expect(await expression.inputValue()).toBe('structured');
+          await expression.selectOption('exploratory');
+          expect(await expression.inputValue()).toBe('exploratory');
         }));
 
       for (const [kind, name, eyebrow] of [

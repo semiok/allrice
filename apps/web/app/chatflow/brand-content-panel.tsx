@@ -9,6 +9,7 @@ import {
   type ReactNode,
   type ComponentProps,
 } from 'react';
+import { SelectField } from '../../components/select-field';
 import { z } from 'zod';
 import {
   ApiErrorSchema,
@@ -405,7 +406,7 @@ function BrandContentReader(props: BrandContentPanelProps) {
       <div className={css.toolbar}>
         <label className={css.brandSelect}>
           品牌
-          <select
+          <SelectField
             aria-label="选择品牌"
             value={creating ? '' : (board?.brand.id ?? selected ?? '')}
             disabled={busy || loading}
@@ -417,7 +418,7 @@ function BrandContentReader(props: BrandContentPanelProps) {
                 {brand.name}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <button
           type="button"
@@ -1426,7 +1427,7 @@ function ImageEditor({
         <fieldset className={css.fieldset} disabled={disabled}>
           <div className={css.formGrid}>
             <Field label="要编辑的位置">
-              <select
+              <SelectField
                 value={draft.slotKey}
                 onChange={(event) => {
                   const image = bundle.images.find(
@@ -1452,10 +1453,10 @@ function ImageEditor({
                 {bundle.images.length < 12 && (
                   <option value={nextSlot}>新增配图</option>
                 )}
-              </select>
+              </SelectField>
             </Field>
             <Field label="当前用户的图片文件">
-              <select
+              <SelectField
                 required={!draft.remove}
                 disabled={draft.remove}
                 value={draft.objectId}
@@ -1468,7 +1469,7 @@ function ImageEditor({
                     {file.sourceKind === 'generated' ? '（已有生成回执）' : ''}
                   </option>
                 ))}
-              </select>
+              </SelectField>
             </Field>
             <Field label="图片说明（选填）">
               <input
@@ -1553,7 +1554,7 @@ function PlansPanel({
         ) : (
           <>
             <Field label="选择已审稿通过的稿件">
-              <select
+              <SelectField
                 value={article?.id ?? ''}
                 onChange={(event) => setArticleId(event.target.value)}
                 disabled={disabled}
@@ -1565,7 +1566,7 @@ function PlansPanel({
                     · v{currentBrandContentBundle(board, item)?.number}
                   </option>
                 ))}
-              </select>
+              </SelectField>
             </Field>
             {article && (
               <PlanForm

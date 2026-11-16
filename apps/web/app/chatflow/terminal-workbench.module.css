@@ -147,12 +147,6 @@
 .targetPicker {
   max-width: 100%;
   margin-top: 8px;
-  padding: 5px 8px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 7px;
-  background: var(--dsw-alias-bg-base);
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 12px;
 }
 .cleanup {
   position: fixed;

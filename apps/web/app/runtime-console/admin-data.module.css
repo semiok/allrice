@@ -58,7 +58,6 @@
   gap: 6px;
   min-height: var(--admin-control-height);
 }
-.selectors select,
 .selectors input:not([type='checkbox']) {
   width: 100%;
   min-width: 0;
@@ -72,7 +71,7 @@
   border: 1px solid var(--admin-control-border);
   border-radius: var(--admin-control-radius);
 }
-.selectors select {
+.selectors [data-select-field] {
   min-width: 140px;
 }
 .deliverablePreview {
@@ -255,7 +254,7 @@
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
 }
-.inspection :where(input, select) {
+.inspection input {
   min-width: 0;
   max-width: 100%;
   min-height: var(--admin-control-height);
@@ -282,4 +281,25 @@
 .inspection pre {
   max-width: 100%;
   overflow: auto;
+}
+
+.selectors
+  input:not(
+    [type='checkbox'],
+    [type='radio'],
+    [type='file'],
+    [type='range'],
+    [type='color']
+  ):focus,
+.inspection
+  input:not(
+    [type='checkbox'],
+    [type='radio'],
+    [type='file'],
+    [type='range'],
+    [type='color']
+  ):focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+  box-shadow: none;
 }

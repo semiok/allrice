@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   MaintenanceCatalogSchema,
@@ -249,7 +250,7 @@ export function PlatformMaintenance() {
       {catalog && (
         <label>
           公司部署
-          <select
+          <SelectField
             aria-label="维护公司部署"
             value={selected}
             onChange={(e) => {
@@ -263,7 +264,7 @@ export function PlatformMaintenance() {
                 {d.companyName} · {d.deploymentName}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
       )}
       {deployment && (
@@ -351,7 +352,7 @@ function MaintenancePolicyEditor({
     <div className={css.controls}>
       <label>
         处理方式
-        <select
+        <SelectField
           aria-label="维护处理方式"
           value={policy.mode}
           disabled={busy}
@@ -367,7 +368,7 @@ function MaintenancePolicyEditor({
           <option value="repair_and_pr" disabled={!ready}>
             修复并提交 PR{!ready ? '（未就绪）' : ''}
           </option>
-        </select>
+        </SelectField>
       </label>
       {policy.mode === 'repair_and_pr' && (
         <label>

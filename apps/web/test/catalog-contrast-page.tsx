@@ -19,6 +19,8 @@ import { AdminShell } from '../components/admin/admin-shell';
 import { LoginForm } from '../app/login/login-form';
 import { applyTheme } from '../lib/theme/theme';
 import { employeeDetailsFixture } from './employee-details-fixture';
+import { employeeAccentStyle } from '../app/chatflow/employee-navigation';
+import conversation from '../app/chatflow/dsh-saas.module.css';
 // The root layout's global stylesheets, in its order.
 import '../app/dsh-upstream/design-platform.css';
 import '../app/dsh-upstream/base.css';
@@ -104,8 +106,19 @@ const options = {
 window.fetch = async (input, init) => {
   const url = new URL(String(input), location.href);
   const path = url.pathname;
-  if (path === '/api/v1/scheduled-tasks')
-    return Response.json({ tasks, nextCursor: null });
+  if (path === '/api/v1/scheduled-tasks') {
+    const query = url.searchParams.get('query')?.toLocaleLowerCase();
+    return Response.json({
+      tasks: query
+        ? tasks.filter((task) =>
+            `${task.name} ${task.prompt} ${task.employeeName}`
+              .toLocaleLowerCase()
+              .includes(query),
+          )
+        : tasks,
+      nextCursor: null,
+    });
+  }
   if (path === `/api/v1/scheduled-tasks/${id(40)}`)
     return Response.json({
       task: tasks[0],
@@ -267,6 +280,28 @@ const cases: Record<string, ReactNode> = {
     </>
   ),
 };
+
+// Use the production employee accent scope: a loose CSS variable on <body>
+// would miss the green business-primary override that caused the regression.
+cases['search-parity'] = (
+  <>
+    <section
+      aria-label="绿色员工的自动化任务"
+      className={conversation.employeeConversation}
+      style={employeeAccentStyle('Rice', 'green')}
+    >
+      <AutomationTaskList
+        workspaceId={workspaceId}
+        scope="search-parity"
+        headers={{}}
+        employees={[{ id: id(4), name: 'Rice' }]}
+        onSelect={noop}
+        onNew={noop}
+      />
+    </section>
+    <section aria-label="交付成果搜索基准">{cases.files}</section>
+  </>
+);
 
 // The runtime's own switch; styles/base.css does the rest (color-scheme,
 // the dark canvas), as on a real page.

@@ -9,6 +9,7 @@ import {
   useState,
   type FormEvent,
 } from 'react';
+import { SelectField } from '../../components/select-field';
 import {
   ChangeRecurringTaskInputSchema,
   RecurringTaskHistorySchema,
@@ -824,7 +825,7 @@ function RecurringTasksContent({
           </label>
           <label>
             执行周期
-            <select
+            <SelectField
               value={draft.kind}
               disabled={locked}
               onChange={(event) =>
@@ -851,11 +852,11 @@ function RecurringTasksContent({
               >
                 每月
               </option>
-            </select>
+            </SelectField>
           </label>
           <label>
             执行会话
-            <select
+            <SelectField
               value={draft.conversationMode ?? 'reuse'}
               disabled={locked}
               onChange={(event) =>
@@ -869,7 +870,7 @@ function RecurringTasksContent({
             >
               <option value="reuse">沿用来源聊天</option>
               <option value="new_each_run">每次新建聊天</option>
-            </select>
+            </SelectField>
           </label>
           <p className={css.hint}>
             来源聊天用于管理和权限验证。修改只影响尚未排队的执行，已排队的本轮保持原会话。

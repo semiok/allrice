@@ -20,7 +20,18 @@ type Colour = number[];
 
 suite('chat input, questions and receipts read clearly (MET-214)', () => {
   let browser: Browser, server: Server, origin: string;
+  let nativeCardDeclarations: string;
   beforeAll(async () => {
+    // Compare the host card with the installed rc.2 InputBar CSS contract.
+    const published = readFileSync(
+      'apps/web/node_modules/@deepseek-ai/dsh-client-ui-conversation/lib/client.js',
+      'utf8',
+    );
+    nativeCardDeclarations = published.match(/\.uV2eYG_card\{([^}]+)\}/)![1]!;
+    expect(nativeCardDeclarations).toContain(
+      'box-shadow:var(--dsw-elevation-soft)',
+    );
+    expect(nativeCardDeclarations).toContain('border:0');
     const require = createRequire(import.meta.url);
     const { build } = createRequire(require.resolve('tsx'))('esbuild');
     const result = await build({
@@ -264,15 +275,28 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
       .soft(contrast(seen.text, ground), await label(node))
       .toBeGreaterThanOrEqual(4.5);
   };
-  const ring = (card: Locator) =>
-    card.evaluate((node) => {
-      const style = getComputedStyle(node);
-      return {
-        style: style.outlineStyle,
-        width: parseFloat(style.outlineWidth),
-        offset: parseFloat(style.outlineOffset),
+  const matchesNativeCard = async (card: Locator) => {
+    const surface = await card.evaluate((node, declarations) => {
+      const reference = document.createElement('div');
+      reference.style.cssText = declarations;
+      node.parentElement!.append(reference);
+      const read = (element: Element) => {
+        const css = getComputedStyle(element);
+        return {
+          border: css.border,
+          radius: css.borderRadius,
+          background: css.backgroundColor,
+          shadow: css.boxShadow,
+          outline: css.outlineStyle,
+        };
       };
-    });
+      const actual = read(node);
+      const native = read(reference);
+      reference.remove();
+      return { actual, native };
+    }, nativeCardDeclarations);
+    expect.soft(surface.actual).toEqual(surface.native);
+  };
   /** A control's own focus indicator: an outline or a ring-like shadow. */
   const ownFocus = (node: Locator) =>
     node.evaluate((element) => {
@@ -350,7 +374,7 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
   for (const width of [1440, 390])
     for (const theme of ['light', 'dark'] as const)
       it(`keeps the chat readable at ${width}px in the ${theme} theme`, async () => {
-        // The empty conversation: introduction, hint and the focus ring.
+        // The empty conversation: introduction, hint and the native composer surface.
         let page = await open(width, theme, 'hero');
         try {
           await frame(page, width);
@@ -362,11 +386,11 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           await readable(input, '::placeholder');
           await readable(page.locator('h1 + p'));
           const surface = await look(card);
-          const column = await look(page.locator('[class*="emptyStage"]'));
           expect.soft(surface.inside).toBe(true);
 
-          // D13: the ring comes with the message box's focus, from the keyboard.
-          expect.soft((await ring(card)).style).toBe('none');
+          // MET-214 D13 was reverted at the user's request: rc.2 has no
+          // extra card focus outline. Border, fill and elevation stay native.
+          await matchesNativeCard(card);
           await page.keyboard.press('Tab');
           expect(
             await input.evaluate(
@@ -375,15 +399,8 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
                 node.matches(':focus-visible'),
             ),
           ).toBe(true);
-          const focused = await ring(card);
-          expect.soft(focused.style).toBe('solid');
-          expect.soft(focused.width).toBeGreaterThanOrEqual(2);
-          // Drawn inside the card's own box: no ancestor can clip it.
-          expect.soft(focused.offset + focused.width).toBeLessThanOrEqual(0);
-          // Every employee accent tints the ring; each must still stand out.
-          for (const [accent, { value }] of Object.entries(
-            employeeColorPalette,
-          )) {
+          await matchesNativeCard(card);
+          for (const { value } of Object.values(employeeColorPalette)) {
             await page.evaluate(
               (value) =>
                 document
@@ -391,28 +408,15 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
                   .style.setProperty('--employee-end', value),
               value,
             );
-            const { outline } = await look(card);
-            for (const ground of [surface.fill, column.ground])
-              expect
-                .soft(contrast(outline, ground), `${accent} focus ring`)
-                .toBeGreaterThanOrEqual(3);
+            await matchesNativeCard(card);
           }
           await page.evaluate(() =>
             document
               .querySelector<HTMLElement>('main > section')!
               .style.setProperty('--employee-end', '#3B82F6'),
           );
-          // As painted: the ring is on screen at the card's edge.
-          const box = (await card.boundingBox())!;
-          const painted = await pixel(card, 1, Math.round(box.height / 2));
-          expect
-            .soft(contrast(painted, column.ground))
-            .toBeGreaterThanOrEqual(3);
-          expect
-            .soft(contrast(painted, surface.fill))
-            .toBeGreaterThanOrEqual(3);
 
-          // The card's buttons keep their own focus: no second, card-wide ring.
+          // The card's buttons retain their own visible keyboard focus.
           const add = page.getByRole('button', { name: '添加文件' });
           await page.keyboard.press('Tab');
           expect(
@@ -421,22 +425,22 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           expect
             .soft(await ownFocus(add))
             .toEqual({ visible: true, shown: true });
-          expect.soft((await ring(card)).style).toBe('none');
+          await matchesNativeCard(card);
           await add.click();
-          expect.soft((await ring(card)).style).toBe('none');
+          await matchesNativeCard(card);
           await input.click();
-          expect.soft((await ring(card)).style).toBe('solid');
+          await matchesNativeCard(card);
 
           // Dropping files over a focused box: the hint reads, the focus stays.
           await dragFiles(page);
           await readable(page.getByText('图片拖动到此处即可添加'));
           await readable(page.getByText('最多 20 张，每张 20 MB'));
-          expect.soft((await ring(card)).style).toBe('solid');
+          await matchesNativeCard(card);
         } finally {
           await page.close();
         }
 
-        // Pointer Send keeps the message box focused, including its card ring.
+        // Pointer Send keeps the message box focused and its native card surface.
         page = await open(width, theme, 'draft');
         try {
           await frame(page, width);
@@ -447,12 +451,12 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           expect(await input.isEditable()).toBe(true);
           expect(await send.isEnabled()).toBe(true);
           await input.click();
-          expect.soft((await ring(card)).style).toBe('solid');
+          await matchesNativeCard(card);
           await send.click();
           expect(
             await input.evaluate((node) => node === document.activeElement),
           ).toBe(true);
-          expect.soft((await ring(card)).style).toBe('solid');
+          await matchesNativeCard(card);
           await page.keyboard.press('Tab');
           await page.keyboard.press('Tab');
           expect(
@@ -461,7 +465,7 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           expect
             .soft(await ownFocus(send))
             .toEqual({ visible: true, shown: true });
-          expect.soft((await ring(card)).style).toBe('none');
+          await matchesNativeCard(card);
         } finally {
           await page.close();
         }
@@ -499,7 +503,7 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           expect(
             await input.evaluate((node) => node === document.activeElement),
           ).toBe(true);
-          expect.soft((await ring(card)).style).toBe('solid');
+          await matchesNativeCard(card);
           expect(
             await page
               .getByRole('button', { name: '发送', exact: true })
@@ -512,7 +516,7 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
           expect(
             await input.evaluate((node) => node === document.activeElement),
           ).toBe(false);
-          expect.soft((await ring(card)).style).toBe('none');
+          await matchesNativeCard(card);
           await dragFiles(page);
           await readable(page.getByText('当前无法添加图片'));
         } finally {

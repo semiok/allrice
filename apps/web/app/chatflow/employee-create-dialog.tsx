@@ -77,12 +77,12 @@ export function EmployeeCreateDialog({
   }
   return (
     <DshDialog
-      ariaLabel="创建一位 AI 员工"
+      ariaLabel="创建 AI 员工"
       title={
         <>
-          创建一位 AI 员工
+          创建 AI 员工{' '}
           <span className={createCss.titleDescription}>
-            （员工由人设、技能、工作场景、插件、记忆五部分组成）
+            员工由人设、技能、工作场景、插件、记忆五部分组成
           </span>
         </>
       }

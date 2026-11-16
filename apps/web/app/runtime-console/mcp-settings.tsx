@@ -1,5 +1,6 @@
 'use client';
 
+import { SelectField } from '../../components/select-field';
 import { useEffect, useState } from 'react';
 import type { McpConnection, McpEmployeeTarget } from '@allrice/contracts';
 
@@ -275,7 +276,7 @@ export function McpSettings({
             </p>
             <label>
               选择员工版本
-              <select
+              <SelectField
                 aria-label={`选择员工版本 ${connection.name}`}
                 value={selectedEmployees[connection.id] ?? ''}
                 onChange={(event) =>
@@ -298,7 +299,7 @@ export function McpSettings({
                       : `（${employee.reasons.join('；')}）`}
                   </option>
                 ))}
-              </select>
+              </SelectField>
             </label>
             <button
               type="button"
@@ -448,7 +449,7 @@ export function McpSettings({
               <p>{tool.description}</p>
               <label>
                 管理员判定风险
-                <select
+                <SelectField
                   value={risks[tool.revisionId] ?? tool.risk}
                   disabled={busy}
                   onChange={(event) =>
@@ -462,7 +463,7 @@ export function McpSettings({
                   <option value="write">写入</option>
                   <option value="external_send">对外发送</option>
                   <option value="high_risk_data">高风险数据</option>
-                </select>
+                </SelectField>
               </label>
               <button
                 type="button"

@@ -19,7 +19,7 @@ suite('member connected-apps page', () => {
     const output = await build({
       absWorkingDir: process.cwd(),
       stdin: {
-        contents: `import { createRoot } from 'react-dom/client'; import { ConnectedApps } from './connected-apps'; createRoot(document.getElementById('root')).render(<ConnectedApps workspaceId="${workspaceId}" />);`,
+        contents: `import '../../dsh-upstream/design-platform.css'; import { createRoot } from 'react-dom/client'; import { ConnectedApps } from './connected-apps'; createRoot(document.getElementById('root')).render(<ConnectedApps workspaceId="${workspaceId}" />);`,
         resolveDir: resolve('apps/web/app/workspace/mcp'),
         loader: 'tsx',
       },
@@ -124,9 +124,43 @@ suite('member connected-apps page', () => {
       await page.goto(`${origin}/chatflow?session=${connectionId}`);
       await page.getByText('管理连接', { exact: true }).click();
       await page.getByRole('button', { name: '填写连接凭据' }).click();
-      await page
-        .getByLabel('应用访问令牌')
-        .fill('synthetic-browser-only-token');
+      const token = page.getByLabel('应用访问令牌');
+      const focusLook = () =>
+        token.evaluate((node) => {
+          const style = getComputedStyle(node);
+          const box = node.getBoundingClientRect();
+          return {
+            width: box.width,
+            height: box.height,
+            background: style.backgroundColor,
+            borderWidth: style.borderWidth,
+            border: style.borderColor,
+            primary: style
+              .getPropertyValue('--dsw-alias-state-business-primary')
+              .trim(),
+            outline: style.outlineStyle,
+            shadow: style.boxShadow,
+            keyboard: node.matches(':focus-visible'),
+          };
+        });
+      const idle = await focusLook();
+      await token.click();
+      const pointer = await focusLook();
+      expect(pointer.primary).toMatch(/^rgb/);
+      expect(pointer.border).toBe(pointer.primary);
+      expect(pointer.border).not.toBe(idle.border);
+      expect(pointer).toMatchObject({
+        width: idle.width,
+        height: idle.height,
+        background: idle.background,
+        borderWidth: idle.borderWidth,
+        outline: 'none',
+        shadow: 'none',
+      });
+      await token.fill('synthetic-browser-only-token');
+      await token.press('Tab');
+      await page.keyboard.press('Shift+Tab');
+      expect(await focusLook()).toEqual({ ...pointer, keyboard: true });
       await page.getByRole('button', { name: '保存并连接' }).click();
       await expect
         .poll(() => page.locator('article').innerText())

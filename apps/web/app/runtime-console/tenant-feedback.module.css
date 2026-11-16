@@ -27,7 +27,7 @@
 .summary {
   margin: 16px 0;
 }
-.root :where(select, textarea) {
+.root textarea {
   font: inherit;
   min-width: 0;
   max-width: 100%;
@@ -36,10 +36,6 @@
   padding: 6px 10px;
   background: var(--admin-canvas);
   color: inherit;
-}
-.root select {
-  min-height: var(--admin-control-height);
-  font-size: var(--admin-font-body);
 }
 .filters {
   display: flex;
@@ -54,7 +50,7 @@
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
 }
-.filters select {
+.filters [data-select-field] {
   min-width: 145px;
 }
 .layout {
@@ -226,4 +222,10 @@
   .detail {
     padding: 16px;
   }
+}
+
+.root textarea:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+  box-shadow: none;
 }

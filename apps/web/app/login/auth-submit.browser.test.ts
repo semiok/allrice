@@ -271,7 +271,43 @@ suite('login failures in plain words', () => {
           const form = page.locator('form');
           const submit = form.locator('[type="submit"]');
           await expect.poll(() => submit.isEnabled()).toBe(true);
-          await form.locator('[name="username"]').fill('synthetic-user');
+          const account = form.locator('[name="username"]');
+          const focusLook = () =>
+            account.evaluate((node) => {
+              const style = getComputedStyle(node);
+              const box = node.getBoundingClientRect();
+              return {
+                width: box.width,
+                height: box.height,
+                background: style.backgroundColor,
+                borderWidth: style.borderWidth,
+                border: style.borderColor,
+                primary: style
+                  .getPropertyValue('--dsw-alias-state-business-primary')
+                  .trim(),
+                outline: style.outlineStyle,
+                shadow: style.boxShadow,
+                keyboard: node.matches(':focus-visible'),
+              };
+            });
+          const idle = await focusLook();
+          await account.click();
+          const pointer = await focusLook();
+          expect(pointer.primary).toMatch(/^rgb/);
+          expect(pointer.border).toBe(pointer.primary);
+          expect(pointer.border).not.toBe(idle.border);
+          expect(pointer).toMatchObject({
+            width: idle.width,
+            height: idle.height,
+            background: idle.background,
+            borderWidth: idle.borderWidth,
+            outline: 'none',
+            shadow: 'none',
+          });
+          await account.press('Tab');
+          await page.keyboard.press('Shift+Tab');
+          expect(await focusLook()).toEqual({ ...pointer, keyboard: true });
+          await account.fill('synthetic-user');
           await form.locator('[name="password"]').fill(password);
           for (const [index, [name, handler, text]] of failures.entries()) {
             reply = handler;

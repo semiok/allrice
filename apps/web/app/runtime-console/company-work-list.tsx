@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useEffect, useState } from 'react';
 import type {
   ActivityCounts,
@@ -67,7 +68,7 @@ export function CompanyWorkList({
       <div className={styles.selectors}>
         <label>
           工作状态
-          <select
+          <SelectField
             value={status}
             onChange={(e) => {
               setStatus(e.target.value);
@@ -87,7 +88,7 @@ export function CompanyWorkList({
                 {label}
               </option>
             ))}
-          </select>
+          </SelectField>
         </label>
         <AdminButton
           variant="quiet"

@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { AdminButton } from '../../components/admin/admin-ui';
 
 import { useEffect, useState } from 'react';
@@ -57,7 +58,7 @@ export function PlatformModelSettingsPanel() {
         <div className={styles.quotaForm}>
           <label>
             对话与理解
-            <select
+            <SelectField
               aria-label="对话与理解模型"
               value={configuration.workModel}
               disabled={busy}
@@ -77,11 +78,11 @@ export function PlatformModelSettingsPanel() {
                   {PLATFORM_WORK_MODEL_LABELS[model]}
                 </option>
               ))}
-            </select>
+            </SelectField>
           </label>
           <label>
             推理强度
-            <select
+            <SelectField
               aria-label="推理强度"
               value={configuration.reasoningEffort}
               disabled={busy}
@@ -100,11 +101,11 @@ export function PlatformModelSettingsPanel() {
               <option value="medium">中</option>
               <option value="high">高</option>
               <option value="xhigh">极高</option>
-            </select>
+            </SelectField>
           </label>
           <label>
             图片生成与编辑
-            <select
+            <SelectField
               aria-label="图片模型"
               value={
                 configuration.imagesEnabled ? configuration.imageModel : ''
@@ -131,7 +132,7 @@ export function PlatformModelSettingsPanel() {
               <option value="gpt-image-2.5-sunburst">
                 固定使用 Sunburst · 质量优先
               </option>
-            </select>
+            </SelectField>
           </label>
           <div className={styles.formActions}>
             <AdminButton

@@ -34,7 +34,6 @@
 }
 .panel input,
 .panel textarea,
-.panel select,
 .panel button {
   background: #25272b;
   color: #eceef1;
@@ -83,4 +82,20 @@
 }
 .error {
   color: #ef9999 !important;
+}
+
+.panel
+  :is(
+    input:not(
+      [type='checkbox'],
+      [type='radio'],
+      [type='file'],
+      [type='range'],
+      [type='color']
+    ),
+    textarea
+  ):focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+  box-shadow: none;
 }

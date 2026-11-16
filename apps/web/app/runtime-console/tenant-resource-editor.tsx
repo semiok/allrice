@@ -1,4 +1,5 @@
 'use client';
+import { SelectField } from '../../components/select-field';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   AdminTenantMember,
@@ -160,7 +161,7 @@ export function TenantResourceEditor(
     >
       <label>
         查看成员
-        <select
+        <SelectField
           aria-label="实际使用者"
           value={subjectId}
           disabled={loading || busy}
@@ -181,7 +182,7 @@ export function TenantResourceEditor(
               {u.displayName} · {u.email}
             </option>
           ))}
-        </select>
+        </SelectField>
       </label>
       {next ? (
         <button disabled={busy || loading} onClick={() => void load(next)}>
@@ -501,7 +502,7 @@ function Quotas({
             ) : null}
             <label>
               调整对象
-              <select
+              <SelectField
                 aria-label="调整额度对象"
                 disabled={busy}
                 value={scope}
@@ -527,7 +528,7 @@ function Quotas({
                     {label}
                   </option>
                 ))}
-              </select>
+              </SelectField>
             </label>
             {row && limits ? (
               <form
@@ -558,7 +559,7 @@ function Quotas({
                   {scope !== 'organization' ? (
                     <label>
                       任务活跃时限（新任务生效）
-                      <select
+                      <SelectField
                         aria-label="任务活跃时限"
                         value={limits.maxRuntimeMs}
                         disabled={inherit}
@@ -580,7 +581,7 @@ function Quotas({
                             原自定义值：{limits.maxRuntimeMs / 60000} 分钟
                           </option>
                         ) : null}
-                      </select>
+                      </SelectField>
                       <small>
                         仅整项任务已确认挂起的审批/设备等待暂停计时。不限制不解除单次工具超时、并发或官方额度限制。多个显式策略取最严格值，移除覆盖才会继承。
                       </small>
@@ -589,7 +590,7 @@ function Quotas({
                   {scope !== 'organization' && data.sandboxExecutionPolicy ? (
                     <label>
                       单次沙箱执行上限（新任务生效）
-                      <select
+                      <SelectField
                         aria-label="单次沙箱执行上限"
                         value={limits.maxSandboxExecutionMs ?? 600000}
                         disabled={inherit}
@@ -606,7 +607,7 @@ function Quotas({
                         <option value={600000}>10 分钟（默认）</option>
                         <option value={1800000}>30 分钟</option>
                         <option value={3600000}>1 小时</option>
-                      </select>
+                      </SelectField>
                       <small>
                         单次沙箱操作允许执行的最长时间。系统按需分配和续期，累计不超过此上限及整轮任务剩余时间。新任务生效；旧版执行端仍受其实际支持的时限约束。
                       </small>
@@ -1111,7 +1112,7 @@ function Environments(props: ScopedProps) {
               <legend>新增平台授权</legend>
               <label>
                 授权能力
-                <select
+                <SelectField
                   value={kind}
                   aria-label="授权能力"
                   onChange={(e) => {
@@ -1123,11 +1124,11 @@ function Environments(props: ScopedProps) {
                   <option value="cloud_grant">云端受控沙箱（无网络）</option>
                   <option value="browser_grant">云端浏览器</option>
                   <option value="local_browser_grant">设备独立浏览器</option>
-                </select>
+                </SelectField>
               </label>
               <label>
                 执行目标
-                <select
+                <SelectField
                   aria-label="授权执行目标"
                   required
                   value={targetId}
@@ -1159,7 +1160,7 @@ function Environments(props: ScopedProps) {
                             {t.label} · {t.state}
                           </option>
                         ))}
-                </select>
+                </SelectField>
               </label>
               {kind !== 'cloud_grant' ? (
                 <>

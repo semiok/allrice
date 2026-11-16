@@ -18,17 +18,6 @@
   color: var(--admin-muted);
   font-size: var(--admin-font-meta);
 }
-.panel select {
-  min-height: var(--admin-control-height);
-  max-width: 100%;
-  padding: 6px 10px;
-  border: 1px solid var(--admin-control-border);
-  border-radius: var(--admin-control-radius);
-  background: var(--admin-canvas);
-  color: var(--admin-text);
-  font: inherit;
-  font-size: var(--admin-font-body);
-}
 .items {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
@@ -55,8 +44,7 @@
   margin: 6px 12px 6px 0;
 }
 .editor label input:not([type='checkbox']),
-.editor label textarea,
-.editor label select {
+.editor label textarea {
   min-height: var(--admin-control-height);
   padding: 8px 10px;
   color: var(--admin-text);
@@ -90,4 +78,19 @@
 }
 .editor input[type='checkbox'] {
   accent-color: var(--admin-text);
+}
+
+.editor
+  label
+  input:not(
+    [type='checkbox'],
+    [type='radio'],
+    [type='file'],
+    [type='range'],
+    [type='color']
+  ):focus,
+.editor label textarea:focus {
+  border-color: var(--dsw-alias-state-business-primary);
+  outline: none;
+  box-shadow: none;
 }

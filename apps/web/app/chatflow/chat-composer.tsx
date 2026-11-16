@@ -28,14 +28,14 @@ import type { ComposerDraftStore } from '../../lib/chatflow/composer-draft-store
 import { resizeComposerTextarea } from './chatflow-utils';
 import {
   IconPlusOutlineRegular,
-  IconFolderOpenOutlineRegular,
-  IconLinkOutlineRegular,
   Menu,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 
 import { shouldSubmitComposerKey } from '../../lib/chatflow/composer-keyboard';
 
 import { PendingAttachmentRail } from './attachment-components';
+import { WorkbenchIcon } from './workbench-modules';
+import { WorkbenchFileIcon } from './workbench-file-icon';
 import {
   bridgeComposerStatus,
   type BridgeConnectionState,
@@ -62,8 +62,8 @@ interface ChatComposerProps {
   companyReferences?: CompanyDraftReference[];
   onRemoveCompanyReference?: (id: string) => void;
   sessionReferences?: SessionReference[];
-  onOpenSessionReferences?: () => void;
-  onOpenReferenceLibrary?: () => void;
+  onOpenDeliverables?: () => void;
+  onOpenMaterials?: () => void;
   referenceSelections?: ReferenceDraft[];
   unavailableReferenceRevisionIds?: readonly string[];
   onRemoveReference?: (id: string) => void;
@@ -90,7 +90,6 @@ interface ChatComposerProps {
   onDraftChange: (draft: string) => void;
   onLoadBridgeDevices: () => void | Promise<void>;
   onOpenAttachment: (attachment: PendingAttachment) => void;
-  onOpenWorkspaceFiles: () => void | Promise<void>;
   onRemoveAttachment: (attachment: PendingAttachment) => void;
   onRetryAttachment: (attachment: PendingAttachment) => void;
   onSendMessage: () => void | Promise<void>;
@@ -277,8 +276,8 @@ export function ChatComposer({
   onRemoveReference,
   onRemoveCompanyReference,
   sessionReferences = [],
-  onOpenSessionReferences,
-  onOpenReferenceLibrary,
+  onOpenDeliverables,
+  onOpenMaterials,
   onRemoveSessionReference,
   employeeName,
   attachmentMenuOpen,
@@ -302,7 +301,6 @@ export function ChatComposer({
   onDraftChange,
   onLoadBridgeDevices,
   onOpenAttachment,
-  onOpenWorkspaceFiles,
   onRemoveAttachment,
   onRetryAttachment,
   onSendMessage,
@@ -413,55 +411,28 @@ export function ChatComposer({
                   </button>
                 }
                 items={[
-                  { type: 'label', id: 'heading', text: '添加到本轮' },
-                  ...(onOpenReferenceLibrary
-                    ? [
-                        {
-                          id: 'reference-library',
-                          label: '参考资料',
-                          icon: <IconFolderOpenOutlineRegular size={20} />,
-                        },
-                      ]
-                    : []),
-                  ...(onOpenSessionReferences
-                    ? [
-                        {
-                          id: 'reference',
-                          label: '引用会话',
-                          icon: <IconLinkOutlineRegular size={20} />,
-                        },
-                      ]
-                    : []),
                   {
-                    id: 'workspace',
-                    label: '从工作区添加',
-                    icon: <IconFolderOpenOutlineRegular size={20} />,
+                    id: 'deliverables',
+                    label: '交付成果',
+                    icon: <WorkbenchIcon kind="files" size={18} />,
+                    disabled: !onOpenDeliverables,
+                  },
+                  {
+                    id: 'materials',
+                    label: '企业资料',
+                    icon: <WorkbenchIcon kind="materials" size={18} />,
+                    disabled: !onOpenMaterials,
                   },
                   {
                     id: 'upload',
-                    label: '从本地上传',
-                    icon: (
-                      <svg
-                        width="20"
-                        height="20"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.7"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <path d="m7 8 5-5 5 5M12 3v12M4 15v5h16v-5" />
-                      </svg>
-                    ),
+                    label: '本地上传',
+                    icon: <WorkbenchFileIcon kind="upload" />,
                   },
                 ]}
                 onSelect={(id) => {
                   onAttachmentMenuOpenChange(false);
-                  if (id === 'reference-library') onOpenReferenceLibrary?.();
-                  else if (id === 'reference') onOpenSessionReferences?.();
-                  else if (id === 'workspace') void onOpenWorkspaceFiles();
+                  if (id === 'deliverables') onOpenDeliverables?.();
+                  else if (id === 'materials') onOpenMaterials?.();
                   else if (id === 'upload') fileInput.current?.click();
                 }}
               />

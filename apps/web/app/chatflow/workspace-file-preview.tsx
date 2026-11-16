@@ -435,6 +435,7 @@ export function WorkspaceFilePreview(props: {
             interactive={interactive}
             toolResult={toolResult}
             footer={pdfFooter ? footer : undefined}
+            imageHorizontalInset={props.deliverable ? 16 : undefined}
           />
           {props.deliverable &&
             preview.kind === 'download_only' &&
