@@ -11,6 +11,7 @@ import {
 } from '../reference-image-read.ts';
 import {
   BrandContentWorkflowInvocationSchema,
+  EmployeeExecutionSnapshotSchema,
   BrandFeedbackInputSchema,
   BrandContextContentSchema,
   BrandContentFileRefSchema,
@@ -102,6 +103,7 @@ import {
   listPersonalSceneSkillsInTransaction,
 } from './personal-scene-skills.ts';
 import { EmployeeContentError } from './employee-content-model.ts';
+import { EmployeeModuleError } from './employee-module-bindings.ts';
 
 export class EmployeeRuntimeContentError extends Error {
   readonly code = 'EMPLOYEE_CONTENT_UNAVAILABLE';
@@ -520,6 +522,7 @@ async function assertPersonalProvenance(
 }
 type RunRow = PersonalProvenance & {
   content: unknown;
+  module_snapshot: unknown;
   content_scene_state: unknown;
   content_generation_id: string | null;
   user_message_id: string;
@@ -539,7 +542,7 @@ function identity(scope: RunScope): ContentIdentity {
 async function ownedRun(scope: RunScope, sql: ContentSql) {
   const [row] = await sql<
     RunRow[]
-  >`select er.execution_snapshot->'workflowInvocation' brand_workflow,er.experience_reads,er.execution_snapshot ? 'personalSkills' as has_personal_skills,er.execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(er.native_skills) n where n ? 'personal') as native_personal_pins,er.execution_snapshot->'personalSkills' as personal_skills,er.execution_snapshot->'content' as content,
+  >`select case when er.execution_snapshot ? 'moduleInvocation' then er.execution_snapshot end module_snapshot,er.execution_snapshot->'workflowInvocation' brand_workflow,er.experience_reads,er.execution_snapshot ? 'personalSkills' as has_personal_skills,er.execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(er.native_skills) n where n ? 'personal') as native_personal_pins,er.execution_snapshot->'personalSkills' as personal_skills,er.execution_snapshot->'content' as content,
       er.content_generation_id,er.content_scene_state,er.reference_reads,er.prompt_snapshot->>'userRequest' as user_request,er.user_message_id,er.prompt_snapshot->'sessionReferences' as session_references,er.prompt_snapshot->'referenceSelections' as reference_selections
     from allrice_employee_runs er join allrice_chat_sessions s on s.id=er.session_id
     where er.run_id=${scope.runId} and er.session_id=${scope.sessionId}
@@ -652,6 +655,7 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
       | 'session_references'
       | 'brand_workflow'
       | 'personal_instance_id'
+      | 'module_snapshot'
     >,
   ) => {
     if (row.personal_instance_id) instances.add(row.personal_instance_id);
@@ -662,6 +666,23 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
       const parsed = EmployeeRuntimeContentSchema.safeParse(row.content);
       if (!parsed.success) return unavailable();
       instances.add(parsed.data.instanceId);
+    }
+    if (row.module_snapshot) {
+      const frozen = EmployeeExecutionSnapshotSchema.parse(row.module_snapshot);
+      const pins =
+        frozen.schemaVersion === 2
+          ? (frozen.moduleInvocation?.intent.references ?? [])
+          : [];
+      const versionIds = pins.flatMap((pin) =>
+        pin.origin === 'file' ? [pin.file.versionId] : [],
+      );
+      if (versionIds.length) {
+        const sources = await sql<{ session_id: string | null }[]>`
+          select distinct session_id from allrice_deliverable_versions
+          where id in ${sql(versionIds)} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}`;
+        for (const source of sources)
+          if (source.session_id) sessions.add(source.session_id);
+      }
     }
     for (const ref of row.session_references ?? []) {
       sessions.add(ref.sessionId);
@@ -725,9 +746,10 @@ async function contentGraph(scope: RunScope, sql: ContentSql) {
         | 'session_references'
         | 'reference_selections'
         | 'reference_reads'
+        | 'module_snapshot'
       >[]
     >`
-      select distinct execution_snapshot->'workflowInvocation' brand_workflow,experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
+      select distinct case when execution_snapshot ? 'moduleInvocation' then execution_snapshot end module_snapshot,execution_snapshot->'workflowInvocation' brand_workflow,experience_reads,execution_snapshot ? 'personalSkills' as has_personal_skills,execution_snapshot->'instance'->>'id' as personal_instance_id,(select jsonb_agg(jsonb_build_object('id',n->'id','personal',n->'personal')) from jsonb_array_elements(native_skills) n where n ? 'personal') as native_personal_pins,execution_snapshot->'personalSkills' as personal_skills,execution_snapshot->'content' as content,content_scene_state,reference_reads,prompt_snapshot->'sessionReferences' as session_references,prompt_snapshot->'referenceSelections' as reference_selections
       from allrice_employee_runs where content_generation_id=${id} and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId}
         and error_code is distinct from 'STEER_CONSUMED'
         ${dependencies ? sql`and run_id in ${sql([...dependencies])}` : sql``} limit 129`;
@@ -2122,12 +2144,44 @@ export async function readEmployeeReferenceCitations(scope: RunScope) {
  * Ordinary method publication does not invalidate a valid frozen revision. */
 export async function assertEmployeeContentContext(
   scope: RunScope,
-  generationId: string,
+  generationId: string | null,
   worker?: { workerId: string; jobId: string; leaseToken: string },
 ) {
   const accepted = await withContentLocks(scope, async (tx) => {
     if (!(await validContentLease(scope, worker, tx))) return false;
     const run = await ownedRun(scope, tx);
+    if (run.module_snapshot) {
+      const { assertFrozenBrandMediaModule, BrandMediaError } =
+        await import('../brand-media/server-wiring.ts');
+      try {
+        await assertFrozenBrandMediaModule(
+          tx,
+          EmployeeExecutionSnapshotSchema.parse(run.module_snapshot),
+          scope,
+          false,
+        );
+      } catch (error) {
+        if (
+          error instanceof BrandMediaError ||
+          error instanceof EmployeeModuleError ||
+          error instanceof BrandContentError ||
+          error instanceof DataAccessError ||
+          error instanceof ReferenceRuntimeError ||
+          error instanceof EmployeeInstanceError ||
+          error instanceof ZodError
+        )
+          return unavailable();
+        throw error;
+      }
+    }
+    // A module installed on a historical employee still uses this dispatch
+    // boundary even if that employee has no content-generation snapshot.
+    if (generationId === null)
+      return (
+        !!run.module_snapshot &&
+        !run.content &&
+        (await validContentLease(scope, worker, tx))
+      );
     const [context] = await tx<
       ContentContextRow[]
     >`select * from allrice_employee_content_contexts where session_id=${scope.sessionId} and generation_id=${generationId} for update`;

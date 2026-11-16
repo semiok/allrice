@@ -18,6 +18,7 @@ import {
   HelpDrawer,
   ui,
   runActive,
+  candidateRequestId,
   useBrandMediaRunEvents,
   type BrandMediaClient,
   type BrandMediaRun,
@@ -140,41 +141,53 @@ export function BrandMediaPanel({
   const reload = useCallback(async () => {
     const version = ++generation.current;
     try {
-      const [topicPage, articlePage, schedule, recovery] = await Promise.all([
-        client.read({ view: 'topics' }),
-        client.read({
-          view: 'articles',
-          ...(state === 'all' ? {} : { state }),
-        }),
-        client.read({ view: 'calendar', month, timezone }),
-        client.runs(),
-      ]);
+      const [topicPage, articlePage, schedule, recovery] =
+        await Promise.allSettled([
+          client.read({ view: 'topics' }),
+          client.read({
+            view: 'articles',
+            ...(state === 'all' ? {} : { state }),
+          }),
+          client.read({ view: 'calendar', month, timezone }),
+          client.runs(),
+        ]);
       if (version !== generation.current) return;
-      if (topicPage.view === 'topics') {
-        setTopics(topicPage.items);
-        setTopicCursor(topicPage.nextCursor);
+      if (
+        topicPage.status === 'fulfilled' &&
+        topicPage.value.view === 'topics'
+      ) {
+        setTopics(topicPage.value.items);
+        setTopicCursor(topicPage.value.nextCursor);
       }
-      if (articlePage.view === 'articles') {
-        setArticles(articlePage.items);
-        setArticleCursor(articlePage.nextCursor);
-        setSelectedId((old) => old ?? articlePage.items[0]?.id ?? null);
-        const currentId = selectedIdRef.current;
-        if (currentId) {
-          const current = await client.read({
-            view: 'article',
-            articleId: currentId,
-          });
-          if (
-            version === generation.current &&
-            current.view === 'article' &&
-            selectedIdRef.current === currentId
-          )
-            setDetail(current.article);
-        }
+      if (
+        articlePage.status === 'fulfilled' &&
+        articlePage.value.view === 'articles'
+      ) {
+        const page = articlePage.value;
+        setArticles(page.items);
+        setArticleCursor(page.nextCursor);
+        setSelectedId((old) => old ?? page.items[0]?.id ?? null);
       }
-      if (schedule.view === 'calendar') setCalendar(schedule.items);
-      setRuns(recovery.runs);
-      setError('');
+      if (schedule.status === 'fulfilled' && schedule.value.view === 'calendar')
+        setCalendar(schedule.value.items);
+      if (recovery.status === 'fulfilled') setRuns(recovery.value.runs);
+      const failed = [topicPage, articlePage, schedule, recovery].find(
+        (value) => value.status === 'rejected',
+      );
+      setError(failed?.status === 'rejected' ? failed.reason.message : '');
+      const currentId = selectedIdRef.current;
+      if (currentId) {
+        const current = await client.read({
+          view: 'article',
+          articleId: currentId,
+        });
+        if (
+          version === generation.current &&
+          current.view === 'article' &&
+          selectedIdRef.current === currentId
+        )
+          setDetail(current.article);
+      }
     } catch (cause) {
       if (version === generation.current)
         setError(
@@ -231,7 +244,14 @@ export function BrandMediaPanel({
         JSON.stringify({ ...input, requestId: undefined })
         ? previous
         : {
-            requestId: crypto.randomUUID(),
+            requestId:
+              input.operation === 'topic.add'
+                ? await candidateRequestId(
+                    client.scope,
+                    input.sourceRunId,
+                    input.candidate,
+                  )
+                : crypto.randomUUID(),
             input: { ...input, requestId: '' } as Scoped<BrandMediaUserCommand>,
           };
     request.input = {
@@ -263,7 +283,8 @@ export function BrandMediaPanel({
     void command(input, key).catch(() => {});
   };
   const candidatesRun = runs.find(
-    (row) => row.invocation.intent.operation === 'candidates',
+    (row) =>
+      !row.unavailable && row.invocation.intent.operation === 'candidates',
   );
   const articleRun =
     selected &&
@@ -294,11 +315,29 @@ export function BrandMediaPanel({
         invocation: result.invocation,
         deliveries: [],
         submission: null,
+        addedCandidates: [],
+        unavailable: false,
       },
       ...old.filter((row) => row.run.id !== result.run.id),
     ]);
     await reload();
     return result;
+  };
+  const retry = (row: BrandMediaRun) => {
+    if (busy || row.unavailable || runActive(row)) return;
+    setBusy(true);
+    const {
+      workspaceId: _workspace,
+      instanceId: _instance,
+      ...intent
+    } = row.invocation.intent;
+    void generate({
+      ...intent,
+      requestId: crypto.randomUUID(),
+      sessionId: row.sessionId,
+    })
+      .catch((cause) => setError(cause.message))
+      .finally(() => setBusy(false));
   };
   const openArticle = (article: BrandMediaArticle) => {
     setState('all');
@@ -440,6 +479,16 @@ export function BrandMediaPanel({
         </p>
       )}
       {notice && <p role="status">{notice}</p>}
+      {runs
+        .filter((row) => row.unavailable)
+        .map((row) => (
+          <RunStatus
+            key={row.run.id}
+            row={row}
+            client={client}
+            refresh={reload}
+          />
+        ))}
       <div className={ui.content}>
         {tab === 'calendar' && (
           <section
@@ -552,7 +601,8 @@ export function BrandMediaPanel({
                 row={candidatesRun}
                 client={client}
                 refresh={reload}
-                onRetry={() => setForm({ kind: 'candidates' })}
+                onRetry={() => retry(candidatesRun)}
+                retrying={busy}
               />
             )}
             {form?.kind === 'candidates' &&
@@ -561,7 +611,14 @@ export function BrandMediaPanel({
                   <h4>{candidate.title}</h4>
                   <p>{candidate.summary}</p>
                   <Button
-                    disabled={busy}
+                    disabled={
+                      busy ||
+                      candidatesRun!.addedCandidates.some(
+                        (added) =>
+                          added.title === candidate.title &&
+                          added.summary === candidate.summary,
+                      )
+                    }
                     onClick={() => {
                       const intent = candidatesRun!.invocation.intent;
                       if (intent.operation !== 'candidates') return;
@@ -577,7 +634,13 @@ export function BrandMediaPanel({
                       );
                     }}
                   >
-                    加入选题库
+                    {candidatesRun!.addedCandidates.some(
+                      (added) =>
+                        added.title === candidate.title &&
+                        added.summary === candidate.summary,
+                    )
+                      ? '已加入 ✓'
+                      : '加入选题库'}
                   </Button>
                 </article>
               ))}
@@ -744,9 +807,8 @@ export function BrandMediaPanel({
                         row={articleRun}
                         client={client}
                         refresh={reload}
-                        onRetry={() =>
-                          setForm({ kind: 'article', article: selected })
-                        }
+                        onRetry={() => retry(articleRun)}
+                        retrying={busy}
                       />
                     )}
                     <div className={ui.body} aria-label="文章正文">
@@ -876,15 +938,22 @@ function RunStatus({
   client,
   refresh,
   onRetry,
+  retrying = false,
 }: {
   row: BrandMediaRun;
   client: BrandMediaClient;
   refresh: () => Promise<void>;
-  onRetry: () => void;
+  onRetry?: () => void;
+  retrying?: boolean;
 }) {
   const [error, setError] = useState('');
   return (
     <div role="status">
+      {row.unavailable && (
+        <p>
+          这次生成的文章或参考资料已不可用。已保存的成果可在交付成果中核对。
+        </p>
+      )}
       {runActive(row) ? (
         <>
           <span>
@@ -916,7 +985,11 @@ function RunStatus({
               ? '已取消生成'
               : '生成失败：' + (row.run.error?.message ?? '暂时无法完成')}
           </span>
-          <Button onClick={onRetry}>重试</Button>
+          {onRetry && !row.unavailable && (
+            <Button disabled={retrying} onClick={onRetry}>
+              重试
+            </Button>
+          )}
         </>
       )}
       {error && <p role="alert">{error}</p>}

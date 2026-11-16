@@ -51,10 +51,11 @@ import {
 import {
   applyBrandMediaUserCommand,
   readBrandMediaRecords,
+  readBrandMediaWritingSource,
   submitBrandMediaArticleRecord,
   type BrandMediaScope,
 } from './repository.ts';
-import { brandMediaFail as fail } from './errors.ts';
+import { BrandMediaError, brandMediaFail as fail } from './errors.ts';
 import type postgres from 'postgres';
 import type { BrandContentIdentity } from '../brand-content/types.ts';
 import { getEmployeeInstance } from '../employees/employee-instances.ts';
@@ -77,7 +78,11 @@ import {
   linkFileToSession,
 } from '../workspace/service.ts';
 import { getRun } from '../execution/queue.ts';
-import { readArtifact, readArtifactBytes } from '../artifact-review.ts';
+import {
+  ArtifactReviewError,
+  readArtifact,
+  readArtifactBytes,
+} from '../artifact-review.ts';
 import type { StoragePort } from '@allrice/contracts';
 
 export { BrandMediaError } from './errors.ts';
@@ -687,34 +692,41 @@ export async function generateBrandMedia(
       },
       { sessionId, freezeAccountCapabilities: true },
     );
-  const uploadIds = await transaction(getDatabase(), async (tx) => {
-    const scope = await requireBrandContentScope(tx, context, intent, true);
-    await requireEmployeeModuleBinding(
-      tx,
-      scope,
-      brandMediaRelease,
-      module.revision,
-    );
-    await assertReferences(tx, context, scope, intent.references);
-    const ids = [];
-    for (const pin of intent.references)
-      if (pin.origin === 'upload') {
-        const [file] =
-          await tx`select file_name from allrice_workbench_file_policies where object_id=${pin.file.objectId}
+  const { uploadIds, writingSource } = await transaction(
+    getDatabase(),
+    async (tx) => {
+      const scope = await requireBrandContentScope(tx, context, intent, true);
+      await requireEmployeeModuleBinding(
+        tx,
+        scope,
+        brandMediaRelease,
+        module.revision,
+      );
+      await assertReferences(tx, context, scope, intent.references);
+      const ids = [];
+      for (const pin of intent.references)
+        if (pin.origin === 'upload') {
+          const [file] =
+            await tx`select file_name from allrice_workbench_file_policies where object_id=${pin.file.objectId}
         and organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId} for share`;
-        if (!file) fail('source_unavailable');
-        await linkFileToSession({
-          context,
-          workspaceId: scope.workspaceId,
-          sessionId,
-          objectId: pin.file.objectId,
-          fileName: file.file_name,
-          database: tx,
-        });
-        ids.push(pin.file.objectId);
-      }
-    return ids;
-  });
+          if (!file) fail('source_unavailable');
+          await linkFileToSession({
+            context,
+            workspaceId: scope.workspaceId,
+            sessionId,
+            objectId: pin.file.objectId,
+            fileName: file.file_name,
+            database: tx,
+          });
+          ids.push(pin.file.objectId);
+        }
+      const writingSource =
+        intent.operation === 'article'
+          ? await readBrandMediaWritingSource(tx, scope, intent.articleId)
+          : null;
+      return { uploadIds: ids, writingSource };
+    },
+  );
   const invocation = BrandMediaInvocationSchema.parse({ module, intent });
   const receipt = await sendChatMessage(
     context,
@@ -726,7 +738,10 @@ export async function generateBrandMedia(
       attachmentIds: uploadIds,
       text:
         '品牌自媒体页面请求。请先读取 brand-media 使用说明，再完成本次固定请求。候选只交付，不加入选题；正文只提交固定 articleId/revision。\n' +
-        JSON.stringify(intent),
+        JSON.stringify(intent) +
+        (writingSource
+          ? '\n服务端固定选题与写作要求：\n' + JSON.stringify(writingSource)
+          : ''),
       referenceRevisionIds: intent.references.flatMap((pin) =>
         pin.origin === 'reference' ? [pin.revisionId] : [],
       ),
@@ -1015,101 +1030,146 @@ export async function readBrandMediaRuns(
         );
         if (snapshot.schemaVersion !== 2 || !snapshot.moduleInvocation)
           throw new DataAccessError('authorization_denied');
-        await assertReferences(
-          tx,
-          context,
-          scope,
-          snapshot.moduleInvocation.intent.references,
-          false,
-        );
-        const outputs = await tx<
-          { version_id: string }[]
-        >`select a.version_id from allrice_workbench_artifacts a
+        const native = {
+          run: await getRun(context, scope.workspaceId, row.run_id),
+          sessionId: row.session_id,
+          invocation: snapshot.moduleInvocation,
+        };
+        try {
+          if (snapshot.moduleInvocation.intent.operation === 'article')
+            await readBrandMediaRecords(tx, scope, {
+              ...input,
+              view: 'article',
+              articleId: snapshot.moduleInvocation.intent.articleId,
+            });
+          await assertReferences(
+            tx,
+            context,
+            scope,
+            snapshot.moduleInvocation.intent.references,
+            false,
+          );
+          const outputs = await tx<
+            { version_id: string }[]
+          >`select a.version_id from allrice_workbench_artifacts a
         join allrice_audit_events e on e.resource_id=a.version_id and e.action='brand.media.delivery'
         where a.run_id=${row.run_id} and a.organization_id=${scope.organizationId} and a.workspace_id=${scope.workspaceId} and a.owner_id=${scope.ownerId}
           and e.organization_id=a.organization_id and e.workspace_id=a.workspace_id and e.actor_id=a.owner_id
           and e.metadata->'module'=${tx.json(brandMediaRelease)} order by e.occurred_at,a.version_id`;
-        const deliveries = [];
-        for (const output of outputs) {
-          const artifact = await readArtifact(
-            tx,
-            context,
-            row.session_id,
-            output.version_id,
-          );
-          await holdFileAuthority(
-            tx,
-            context,
-            scope,
-            {
-              objectId: artifact.object.id,
-              versionId: artifact.id,
-              checksum: artifact.object.checksum,
-            },
-            false,
-          );
-          await assertBrandContentFile(
-            tx,
-            context,
-            scope,
-            {
-              objectId: artifact.object.id,
-              versionId: artifact.id,
-              checksum: artifact.object.checksum,
-            },
-            false,
-            false,
-          );
-          const bytes = await readArtifactBytes(storage, artifact.object);
-          deliveries.push({
-            file: {
-              objectId: artifact.object.id,
-              versionId: artifact.id,
-              checksum: artifact.object.checksum,
-            },
-            content: new TextDecoder().decode(bytes),
-            format: artifact.version.format,
-          });
-        }
-        let submission: {
-          articleUpdated: boolean;
-          revision: number | null;
-        } | null = null;
-        const intent = snapshot.moduleInvocation.intent;
-        if (intent.operation === 'article' && deliveries.length) {
-          const [receipt] = await tx<
-            { response: unknown }[]
-          >`select response from allrice_brand_content_requests
+          const deliveries = [];
+          for (const output of outputs) {
+            const artifact = await readArtifact(
+              tx,
+              context,
+              row.session_id,
+              output.version_id,
+            );
+            await holdFileAuthority(
+              tx,
+              context,
+              scope,
+              {
+                objectId: artifact.object.id,
+                versionId: artifact.id,
+                checksum: artifact.object.checksum,
+              },
+              false,
+            );
+            await assertBrandContentFile(
+              tx,
+              context,
+              scope,
+              {
+                objectId: artifact.object.id,
+                versionId: artifact.id,
+                checksum: artifact.object.checksum,
+              },
+              false,
+              false,
+            );
+            const bytes = await readArtifactBytes(storage, artifact.object);
+            deliveries.push({
+              file: {
+                objectId: artifact.object.id,
+                versionId: artifact.id,
+                checksum: artifact.object.checksum,
+              },
+              content: new TextDecoder().decode(bytes),
+              format: artifact.version.format,
+            });
+          }
+          let submission: {
+            articleUpdated: boolean;
+            revision: number | null;
+          } | null = null;
+          const intent = snapshot.moduleInvocation.intent;
+          if (intent.operation === 'article' && deliveries.length) {
+            const [receipt] = await tx<
+              { response: unknown }[]
+            >`select response from allrice_brand_content_requests
             where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}
               and instance_id=${scope.instanceId} and request_id=${'brand-media:' + intent.requestId}`;
-          const parsed = BrandMediaMutationResultSchema.safeParse(
-            receipt?.response,
-          );
-          const submitted =
-            parsed.success &&
-            parsed.data.kind === 'article' &&
-            parsed.data.article.id === intent.articleId &&
-            deliveries.some(
-              (delivery) =>
-                delivery.file.versionId ===
-                (parsed.data as { kind: 'article'; article: BrandMediaArticle })
-                  .article.body?.versionId,
+            const parsed = BrandMediaMutationResultSchema.safeParse(
+              receipt?.response,
             );
-          submission = {
-            articleUpdated: submitted,
-            revision:
-              submitted && parsed.success && parsed.data.kind === 'article'
-                ? parsed.data.article.revision
-                : null,
-          };
+            const submitted =
+              parsed.success &&
+              parsed.data.kind === 'article' &&
+              parsed.data.article.id === intent.articleId &&
+              deliveries.some(
+                (delivery) =>
+                  delivery.file.versionId ===
+                  (
+                    parsed.data as {
+                      kind: 'article';
+                      article: BrandMediaArticle;
+                    }
+                  ).article.body?.versionId,
+              );
+            submission = {
+              articleUpdated: submitted,
+              revision:
+                submitted && parsed.success && parsed.data.kind === 'article'
+                  ? parsed.data.article.revision
+                  : null,
+            };
+          }
+          const selections = await tx<{ response: unknown }[]>`
+          select response from allrice_brand_content_requests
+          where organization_id=${scope.organizationId} and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId}
+            and instance_id=${scope.instanceId} and response->>'kind'='topic'
+            and response->'topic'->>'sourceRunId'=${row.run_id}`;
+          const addedCandidates = selections.flatMap(({ response }) => {
+            const parsed = BrandMediaMutationResultSchema.safeParse(response);
+            return parsed.success && parsed.data.kind === 'topic'
+              ? [parsed.data.topic.candidate]
+              : [];
+          });
+          results.push({
+            ...native,
+            submission,
+            deliveries,
+            addedCandidates,
+            unavailable: false,
+          });
+        } catch (error) {
+          if (!(
+            error instanceof ReferenceRuntimeError ||
+            error instanceof BrandContentError ||
+            error instanceof BrandMediaError ||
+            error instanceof ArtifactReviewError ||
+            (error instanceof DataAccessError &&
+              ['not_found', 'authorization_denied'].includes(error.code))
+          ))
+            throw error;
+          results.push({
+            ...native,
+            submission: null,
+            deliveries: [],
+            addedCandidates: [],
+            unavailable: true,
+          });
         }
-        results.push({
-          submission,
-          run: await getRun(context, scope.workspaceId, row.run_id),
-          sessionId: row.session_id,
-          invocation: snapshot.moduleInvocation,
-          deliveries,
-        });
       }
       return { runs: results };
     },

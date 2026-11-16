@@ -1,12 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
 
 import { allRiceToolManifest, employeeToolCatalog } from '@allrice/contracts';
 import { Context } from '@deepseek-ai/cordis';
 import { ToolCallId } from '@deepseek-ai/dsh-llm';
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt';
-import Tools from '@deepseek-ai/dsh-tools';
+import Tools, { defineTool } from '@deepseek-ai/dsh-tools';
 import Web from '@deepseek-ai/dsh-web';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -219,6 +221,117 @@ describe('AllRice worker tool manifest contract', () => {
           wireName,
         })),
       );
+    }
+    // This registry also projects a source descriptor with .map. Evaluate the
+    // actual imported projection and actual registration method, then read the
+    // public DSH registry; copying manifest pairs here would only self-confirm.
+    const source = ts.createSourceFile(
+      'runtime.mjs',
+      runtimeSource,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.JS,
+    );
+    const registries: ts.ArrayLiteralExpression[] = [],
+      methods: ts.MethodDeclaration[] = [];
+    const visit = (node: ts.Node) => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === 'brokerNativeTools' &&
+        node.initializer &&
+        ts.isArrayLiteralExpression(node.initializer)
+      )
+        registries.push(node.initializer);
+      if (
+        ts.isMethodDeclaration(node) &&
+        node.name.getText(source) === 'registerNativeTools'
+      )
+        methods.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(registries).toHaveLength(1);
+    expect(methods).toHaveLength(1);
+    expect(runtimeSource).toContain('this.registerNativeTools();');
+    const projections = registries[0]!.elements.flatMap((node) => {
+      if (!ts.isSpreadElement(node) || !ts.isCallExpression(node.expression))
+        return [];
+      const call = node.expression;
+      if (
+        !ts.isPropertyAccessExpression(call.expression) ||
+        call.expression.name.text !== 'map'
+      )
+        return [];
+      return [{ binding: call.expression.expression.getText(source), call }];
+    });
+    expect(projections.map((projection) => projection.binding)).toEqual([
+      'brandMediaTools',
+    ]);
+    const imported = source.statements.flatMap((statement) => {
+      if (
+        !ts.isImportDeclaration(statement) ||
+        !ts.isStringLiteral(statement.moduleSpecifier) ||
+        statement.moduleSpecifier.text !==
+          '@allrice/contracts/native-runtime' ||
+        !statement.importClause?.namedBindings ||
+        !ts.isNamedImports(statement.importClause.namedBindings)
+      )
+        return [];
+      return statement.importClause.namedBindings.elements.map((specifier) => ({
+        imported: (specifier.propertyName ?? specifier.name).text,
+        local: specifier.name.text,
+      }));
+    });
+    for (const binding of ['brandMediaTools', 'brandMediaNativeParameters'])
+      expect(imported).toContainEqual({ imported: binding, local: binding });
+    expect(runtimeSource).toContain(
+      "import { defineTool } from '@deepseek-ai/dsh-tools';",
+    );
+    const nativeContract = await import('@allrice/contracts/native-runtime');
+    const mappedRegistrations = runInNewContext(
+      projections[0]!.call.getText(source),
+      {
+        brandMediaTools: nativeContract.brandMediaTools,
+        brandMediaNativeParameters: nativeContract.brandMediaNativeParameters,
+      },
+    ) as { canonicalName: string; wireName: string }[];
+    expect(Array.isArray(mappedRegistrations)).toBe(true);
+    const mappedContext = new Context();
+    try {
+      await mappedContext.plugin(SystemPrompt);
+      await mappedContext.plugin(Tools);
+      const host = {
+        ctx: mappedContext,
+        nativeTools: new Set(
+          mappedRegistrations.map((tool) => tool.canonicalName),
+        ),
+        nativeToolsRegistered: new Set<string>(),
+      };
+      const register = runInNewContext(
+        `({ ${methods[0]!.getText(source)} }).registerNativeTools`,
+        {
+          brokerNativeTools: mappedRegistrations,
+          defineTool,
+          isBoundedReferenceToolName: nativeContract.isBoundedReferenceToolName,
+        },
+      ) as (this: typeof host) => void;
+      register.call(host);
+      expect([...host.nativeToolsRegistered]).toEqual(
+        mappedRegistrations.map((tool) => tool.canonicalName),
+      );
+      runtimePairs.push(
+        ...mappedRegistrations.map((tool) => {
+          const registered = mappedContext.tools.get(tool.wireName);
+          expect(registered).toBeDefined();
+          return {
+            canonicalName: tool.canonicalName,
+            wireName: registered!.name,
+          };
+        }),
+      );
+    } finally {
+      await mappedContext.fiber.dispose();
     }
     // Native tool-web registers fetch through its public factory, not the
     // declaration array. Exercise that registration and its Broker dispatch.

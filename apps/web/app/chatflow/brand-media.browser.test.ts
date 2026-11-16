@@ -138,6 +138,8 @@ type Recovery = {
   sessionId: string;
   invocation: { module: typeof binding; intent: Record<string, unknown> };
   submission: { articleUpdated: boolean; revision: number | null } | null;
+  addedCandidates: BrandMediaTopic['candidate'][];
+  unavailable: boolean;
   deliveries: Array<{ file: typeof file; format: string; content: string }>;
 };
 function recovery(
@@ -170,6 +172,8 @@ function recovery(
     sessionId: id(6),
     invocation: { module: binding, intent },
     submission: null,
+    addedCandidates: [],
+    unavailable: false,
     deliveries:
       status === 'succeeded'
         ? [
@@ -206,6 +210,8 @@ type State = {
   helpGate?: Promise<void>;
   addGate?: Promise<void>;
   failGenerateOnce?: boolean;
+  failCandidateOnce?: boolean;
+  failAllRecovery?: boolean;
   failRecoveryAfterGenerate?: boolean;
   moreTopics?: boolean;
   moreArticles?: boolean;
@@ -386,7 +392,10 @@ suite('MET-224 main-area brand media text workflow', () => {
             });
           }
           if (view === 'runs') {
-            if (state.failRecoveryAfterGenerate && state.runs.length)
+            if (
+              state.failAllRecovery ||
+              (state.failRecoveryAfterGenerate && state.runs.length)
+            )
               return reply({ message: '恢复读取暂时失败' }, 503);
             return reply({ runs: state.runs });
           }
@@ -448,6 +457,14 @@ suite('MET-224 main-area brand media text workflow', () => {
           });
         }
         if (body?.operation === 'topic.add') {
+          if (state.failCandidateOnce) {
+            state.failCandidateOnce = false;
+            return reply({ message: '选入请求网络中断' }, 503);
+          }
+          const run = state.runs.find((row) => row.run.id === body.sourceRunId);
+          run?.addedCandidates.push(
+            body.candidate as BrandMediaTopic['candidate'],
+          );
           const added = {
             ...topic(11),
             candidate: body.candidate,
@@ -810,10 +827,127 @@ suite('MET-224 main-area brand media text workflow', () => {
       summary: '下班后的轻松时刻',
     });
     expect(selected).not.toHaveProperty('moduleInvocation');
+    await page.getByRole('button', { name: '已加入 ✓', exact: true }).waitFor();
+    await page.getByRole('button', { name: '← 回到对话' }).click();
+    await f.open();
+    await candidatesPage(page);
+    expect(
+      await page
+        .getByRole('button', { name: '已加入 ✓', exact: true })
+        .isDisabled(),
+    ).toBe(true);
+    expect(
+      f.state.requests.filter((req) => req.body?.operation === 'topic.add'),
+    ).toHaveLength(1);
     await page.getByRole('button', { name: '← 选题库' }).click();
     expect(
       await page.getByRole('heading', { name: '已加载 2 个选题' }).isVisible(),
     ).toBe(true);
+    await f.close();
+  });
+
+  it('candidate selection keeps the same operation identity after an uncertain request and a full host remount', async () => {
+    const f = await fixture({
+      runs: [recovery('candidates')],
+      failCandidateOnce: true,
+    });
+    await f.open();
+    await candidatesPage(f.page);
+    await f.page
+      .getByRole('button', { name: '加入选题库', exact: true })
+      .click();
+    await f.page.getByText('选入请求网络中断', { exact: false }).waitFor();
+    await f.page.getByRole('button', { name: '← 回到对话' }).click();
+    await f.open();
+    await candidatesPage(f.page);
+    await f.page
+      .getByRole('button', { name: '加入选题库', exact: true })
+      .click();
+    await f.page
+      .getByRole('button', { name: '已加入 ✓', exact: true })
+      .waitFor();
+    const adds = f.state.requests.filter(
+      (req) => req.body?.operation === 'topic.add',
+    );
+    expect(adds).toHaveLength(2);
+    expect(adds[1]!.body!.requestId).toBe(adds[0]!.body!.requestId);
+    expect(f.state.topics).toHaveLength(2);
+    await f.close();
+  });
+
+  it.each(['failed', 'canceled'] as const)(
+    'cold article %s retry sends the original instructions, exact target and pins as a new controlled request',
+    async (status) => {
+      const failed = recovery('article', status),
+        pin = { origin: 'upload', file: { objectId: id(90), checksum } };
+      failed.invocation.intent.instructions = '保留结构，给通勤族增加真实场景';
+      failed.invocation.intent.references = [pin];
+      const f = await fixture({ runs: [failed] });
+      await f.open();
+      await f.page.getByRole('tab', { name: '文章库', exact: true }).click();
+      await f.page.getByRole('button', { name: '重试', exact: true }).click();
+      await f.page.getByText('已排队，等待当前员工', { exact: true }).waitFor();
+      const sent = generates(f.state);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.body).toMatchObject({
+        operation: 'article',
+        articleId: id(20),
+        expectedRevision: 1,
+        instructions: failed.invocation.intent.instructions,
+        references: [pin],
+        sessionId: failed.sessionId,
+      });
+      expect(sent[0]!.body!.requestId).not.toBe(
+        failed.invocation.intent.requestId,
+      );
+      expect(sent[0]!.body).not.toHaveProperty('deliveryMode');
+      await f.close();
+    },
+  );
+
+  it('applies legal topics, articles and calendar even when recovery reading fails, and preserves cancel for an unavailable historical target', async () => {
+    const missing = recovery('article', 'queued');
+    missing.invocation.intent.articleId = id(777);
+    missing.unavailable = true;
+    const scheduled = article();
+    scheduled.publication = {
+      state: 'scheduled',
+      schedule: { plannedAt: '2026-11-20T08:00:00.000Z', timezone: 'UTC' },
+      links: null,
+    };
+    const f = await fixture({
+      failAllRecovery: true,
+      articles: [scheduled],
+      runs: [missing],
+    });
+    await f.open();
+    await f.page.getByText('恢复读取暂时失败', { exact: false }).waitFor();
+    await f.page
+      .getByRole('button', { name: '文章 20', exact: true })
+      .waitFor();
+    await topicsPage(f.page);
+    await f.page
+      .getByRole('heading', { name: '1 个选题', exact: true })
+      .waitFor();
+    await f.page.getByRole('tab', { name: '文章库', exact: true }).click();
+    await f.page
+      .getByRole('heading', { name: '文章 20', exact: true })
+      .waitFor();
+    f.state.failAllRecovery = false;
+    await f.page.getByRole('button', { name: '刷新', exact: true }).click();
+    await f.page
+      .getByText(
+        '这次生成的文章或参考资料已不可用。已保存的成果可在交付成果中核对。',
+      )
+      .waitFor();
+    await f.page.getByRole('button', { name: '取消', exact: true }).click();
+    await f.page.getByText('已取消生成', { exact: true }).waitFor();
+    expect(
+      f.state.requests.some((req) => req.path.includes(id(300) + '/cancel')),
+    ).toBe(true);
+    expect(
+      await f.page.getByRole('button', { name: '重试', exact: true }).count(),
+    ).toBe(0);
     await f.close();
   });
 

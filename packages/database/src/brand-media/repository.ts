@@ -98,11 +98,16 @@ const createdAt = (tx: Tx) => tx`
   to_char(created_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as created_at_iso`;
 const articleTimes = (tx: Tx) => tx`${createdAt(tx)},
   to_char(planned_at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as planned_at_iso`;
-async function readTopic(tx: Tx, scope: BrandMediaScope, id: string) {
+async function readTopic(
+  tx: Tx,
+  scope: BrandMediaScope,
+  id: string,
+  lock = true,
+) {
   const [row] = await tx<
     TopicRow[]
   >`select *,${createdAt(tx)} from allrice_brand_media_topics
-    where ${scopeWhere(tx, scope)} and id=${id} for update`;
+    where ${scopeWhere(tx, scope)} and id=${id} ${lock ? tx`for update` : tx``}`;
   if (!row) fail('not_found');
   return topicDto(row);
 }
@@ -118,6 +123,20 @@ async function readArticle(
     where ${scopeWhere(tx, scope)} and id=${id} ${lock ? tx`for update` : tx``}`;
   if (!row) fail('not_found');
   return articleDto(row);
+}
+/** Exact linked input remains readable after a topic leaves the unstarted list. */
+export async function readBrandMediaWritingSource(
+  tx: Tx,
+  scope: BrandMediaScope,
+  articleId: string,
+) {
+  const article = await readArticle(tx, scope, articleId, false);
+  const topic = await readTopic(tx, scope, article.topicId, false);
+  return {
+    candidate: topic.candidate,
+    direction: topic.direction,
+    requirements: article.requirements,
+  };
 }
 const assertRevision = (actual: number, expected: number) => {
   if (actual !== expected) fail('version_conflict');

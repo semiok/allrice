@@ -3,6 +3,8 @@
  * model, Worker loop, Dev account or external publication is involved. */
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   BrandMediaReadResultSchema,
@@ -17,6 +19,7 @@ import {
   BrandMediaCandidatesResultSchema,
   BrandMediaArticleResultSchema,
   type ExecutionContext,
+  type StoragePort,
   type RunSnapshot,
   type BrandMediaInvocation,
   makeObjectKey,
@@ -57,6 +60,12 @@ import {
   requireEmployeeModuleBinding,
 } from '../../../packages/database/src/employees/employee-module-bindings.ts';
 import { employeeManifestChecksum } from '../../../packages/database/src/employees/employee-config.ts';
+import {
+  assertEmployeeContentContext,
+  prepareEmployeeContentContext,
+  EmployeeRuntimeContentError,
+} from '../../../packages/database/src/employees/employee-runtime-content.ts';
+import { acquireConversationRuntime } from '../../../packages/database/src/conversation/conversation-runtime.ts';
 import { resolveEmployeeExecution } from '../../../packages/database/src/employees/employeehub.ts';
 import {
   publishReference,
@@ -68,6 +77,7 @@ import {
 } from '../../../packages/database/src/reference-processing.ts';
 import {
   readBrandMedia,
+  readBrandMediaRuns,
   freezeBrandMediaModule,
 } from '../../../packages/database/src/brand-media/server-wiring.ts';
 import {
@@ -1468,6 +1478,73 @@ suite(
         storageRoot: f.storageRoot,
       };
     }
+    async function productionContentGuard(
+      a: Actor,
+      sent: Awaited<ReturnType<typeof generate>>,
+      run: Awaited<ReturnType<typeof execution>>,
+    ) {
+      const source = await readFile(
+        new URL('../../worker/src/jobs/employee-run.ts', import.meta.url),
+        'utf8',
+      );
+      const ast = ts.createSourceFile(
+        'employee-run.ts',
+        source,
+        ts.ScriptTarget.Latest,
+        true,
+      );
+      const initializers: ts.Expression[] = [];
+      const visit = (node: ts.Node) => {
+        if (
+          ts.isVariableDeclaration(node) &&
+          node.name.getText(ast) === 'contentGuard' &&
+          node.initializer
+        )
+          initializers.push(node.initializer);
+        ts.forEachChild(node, visit);
+      };
+      visit(ast);
+      expect(initializers).toHaveLength(1);
+      // The real handler also passes this exact object into HarnessExecutionInput.
+      expect(source).toContain('contentGuard,');
+      const scope = {
+        organizationId: a.context.organizationId,
+        workspaceId: a.scope.workspaceId,
+        ownerId: a.context.actor.id,
+        sessionId: sent.userMessage.sessionId,
+        runId: sent.run.id,
+      };
+      const contentRuntime = await prepareEmployeeContentContext(scope);
+      const resolved = await resolveEmployeeExecution(scope);
+      await acquireConversationRuntime({
+        ...scope,
+        workerId: run.context.worker.id,
+        configChecksum: employeeManifestChecksum(a.manifest),
+        compactThresholdTokens: 40000,
+      });
+      const code = ts.transpileModule(`(${initializers[0]!.getText(ast)})`, {
+        compilerOptions: {
+          target: ts.ScriptTarget.ES2022,
+          module: ts.ModuleKind.None,
+        },
+      }).outputText;
+      return runInNewContext(code, {
+        contentRuntime,
+        resolved,
+        execution: { context: run.context },
+        contentScope: scope,
+        workflowLease: {
+          workerId: run.context.worker.id,
+          jobId: run.context.jobId,
+          leaseToken: run.managedBrowserJobLeaseToken,
+        },
+        assertEmployeeContentContext,
+        EmployeeRuntimeContentError,
+        HandlerError: Error,
+        appendJobEvent: async () => {},
+        contentEvidence: undefined,
+      }) as { generationId: string; check: () => Promise<void> };
+    }
     async function broker(
       input: Awaited<ReturnType<typeof execution>>,
       name: string,
@@ -1594,6 +1671,24 @@ suite(
           },
         ],
       });
+      if (selected.result.kind !== 'topic')
+        throw Error('Expected human selection');
+      await command(a, {
+        operation: 'article.start',
+        topicId: selected.result.topic.id,
+        expectedRevision: 1,
+        requirements: '',
+        references: [],
+      });
+      const reopened = await business.GET(
+        request(a, 'brand-media', undefined, '?view=runs'),
+        params(a.scope.instanceId),
+      );
+      expect(reopened.status).toBe(200);
+      expect((await reopened.json()).runs[0].addedCandidates).toEqual([
+        sampleCandidates.candidates[0],
+      ]);
+      expect(await read(a, { view: 'topics' })).toMatchObject({ items: [] });
     });
     it('queues a new fixed article Run behind an active Run without a steer command or mutating the old snapshot, including replay', async () => {
       const a = await generationActor(),
@@ -1873,6 +1968,173 @@ suite(
       );
       expect(response.status).toBe(409);
     });
+    it('rebuilds the exact selected candidate summary, direction and optional requirements for a fresh article Session without trusting client facts', async () => {
+      const a = await generationActor(),
+        direction = '面向通勤族，写下班后十分钟的真实体验';
+      const candidates = await generate(a, candidateIntent(a, { direction }));
+      const firstRun = await execution(a, candidates);
+      await broker(
+        firstRun,
+        'workspace.brand_media.candidates',
+        sampleCandidates,
+      );
+      await finish(candidates.run.id);
+      const selected = await command(a, {
+        operation: 'topic.add',
+        candidate: sampleCandidates.candidates[0],
+        direction,
+        sourceRunId: candidates.run.id,
+        references: [],
+      });
+      if (selected.result.kind !== 'topic') throw Error('Expected topic');
+      const started = await command(a, {
+        operation: 'article.start',
+        topicId: selected.result.topic.id,
+        expectedRevision: 1,
+        requirements: '',
+        references: [],
+      });
+      if (started.result.kind !== 'article') throw Error('Expected article');
+      expect(await read(a, { view: 'topics' })).toMatchObject({ items: [] });
+      const intent = {
+        ...a.scope,
+        operation: 'article',
+        requestId: randomUUID(),
+        articleId: started.result.article.id,
+        expectedRevision: 1,
+        instructions: '根据这个选题和已选资料写正文。',
+        references: [],
+      };
+      const sent = await generate(a, intent);
+      expect(sent.userMessage.sessionId).not.toBe(
+        candidates.userMessage.sessionId,
+      );
+      const [row] =
+        await f.db`select prompt_snapshot from allrice_employee_runs where run_id=${sent.run.id}`;
+      const trusted = JSON.parse(
+        row!.prompt_snapshot.userRequest.split(
+          '服务端固定选题与写作要求：\n',
+        )[1],
+      );
+      expect(trusted).toEqual({
+        candidate: sampleCandidates.candidates[0],
+        direction,
+        requirements: '',
+      });
+      await generate(
+        a,
+        {
+          ...intent,
+          requestId: randomUUID(),
+          candidate: { title: '伪造', summary: '伪造' },
+          direction: '伪造',
+        },
+        422,
+      );
+    });
+
+    it('isolates a deleted article with revoked references while recovering an unrelated delivery and retaining the native cancel path', async () => {
+      const a = await generationActor(),
+        pin = await reference(a),
+        stale = await draft(a, [pin]);
+      const first = await generate(a, {
+        ...a.scope,
+        operation: 'article',
+        requestId: randomUUID(),
+        articleId: stale.id,
+        expectedRevision: stale.revision,
+        instructions: '写完整',
+        references: [pin],
+      });
+      const oldRun = await execution(a, first);
+      await broker(oldRun, 'workspace.brand_media.article.submit', {
+        articleId: stale.id,
+        expectedRevision: 1,
+        title: stale.title,
+        body: '已保存但不再有来源权限的正文',
+      });
+      const saved = await articleRead(a, stale.id);
+      await command(a, {
+        operation: 'article.delete',
+        articleId: stale.id,
+        expectedRevision: saved.revision,
+      });
+      const legal = await draft(a),
+        second = await generate(a, {
+          ...a.scope,
+          operation: 'article',
+          requestId: randomUUID(),
+          articleId: legal.id,
+          expectedRevision: legal.revision,
+          instructions: '写另一篇',
+          references: [],
+        });
+      const newRun = await execution(a, second);
+      await broker(newRun, 'workspace.brand_media.article.submit', {
+        articleId: legal.id,
+        expectedRevision: legal.revision,
+        title: legal.title,
+        body: '无关且合法的正文成果',
+      });
+      await finish(second.run.id);
+      const [policy] =
+        await f.db`select revision from allrice_workbench_file_policies where reference_source_id=${pin.sourceId}`;
+      await changeReferencePublication(a.context, pin.sourceId, {
+        workspaceId: a.scope.workspaceId,
+        requestId: randomUUID(),
+        action: 'delete',
+        expectedRevision: policy!.revision,
+      });
+      const response = await business.GET(
+        request(a, 'brand-media', undefined, '?view=runs'),
+        params(a.scope.instanceId),
+      );
+      expect(response.status).toBe(200);
+      const rows = (await response.json()).runs;
+      expect(
+        rows.find((row: { run: RunSnapshot }) => row.run.id === first.run.id),
+      ).toMatchObject({
+        unavailable: true,
+        deliveries: [],
+        run: { status: 'running' },
+      });
+      expect(
+        rows.find((row: { run: RunSnapshot }) => row.run.id === second.run.id),
+      ).toMatchObject({
+        unavailable: false,
+        deliveries: [{ content: '无关且合法的正文成果' }],
+        submission: { articleUpdated: true },
+      });
+      await read(a, { view: 'article', articleId: stale.id }, 404);
+      expect((await read(a, { view: 'articles' })).view).toBe('articles');
+      const storageFailure = Error('synthetic storage outage');
+      const brokenStorage: StoragePort = Object.create(
+        runtimeFixtureStorage(f.db),
+      );
+      brokenStorage.get = async () => {
+        throw storageFailure;
+      };
+      await expect(
+        readBrandMediaRuns(a.context, a.scope, brokenStorage),
+      ).rejects.toBe(storageFailure);
+      await cancelRun(a.context, a.scope.workspaceId, first.run.id, {
+        reason: '取消失效资料的生成',
+      });
+      const canceled = await business.GET(
+        request(a, 'brand-media', undefined, '?view=runs'),
+        params(a.scope.instanceId),
+      );
+      expect(
+        (await canceled.json()).runs.find(
+          (row: { run: RunSnapshot }) => row.run.id === first.run.id,
+        ),
+      ).toMatchObject({
+        unavailable: true,
+        deliveries: [],
+        run: { status: 'running', cancelRequestedAt: expect.any(String) },
+      });
+    });
+
     it('“把这篇写完整” submits only the fixed article and preserves an immutable deliverable on late CAS conflicts', async () => {
       const a = await generationActor(),
         article = await draft(a);
@@ -2138,6 +2400,36 @@ suite(
       expect(
         await f.db`select id from allrice_knowledge_sources where organization_id=${a.context.organizationId} and publication_kind is not null`,
       ).toHaveLength(0);
+      const worker = await execution(a, sent);
+      const guard = await productionContentGuard(a, sent, worker);
+      await guard.check();
+      const imageModulePath = new URL(
+        '../../worker/src/harness/prompt-images.ts',
+        import.meta.url,
+      ).href;
+      const { loadHarnessImages } = await import(imageModulePath);
+      const imageBytes = async () =>
+        loadHarnessImages(frozen!.prompt_snapshot.imageAttachments, {
+          storage: runtimeFixtureStorage(f.db)!,
+        });
+      expect(await imageBytes()).toMatchObject([
+        { mediaType: 'image/jpeg', data: input.contentBase64 },
+      ]);
+      await f.db`update allrice_storage_objects set retention_until=clock_timestamp()-interval '1 second' where id=${file.objectId}`;
+      // Immutable storage bytes still exist; the real production check denies their use.
+      expect(await imageBytes()).toMatchObject([{ data: input.contentBase64 }]);
+      await expect(guard.check()).rejects.toThrow();
+      await f.db`update allrice_storage_objects set retention_until=null where id=${file.objectId}`;
+      await guard.check();
+      await f.db`update allrice_storage_objects set deleted_at=clock_timestamp() where id=${file.objectId}`;
+      expect(await imageBytes()).toHaveLength(1);
+      await expect(guard.check()).rejects.toThrow();
+      await f.db`update allrice_storage_objects set deleted_at=null where id=${file.objectId}`;
+      await guard.check();
+      await f.db`update allrice_employee_module_bindings set revoked_at=clock_timestamp() where instance_id=${a.scope.instanceId}`;
+      await expect(guard.check()).rejects.toThrow();
+      await f.db`update allrice_employee_module_bindings set revoked_at=null where instance_id=${a.scope.instanceId}`;
+      await guard.check();
       await generate(
         a,
         candidateIntent(a, {
