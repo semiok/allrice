@@ -271,6 +271,24 @@ if mode.exists():
         self.dog.check_round(self.now)
         self.assertEqual(self.notifications(), [])
 
+    def test_deploy_target_identity_ignores_display_label_and_separators(self):
+        for index, (pending, terminal) in enumerate([
+            ('部署版本 release-99', '部署版本release-99'),
+            ('部署任务:deploy-99', '部署任务 deploy-99'),
+            ('部署版本 release-99', '部署任务：`release-99`'),
+            ('部署版本 **release-99**', '部署id release-99'),
+            ('部署版本 67251a4c', '部署 67251a4c'),
+            ('部署任务 release-99', '部署任务 release-99.'),
+        ]):
+            with self.subTest(pending=pending, terminal=terminal):
+                self.assertEqual(self.dog.wait_targets(pending), self.dog.wait_targets(terminal))
+                text = '本线正在等待%s的结果。\n%s 已完成。' % (pending, terminal)
+                self.assertFalse(self.dog.says_waiting(text))
+                self.turn(self.now-1801, text, turn_id='deploy-id-%s' % index)
+                self.dog.check_round(self.now)
+                self.assertEqual(self.notifications(), [])
+        self.assertTrue(self.dog.says_waiting('本线正在等待部署版本 release-99 的结果。\n部署版本 release-98 已完成。'))
+
     def check_at(self, now):
         with patch.object(runtime, 'stamp', return_value=datetime.fromtimestamp(now, timezone.utc).isoformat()):
             self.dog.check_round(now)

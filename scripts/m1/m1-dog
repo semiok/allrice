@@ -92,12 +92,16 @@ def direct_wait_targets(line):
 
 def wait_targets(line):
     # A bare PR number, "CI", or a copied gh command is not a running task.
-    patterns = {
-        'ci': r'(?:(?<![A-Za-z])CI(?![A-Za-z]).{0,12}\brun\s*[:：#]?\s*|/actions/runs/)(\d+)\b',
-        'm5': r'(?<![A-Za-z])M5(?![A-Za-z]).{0,12}(?:批次|batch)\s*[:：#]?\s*[`\[]?([A-Za-z0-9][A-Za-z0-9_.-]*)',
-        'deploy': r'(?:部署|deploy).{0,12}?([0-9a-f]{7,40}\b|(?:任务|批次|版本|id)\s*[:：#]?\s*[`\[]?[A-Za-z0-9][A-Za-z0-9_.-]*)',
-    }
-    return {(kind, match.lower()) for kind, pattern in patterns.items()
+    # Keys are actual IDs, independent of labels, punctuation and Markdown.
+    line = line.replace('**', '').replace('`', '')
+    identifier = r'([A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?)'
+    patterns = [
+        ('ci', r'(?:(?<![A-Za-z])CI(?![A-Za-z]).{0,12}\brun\s*[:：#]?\s*|/actions/runs/)(\d+)\b'),
+        ('m5', r'(?<![A-Za-z])M5(?![A-Za-z])\s*(?:批次|batch)\s*[:：#]?\s*' + identifier),
+        ('deploy', r'(?:部署|deploy)\s*([0-9a-f]{7,40})\b'),
+        ('deploy', r'(?:部署|deploy)\s*(?:任务|批次|版本|id)\s*[:：#]?\s*' + identifier),
+    ]
+    return {(kind, match.lower()) for kind, pattern in patterns
             for match in re.findall(pattern, line, re.I)}
 
 
