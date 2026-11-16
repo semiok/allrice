@@ -3445,7 +3445,10 @@ suite(
         await command(a, secondInput, 403);
         await f.db`update allrice_workbench_file_policies set owner_id=${a.context.actor.id} where object_id=${second.file.objectId}`;
         const body = await file(a);
-        await f.db`update allrice_brand_media_articles set body_file=${f.db.json(body)} where id=${article.id}`;
+        const prepared =
+          await f.db`update allrice_brand_media_articles set body_file=${f.db.json(body)},revision=revision+1
+          where id=${article.id} and revision=${current.revision} returning revision`;
+        expect(prepared).toEqual([{ revision: current.revision + 1 }]);
         current = await publication(a, await articleRead(a, article.id), {
           action: 'schedule',
           schedule,
