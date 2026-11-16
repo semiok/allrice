@@ -100,7 +100,9 @@ P2 仅有 Browser 人工入口，尚无 Worker 正文写入入口或工具实现
 `packages/database/src/brand-media/server-wiring.ts` 独占当前核心适配：
 
 - 身份/实例：复用 `requireBrandContentScope`，重新查真实 session、成员、
-  员工配发/实例，锁在当前事务内，不信任请求的 org/actor/enablement。
+  员工配发/实例，不信任请求的 org/actor/enablement。写入口在当前事务内持锁；
+  GET 沿旧品牌读取语义，使用一致性 repeatable-read 快照且显式 `lock=false`，
+  不让轮询阻塞写入。后续新读取仍重新核对权限，写入始终检查当前撤权。
 - 事务/幂等/审计：复用 `employeeAccessTransaction`、`brandContentDigest`、
   `allrice_brand_content_requests` 与 `allrice_audit_events`。安装和业务写入
   共用 `brand-media:<requestId>` 命名空间；同 ID 不同输入拒绝，重放先核当前门卫，
