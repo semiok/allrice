@@ -39,7 +39,9 @@ PNPM = r'''#!/bin/sh
 # stub pnpm: records the call and the environment it saw
 echo "$*|$ALLRICE_TEST_DATABASE_URL|${ALLRICE_RUN_DB_INTEGRATION:-}|${ALLRICE_RUN_BROWSER_INTEGRATION:-}|${ALLRICE_RUN_X:-}|${LEAK_ME:-}|$PWD|${M5T_VITEST_CAP:-}|$PGPORT|$HOME|${ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE:-}" >>"$HOME/pnpm.calls"
 case "$1" in
-  install) mkdir -p node_modules/.bin; touch node_modules/kept; cp "$(dirname "$0")/vitest" node_modules/.bin/vitest; exit "$(cat "$HOME/install.rc" 2>/dev/null || echo 0)" ;;
+  install) mkdir -p node_modules/.bin apps/worker/node_modules/playwright-core; touch node_modules/kept; cp "$(dirname "$0")/vitest" node_modules/.bin/vitest
+    echo 'exports.chromium = { executablePath: () => require("node:path").join(require("node:os").homedir(), "cached Chromium") };' >apps/worker/node_modules/playwright-core/index.js
+    exit "$(cat "$HOME/install.rc" 2>/dev/null || echo 0)" ;;
   exec) [ ! -e "$HOME/detach" ] || { # a detached process, orphaned at once, that starts a child of its own later
       ( /usr/bin/python3 -c 'import os,subprocess,sys,time
 os.setsid(); open(sys.argv[1],"w").write(str(os.getpid())); time.sleep(2)
@@ -51,6 +53,7 @@ esac
 '''
 VITEST = r'''#!/bin/sh
 # stub vitest, as node_modules/.bin/vitest: recorded like pnpm (same file), "exec vitest …"
+env | sort >"$HOME/vitest.env"
 exec pnpm exec vitest "$@"
 '''
 CODEX = r'''#!/bin/sh
@@ -123,6 +126,7 @@ class M5Test(unittest.TestCase):
         for home in (self.m1, self.m5):
             write(os.path.join(home, '.local/opt/node-22.23.2/bin/pnpm'), PNPM, 0o755)
             write(os.path.join(home, '.local/opt/node-22.23.2/bin/vitest'), VITEST, 0o755)
+            os.symlink(shutil.which('node'), os.path.join(home, '.local/opt/node-22.23.2/bin/node'))
         write(os.path.join(self.m1, '.local/bin/codex'), CODEX, 0o755)
         self.codex = os.path.join(self.m5, 'codex')
         write(self.codex, CODEX, 0o755)
@@ -711,6 +715,26 @@ class M5Test(unittest.TestCase):
         self.assertIn('M1: ready', p.stdout)
         write(os.path.join(self.m5, 'offline'), '')
         self.assertIn('M5: M5 不在线', self.run_m5('status').stdout)
+
+    def test_locked_browser_reaches_build_and_vitest_on_m5_only(self):
+        overrides = ('ALLRICE_TEST_CHROME_EXECUTABLE', 'ALLRICE_BROWSER_EXECUTABLE',
+                     'PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH', 'ALLRICE_MANAGED_BROWSER_EXECUTABLE', 'CHROME_PATH')
+        # No --browser: complete plans can enable their browser batches inside --build.
+        p = self.run_m5('--build', 'env | sort >browser-build.env', '--', '--maxWorkers=1', '--testTimeout=30000', 'browser.test.ts',
+                        **{key: '/caller/Chrome' for key in overrides})
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        expected = os.path.join(self.th, 'cached Chromium')
+        for path in (os.path.join(self.base, 'slots/slot-1/browser-build.env'), os.path.join(self.th, 'vitest.env')):
+            env = dict(line.split('=', 1) for line in read(path).splitlines())
+            self.assertEqual([env[key] for key in overrides], [expected] * len(overrides))
+            self.assertNotIn('LEAK_ME', env)
+        self.assertEqual([c[0] for c in self.calls(self.th) if c[0].startswith('exec')],
+                         ['exec vitest run --testTimeout=30000 browser.test.ts --maxWorkers=1'])
+        self.assertIn('no browser download', p.stdout)
+        p = self.run_m5('--on', 'm1', '--browser', '--no-build', '--', 'browser.test.ts')
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        env = dict(line.split('=', 1) for line in read(os.path.join(self.m1, 'vitest.env')).splitlines())
+        self.assertTrue(all(key not in env for key in overrides))
 
     def test_uncommitted_changes_are_named(self):
         write(os.path.join(self.repo, 'README.md'), 'dirty\n')

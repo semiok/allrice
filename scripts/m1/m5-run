@@ -346,6 +346,18 @@ phase() { # <name> <command…>: run in the worktree, record its duration
 }
 prepare() { # install and build; prints why when one fails
   phase install pnpm install --frozen-lockfile --prefer-offline ${STORE[@]+"${STORE[@]}"} || { rc=$?; interrupted install; finish "install failed"; }
+  if [ "$target" = m5 ]; then
+    # Resolve from the tested checkout and isolated HOME, never the user's Chrome.
+    # Set all existing fixture overrides before build: complete CI plans run there.
+    local chromium_path
+    chromium_path=$(cd "$wt" && clean node -e 'const {createRequire}=require("node:module"); const {resolve}=require("node:path"); console.log(createRequire(resolve("apps/worker/package.json"))("playwright-core").chromium.executablePath())') || { rc=$?; finish "could not resolve locked Chromium"; }
+    TEST_ENV+=("ALLRICE_TEST_CHROME_EXECUTABLE=$chromium_path"
+      "ALLRICE_BROWSER_EXECUTABLE=$chromium_path"
+      "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$chromium_path"
+      "ALLRICE_MANAGED_BROWSER_EXECUTABLE=$chromium_path"
+      "CHROME_PATH=$chromium_path")
+    say "browser: locked Playwright Chromium ($chromium_path); no browser download"
+  fi
   cap_vitest
   [ -z "${M5T_BUILD:-}" ] || phase build /bin/bash -c "$M5T_BUILD" || { rc=$?; interrupted build; finish "build failed"; }
 }

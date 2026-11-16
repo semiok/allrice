@@ -309,6 +309,7 @@ suite('cloud project first complete native chain', () => {
         browser = await chromium.launch({
           headless: true,
           executablePath:
+            process.env.CHROME_PATH ??
             '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
           args: [
             '--no-proxy-server',
