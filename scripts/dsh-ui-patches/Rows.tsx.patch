@@ -1,10 +1,12 @@
 --- a/packages/client/ui-workspace/src/client/rows/Rows.tsx
 +++ b/packages/client/ui-workspace/src/client/rows/Rows.tsx
-@@ -11,20 +11,20 @@
+@@ -10,21 +10,21 @@
+  * context; this package's own actions are entries like any plugin's. The
   * session and workspace hover cards are suppressed while a menu is open.
   */
- import { useEffect, useMemo, useRef, useState } from 'react'
+-import { useEffect, useMemo, useRef, useState } from 'react'
 -import type { RefObject } from 'react'
++import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 +import type { RefObject, ReactNode, ComponentProps } from 'react'
  import clsx from 'clsx'
 -import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots'
@@ -164,7 +166,15 @@
    const row = node
    const title = displayTitle(node, t)
    const selected = node.id === currentId
-@@ -595,6 +603,10 @@
+@@ -573,6 +581,7 @@
+   // their drop targets to fellow pinned rows.
+   const draggable = drag !== undefined && !row.blank && !row.archived
+   const [menuOpen, setMenuOpen] = useState(false)
++  const closeMenu = useCallback(() => { setMenuOpen(false) }, [])
+   // The menu's open state, bound into the row entries' `useMenuOpenState` hook.
+   const menuOpenState = useMemo((): MenuOpenState => [menuOpen, setMenuOpen], [menuOpen])
+   const rowRef = useRef<HTMLDivElement>(null)
+@@ -595,6 +604,10 @@
        )}
        role="treeitem"
        aria-selected={selected}
@@ -175,7 +185,7 @@
        aria-description={row.archived ? t('toast.archivedNotOpenable') : undefined}
        onClick={() => { onOpen(node.id) }}
        onPointerEnter={marquee.enter}
-@@ -632,12 +644,12 @@
+@@ -632,12 +645,12 @@
        <span className={css.slot}>
          {!row.archived && !row.blank && (showStatus
            ? <SessionStatusDots statuses={statuses} />
@@ -190,7 +200,7 @@
            ? undefined
            : (e) => { e.stopPropagation(); onRenameRequest(node.id, row.title) }}
        >
-@@ -661,7 +673,7 @@
+@@ -661,11 +674,11 @@
        {/* The strip's clicks stay in the strip: the trigger and every
            row.action entry act without also opening the row, so an entry's
            button needs no propagation handling of its own. */}
@@ -199,7 +209,12 @@
          <span className={css.rowActions} onClick={(e) => { e.stopPropagation() }}>
            <Menu
              open={menuOpen}
-@@ -693,7 +705,7 @@
+-            onClose={() => { setMenuOpen(false) }}
++            onClose={closeMenu}
+             portal
+             closeOnPointerLeave
+             anchor={(
+@@ -693,7 +706,7 @@
    return (
      <HoverCard
        anchor={ownRow}

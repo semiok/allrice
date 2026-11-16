@@ -6167,6 +6167,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const cdp = await f.context.newCDPSession(f.page);
     const internalErrors: string[] = [];
     const traces = new Set<string>();
+    let resume: Promise<unknown> = Promise.resolve();
     let observed!: () => void;
     const historyObserved = new Promise<void>((resolve) => {
       observed = resolve;
@@ -6179,7 +6180,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         internalErrors.push(error);
         observed();
       }
-      void cdp.send('Debugger.resume').catch((cause: unknown) => {
+      resume = cdp.send('Debugger.resume').catch((cause: unknown) => {
         internalErrors.push(String(cause));
         observed();
       });
@@ -6236,6 +6237,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       expect(await f.page.getByRole('tooltip').count()).toBe(0);
       expect(internalErrors).toEqual([]);
     } finally {
+      await cdp.send('Debugger.setPauseOnExceptions', { state: 'none' });
+      await resume;
       await cdp.detach();
       await f.close();
     }
