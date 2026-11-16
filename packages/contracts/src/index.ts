@@ -177,6 +177,7 @@ export {
 export * from './workflow-packages.ts';
 
 export * from './brand-content.ts';
+export * from './brand-media.ts';
 
 export * from './brand-content-workflow.ts';
 
