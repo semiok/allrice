@@ -104,6 +104,8 @@ import { employeeChatUuid } from '../../../packages/database/src/employees/emplo
 import {
   startClaimedJob,
   cancelRun,
+  getRun,
+  maintainQueue,
   completeJob,
   failJob,
 } from '../../../packages/database/src/execution/queue.ts';
@@ -1467,8 +1469,35 @@ suite(
           activeRunIds: [sent.run.id],
         }),
       );
-      await cancelRun(a.context, a.scope.workspaceId, sent.run.id, {
-        reason: 'Synthetic HTTP activity cleanup',
+      const cancellation = await cancelRun(
+        a.context,
+        a.scope.workspaceId,
+        sent.run.id,
+        {
+          reason: 'Synthetic HTTP activity cleanup',
+        },
+      );
+      expect(cancellation).toMatchObject({
+        status: 'queued',
+        cancelRequestedAt: expect.any(String),
+      });
+      const stoppingResponse = await list(
+        a,
+        `&cursor=${encodeURIComponent(first.nextCursor)}`,
+      );
+      expect(stoppingResponse.status).toBe(200);
+      expect((await stoppingResponse.json()).sessions).toContainEqual(
+        expect.objectContaining({
+          id: sent.userMessage.sessionId,
+          running: true,
+          activeRunIds: [sent.run.id],
+        }),
+      );
+      await maintainQueue();
+      expect(
+        await getRun(a.context, a.scope.workspaceId, sent.run.id),
+      ).toMatchObject({
+        status: 'canceled',
       });
       const terminalResponse = await list(
         a,

@@ -2683,8 +2683,27 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
         (row) => row.id === first.sessionId,
       ),
     ).toBe(false);
-    await queue.cancelRun(f.a.context, f.a.workspaceId, successor.run.id, {
-      reason: 'Synthetic sidebar test cleanup',
+    const cancellation = await queue.cancelRun(
+      f.a.context,
+      f.a.workspaceId,
+      successor.run.id,
+      {
+        reason: 'Synthetic sidebar test cleanup',
+      },
+    );
+    expect(cancellation).toMatchObject({
+      status: 'queued',
+      cancelRequestedAt: expect.any(String),
+    });
+    expect(await activity()).toMatchObject({
+      running: true,
+      activeRunIds: [successor.run.id],
+    });
+    await queue.maintainQueue();
+    expect(
+      await queue.getRun(f.a.context, f.a.workspaceId, successor.run.id),
+    ).toMatchObject({
+      status: 'canceled',
     });
     expect(await activity()).toMatchObject({
       running: false,
