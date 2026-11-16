@@ -69,7 +69,7 @@ sys.exit(int(os.environ.get('QUEUE_EXIT', '0')))
         return item
 
     def finished(self, item):
-        deadline = time.monotonic() + 12
+        deadline = time.monotonic() + 20
         path = Path(item['result'])
         while time.monotonic() < deadline:
             state = json.loads(path.read_text())
@@ -138,6 +138,31 @@ time.sleep(60)
                           'Path("orphan.pid").write_text(str(p.pid))')
         self.assertEqual(self.finished(item)['commandExitCode'], 0)
         self.assertFalse(running(int((self.home / 'orphan.pid').read_text())))
+        self.assert_released(item)
+
+    def test_timeout_allows_real_m5_relay_to_clean_its_separate_child_group(self):
+        m5_source = (TOOL.parent / 'm5-test').read_text()
+        relay = m5_source.split('relay() {', 1)[1].split('\n}\n', 1)[0]
+        wrapper = self.home / 'relay.sh'
+        wrapper.write_text('STOPPED=75\nrelay() {' + relay + '\n}\n'
+                           'relay 0 "$HOME/relay.log" "$@"\n')
+        def release_fixture_child():
+            path = self.home / 'relay-child.pid'
+            if path.exists() and running(int(path.read_text())):
+                try:
+                    os.killpg(int(path.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        self.addCleanup(release_fixture_child)
+        item = self.start('import os,sys; os.execv("/bin/bash", ["bash", "relay.sh", sys.executable, "-c", '
+                          '"import os,signal,time; from pathlib import Path; '
+                          'signal.signal(signal.SIGTERM, signal.SIG_IGN); '
+                          'Path(\\\"relay-child.pid\\\").write_text(str(os.getpid())); time.sleep(60)"])',
+                          timeout='2s')
+        state = self.finished(item)
+        self.assertEqual((state['commandExitCode'], state['notification']), (124, 'sent'))
+        child = int((self.home / 'relay-child.pid').read_text())
+        self.assertFalse(running(child), 'm5 relay child must exit before the completion receipt')
         self.assert_released(item)
 
     def test_same_label_is_global_and_concurrent_launch_is_atomic(self):

@@ -109,7 +109,9 @@ def stop_group(process):
     # Commands are foreground blocking commands, never self-daemonizing services.
     # Also close same-group children left behind by an otherwise successful command.
     send(signal.SIGTERM)
-    end = time.monotonic() + 1
+    # m5-test relay() polls at 1s and gives its separate child group up to 5s
+    # before killing it. Keep the relay alive long enough to finish that cleanup.
+    end = time.monotonic() + 10
     while group_running(process.pid) and time.monotonic() < end:
         time.sleep(0.05)
     if group_running(process.pid):
