@@ -3,9 +3,10 @@
 # own release build, ports, database, data directories and launchd jobs, so tasks
 # validate in parallel without touching the shared Dev. Cloud execution is off.
 #
-#   qa-instance up <task> [--ref <branch|sha>]   build + start + prepare tenant (default ref: origin/main)
+#   qa-instance up <task> --owner <line> --card <MET-n> [--ref <branch|sha>] [--ttl 6h] [--wait]
 #   qa-instance down <task>                      stop, drop database, remove release and data
-#   qa-instance list                             instances, ports, versions, health
+#   qa-instance list                             owner, card, age, process, lease, health
+#   qa-instance renew <task> [--ttl 6h]           lease from now, at most 24 hours
 #
 # After `up`: open http://localhost:<webPort> on M1 and log in with the account in
 # ~/allrice-qa/<task>/creds.json (also used by: smoke-test --instance <task>).
@@ -16,6 +17,8 @@ NODE_BIN="$HOME/.local/opt/node-22.23.2/bin"
 export PATH="$NODE_BIN:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 MAX_INSTANCES=3
 UID_=$(id -u)
+LEASE="$BIN/qa-lease.py"
+ALLOCATED_TASK=""
 
 die() { echo "qa-instance: $*" >&2; exit 1; }
 say() { echo "[qa-instance] $*"; }
@@ -26,13 +29,17 @@ instances() { ls -1d "$QA"/*/instance.json 2>/dev/null | xargs -n1 dirname 2>/de
 port_busy() { port_open "$1"; }
 json_get() { /usr/bin/python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$1" "$2"; }
 
-write_instance() {  # uses the caller's dir task ref sha web worker db artifact
-  /usr/bin/python3 - "$dir/instance.json" "$task" "$ref" "$sha" "$web" "$worker" "$db" "${artifact:-}" "$1" <<'PY'
-import json, sys, time
-p, task, ref, sha, web, worker, db, art, state = sys.argv[1:]
-json.dump({'task': task, 'ref': ref, 'sha': sha, 'webPort': int(web), 'workerPort': int(worker), 'database': db,
+write_instance() {  # uses the caller's allocation/build variables
+  /usr/bin/python3 - "$LEASE" "$dir/instance.json" "$task" "$ref" "$sha" "$web" "$worker" "$db" "${artifact:-}" "$1" "$owner" "$card" "$ttl" <<'PY'
+import json, sys, time, runpy, os
+helper, p, task, ref, sha, web, worker, db, art, state, owner, card, ttl = sys.argv[1:]
+lease = runpy.run_path(helper)
+now = time.time()
+old = json.load(open(p)) if os.path.exists(p) else {}
+lease['write'](p, {'task': task, 'ref': ref, 'sha': sha, 'webPort': int(web), 'workerPort': int(worker), 'database': db,
            'nativeArtifactId': art or None, 'cloudExecution': False, 'setup': state,
-           'updatedAt': time.strftime('%Y-%m-%dT%H:%M:%S%z')}, open(p, 'w'), indent=1)
+           'owner': owner, 'card': card, 'createdAt': old.get('createdAt', lease['stamp'](now)),
+           'expiresAt': old.get('expiresAt', lease['stamp'](now + int(ttl))), 'updatedAt': lease['stamp'](now)})
 PY
 }
 
@@ -44,6 +51,7 @@ stop_services() { # task -> 0 once both jobs are gone, their processes exited an
 }
 
 cmd_list() {
+  /usr/bin/python3 "$LEASE" list "$QA"
   local any=0
   printf '%-20s %-6s %-6s %-9s %-10s %-26s %s\n' TASK WEB WORKER SHA STATE DATABASE REF
   for task in $(instances); do
@@ -58,13 +66,47 @@ cmd_list() {
   [ $any = 1 ] || echo "(no QA instances)"
 }
 
+cmd_renew() {
+  local task=$1 ttl=6h; shift
+  if [ $# -gt 0 ]; then
+    [ $# -eq 2 ] && [ "$1" = --ttl ] || die 'usage: qa-instance renew <task> [--ttl 6h]'
+    ttl=$2
+  fi
+  /usr/bin/python3 "$LEASE" renew "$QA/$task/instance.json" "$ttl"
+}
+
+# Allocation lock is held. Never block on another task lock: that task may be
+# waiting for the allocation lock itself. Recheck after acquiring its lock.
+reclaim_one() {
+  local candidate
+  for candidate in $(instances); do
+    /usr/bin/python3 "$LEASE" reclaimable "$QA/$candidate/instance.json" || continue
+    if (
+      exec 9>>"$QA/.task-$candidate.lock"
+      flock_fd 9 0 || exit 1
+      /usr/bin/python3 "$LEASE" reclaimable "$QA/$candidate/instance.json" || exit 1
+      local archived
+      archived=$(/usr/bin/python3 "$LEASE" archive "$QA/$candidate/instance.json" "$HOME/allrice-dev/qa/codex/qa-reclaimed") || exit 2
+      # A process may have appeared while logs were being archived.
+      /usr/bin/python3 "$LEASE" reclaimable "$QA/$candidate/instance.json" || exit 1
+      say "reclaiming $candidate; archive=$archived" >&2
+      cmd_down "$candidate" >&2 || exit 2
+      rm -f -- "$QA/.task-$candidate.lock"
+    ); then return 0; fi
+  done
+  return 1
+}
+
 cmd_down() {
   local task=$1; valid_task "$task"
   local dir="$QA/$task" db; db=$(db_name "$task")
   [ -d "$dir" ] || say "no instance directory for $task (cleaning leftovers anyway)"
   stop_services "$task" || die "services of $task did not stop within 90s; database and files left in place"
-  if psql -h 127.0.0.1 -d postgres -Atc "select 1 from pg_database where datname='$db'" | grep -q 1; then
-    dropdb -h 127.0.0.1 --force "$db" && say "dropped database $db"
+  local exists
+  exists=$(psql -h 127.0.0.1 -d postgres -Atc "select 1 from pg_database where datname='$db'") || die "cannot inspect database $db; files left in place"
+  if [[ "$exists" = *1* ]]; then
+    dropdb -h 127.0.0.1 --force "$db" || die "cannot drop database $db; files left in place"
+    say "dropped database $db"
   fi
   if [ -d "$dir/release" ]; then
     git -C "$REPO" worktree remove --force "$dir/release" 2>/dev/null || rm -rf -- "$dir/release"
@@ -80,7 +122,14 @@ cmd_alloc() {
   local task=$1 ref=$2 sha=$3
   local dir="$QA/$task" db n web worker found=0 claimed=" " t p artifact=""; db=$(db_name "$task")
   [ ! -e "$dir/instance.json" ] || die "instance $task already exists (qa-instance down $task first)"
-  [ "$(instances | wc -l | tr -d ' ')" -lt "$MAX_INSTANCES" ] || die "already $MAX_INSTANCES instances (memory limit); take one down first"
+  if [ "$(instances | wc -l | tr -d ' ')" -ge "$MAX_INSTANCES" ]; then
+    reclaim_one || true
+    if [ "$(instances | wc -l | tr -d ' ')" -ge "$MAX_INSTANCES" ]; then
+      echo "qa-instance: all $MAX_INSTANCES slots occupied:" >&2
+      /usr/bin/python3 "$LEASE" list "$QA" >&2
+      return 75
+    fi
+  fi
   for t in $(instances); do
     # A concurrent `down` may have just removed this one.
     p=$(json_get "$QA/$t/instance.json" webPort 2>/dev/null) || continue
@@ -92,8 +141,9 @@ cmd_alloc() {
     if ! port_busy "$web" && ! port_busy "$worker"; then found=1; break; fi
   done
   [ $found = 1 ] || die "no free port pair in 3200-3299"
-  mkdir -p "$dir/.local" "$dir/logs"; chmod 700 "$dir" "$dir/.local"
-  write_instance building
+  mkdir -p "$dir/.local" "$dir/logs" || return 2
+  chmod 700 "$dir" "$dir/.local" || return 2
+  write_instance building || return 2
   echo "$web $worker"
 }
 
@@ -113,8 +163,19 @@ resolve_ref() {
 
 cmd_up() {
   local task=$1; shift; valid_task "$task"
-  local ref="origin/main"
-  while [ $# -gt 0 ]; do case "$1" in --ref) ref=${2:?--ref needs a value}; shift 2 ;; *) die "unknown option $1" ;; esac; done
+  local ref="origin/main" owner="" card="" ttl=6h wait=0 started=$SECONDS rc
+  while [ $# -gt 0 ]; do case "$1" in
+    --ref) ref=${2:?--ref needs a value}; shift 2 ;;
+    --owner) owner=${2:?--owner needs a value}; shift 2 ;;
+    --card) card=${2:?--card needs a value}; shift 2 ;;
+    --ttl) ttl=${2:?--ttl needs a value}; shift 2 ;;
+    --wait) wait=1; shift ;;
+    *) die "unknown option $1" ;;
+  esac; done
+  [[ -n "$owner" && "$owner" != *$'\n'* && "$owner" != *$'\r'* && ${#owner} -le 80 ]] || die '--owner (line name, max 80 characters) is required'
+  [[ "$card" =~ ^[A-Z][A-Z0-9]*-[1-9][0-9]*$ ]] || die '--card (e.g. MET-220) is required'
+  ttl=$(/usr/bin/python3 "$LEASE" ttl "$ttl") || exit 2
+  local waited_since; waited_since=$(date +%s)
   local dir="$QA/$task" db; db=$(db_name "$task")
   [ ! -e "$dir/instance.json" ] || die "instance $task already exists (qa-instance down $task first)"
 
@@ -127,16 +188,23 @@ cmd_up() {
   # starting instances together cannot take the same ports or exceed MAX_INSTANCES.
   mkdir -p "$QA"
   local web worker artifact="" ports
-  exec 7>>"$QA/.alloc.lock"
-  flock_fd 7 30 || die "another qa-instance up is still allocating; try again shortly"
-  ports=$(cmd_alloc "$task" "$ref" "$sha") || exit 1
-  exec 7>&-
+  while :; do
+    exec 7>>"$QA/.alloc.lock"
+    flock_fd 7 30 || die "another qa-instance up is still allocating; try again shortly"
+    if ports=$(cmd_alloc "$task" "$ref" "$sha"); then exec 7>&-; break; else rc=$?; fi
+    exec 7>&-
+    [ "$rc" -eq 75 ] && [ "$wait" -eq 1 ] || return "$rc"
+    [ -n "${LINEAR_API_KEY:-}" ] || die 'up --wait requires LINEAR_API_KEY for owner-card reminders; do not read Dev credentials'
+    /usr/bin/python3 "$LEASE" remind "$QA" "$task" "$owner" "$card" "$waited_since" || echo 'qa-instance: reminder check failed; still waiting' >&2
+    [ $((SECONDS - started)) -lt 86400 ] || die 'wait exceeded 24h; no slot allocated'
+    sleep 15
+  done
   read -r web worker <<<"$ports"
-  # The task name is fixed into the handler now: cmd_up's locals are gone when it runs.
-  trap "rc=\$?; [ \$rc = 0 ] || echo 'qa-instance: up $task failed; the instance still holds a slot. Clean up: qa-instance down $task' >&2" EXIT
+  ALLOCATED_TASK=$task
   say "task=$task ref=$ref sha=${sha:0:8} web=$web worker=$worker db=$db"
 
   git -C "$REPO" worktree add -q --detach "$dir/release" "$sha"
+  [ -f "$dir/release/scripts/m1/rice-standard.json" ] || die 'ref has no Rice template; refusing the installed tools template'
 
   say "installing and building (log: $dir/logs/build.log)"
   ( cd "$dir/release" && pnpm install --frozen-lockfile && \
@@ -235,25 +303,38 @@ PY
   write_instance started
   local drop
   drop=$(psql -h 127.0.0.1 -d "$db" -Atc "select string_agg(id::text, ',') from allrice_platform_dsh_skills where required_tool_refs ?| array['cloud.process.execute','cloud.mcp.call','python.execute','workspace.reconciliation.export']")
-  node "$BIN/qa-bootstrap.mjs" --port "$web" --company "QA-$task" --username "qa-$task" --creds "$dir/creds.json" --no-cloud --drop-skills "$drop" > "$dir/logs/bootstrap.log" 2>&1 \
+  node "$BIN/qa-bootstrap.mjs" --rice "$dir/release/scripts/m1/rice-standard.json" --port "$web" --company "QA-$task" --username "qa-$task" --creds "$dir/creds.json" --no-cloud --drop-skills "$drop" > "$dir/logs/bootstrap.log" 2>&1 \
     || die "tenant bootstrap failed, see $dir/logs/bootstrap.log"
 
   write_instance ready
-  trap - EXIT
+  ALLOCATED_TASK=""
   say "ready: http://localhost:$web  (account: $dir/creds.json; smoke: $BIN/smoke-test --instance $task)"
 }
 
+cleanup_task_lock() {
+  local rc=$?
+  trap - EXIT
+  if [ "$rc" -ne 0 ] && [ -n "$ALLOCATED_TASK" ]; then
+    echo "qa-instance: up $ALLOCATED_TASK failed; slot retained. Clean up: qa-instance down $ALLOCATED_TASK" >&2
+  fi
+  # All new callers open/try task locks under .alloc.lock, so none can retain an
+  # old inode while we unlink. Keep the shared allocation lock permanently.
+  qa_task_unlock "$QA/.task-$LOCKED_TASK.lock"
+  exit "$rc"
+}
+
 case "${1:-}" in
-  up|down)
+  up|down|renew)
     op=$1; shift
-    [ $# -ge 1 ] || die "usage: qa-instance up <task> [--ref <branch|sha>] | down <task>"
-    [ "$op" = up ] || [ $# -eq 1 ] || die "usage: qa-instance down <task>"
+    [ $# -ge 1 ] || die 'usage: qa-instance up|down|renew <task> (up requires --owner and --card)'
+    [ "$op" != down ] || [ $# -eq 1 ] || die "usage: qa-instance down <task>"
     valid_task "$1"; mkdir -p "$QA"
-    # up and down of the same task never overlap. The lock file is kept for good:
-    # deleting it while held would let a later caller lock a new file and run alongside.
-    exec 8>>"$QA/.task-$1.lock"
-    flock_fd 8 0 || die "another up/down of $1 is running"
-    if [ "$op" = up ]; then cmd_up "$@"; else cmd_down "$1"; fi ;;
+    qa_task_lock "$QA/.task-$1.lock" || die "another allocation or operation of $1 is running"
+    LOCKED_TASK=$1
+    trap cleanup_task_lock EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM HUP
+    case "$op" in up) cmd_up "$@" ;; down) cmd_down "$1" ;; renew) cmd_renew "$@" ;; esac ;;
   list) cmd_list ;;
   *) sed -n 2,13p "$0"; exit 2 ;;
 esac

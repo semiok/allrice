@@ -161,7 +161,12 @@ print(time.strftime("%Y-%m-%dT%H:%M:%S%z",time.localtime(s)))'; }
 read -r status once recurring worker_id <<<"$(worker_ready)"
 was=$(job_state "$LABEL") || die "cannot read the launchd state of $LABEL"
 say "target $mode${task:+ $task}: Worker $LABEL ${was%% *} and $status, controllers once=$once recurring=$recurring, worker $worker_id; host booted $(boot_at)"
-OUT_ORPHANS=$(mktemp); OUT_OTHERS=$(mktemp); trap 'rm -f "$OUT_ORPHANS" "$OUT_OTHERS"' EXIT
+OUT_ORPHANS=$(mktemp); OUT_OTHERS=$(mktemp); TASK_LOCKED=""
+cleanup() {
+  rm -f "$OUT_ORPHANS" "$OUT_OTHERS"
+  [ -z "$TASK_LOCKED" ] || qa_task_unlock "$LOCK"
+}
+trap cleanup EXIT
 before=$(partitions) || die "cannot read the partitions"
 show "$before" "$worker_id"
 if [ -s "$OUT_OTHERS" ]; then
@@ -174,8 +179,14 @@ if [ -z "$execute" ]; then
   exit 0
 fi
 
-mkdir -p "$(dirname "$LOCK")"; exec 9>>"$LOCK"
-flock_fd 9 0 || die "$LOCK is held (a deploy, a restart or an up/down of the instance); try later" 3
+mkdir -p "$(dirname "$LOCK")"
+if [ "$mode" = instance ]; then
+  qa_task_lock "$LOCK" || die "$LOCK or the QA allocator is held; try later" 3
+  TASK_LOCKED=1
+else
+  exec 9>>"$LOCK"
+  flock_fd 9 0 || die "$LOCK is held (a deploy or a restart); try later" 3
+fi
 # What decides restarting must be read under the lock, not before it.
 read -r status once recurring worker_id <<<"$(worker_ready)"
 was=$(job_state "$LABEL") || die "cannot read the launchd state of $LABEL"
@@ -189,7 +200,6 @@ say "backup: $OUT (kept until removed by hand)"
 STOPPED=""
 restore() { # however the run ends after the stop, a Worker that was loaded runs again
   local rc=$? i state=""; trap '' INT TERM HUP PIPE; set +e
-  rm -f "$OUT_ORPHANS" "$OUT_OTHERS"
   if [ -n "$STOPPED" ]; then # an interrupted stop may still be unloading it
     for i in $(seq 1 90); do state=$(job_state "$LABEL" 2>/dev/null) && [ "$state" = gone ] && break; sleep 1; done
     if [ "$state" = gone ]; then
@@ -198,6 +208,7 @@ restore() { # however the run ends after the stop, a Worker that was loaded runs
       echo "schedule-recover: $LABEL is '${state:-unknown}', not started again: check it by hand" >&2
     fi
   fi
+  cleanup
   exit "$rc"
 }
 trap restore EXIT; trap 'exit 130' INT TERM HUP
