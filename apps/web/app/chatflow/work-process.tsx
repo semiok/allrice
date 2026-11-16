@@ -307,13 +307,12 @@ export function WorkProcess({
   const executingTitle =
     acceptingAnswers && !waiting && !waitingQuestion && !submittedQuestion;
   const completed = !running && !failed && !canceled;
-  const titleWithTiming = (
+  const titleTiming = (
     <>
-      {title}
       {timing ? (
         <>
           {completed ? '，' : ' · '}
-          <span aria-label="本轮运行时间">
+          <span className={styles.processTitle} aria-label="本轮运行时间">
             用时{' '}
             <RunElapsedTime
               timing={timing}
@@ -489,7 +488,7 @@ export function WorkProcess({
       >
         <DisclosureRow
           icon={<IconThinkOutline14 />}
-          title={titleWithTiming}
+          title={title}
           open={display.canFold && display.open}
           expandable={display.canFold}
           expandOnRowClick
@@ -499,6 +498,7 @@ export function WorkProcess({
           titleClassName={styles.processTitle}
           collapsedContent={
             <>
+              {titleTiming}
               {summary ? (
                 <>
                   <span
@@ -571,7 +571,7 @@ export function WorkProcess({
     >
       <DisclosureRow
         icon={<IconThinkOutline14 />}
-        title={titleWithTiming}
+        title={title}
         open={display.canFold && display.open}
         expandable={display.canFold}
         expandOnRowClick
@@ -583,6 +583,7 @@ export function WorkProcess({
         onToggle={toggle}
         collapsedContent={
           <>
+            {titleTiming}
             {summary ? (
               <>
                 <span
@@ -786,6 +787,7 @@ function NativeStepsGroup({
         titleClassName={styles.processTitle}
         collapsedContent={
           <>
+            {titleTiming}
             {keys.map((key) => (
               <span key={key} data-process-control={key} />
             ))}

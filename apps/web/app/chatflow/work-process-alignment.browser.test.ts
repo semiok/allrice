@@ -205,7 +205,7 @@ suite('approved DSH process alignment', () => {
                 getComputedStyle(avatar).backgroundColor,
                 getComputedStyle(title).color,
                 getComputedStyle(
-                  title.querySelector('[aria-label="本轮运行时间"]')!,
+                  header.querySelector('[aria-label="本轮运行时间"]')!,
                 ).color,
               ],
               clocks: [avatar, header, step].map((node) =>
