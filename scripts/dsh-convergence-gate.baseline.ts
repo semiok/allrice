@@ -10,6 +10,15 @@ import type { BaselineEntry } from './dsh-convergence-gate.ts';
 export const baseline: readonly BaselineEntry[] = [
   {
     kind: 'table',
+    id: 'allrice_employee_module_bindings',
+    category: '门卫',
+    basis:
+      'MET-224 快车道 P2：DSH 不拥有 SaaS 员工实例范围的插件安装授权；仅存 org/workspace/owner/instance 与精确 module/version/digest/revision、有效/撤销事实，接已有身份授权。无 Run、工具或 Skill 状态机；MET-253 接管同一存储，不双写。',
+    approvedBy:
+      '2026-11-16 MET-224 用户批准快车道计划及 bbb67fb2-03e6-42be-8b4b-ab4cfc2750e7；写前对照 a0a21ae4-c376-444c-8286-f7b6ccd3891f。',
+  },
+  {
+    kind: 'table',
     id: 'allrice_assistant_artifacts',
     category: '待删',
     basis:

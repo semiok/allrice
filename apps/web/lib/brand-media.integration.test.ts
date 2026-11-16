@@ -1,0 +1,1044 @@
+/** Actual HTTP handlers, login/session/membership checks and PostgreSQL in a
+ * migrated random schema. Only Next's cookie transport is substituted. No
+ * model, Worker loop, Dev account or external publication is involved. */
+import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  BrandMediaReadResultSchema,
+  EmployeeDefinitionSchema,
+  allRiceToolManifest,
+  brandMediaModule,
+  brandMediaRelease,
+  type BrandMediaArticle,
+  type BrandMediaMutationResult,
+  type BrandMediaReadResult,
+  type BrandMediaTopic,
+} from '@allrice/contracts';
+import * as client from '../../../packages/database/src/core/client.ts';
+import {
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+  runtimeTaskFixture,
+} from '../../../packages/database/src/runtime.fixture.ts';
+import {
+  authenticateSession,
+  createSession,
+} from '../../../packages/database/src/identity.ts';
+import {
+  createEmployeeInstance,
+  ensureGeneralEmployeeInstance,
+} from '../../../packages/database/src/employees/employee-instances.ts';
+import {
+  EmployeeModuleError,
+  requireEmployeeModuleBinding,
+} from '../../../packages/database/src/employees/employee-module-bindings.ts';
+import { employeeManifestChecksum } from '../../../packages/database/src/employees/employee-config.ts';
+import { resolveEmployeeExecution } from '../../../packages/database/src/employees/employeehub.ts';
+import {
+  publishReference,
+  changeReferencePublication,
+} from '../../../packages/database/src/reference-library.ts';
+import {
+  claimReferenceProcessing,
+  finishReferenceProcessing,
+} from '../../../packages/database/src/reference-processing.ts';
+import { readBrandMedia } from '../../../packages/database/src/brand-media/server-wiring.ts';
+import * as catalog from '../app/api/v1/employee-instances/[id]/modules/route';
+import * as business from '../app/api/v1/employee-instances/[id]/brand-media/route';
+
+const browser = vi.hoisted(() => ({ token: '' }));
+vi.mock('next/headers', () => ({
+  cookies: async () => ({
+    get: (key: string) =>
+      key === 'allrice_session' && browser.token
+        ? { value: browser.token }
+        : undefined,
+  }),
+}));
+const suite =
+  process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
+    ? describe.sequential
+    : describe.skip;
+type Fixture = Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
+type Actor = Awaited<ReturnType<typeof actor>>;
+let f: Fixture;
+
+async function actor(baseRice = false) {
+  const base = await runtimeTaskFixture(f.db),
+    currentVersionId = randomUUID();
+  const [assignment] = await f.db<
+    { id: string; employee_version_id: string; manifest: unknown }[]
+  >`
+    select a.id,a.employee_version_id,v.manifest from allrice_employee_assignments a
+    join allrice_employee_versions v on v.id=a.employee_version_id where a.user_id=${base.context.actor.id}`;
+  const manifest = EmployeeDefinitionSchema.parse(assignment!.manifest);
+  // Preserve the historical fixture publication. A separate valid publication
+  // supports the real frozen configuration resolver in the installation test.
+  await f.db`insert into allrice_employee_versions
+    (id,organization_id,workspace_id,employee_id,version,name,model,system_prompt,capabilities,config_checksum,manifest,provider_snapshot)
+    select ${currentVersionId},organization_id,workspace_id,employee_id,version+1,name,model,system_prompt,capabilities,
+      ${employeeManifestChecksum(manifest)},manifest,provider_snapshot
+    from allrice_employee_versions where id=${assignment!.employee_version_id}`;
+  await f.db`update allrice_employee_assignments set employee_version_id=${currentVersionId} where id=${assignment!.id}`;
+  if (baseRice)
+    await f.db`update allrice_employees set employee_key='default-assistant',name='Rice'
+    where id=(select employee_id from allrice_employee_assignments where id=${assignment!.id})`;
+  await ensureGeneralEmployeeInstance(f.db, assignment!.id);
+  const login = await createSession(base.context.actor.id);
+  const context = (await authenticateSession(login.token, {
+    organizationId: base.context.organizationId,
+    workspaceId: base.context.workspaceId!,
+  }))!;
+  if (!context) throw Error('Fixture requires a real login');
+  const um = randomUUID(),
+    am = randomUUID();
+  await f.db`insert into allrice_messages(id,organization_id,workspace_id,owner_id,session_id,role,content,status)
+    values(${um},${context.organizationId},${context.workspaceId!},${context.actor.id},${base.task.chatSessionId},'user','{"text":"给这条选题开始写","citations":[]}','completed'),
+      (${am},${context.organizationId},${context.workspaceId!},${context.actor.id},${base.task.chatSessionId},'assistant','{"text":"合成候选","citations":[]}','completed')`;
+  await f.db`insert into allrice_employee_runs
+    (run_id,organization_id,workspace_id,owner_id,employee_assignment_id,employee_version_id,session_id,user_message_id,assistant_message_id,provider_snapshot,prompt_snapshot)
+    values(${base.task.runId},${context.organizationId},${context.workspaceId!},${context.actor.id},${assignment!.id},
+      ${currentVersionId},${base.task.chatSessionId},${um},${am},${f.db.json(manifest.provider)},
+      ${f.db.json({ systemPrompt: 'Synthetic frozen prompt', conversation: [], memories: [], userRequest: '合成候选' })})`;
+  return {
+    base,
+    context,
+    token: login.token,
+    assignmentId: assignment!.id,
+    scope: { workspaceId: context.workspaceId!, instanceId: assignment!.id },
+    manifest,
+    currentVersionId,
+  };
+}
+function request(
+  a: Actor,
+  path: 'modules' | 'brand-media',
+  input?: unknown,
+  query = '',
+  target = a.scope.instanceId,
+) {
+  browser.token = a.token;
+  return new Request(
+    `https://example.test/api/v1/employee-instances/${target}/${path}${query}`,
+    {
+      method: input === undefined ? 'GET' : 'POST',
+      headers: {
+        host: 'example.test',
+        'Content-Type': 'application/json',
+        'x-allrice-organization-id': a.context.organizationId,
+        'x-allrice-workspace-id': a.scope.workspaceId,
+      },
+      ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+    },
+  );
+}
+const params = (id: string) => ({ params: Promise.resolve({ id }) });
+function installInput(a: Actor, requestId = randomUUID()) {
+  return { ...a.scope, release: brandMediaRelease, requestId };
+}
+async function install(a: Actor, input = installInput(a)) {
+  const response = await catalog.POST(
+    request(a, 'modules', input),
+    params(a.scope.instanceId),
+  );
+  expect(response.status).toBe(200);
+  return response.json();
+}
+async function command(a: Actor, input: object, expectedStatus = 200) {
+  const response = await business.POST(
+    request(a, 'brand-media', {
+      ...a.scope,
+      requestId: randomUUID(),
+      ...input,
+    }),
+    params(a.scope.instanceId),
+  );
+  expect(response.status).toBe(expectedStatus);
+  return response.json() as Promise<{
+    result: BrandMediaMutationResult;
+    replayed: boolean;
+  }>;
+}
+async function read(
+  a: Actor,
+  query: Record<string, string>,
+  expectedStatus = 200,
+): Promise<BrandMediaReadResult> {
+  const response = await business.GET(
+    request(a, 'brand-media', undefined, '?' + new URLSearchParams(query)),
+    params(a.scope.instanceId),
+  );
+  expect(response.status).toBe(expectedStatus);
+  const body = await response.json();
+  return expectedStatus === 200 ? BrandMediaReadResultSchema.parse(body) : body;
+}
+const topicInput = (a: Actor) => ({
+  operation: 'topic.add',
+  requestId: randomUUID(),
+  candidate: { title: '冬季新品', summary: '面向老客户的新品故事' },
+  direction: '引用已选择的资料，说明产品规格',
+  references: [] as BrandMediaTopic['references'],
+  sourceRunId: a.base.task.runId,
+});
+async function topic(a: Actor, patch: object = {}) {
+  const response = await command(a, { ...topicInput(a), ...patch });
+  if (response.result.kind !== 'topic') throw Error('Expected topic');
+  return response.result.topic;
+}
+async function draft(a: Actor, references: BrandMediaTopic['references'] = []) {
+  const selected = await topic(a, { references });
+  const response = await command(a, {
+    operation: 'article.start',
+    topicId: selected.id,
+    expectedRevision: selected.revision,
+    requirements: '写一篇纯文本草稿',
+    references,
+  });
+  if (response.result.kind !== 'article') throw Error('Expected draft');
+  return response.result.article;
+}
+async function articleRead(a: Actor, id: string) {
+  const result = await read(a, { view: 'article', articleId: id });
+  if (result.view !== 'article') throw Error('Expected article');
+  return result.article;
+}
+async function publication(
+  a: Actor,
+  article: BrandMediaArticle,
+  change: object,
+) {
+  const response = await command(a, {
+    operation: 'article.publication',
+    articleId: article.id,
+    expectedRevision: article.revision,
+    change,
+  });
+  if (response.result.kind !== 'article') throw Error('Expected article');
+  return response.result.article;
+}
+async function file(a: Actor) {
+  const artifact = await a.base.artifact(
+    a.base.task.runId,
+    '合成正文与不可变文件',
+  );
+  const [version] = await f.db<
+    { object_id: string }[]
+  >`select object_id from allrice_deliverable_versions where id=${artifact.artifactId}`;
+  return {
+    objectId: version!.object_id,
+    versionId: artifact.artifactId,
+    checksum: artifact.digest,
+  };
+}
+async function reference(a: Actor) {
+  const text = '合成产品规格：A5，48张。';
+  const saved = await publishReference(
+    a.context,
+    {
+      workspaceId: a.scope.workspaceId,
+      requestId: randomUUID(),
+      origin: 'upload',
+      fileName: '规格.txt',
+      mediaType: 'text/plain',
+      contentBase64: Buffer.from(text).toString('base64'),
+      audience: { scope: 'personal', departmentIds: [] },
+    },
+    runtimeFixtureStorage(f.db)!,
+  );
+  const claim = await claimReferenceProcessing();
+  expect(claim?.revisionId).toBe(saved.revisionId);
+  await finishReferenceProcessing(
+    claim!,
+    [{ content: text, start: 0, end: text.length }],
+    {
+      text,
+      kind: 'text',
+      warnings: [],
+      units: [{ label: '正文', start: 0, end: text.length }],
+    },
+  );
+  return {
+    origin: 'reference' as const,
+    sourceId: saved.sourceId,
+    revisionId: saved.revisionId,
+  };
+}
+const schedule = {
+  plannedAt: '2026-11-24T20:00:00+08:00',
+  timezone: 'Asia/Shanghai',
+};
+
+suite(
+  'MET-224 P2 human module and business API, real session and persistence',
+  () => {
+    beforeAll(async () => {
+      vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '0');
+      f = await createRuntimeFixtureDatabase();
+      vi.spyOn(client, 'getDatabase').mockReturnValue(f.db);
+    }, 120000);
+    afterAll(async () => {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      browser.token = '';
+      await f?.close();
+    }, 30000);
+
+    it('“给 Rice 添加品牌自媒体，选入这个选题，开始写并排周二晚上，发布后改回排期” persists the human chain', async () => {
+      const a = await actor(true);
+      const before = await catalog.GET(
+        request(a, 'modules'),
+        params(a.scope.instanceId),
+      );
+      expect(before.headers.get('Cache-Control')).toBe('private, no-store');
+      expect((await before.json()).modules[0]).toMatchObject({
+        binding: null,
+        available: true,
+        enabled: false,
+      });
+      await read(a, { view: 'topics' }, 403);
+      const added = await install(a);
+      expect(added.binding).toMatchObject({
+        ...a.scope,
+        ownerId: a.context.actor.id,
+        organizationId: a.context.organizationId,
+        release: brandMediaRelease,
+        revision: 1,
+        revokedAt: null,
+      });
+      let article = await draft(a);
+      expect(article.body).toBeNull();
+      expect(await read(a, { view: 'topics' })).toMatchObject({ items: [] });
+      article = await publication(a, article, { action: 'schedule', schedule });
+      const plannedAt = article.publication.schedule!.plannedAt;
+      article = await publication(a, article, {
+        action: 'publish',
+        links: {
+          wechat: 'https://mp.weixin.qq.com/s/synthetic',
+          xiaohongshu: null,
+        },
+      });
+      expect(article.publication.state).toBe('published');
+      article = await publication(a, article, { action: 'unpublish' });
+      expect(article.publication).toEqual({
+        state: 'scheduled',
+        schedule: { ...schedule, plannedAt },
+        links: null,
+      });
+      article = await publication(a, article, { action: 'unschedule' });
+      expect(article.publication).toEqual({
+        state: 'draft',
+        schedule: null,
+        links: null,
+      });
+      await command(a, {
+        operation: 'article.delete',
+        articleId: article.id,
+        expectedRevision: article.revision,
+      });
+      expect(
+        await f.db`select id from allrice_brand_media_articles where id=${article.id}`,
+      ).toEqual([]);
+      expect(
+        await f.db`select id from allrice_brand_media_topics where id=${article.topicId}`,
+      ).toEqual([]);
+      const [evidence] = await f.db`select
+      (select count(*)::int from allrice_brand_content_requests where instance_id=${a.scope.instanceId} and request_id like 'brand-media:%') requests,
+      (select count(*)::int from allrice_audit_events where resource_id=${a.scope.instanceId} and action like 'brand.media.%') audit`;
+      expect(evidence).toEqual({ requests: 8, audit: 8 });
+    });
+
+    it('permits existing/general Rice and new instances without changing their published configuration, frozen admission or native tool directory', async () => {
+      const a = await actor(true);
+      const [before] =
+        await f.db`select manifest,capabilities,config_checksum from allrice_employee_versions where id=${a.currentVersionId}`;
+      const frozen = {
+        organizationId: a.context.organizationId,
+        workspaceId: a.scope.workspaceId,
+        ownerId: a.context.actor.id,
+        runId: a.base.task.runId,
+      };
+      const admittedBefore = await resolveEmployeeExecution(frozen);
+      const nativeModule = new URL(
+        '../../worker/src/harness/dsh/native-tools.ts',
+        import.meta.url,
+      ).href;
+      // Runtime import keeps Worker Node ambient types out of Next compilation
+      // while exercising the real native directory selector with old config.
+      const { selectDshNativeTools } = (await import(nativeModule)) as {
+        selectDshNativeTools(names: readonly string[]): Promise<string[]>;
+      };
+      const nativeBefore = await selectDshNativeTools(
+        a.manifest.capabilityBindings.toolNames,
+      );
+      await install(a);
+      const instance = await createEmployeeInstance(a.context, {
+        workspaceId: a.scope.workspaceId,
+        assignmentId: a.assignmentId,
+        requestId: randomUUID(),
+        profile: { name: '新建写作员工' },
+      });
+      const newer = { ...a, scope: { ...a.scope, instanceId: instance.id } };
+      const catalogBefore = await catalog.GET(
+        request(newer, 'modules'),
+        params(instance.id),
+      );
+      expect((await catalogBefore.json()).modules[0].binding).toBeNull();
+      await install(newer);
+      const [after] =
+        await f.db`select manifest,capabilities,config_checksum from allrice_employee_versions where id=${a.currentVersionId}`;
+      expect(after).toEqual(before);
+      expect(await resolveEmployeeExecution(frozen)).toEqual(admittedBefore);
+      const actualNative = await selectDshNativeTools(
+        EmployeeDefinitionSchema.parse(after!.manifest).capabilityBindings
+          .toolNames,
+      );
+      expect(actualNative).toEqual(nativeBefore);
+      const known = new Set<string>(
+        allRiceToolManifest.map((t) => t.canonicalName),
+      );
+      expect(actualNative.every((name) => known.has(name))).toBe(true);
+      expect(brandMediaModule.tools).toEqual([]);
+      expect(brandMediaModule.skills).toEqual([]);
+    });
+
+    it('deduplicates simultaneous add and request replay into one full-scope binding and an existing ledger row', async () => {
+      const a = await actor(),
+        input = installInput(a);
+      const [first, concurrent] = await Promise.all([
+        install(a, input),
+        install(a, input),
+      ]);
+      expect(concurrent.binding).toEqual(first.binding);
+      expect([first.replayed, concurrent.replayed].sort()).toEqual([
+        false,
+        true,
+      ]);
+      expect((await install(a)).binding).toEqual(first.binding);
+      const [count] =
+        await f.db`select count(*)::int n from allrice_employee_module_bindings where instance_id=${a.scope.instanceId}`;
+      expect(count!.n).toBe(1);
+      const [requests] =
+        await f.db`select count(*)::int n from allrice_brand_content_requests
+      where instance_id=${a.scope.instanceId} and request_id=${'brand-media:' + input.requestId}`;
+      expect(requests!.n).toBe(1);
+      await command(a, { ...topicInput(a), requestId: input.requestId }, 409);
+      expect(
+        await f.db`select id from allrice_brand_media_topics where instance_id=${a.scope.instanceId}`,
+      ).toEqual([]);
+    });
+
+    it('rejects uninstalled access, name/version/digest substitutions and browser authorization facts without creating a binding', async () => {
+      const a = await actor();
+      await command(a, topicInput(a), 403);
+      for (const release of [
+        { ...brandMediaRelease, moduleId: '品牌自媒体' },
+        { ...brandMediaRelease, contentVersion: '0.2.0' },
+        { ...brandMediaRelease, digest: 'sha256:' + '0'.repeat(64) },
+      ]) {
+        const response = await catalog.POST(
+          request(a, 'modules', { ...installInput(a), release }),
+          params(a.scope.instanceId),
+        );
+        expect(response.status).toBe(409);
+      }
+      for (const injected of [
+        { organizationId: a.context.organizationId },
+        { actor: a.context.actor },
+        { enabled: true },
+        { authority: 'workflow' },
+      ]) {
+        const response = await catalog.POST(
+          request(a, 'modules', { ...installInput(a), ...injected }),
+          params(a.scope.instanceId),
+        );
+        expect(response.status).toBe(422);
+      }
+      expect(
+        await f.db`select module_id from allrice_employee_module_bindings where instance_id=${a.scope.instanceId}`,
+      ).toEqual([]);
+      await install(a);
+      for (const injected of [
+        { body: { text: '浏览器正文' } },
+        { authority: 'workflow' },
+        { actor: a.context.actor },
+      ])
+        await command(a, { ...topicInput(a), ...injected }, 422);
+      await command(
+        a,
+        {
+          operation: 'article.submit',
+          articleId: randomUUID(),
+          expectedRevision: 1,
+          title: '浏览器不得提交',
+          body: await file(a),
+        },
+        422,
+      );
+    });
+
+    it('does not let another tenant, owner or instance borrow a binding or private article', async () => {
+      const a = await actor(),
+        b = await actor();
+      await install(a);
+      await install(b);
+      const article = await draft(a);
+      expect(
+        (
+          await business.GET(
+            request(
+              b,
+              'brand-media',
+              undefined,
+              '?view=articles',
+              a.scope.instanceId,
+            ),
+            params(a.scope.instanceId),
+          )
+        ).status,
+      ).toBe(404);
+      expect(
+        (
+          await catalog.POST(
+            request(b, 'modules', {
+              ...installInput(b),
+              instanceId: a.scope.instanceId,
+            }),
+            params(a.scope.instanceId),
+          )
+        ).status,
+      ).toBe(404);
+      expect(
+        (
+          await business.POST(
+            request(
+              a,
+              'brand-media',
+              { ...a.scope, ...topicInput(a) },
+              '',
+              b.scope.instanceId,
+            ),
+            params(b.scope.instanceId),
+          )
+        ).status,
+      ).toBe(403);
+      await read(b, { view: 'article', articleId: article.id }, 404);
+      await command(
+        b,
+        {
+          operation: 'article.delete',
+          articleId: article.id,
+          expectedRevision: article.revision,
+        },
+        404,
+      );
+      const second = await createEmployeeInstance(a.context, {
+        workspaceId: a.scope.workspaceId,
+        assignmentId: a.assignmentId,
+        requestId: randomUUID(),
+        profile: { name: '同用户另一个员工' },
+      });
+      const other = { ...a, scope: { ...a.scope, instanceId: second.id } };
+      await read(other, { view: 'articles' }, 403);
+      await install(other);
+      await read(other, { view: 'article', articleId: article.id }, 404);
+      await command(
+        other,
+        {
+          operation: 'article.delete',
+          articleId: article.id,
+          expectedRevision: article.revision,
+        },
+        404,
+      );
+      expect(
+        (
+          await business.GET(
+            request(
+              a,
+              'brand-media',
+              undefined,
+              '?view=topics&workspaceId=' + b.scope.workspaceId,
+            ),
+            params(a.scope.instanceId),
+          )
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await f.db`select revision from allrice_brand_media_articles where id=${article.id}`
+        )[0]!.revision,
+      ).toBe(1);
+    });
+
+    it('checks binding revocation/version and frozen revision again on cold reads and cached receipts', async () => {
+      const a = await actor(),
+        input = installInput(a);
+      await install(a, input);
+      const add = topicInput(a);
+      await command(a, add);
+      await f.db`update allrice_employee_module_bindings set revision=revision+1,revoked_at=clock_timestamp() where instance_id=${a.scope.instanceId}`;
+      await read(a, { view: 'topics' }, 403);
+      await command(a, add, 403);
+      expect(
+        (
+          await catalog.POST(
+            request(a, 'modules', input),
+            params(a.scope.instanceId),
+          )
+        ).status,
+      ).toBe(403);
+      // A later explicit core revision is simulated; P2 offers no reactivation UI/API.
+      await f.db`update allrice_employee_module_bindings set revision=revision+1,revoked_at=null,
+      digest=${'sha256:' + 'f'.repeat(64)} where instance_id=${a.scope.instanceId}`;
+      await read(a, { view: 'topics' }, 409);
+      await command(a, add, 409);
+      await expect(
+        f.db.begin((tx) =>
+          requireEmployeeModuleBinding(
+            tx,
+            {
+              ...a.scope,
+              organizationId: a.context.organizationId,
+              ownerId: a.context.actor.id,
+            },
+            brandMediaRelease,
+            1,
+          ),
+        ),
+      ).rejects.toBeInstanceOf(EmployeeModuleError);
+      const currentCatalog = await catalog.GET(
+        request(a, 'modules'),
+        params(a.scope.instanceId),
+      );
+      expect((await currentCatalog.json()).modules[0]).toMatchObject({
+        enabled: false,
+        available: false,
+      });
+    });
+
+    it('checks real current login and membership before reading persisted records or replaying a request', async () => {
+      const a = await actor();
+      await install(a);
+      const add = topicInput(a);
+      await command(a, add);
+      const cold = await readBrandMedia(
+        a.context,
+        { ...a.scope, view: 'topics' },
+        f.db,
+      );
+      expect(cold.view === 'topics' && cold.items.length).toBe(1);
+      await f.db`update allrice_sessions set revoked_at=clock_timestamp() where id=${a.context.sessionId}`;
+      await read(a, { view: 'topics' }, 401);
+      await command(a, add, 401);
+      await expect(
+        readBrandMedia(a.context, { ...a.scope, view: 'topics' }, f.db),
+      ).rejects.toMatchObject({ code: 'authority_denied' });
+      const b = await actor();
+      await install(b);
+      const old = topicInput(b);
+      await command(b, old);
+      await f.db`update allrice_memberships set active=false where user_id=${b.context.actor.id}`;
+      await read(b, { view: 'topics' }, 401);
+      await command(b, old, 401);
+    });
+
+    it('does not authorize a source Run merely from its UUID, another tenant or another instance of the same owner', async () => {
+      const a = await actor(),
+        b = await actor();
+      await install(a);
+      await command(a, { ...topicInput(a), sourceRunId: randomUUID() }, 409);
+      await command(
+        a,
+        { ...topicInput(a), sourceRunId: b.base.task.runId },
+        409,
+      );
+      const second = await createEmployeeInstance(a.context, {
+        workspaceId: a.scope.workspaceId,
+        assignmentId: a.assignmentId,
+        requestId: randomUUID(),
+        profile: { name: '另一位写作者' },
+      });
+      const other = { ...a, scope: { ...a.scope, instanceId: second.id } };
+      await install(other);
+      await command(other, topicInput(other), 409);
+      expect(
+        await f.db`select id from allrice_brand_media_topics where owner_id=${a.context.actor.id}`,
+      ).toEqual([]);
+    });
+
+    it('keeps one article per topic, prevents direct used-topic deletion and rejects changed request inputs', async () => {
+      const a = await actor();
+      await install(a);
+      const add = topicInput(a),
+        first = await command(a, add),
+        replay = await command(a, add);
+      expect(replay).toEqual({ ...first, replayed: true });
+      await command(a, { ...add, direction: '请求ID不得复用于别的内容' }, 409);
+      if (first.result.kind !== 'topic') throw Error('Expected topic');
+      const selected = first.result.topic;
+      const start = {
+        operation: 'article.start',
+        requestId: randomUUID(),
+        topicId: selected.id,
+        expectedRevision: selected.revision,
+        requirements: '',
+        references: [],
+      };
+      expect((await command(a, start)).result.kind).toBe('article');
+      expect((await command(a, start)).replayed).toBe(true);
+      await command(a, { ...start, requestId: randomUUID() }, 409);
+      await command(
+        a,
+        {
+          operation: 'topic.delete',
+          topicId: selected.id,
+          expectedRevision: selected.revision,
+        },
+        409,
+      );
+      expect(
+        (
+          await f.db`select count(*)::int n from allrice_brand_media_articles where topic_id=${selected.id}`
+        )[0]!.n,
+      ).toBe(1);
+      const unused = await topic(a);
+      await command(
+        a,
+        {
+          operation: 'topic.delete',
+          topicId: unused.id,
+          expectedRevision: unused.revision + 1,
+        },
+        409,
+      );
+      await command(a, {
+        operation: 'topic.delete',
+        topicId: unused.id,
+        expectedRevision: unused.revision,
+      });
+    });
+
+    it('makes concurrent revisions compete atomically without overwriting the first committed result', async () => {
+      const a = await actor();
+      await install(a);
+      const article = await draft(a);
+      const commands = ['2026-11-24T12:00:00Z', '2026-11-25T12:00:00Z'].map(
+        (plannedAt) => ({
+          ...a.scope,
+          requestId: randomUUID(),
+          operation: 'article.publication',
+          articleId: article.id,
+          expectedRevision: 1,
+          change: {
+            action: 'schedule',
+            schedule: { plannedAt, timezone: 'Asia/Shanghai' },
+          },
+        }),
+      );
+      const responses = await Promise.all(
+        commands.map((input) =>
+          business.POST(
+            request(a, 'brand-media', input),
+            params(a.scope.instanceId),
+          ),
+        ),
+      );
+      expect(responses.map((r) => r.status).sort()).toEqual([200, 409]);
+      const [winner] =
+        await f.db`select revision,planned_at from allrice_brand_media_articles where id=${article.id}`;
+      expect(winner!.revision).toBe(2);
+      const receipts = await Promise.all(responses.map((r) => r.json()));
+      const saved =
+        receipts[responses.findIndex((r) => r.status === 200)].result.article;
+      expect(winner!.planned_at.toISOString()).toBe(
+        new Date(saved.publication.schedule.plannedAt).toISOString(),
+      );
+      await command(
+        a,
+        {
+          operation: 'article.references',
+          articleId: article.id,
+          expectedRevision: 1,
+          references: [],
+        },
+        409,
+      );
+    });
+
+    it('preserves microsecond schedule time through publish/correction and keeps published content read-only', async () => {
+      const a = await actor();
+      await install(a);
+      let article = await draft(a);
+      const body = await file(a);
+      await f.db`update allrice_brand_media_articles set body_file=${f.db.json(body)},revision=revision+1 where id=${article.id} and revision=1`;
+      article = await articleRead(a, article.id);
+      const precise = {
+        plannedAt: '2026-11-24T20:00:00.123456+08:00',
+        timezone: 'Asia/Shanghai',
+      };
+      article = await publication(a, article, {
+        action: 'schedule',
+        schedule: precise,
+      });
+      expect(article.publication.schedule!.plannedAt).toBe(
+        '2026-11-24T12:00:00.123456Z',
+      );
+      article = await publication(a, article, {
+        action: 'publish',
+        links: { wechat: null, xiaohongshu: null },
+      });
+      for (const input of [
+        { operation: 'article.delete' },
+        { operation: 'article.references', references: [] },
+        {
+          operation: 'article.publication',
+          change: { action: 'schedule', schedule },
+        },
+        {
+          operation: 'article.publication',
+          change: {
+            action: 'publish',
+            links: { wechat: 'https://example.test/new', xiaohongshu: null },
+          },
+        },
+      ])
+        await command(
+          a,
+          {
+            articleId: article.id,
+            expectedRevision: article.revision,
+            ...input,
+          },
+          409,
+        );
+      const corrected = await publication(a, article, { action: 'unpublish' });
+      expect(corrected).toMatchObject({
+        body,
+        references: article.references,
+        images: article.images,
+        publication: {
+          state: 'scheduled',
+          schedule: article.publication.schedule,
+          links: null,
+        },
+      });
+      expect(corrected.publication.schedule!.plannedAt).toBe(
+        '2026-11-24T12:00:00.123456Z',
+      );
+    });
+
+    it('validates exact immutable delivery versions, checksums and current ACLs again on read and receipt replay', async () => {
+      const a = await actor(),
+        b = await actor();
+      await install(a);
+      const pinned = await file(a),
+        foreign = await file(b);
+      for (const invalid of [
+        foreign,
+        { ...pinned, versionId: randomUUID() },
+        { ...pinned, checksum: 'sha256:' + '0'.repeat(64) },
+      ])
+        await command(
+          a,
+          { ...topicInput(a), references: [{ origin: 'file', file: invalid }] },
+          409,
+        );
+      const input = {
+        ...topicInput(a),
+        references: [{ origin: 'file', file: pinned }],
+      };
+      await command(a, input);
+      await command(a, input);
+      await f.db`update allrice_storage_objects set deleted_at=clock_timestamp() where id=${pinned.objectId}`;
+      await command(a, input, 409);
+      await read(a, { view: 'topics' }, 409);
+      const [count] =
+        await f.db`select count(*)::int n from allrice_brand_content_requests
+      where instance_id=${a.scope.instanceId} and request_id=${'brand-media:' + input.requestId}`;
+      expect(count!.n).toBe(1);
+    });
+
+    it('validates exact reference source/revision pairs and current permission after a publication is revoked', async () => {
+      const a = await actor(),
+        b = await actor();
+      await install(a);
+      const selected = await reference(a),
+        foreign = await reference(b);
+      await command(
+        a,
+        {
+          ...topicInput(a),
+          references: [{ ...selected, sourceId: randomUUID() }],
+        },
+        409,
+      );
+      await command(a, { ...topicInput(a), references: [foreign] }, 409);
+      const input = { ...topicInput(a), references: [selected] };
+      await command(a, input);
+      await command(a, input);
+      const [policy] =
+        await f.db`select revision from allrice_workbench_file_policies where reference_source_id=${selected.sourceId}`;
+      await changeReferencePublication(a.context, selected.sourceId, {
+        workspaceId: a.scope.workspaceId,
+        requestId: randomUUID(),
+        action: 'revoke',
+        expectedRevision: policy!.revision,
+      });
+      await read(a, { view: 'topics' }, 409);
+      await command(a, input, 409);
+    });
+
+    it('preserves deliverables when removing an image or deleting an article and rejects fabricated image generation receipts', async () => {
+      const a = await actor();
+      await install(a);
+      let article = await draft(a);
+      const imageFile = await file(a);
+      const [object] =
+        await f.db`select * from allrice_storage_objects where id=${imageFile.objectId}`;
+      const imageId = randomUUID(),
+        versionId = randomUUID();
+      // The file authority uses the real immutable delivery/session records.
+      // No image operation or provider is invoked by this synthetic fixture.
+      await f.db`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,state,immutable)
+      values(${imageId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${object!.object_key + '-image'},'artifacts','image/png',${object!.size_bytes},${object!.checksum},'ready',true)`;
+      await f.db`insert into allrice_deliverable_versions(id,organization_id,workspace_id,owner_id,object_id,series_id,version,session_id,file_name,format)
+      values(${versionId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${imageId},${randomUUID()},1,${a.base.task.chatSessionId},'合成封面.png','png')`;
+      await f.db`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,request_id,request_digest)
+      values(${versionId},${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${a.base.task.runId},'image',
+        ${f.db.json({ kind: 'tool_result', runId: a.base.task.runId, operationId: null, stepId: null })},${randomUUID()},${imageFile.checksum})`;
+      const image = {
+        file: { ...imageFile, objectId: imageId, versionId },
+        source: 'uploaded',
+      };
+      const added = await command(a, {
+        operation: 'article.image.add',
+        articleId: article.id,
+        expectedRevision: article.revision,
+        image,
+      });
+      if (added.result.kind !== 'article') throw Error('Expected article');
+      article = added.result.article;
+      expect(article.images).toEqual([image]);
+      await command(
+        a,
+        {
+          operation: 'article.image.add',
+          articleId: article.id,
+          expectedRevision: article.revision,
+          image: { ...image, source: 'generated', operationId: randomUUID() },
+        },
+        409,
+      );
+      const removed = await command(a, {
+        operation: 'article.image.remove',
+        articleId: article.id,
+        expectedRevision: article.revision,
+        versionId,
+      });
+      if (removed.result.kind !== 'article') throw Error('Expected article');
+      article = removed.result.article;
+      expect(article.images).toEqual([]);
+      await command(a, {
+        operation: 'article.delete',
+        articleId: article.id,
+        expectedRevision: article.revision,
+      });
+      expect(
+        (
+          await f.db`select deleted_at from allrice_storage_objects where id=${imageId}`
+        )[0]!.deleted_at,
+      ).toBeNull();
+      expect(
+        await f.db`select id from allrice_deliverable_versions where id=${versionId}`,
+      ).toHaveLength(1);
+    });
+
+    it('reads a complete local DST month beyond 201 and paginates tied/sub-millisecond creation times without loss', async () => {
+      const a = await actor();
+      await install(a);
+      await f.db`with topics as (
+      insert into allrice_brand_media_topics
+        (id,organization_id,workspace_id,owner_id,instance_id,candidate,direction,source_run_id,created_at)
+      select gen_random_uuid(),${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${a.scope.instanceId},
+        jsonb_build_object('title','月排期'||n,'summary','合成月历'),'月历验收',${a.base.task.runId},
+        '2026-11-10T12:00:00.123Z'::timestamptz+(n%103)*interval '1 microsecond'
+      from generate_series(1,209) n returning id,candidate,created_at
+    ) insert into allrice_brand_media_articles(id,organization_id,workspace_id,owner_id,instance_id,topic_id,title,created_at)
+      select gen_random_uuid(),${a.context.organizationId},${a.scope.workspaceId},${a.context.actor.id},${a.scope.instanceId},id,candidate->>'title',created_at from topics`;
+      await f.db`update allrice_brand_media_articles set state='scheduled',revision=revision+1,
+      planned_at='2026-03-20T12:00:00Z',timezone='America/Los_Angeles' where instance_id=${a.scope.instanceId} and revision=1`;
+      const edges = [
+        '2026-03-01T07:59:59Z',
+        '2026-03-01T08:00:00Z',
+        '2026-04-01T06:59:59Z',
+        '2026-04-01T07:00:00Z',
+      ];
+      const rows = await f.db<
+        { id: string }[]
+      >`select id from allrice_brand_media_articles where instance_id=${a.scope.instanceId} order by id limit 4`;
+      for (let i = 0; i < edges.length; i++)
+        await f.db`update allrice_brand_media_articles set planned_at=${edges[i]!},revision=revision+1
+      where id=${rows[i]!.id} and revision=2`;
+      const month = await read(a, {
+        view: 'calendar',
+        month: '2026-03',
+        timezone: 'America/Los_Angeles',
+      });
+      if (month.view !== 'calendar') throw Error('Expected calendar');
+      expect(month.items).toHaveLength(207);
+      const ids = month.items.map((x) => x.id);
+      expect(ids).toContain(rows[1]!.id);
+      expect(ids).toContain(rows[2]!.id);
+      expect(ids).not.toContain(rows[0]!.id);
+      expect(ids).not.toContain(rows[3]!.id);
+      let cursor: { createdAt: string; id: string } | null = null;
+      const all: string[] = [],
+        sizes: number[] = [];
+      do {
+        const page = await read(a, {
+          view: 'articles',
+          state: 'scheduled',
+          ...(cursor ? { cursor: JSON.stringify(cursor) } : {}),
+        });
+        if (page.view !== 'articles') throw Error('Expected article page');
+        all.push(...page.items.map((x) => x.id));
+        sizes.push(page.items.length);
+        cursor = page.nextCursor;
+      } while (cursor !== null);
+      expect(sizes).toEqual([100, 100, 9]);
+      expect(new Set(all).size).toBe(209);
+      const ordered = await f.db<
+        { id: string }[]
+      >`select id from allrice_brand_media_articles where instance_id=${a.scope.instanceId} order by created_at desc,id desc`;
+      expect(all).toEqual(ordered.map((x) => x.id));
+      expect(await read(a, { view: 'topics' })).toMatchObject({
+        items: [],
+        nextCursor: null,
+      });
+    });
+
+    it('keeps core-table access out of the business repository', async () => {
+      const repo = await readFile(
+        new URL(
+          '../../../packages/database/src/brand-media/repository.ts',
+          import.meta.url,
+        ),
+        'utf8',
+      );
+      expect([...new Set(repo.match(/allrice_[a-z_]+/g))].sort()).toEqual([
+        'allrice_brand_media_articles',
+        'allrice_brand_media_topics',
+      ]);
+      const imports = [...repo.matchAll(/from ['"]([^'"]+)['"]/g)].map(
+        (m) => m[1],
+      );
+      expect(imports).toEqual([
+        'node:crypto',
+        'postgres',
+        '@allrice/contracts',
+        './errors.ts',
+      ]);
+    });
+  },
+);
