@@ -16,8 +16,8 @@ root=$(git -C "$src" rev-parse --show-toplevel)
 sha=$(git -C "$root" rev-parse HEAD)
 base="$HOME/allrice-dev"; tools="$base/tools"; dest="$tools/$sha"; link="$base/bin"
 SCRIPTS="deploy-dev deploy-lock qa-instance smoke-test with-env backup-daily cloud-autostart schedule-recover m5-test"
-PYTOOLS="monitor"
-FILES="lib.sh m5-run qa-lease.py qa-bootstrap.mjs smoke-test.mjs smoke-reply.mjs smoke-entry.mjs rice-standard.json schedule-recover.sql"
+PYTOOLS="monitor wake-when"
+FILES="lib.sh m5-run qa-lease.py qa-bootstrap.mjs smoke-test.mjs smoke-reply.mjs smoke-entry.mjs rice-standard.json schedule-recover.sql wake-when.threads"
 
 mkdir -p "$tools"
 if [ ! -d "$dest" ]; then
@@ -36,6 +36,10 @@ fi
 mkdir -p "$base/.local"
 exec 9>>"$base/.local/deploy.lock"
 flock_fd 9 30 || { echo "install: a deploy is running ($("$dest/deploy-lock" status)); try later" >&2; exit 3; }
+# Keep thread rotation independent of tool upgrades; never overwrite the live list.
+if [ ! -e "$base/wake-when.threads" ]; then
+  install -m 600 "$dest/wake-when.threads" "$base/wake-when.threads"
+fi
 if [ -d "$link" ] && [ ! -L "$link" ]; then
   # First install: the hand-copied tools become a dated directory, kept for reference.
   mv "$link" "$tools/legacy-$(date +%Y%m%d-%H%M%S)"
