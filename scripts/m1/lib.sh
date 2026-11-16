@@ -27,6 +27,23 @@ while True:
         time.sleep(0.5)' "$1" "${2:-0}"
 }
 
+# Every QA task-lock consumer must open/try/unlink under the allocator lock.
+# Never wait on a task lock while holding the allocator (the owner needs it to
+# release). Fixed fd 8 belongs to this operation; fd 7 is only held briefly.
+qa_task_lock() {
+  exec 7>>"$HOME/allrice-qa/.alloc.lock"
+  flock_fd 7 30 || { exec 7>&-; return 1; }
+  exec 8>>"$1"
+  if ! flock_fd 8 0; then exec 8>&- 7>&-; return 1; fi
+  exec 7>&-
+}
+
+qa_task_unlock() {
+  exec 7>>"$HOME/allrice-qa/.alloc.lock"
+  if flock_fd 7 30; then rm -f -- "$1"; fi
+  exec 8>&- 7>&-
+}
+
 # lock_held <file>: exit 0 when someone holds the lock on <file>, 1 when it is free.
 lock_held() {
   "$M1_PY" -c 'import fcntl,sys

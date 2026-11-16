@@ -985,19 +985,38 @@ class DeployDevMigrations(unittest.TestCase):
               'rows=json.loads(os.environ["ROWS"])\n'
               'if os.path.exists(os.environ["PROOF"]): rows[0].update(closed=True,audit=True)\n'
               'print(json.dumps(rows))\n', 0o755)
-        for failure in ('1', ''):
-            with self.subTest(transaction_failure=failure):
-                proof = os.path.join(self.tmp, 'proof')
-                p = self.run_config_tool('schedule-recover', '--dev', '--release-manager', '--execute',
-                                         ROWS=json.dumps(rows), PROOF=proof, SQL_FAIL=failure)
-                self.assertEqual(p.returncode, 1 if failure else 0, p.stdout + p.stderr)
-                self.assertNotIn('UNEXPECTED_START', p.stdout + p.stderr)
-                self.assertEqual(os.path.exists(proof), not failure)
-                if not failure:
-                    self.assertIn('left stopped', p.stdout)
-                for role in ('web', 'worker'):
-                    self.assertFalse(os.path.exists(self.live_plist(role)))
-                self.assertEqual(self.read_plist(os.path.join(self.home, 'allrice-dev/qa/deploy-disabled/worker.plist')), worker)
+        instance = os.path.join(self.home, 'allrice-qa/recover-test')
+        os.makedirs(instance)
+        write(os.path.join(instance, 'instance.json'), '{}')
+        with open(os.path.join(self.home, 'Library/LaunchAgents/ai.bplabs.allrice-qa-recover-test-worker.plist'), 'wb') as f:
+            plistlib.dump(worker, f)
+        for mode in ('dev', 'instance'):
+            args = ('--dev', '--release-manager') if mode == 'dev' else ('--instance', 'recover-test')
+            if mode == 'instance':
+                import fcntl
+                task_lock = os.path.join(self.home, 'allrice-qa/.task-recover-test.lock')
+                with open(task_lock, 'a') as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                    refused = self.run_config_tool('schedule-recover', *args, '--execute',
+                                                   ROWS=json.dumps(rows), PROOF=os.path.join(self.tmp, 'never-written'))
+                    self.assertEqual(refused.returncode, 3, refused.stdout + refused.stderr)
+                    self.assertTrue(os.path.exists(task_lock))
+                    self.assertFalse(os.path.exists(os.path.join(self.tmp, 'never-written')))
+            for failure in ('1', ''):
+                with self.subTest(mode=mode, transaction_failure=failure):
+                    proof = os.path.join(self.tmp, 'proof-' + mode)
+                    p = self.run_config_tool('schedule-recover', *args, '--execute',
+                                             ROWS=json.dumps(rows), PROOF=proof, SQL_FAIL=failure)
+                    self.assertEqual(p.returncode, 1 if failure else 0, p.stdout + p.stderr)
+                    self.assertNotIn('UNEXPECTED_START', p.stdout + p.stderr)
+                    self.assertEqual(os.path.exists(proof), not failure)
+                    if not failure:
+                        self.assertIn('left stopped', p.stdout)
+                    if mode == 'instance':
+                        self.assertFalse(os.path.exists(task_lock))
+                    for role in ('web', 'worker'):
+                        self.assertFalse(os.path.exists(self.live_plist(role)))
+                    self.assertEqual(self.read_plist(os.path.join(self.home, 'allrice-dev/qa/deploy-disabled/worker.plist')), worker)
 
     def test_parking_directory_failure_records_manual_intervention_and_preserves_plists(self):
         self.saved_release(self.release(files=FILES[:-1]))

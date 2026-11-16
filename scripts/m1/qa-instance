@@ -319,9 +319,7 @@ cleanup_task_lock() {
   fi
   # All new callers open/try task locks under .alloc.lock, so none can retain an
   # old inode while we unlink. Keep the shared allocation lock permanently.
-  exec 7>>"$QA/.alloc.lock"
-  if flock_fd 7 30; then rm -f -- "$QA/.task-$LOCKED_TASK.lock"; fi
-  exec 8>&- 7>&-
+  qa_task_unlock "$QA/.task-$LOCKED_TASK.lock"
   exit "$rc"
 }
 
@@ -331,12 +329,8 @@ case "${1:-}" in
     [ $# -ge 1 ] || die 'usage: qa-instance up|down|renew <task> (up requires --owner and --card)'
     [ "$op" != down ] || [ $# -eq 1 ] || die "usage: qa-instance down <task>"
     valid_task "$1"; mkdir -p "$QA"
-    exec 7>>"$QA/.alloc.lock"
-    flock_fd 7 30 || die 'another allocation is running'
-    exec 8>>"$QA/.task-$1.lock"
-    flock_fd 8 0 || die "another up/down/renew of $1 is running"
+    qa_task_lock "$QA/.task-$1.lock" || die "another allocation or operation of $1 is running"
     LOCKED_TASK=$1
-    exec 7>&-
     trap cleanup_task_lock EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM HUP

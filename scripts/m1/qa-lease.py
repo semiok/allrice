@@ -89,12 +89,36 @@ def process_state(path, data):
             pass
         except OSError:
             return 'unknown'
-    result = subprocess.run(['lsof', '-nP', '-d', 'cwd', '-Fn'], capture_output=True, text=True, timeout=5)
+    # A detached process may run elsewhere but still use this release or files.
+    # Inspect paths, not process environments (which can contain credentials).
+    result = subprocess.run(['ps', '-xww', '-U', str(os.getuid()), '-o', 'pid=,ppid=,command='],
+                            capture_output=True, text=True, timeout=5)
     if result.returncode != 0:
         return 'unknown'
-    prefix = str(path.parent.resolve())
-    if any(line == 'n' + prefix or line.startswith('n' + prefix + '/') for line in result.stdout.splitlines()):
+    processes = {}
+    for line in result.stdout.splitlines():
+        pid, parent, command = line.strip().split(None, 2)
+        processes[int(pid)] = (int(parent), command)
+    ancestors, pid = set(), os.getpid()
+    while pid and pid not in ancestors:
+        ancestors.add(pid)
+        pid = processes.get(pid, (0, ''))[0]
+    prefixes = {str(path.parent.absolute()), str(path.parent.resolve())}
+    def refers(value):
+        return any(value == prefix or value.startswith(prefix + '/') for prefix in prefixes)
+    if any(pid not in ancestors and any(prefix + '/' in command for prefix in prefixes)
+           for pid, (_, command) in processes.items()):
         return 'running'
+    result = subprocess.run(['lsof', '-nP', '-a', '-u', str(os.getuid()), '-Fpn'],
+                            capture_output=True, text=True, timeout=5)
+    if result.returncode != 0:
+        return 'unknown'
+    pid = None
+    for line in result.stdout.splitlines():
+        if line.startswith('p'):
+            pid = int(line[1:])
+        elif line.startswith('n') and pid not in ancestors and refers(line[1:]):
+            return 'running'
     return 'stopped'
 
 
@@ -122,7 +146,9 @@ def archive(path, destination):
             raise ValueError('refusing symlinked logs')
         (pending / 'logs').mkdir(mode=0o700)
         if logs.exists():
-            for root, dirs, files in os.walk(logs, followlinks=False):
+            def unreadable(error):
+                raise error
+            for root, dirs, files in os.walk(logs, followlinks=False, onerror=unreadable):
                 dirs[:] = [d for d in dirs if not (Path(root) / d).is_symlink()]
                 for filename in files:
                     source = Path(root) / filename

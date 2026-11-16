@@ -44,7 +44,9 @@ elif command == 'launchctl' and args[0] == 'print':
     else:
         sys.exit(113)
 elif command == 'lsof':
-    print('n/private/tmp/unrelated')
+    print('p999999\\nn/private/tmp/unrelated')
+elif command == 'ps':
+    print('999999 1 node /tmp/unrelated.mjs')
 elif command == 'sleep' and os.environ.get('QA_TEST_RELEASE'):
     # The waiting process must release the allocator so an owner can down.
     with open(Path.home() / 'allrice-qa/.alloc.lock', 'rb') as f:
@@ -64,7 +66,7 @@ class QaInstanceBuildIdentity(unittest.TestCase):
         self.events = os.path.join(self.tmp, 'events.jsonl')
         node_bin = os.path.join(self.home, '.local/opt/node-22.23.2/bin')
         os.makedirs(node_bin)
-        for name in ('git', 'pnpm', 'node', 'psql', 'dropdb', 'createdb', 'launchctl', 'curl', 'lsof', 'sleep'):
+        for name in ('git', 'pnpm', 'node', 'psql', 'dropdb', 'createdb', 'launchctl', 'curl', 'lsof', 'ps', 'sleep'):
             path = os.path.join(node_bin, name)
             with open(path, 'w') as f:
                 f.write(COMMAND_STUB)

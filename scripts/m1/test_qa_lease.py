@@ -41,11 +41,44 @@ class LeaseSafety(unittest.TestCase):
             self.assertEqual(lease.process_state(self.path, self.data), 'unknown')
         with patch.object(lease.subprocess, 'run', return_value=absent), patch.object(lease.socket, 'create_connection'):
             self.assertEqual(lease.process_state(self.path, self.data), 'running')
-        orphan = subprocess.CompletedProcess([], 0, 'n' + str(self.path.parent / 'release') + '\n', '')
-        with patch.object(lease.subprocess, 'run', side_effect=[absent, absent, orphan]), patch.object(lease.socket, 'create_connection', side_effect=ConnectionRefusedError):
+        processes = subprocess.CompletedProcess([], 0, '', '')
+        orphan = subprocess.CompletedProcess([], 0, 'p999999\nn' + str(self.path.parent / 'release') + '\n', '')
+        with patch.object(lease.subprocess, 'run', side_effect=[absent, absent, processes, orphan]), patch.object(lease.socket, 'create_connection', side_effect=ConnectionRefusedError):
             self.assertEqual(lease.process_state(self.path, self.data), 'running')
         with patch.object(lease.subprocess, 'run', return_value=absent), patch.object(lease.socket, 'create_connection', side_effect=TimeoutError):
             self.assertEqual(lease.process_state(self.path, self.data), 'unknown')
+
+    def test_detached_process_paths_and_open_files_prevent_reclaim(self):
+        absent = subprocess.CompletedProcess([], 113, '', '')
+        for command, files, expected in [
+            ('node ' + str(self.path.parent / 'release/worker.mjs'), 'n/private/tmp', 'running'),
+            ('node --env-file=' + str(self.path.parent / '.env') + ' worker.mjs', 'n/private/tmp', 'running'),
+            ('node /tmp/probe.mjs', 'n' + str(self.path.parent / 'logs/worker.log'), 'running'),
+            ('node /tmp/unrelated.mjs', 'n/private/tmp', 'stopped'),
+        ]:
+            with self.subTest(command=command):
+                def run(args, **kwargs):
+                    if args[0] == 'launchctl':
+                        return absent
+                    output = ('999999 1 ' + command) if args[0] == 'ps' else ('p999999\n' + files)
+                    return subprocess.CompletedProcess(args, 0, output, '')
+                with patch.object(lease.subprocess, 'run', side_effect=run), patch.object(lease.socket, 'create_connection', side_effect=ConnectionRefusedError):
+                    self.assertEqual(lease.process_state(self.path, self.data), expected)
+
+    def test_log_enumeration_failure_preserves_source_and_rejects_archive(self):
+        logs = self.path.parent / 'logs'
+        logs.mkdir()
+        (logs / 'worker.log').write_text('must survive')
+        scandir = os.scandir
+        def fail_logs(path):
+            if not isinstance(path, int) and Path(path) == logs:
+                raise PermissionError('cannot enumerate logs')
+            return scandir(path)
+        with patch.object(lease.os, 'scandir', side_effect=fail_logs):
+            with self.assertRaises(PermissionError):
+                lease.archive(self.path, self.root / 'archive')
+        self.assertEqual(list((self.root / 'archive').iterdir()), [])
+        self.assertEqual((logs / 'worker.log').read_text(), 'must survive')
 
     def test_symlinked_logs_refuse_archive_without_leaving_partial_archive(self):
         (self.root / 'private').mkdir()
