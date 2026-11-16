@@ -6167,25 +6167,35 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     const cdp = await f.context.newCDPSession(f.page);
     const internalErrors: string[] = [];
     const traces = new Set<string>();
+    let observed!: () => void;
+    const historyObserved = new Promise<void>((resolve) => {
+      observed = resolve;
+    });
     // pageerror alone misses exceptions consumed by a successful fetch's catch.
     // Observe real exceptions without changing React, its scheduler or the store.
     cdp.on('Debugger.paused', (event) => {
       const error = event.data?.description ?? '';
-      if (/Maximum update depth exceeded/.test(error))
+      if (/Maximum update depth exceeded/.test(error)) {
         internalErrors.push(error);
+        observed();
+      }
       void cdp.send('Debugger.resume').catch((cause: unknown) => {
         internalErrors.push(String(cause));
+        observed();
       });
     });
     f.page.on('console', (message) => {
-      if (/Maximum update depth exceeded/.test(message.text()))
+      if (/Maximum update depth exceeded/.test(message.text())) {
         internalErrors.push(message.text());
+        observed();
+      }
     });
     f.page.on('requestfinished', (request) => {
       const url = new URL(request.url());
       const match = url.pathname.match(/^\/api\/v1\/runs\/([^/]+)\/events$/);
       if (match && url.searchParams.get('format') === 'json')
         traces.add(match[1]!);
+      if (traces.size === 100) observed();
     });
     try {
       await cdp.send('Debugger.enable');
@@ -6196,6 +6206,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await rail
         .getByRole('button', { name: '跳转到第 100 轮', exact: true })
         .waitFor({ timeout: 15_000 });
+      await historyObserved;
+      expect(internalErrors).toEqual([]);
       await expect
         .poll(() => [...traces].sort())
         .toEqual(Array.from({ length: 100 }, (_, i) => id(3000 + i)).sort());
