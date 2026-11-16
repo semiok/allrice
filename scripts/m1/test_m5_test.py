@@ -363,7 +363,6 @@ class M5Test(unittest.TestCase):
         self.assertEqual(self.run_m5('--', 'l.test.ts').returncode, 0)
         wt = os.path.join(self.base, 'slots/slot-1')
         node = os.path.join(self.m5, '.local/opt/node-22.23.2/bin/node')
-        os.symlink(os.path.realpath(shutil.which('node')), node)
         # "exec node …" from a pnpm shim: argv[0] is just "node", the command line names no path of ours
         stray = subprocess.Popen(['node', '-e', 'setTimeout(() => {}, 120000)'], cwd=wt, close_fds=True,
                                  env=dict(os.environ, PATH=os.path.dirname(node) + ':' + os.environ['PATH']))
