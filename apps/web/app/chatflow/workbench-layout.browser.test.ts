@@ -309,6 +309,25 @@ const A = id(1),
   user = id(5),
   run = id(6);
 const now = '2026-09-20T00:00:00.000Z';
+const sidebarStreams = (page: Page) =>
+  page.evaluate(() =>
+    (
+      JSON.parse(
+        document.documentElement.dataset.runStreams ?? '[]',
+      ) as string[]
+    )
+      .filter((url) => url.startsWith('/api/v1/runs/'))
+      .map((url) => new URL(url, location.href).pathname.split('/')[4]!),
+  );
+const finishSidebarRun = (page: Page, runId: string) =>
+  page.evaluate(
+    (detail) =>
+      window.dispatchEvent(new CustomEvent('allrice-test-stream', { detail })),
+    {
+      runId,
+      body: `data: ${JSON.stringify({ schemaVersion: 3, eventId: id(9901), organizationId: org, workspaceId: workspace, conversationId: A, runId, generation: 1, cursor: `${runId}:1`, sequence: 1, harness: 'dsh', occurredAt: now, sourceEvent: null, type: 'run.succeeded', payload: {} })}\n\n`,
+    },
+  );
 const operationTask = () =>
   RuntimeTaskRefSchema.parse({
     scope: { organizationId: org, workspaceId: workspace, projectId: null },
@@ -807,6 +826,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       running?: boolean;
       streamingOutput?: boolean;
       controlledStream?: boolean;
+      sidebarActivity?: boolean;
       queue?: boolean;
       brandContent?: { kind: 'general' | 'custom'; registered: boolean };
       scheduledTasks?: AutomationCatalogTask[];
@@ -905,6 +925,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       brandContentBoardReads: 0,
       brandContentLaunches: [] as Array<Record<string, unknown>>,
       historyRunning: options.running ?? false,
+      sidebarRunIds: (options.running ? { [A]: [run] } : {}) as Record<
+        string,
+        string[]
+      >,
       bridgeDevices: [] as BridgeDevice[],
       bridgeError: false,
       bridgeSelections: [] as string[],
@@ -1096,6 +1120,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     );
     const withArchive = (item: Session): Session => ({
       ...item,
+      ...(options.sidebarActivity
+        ? {
+            ownerId: user,
+            activeRunIds: state.sidebarRunIds[item.id] ?? [],
+            running: !!state.sidebarRunIds[item.id]?.length,
+          }
+        : {}),
       ...(options.brandContent
         ? {
             employeeInstanceId:
@@ -1144,6 +1175,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     if (options.controlledStream)
       await page.addInitScript(() => {
         const originalFetch = window.fetch.bind(window);
+        const streams = new Map<number, string>();
+        let streamId = 0;
+        const record = () => {
+          document.documentElement.dataset.runStreams = JSON.stringify([
+            ...streams.values(),
+          ]);
+        };
         window.fetch = async (input, init) => {
           const url = new URL(String(input), location.origin);
           if (
@@ -1153,16 +1191,31 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             return originalFetch(input, init);
           let closed = false;
           let cleanup = () => {};
+          const key = ++streamId;
           const stream = new ReadableStream<Uint8Array>({
             start(controller) {
-              const push = (event: Event) =>
+              streams.set(key, url.pathname + url.search);
+              record();
+              const push = (event: Event) => {
+                const detail = (
+                  event as CustomEvent<string | { runId: string; body: string }>
+                ).detail;
+                if (
+                  typeof detail !== 'string' &&
+                  url.pathname !== `/api/v1/runs/${detail.runId}/events`
+                )
+                  return;
                 controller.enqueue(
                   new TextEncoder().encode(
-                    (event as CustomEvent<string>).detail,
+                    typeof detail === 'string' ? detail : detail.body,
                   ),
                 );
+              };
               cleanup = () => {
+                if (closed) return;
                 closed = true;
+                streams.delete(key);
+                record();
                 window.removeEventListener('allrice-test-stream', push);
               };
               window.addEventListener('allrice-test-stream', push);
@@ -1816,6 +1869,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ) {
         const body = route.request().postDataJSON();
         state.messageInputs.push(body);
+        if (options.sidebarActivity) {
+          const sessionId = path.split('/')[4]!;
+          state.sidebarRunIds[sessionId] = [run];
+          state.messageStatus = 'pending';
+        }
         return answer({
           run: { id: run },
           delivery: 'immediate',
@@ -1857,6 +1915,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             createdAt: now,
           };
           state.queue.push(queued);
+          if (options.sidebarActivity) {
+            const sessionId = path.split('/')[4]!;
+            state.sidebarRunIds[sessionId] = [
+              ...(state.sidebarRunIds[sessionId] ?? []),
+              queued.runId!,
+            ];
+          }
           return answer({
             delivery: 'follow_up',
             fallbackRunId: queued.runId,
@@ -1941,13 +2006,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         if (body.archived !== undefined) {
           if (body.archived) state.archivedIds.add(target);
           else state.archivedIds.delete(target);
+          if (options.sidebarActivity && body.archived) {
+            state.sidebarRunIds[target] = [];
+            if (target === A) state.messageStatus = 'completed';
+          }
         }
         const changes = state.sessionEdits.get(target) ?? {};
         if (body.title !== undefined) changes.title = body.title;
         if (body.pinned !== undefined)
           changes.pinnedAt = body.pinned ? now : null;
         state.sessionEdits.set(target, changes);
-        return answer({ session: withArchive(session(target)) });
+        const updated = withArchive(session(target));
+        if (options.sidebarActivity) {
+          // PATCH returns the base Session DTO, not the list's activity read.
+          delete updated.running;
+          delete updated.activeRunIds;
+          delete updated.pendingInteraction;
+        }
+        return answer({ session: updated });
       }
       if (path.endsWith('/workspace-selection')) {
         state.bridgeSelections.push(path);
@@ -22823,7 +22899,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30_000);
   it('uses the native stop-and-archive confirmation, cancel leaves the work running', async () => {
-    const f = await fixture({ archiveActive: true });
+    const f = await fixture({
+      archiveActive: true,
+      sidebarActivity: true,
+      controlledStream: true,
+      running: true,
+    });
     try {
       const row = f.page.locator(`[data-row-key="session:${A}"]`);
       await row.hover();
@@ -22842,11 +22923,207 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         archived: true,
         stopActivity: true,
       });
+      // B remains a background row when its archive receipt arrives. An
+      // unavailable follow-up list must not retain its old Run observer.
+      const b = f.page.locator(`[data-row-key="session:${B}"]`);
+      f.state.sidebarRunIds[B] = [id(406)];
+      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect.poll(() => sidebarStreams(f.page)).toContain(id(406));
+      f.state.sessionListError = true;
+      await b.hover();
+      await selectSessionAction(f.page, b, '归档会话');
+      await dialog
+        .getByRole('button', { name: '停止并归档', exact: true })
+        .click();
+      await expect
+        .poll(() => f.state.archiveRequests.at(-1))
+        .toEqual({ archived: true, stopActivity: true });
+      await expect.poll(() => sidebarStreams(f.page)).not.toContain(id(406));
+      await f.page
+        .locator('#chat-sidebar')
+        .getByRole('alert', { name: '会话列表状态' })
+        .waitFor();
+      expect(await b.locator('svg[data-state="ongoing"]').count()).toBe(0);
+      const reads = f.state.sessionListRequests;
+      await finishSidebarRun(f.page, id(406));
+      await f.page.evaluate(() => new Promise(requestAnimationFrame));
+      expect(f.state.sessionListRequests).toBe(reads);
       expect(f.errors).toEqual([]);
     } finally {
       await f.context.close();
     }
   }, 30_000);
+  for (const width of [1440, 390])
+    for (const appearance of ['light', 'dark'] as const)
+      it(`keeps accepted work running after switching sessions with full native corners at ${width}px ${appearance}`, async () => {
+        const f = await fixture({
+          width,
+          touch: width === 390,
+          appearance,
+          sidebarActivity: true,
+          controlledStream: true,
+          queue: true,
+        });
+        let release = () => {};
+        try {
+          await f.page.emulateMedia({ reducedMotion: 'reduce' });
+          const sidebar = f.page.locator('#chat-sidebar');
+          const a = sidebar.locator(`[data-row-key="session:${A}"]`);
+          const b = sidebar.locator(`[data-row-key="session:${B}"]`);
+          const ongoing = a.locator('svg[data-state="ongoing"]');
+          const open = async () => {
+            if (width === 390) {
+              await f.page
+                .getByRole('button', { name: '展开侧边栏', exact: true })
+                .click();
+              expect(await sidebar.getAttribute('aria-modal')).toBe('true');
+            }
+          };
+          const corners = async (selected: typeof a) => {
+            const box = await selected.evaluate((row) => {
+              const rect = row.getBoundingClientRect();
+              const card = row
+                .closest('[role="region"]')!
+                .querySelector('[class*="employeeCard"]')!
+                .getBoundingClientRect();
+              let left = rect.left,
+                right = rect.right;
+              for (let at = row.parentElement; at; at = at.parentElement) {
+                if (
+                  !['auto', 'scroll', 'hidden', 'clip'].includes(
+                    getComputedStyle(at).overflowX,
+                  )
+                )
+                  continue;
+                const ancestor = at.getBoundingClientRect();
+                left = Math.max(left, ancestor.left + at.clientLeft);
+                right = Math.min(
+                  right,
+                  ancestor.left + at.clientLeft + at.clientWidth,
+                );
+              }
+              const css = getComputedStyle(row);
+              return {
+                left: rect.left,
+                right: rect.right,
+                cardLeft: card.left,
+                cardRight: card.right,
+                visibleLeft: left,
+                visibleRight: right,
+                radius: [
+                  css.borderTopLeftRadius,
+                  css.borderTopRightRadius,
+                  css.borderBottomRightRadius,
+                  css.borderBottomLeftRadius,
+                ],
+              };
+            });
+            expect(Math.abs(box.left - box.cardLeft)).toBeLessThanOrEqual(0.5);
+            expect(Math.abs(box.right - box.cardRight)).toBeLessThanOrEqual(
+              0.5,
+            );
+            expect(Math.abs(box.visibleLeft - box.left)).toBeLessThanOrEqual(
+              0.5,
+            );
+            expect(Math.abs(box.visibleRight - box.right)).toBeLessThanOrEqual(
+              0.5,
+            );
+            expect(box.radius).toEqual(['12px', '12px', '12px', '12px']);
+          };
+          f.state.sessionListDelay = new Promise<void>((done) => {
+            release = done;
+          });
+          let reads = f.state.sessionListRequests;
+          await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+          await expect
+            .poll(() => f.state.sessionListRequests)
+            .toBeGreaterThan(reads);
+          const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          await input.fill('继续整理资料，完成后给我结果。');
+          await input.press('Enter');
+          await expect.poll(() => f.state.messageInputs.length).toBe(1);
+          expect(f.state.messageInputs[0]).toMatchObject({
+            text: '继续整理资料，完成后给我结果。',
+            deliveryMode: 'follow_up',
+          });
+          await expect.poll(() => input.isEnabled()).toBe(true);
+          await input.fill('接着核对下一份资料。');
+          await input.press('Enter');
+          await expect.poll(() => f.state.messageInputs.length).toBe(2);
+          release();
+          f.state.sessionListDelay = null;
+          await open();
+          await expect.poll(() => ongoing.count()).toBe(1);
+          expect(await a.getAttribute('aria-selected')).toBe('true');
+          await corners(a);
+          await b.click();
+          await open();
+          expect(await b.getAttribute('aria-selected')).toBe('true');
+          expect(await a.getAttribute('aria-selected')).toBe('false');
+          expect(await ongoing.count()).toBe(1);
+          expect(await b.locator('svg[data-state="ongoing"]').count()).toBe(0);
+          await corners(b);
+          const first = id(401),
+            successor = id(402);
+          await expect.poll(() => sidebarStreams(f.page)).toContain(first);
+          // A terminal notice while a list read is in flight must start a
+          // fresh read. The successor keeps this row running independently.
+          f.state.sessionListDelay = new Promise<void>((done) => {
+            release = done;
+          });
+          reads = f.state.sessionListRequests;
+          await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+          await expect
+            .poll(() => f.state.sessionListRequests)
+            .toBeGreaterThan(reads);
+          reads = f.state.sessionListRequests;
+          f.state.sidebarRunIds[A] = [successor];
+          f.state.queue = f.state.queue.filter((item) => item.runId !== first);
+          await finishSidebarRun(f.page, first);
+          await expect
+            .poll(() => f.state.sessionListRequests)
+            .toBeGreaterThan(reads);
+          release();
+          f.state.sessionListDelay = null;
+          await expect.poll(() => sidebarStreams(f.page)).toEqual([successor]);
+          expect(await ongoing.count()).toBe(1);
+          f.state.sidebarRunIds[A] = [];
+          f.state.queue = [];
+          await finishSidebarRun(f.page, successor);
+          await expect.poll(() => ongoing.count()).toBe(0);
+          await expect.poll(() => sidebarStreams(f.page)).toEqual([]);
+          reads = f.state.sessionListRequests;
+          await finishSidebarRun(f.page, successor);
+          await f.page.evaluate(() => new Promise(requestAnimationFrame));
+          expect(f.state.sessionListRequests).toBe(reads);
+          // The same visible record under another viewer cannot retain the
+          // previous owner's observer or apply its late terminal callback.
+          f.state.sidebarRunIds[A] = [id(403)];
+          await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+          await expect.poll(() => sidebarStreams(f.page)).toEqual([id(403)]);
+          const employee = sidebar
+            .getByRole('region', { name: 'Rice', exact: true })
+            .getByRole('treeitem')
+            .first();
+          await employee.click();
+          await expect.poll(() => a.count()).toBe(0);
+          await expect.poll(() => sidebarStreams(f.page)).toEqual([]);
+          await employee.click();
+          await expect.poll(() => sidebarStreams(f.page)).toEqual([id(403)]);
+          f.state.viewer = id(99);
+          await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+          await expect.poll(() => sidebarStreams(f.page)).toEqual([]);
+          reads = f.state.sessionListRequests;
+          await finishSidebarRun(f.page, id(403));
+          await f.page.evaluate(() => new Promise(requestAnimationFrame));
+          expect(f.state.sessionListRequests).toBe(reads);
+          expect(f.errors).toEqual([]);
+        } finally {
+          release();
+          await f.close();
+        }
+      });
+
   it.each([0, 3, 5, 7])(
     'automatically shows up to five employee sessions before offering the rest (%i total)',
     async (total) => {
@@ -22980,6 +23257,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       employeeHistory: true,
       employeeHistoryCount: 35,
       officeHistoryCount: 7,
+      sidebarActivity: true,
+      controlledStream: true,
     });
     let release!: () => void;
     try {
@@ -22988,11 +23267,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: 'Office 文档助手',
         exact: true,
       });
+      f.state.sidebarRunIds[B] = [id(405)];
       await office.getByRole('treeitem').first().click();
       const rows = office.locator('[data-row-key^="session:"]');
       await expect.poll(() => rows.count()).toBe(5);
       await office.getByRole('button', { name: '展开其余 2 个会话' }).click();
       await expect.poll(() => rows.count()).toBe(7);
+      await expect.poll(() => sidebarStreams(f.page)).toContain(id(405));
       for (let i = 0; i < 3; i++) {
         f.state.sessionPageDelay = new Promise<void>((done) => {
           release = done;
@@ -23008,10 +23289,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(
           await office.getByText('正在加载会话…', { exact: true }).count(),
         ).toBe(0);
+        if (i === 0) {
+          const pendingReads = f.state.sessionPageRequests.length;
+          f.state.sidebarRunIds[B] = [];
+          await finishSidebarRun(f.page, id(405));
+          await expect
+            .poll(() => f.state.sessionPageRequests.length)
+            .toBeGreaterThan(pendingReads);
+        }
         release();
         f.state.sessionPageDelay = null;
         await f.page.waitForTimeout(100);
         expect(await rows.count()).toBe(7);
+        expect(await rows.locator('svg[data-state="ongoing"]').count()).toBe(0);
       }
       f.state.sessionPageError = true;
       await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));

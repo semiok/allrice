@@ -369,6 +369,7 @@ export function ChatFlowClient({
   const {
     activeId,
     updateSession,
+    applySessionActivities,
     captureSelection,
     createSession,
     registerEmployeeInstance,
@@ -391,6 +392,7 @@ export function ChatFlowClient({
     workspace,
     headers: tenantHeaders,
     onUpdated: updateSession,
+    onActivities: applySessionActivities,
     onShowArchived: openEmployeeArchive,
     selectedSession:
       history?.session ?? workspace?.sessions.find((s) => s.id === activeId),
@@ -1198,6 +1200,20 @@ export function ChatFlowClient({
       message.runId && isMessageRunActive(message, runViews[message.runId]),
   );
   const isRunning = activeRunMessages.length > 0;
+  const knownActiveRuns = JSON.stringify(
+    [
+      ...activeRunMessages.map((message) => message.runId!),
+      ...(history?.queuedMessages ?? [])
+        .map((message) => message.runId)
+        .filter((id): id is string => !!id),
+    ]
+      .filter((id, index, all) => all.indexOf(id) === index)
+      .sort(),
+  );
+  const acceptSidebarRuns = archive.acceptRuns;
+  useEffect(() => {
+    if (activeId) acceptSidebarRuns(activeId, JSON.parse(knownActiveRuns));
+  }, [activeId, knownActiveRuns, acceptSidebarRuns]);
   const interactions = useInteractionStatus(
     workbenchEnabled,
     activeId,
@@ -1396,6 +1412,7 @@ export function ChatFlowClient({
       retry.confirmed();
       recordNativeAdmission(sessionId, result.run.id, nativeAdmission);
       if (!action.current()) return;
+      archive.acceptRuns(sessionId, [result.fallbackRunId ?? result.run.id]);
       const retainedPreviews = imageCache.handoff(
         `${settingsScope}/${sessionId}`,
         tenantHeaders,
@@ -2859,7 +2876,14 @@ export function ChatFlowClient({
             ? session
             : {
                 ...session,
-                running: isRunning,
+                running:
+                  isRunning ||
+                  session.activeRunIds?.some(
+                    (runId) =>
+                      !['completed', 'failed', 'canceled'].includes(
+                        runViews[runId]?.status ?? '',
+                      ),
+                  ),
                 pendingInteraction: interactions.data?.pendingActions.length
                   ? 'approval'
                   : pendingUserQuestion
@@ -3777,6 +3801,7 @@ export function ChatFlowClient({
           archive={employeeArchive}
           headers={tenantHeaders}
           onSessionUpdated={updateSession}
+          onSessionActivities={applySessionActivities}
           workspace={workspace}
           activeId={activeId}
           onClose={closeEmployeeArchive}

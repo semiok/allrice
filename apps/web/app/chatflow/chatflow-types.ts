@@ -40,8 +40,13 @@ export interface Session {
   pinnedAt?: string | null;
   employeeName?: string;
   running?: boolean;
+  activeRunIds?: string[];
   pendingInteraction?: 'approval' | 'plan-review' | 'question';
 }
+export type SessionActivity = Pick<
+  Session,
+  'id' | 'running' | 'activeRunIds' | 'pendingInteraction'
+>;
 
 export interface EmployeeVersion {
   id: string;

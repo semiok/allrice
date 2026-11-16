@@ -114,6 +114,7 @@ import * as imagePreviewHttp from '../app/api/v1/workbench/files/[id]/preview/ro
 import * as imageDownloadHttp from '../app/api/v1/workbench/files/[id]/download/route';
 import * as catalog from '../app/api/v1/employee-instances/[id]/modules/route';
 import * as business from '../app/api/v1/employee-instances/[id]/brand-media/route';
+import * as sessionListHttp from '../app/api/v1/sessions/route';
 
 const jpeg =
   '/9j/4AAQSkZJRgABAQAASABIAAD/4QBMRXhpZgAATU0AKgAAAAgAAYdpAAQAAAABAAAAGgAAAAAAA6ABAAMAAAABAAEAAKACAAQAAAABAAAAAqADAAQAAAABAAAAAgAAAAD/7QA4UGhvdG9zaG9wIDMuMAA4QklNBAQAAAAAAAA4QklNBCUAAAAAABDUHYzZjwCyBOmACZjs+EJ+/8AAEQgAAgACAwEiAAIRAQMRAf/EAB8AAAEFAQEBAQEBAAAAAAAAAAABAgMEBQYHCAkKC//EALUQAAIBAwMCBAMFBQQEAAABfQECAwAEEQUSITFBBhNRYQcicRQygZGhCCNCscEVUtHwJDNicoIJChYXGBkaJSYnKCkqNDU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6g4SFhoeIiYqSk5SVlpeYmZqio6Slpqeoqaqys7S1tre4ubrCw8TFxsfIycrS09TV1tfY2drh4uPk5ebn6Onq8fLz9PX29/j5+v/EAB8BAAMBAQEBAQEBAQEAAAAAAAABAgMEBQYHCAkKC//EALURAAIBAgQEAwQHBQQEAAECdwABAgMRBAUhMQYSQVEHYXETIjKBCBRCkaGxwQkjM1LwFWJy0QoWJDThJfEXGBkaJicoKSo1Njc4OTpDREVGR0hJSlNUVVZXWFlaY2RlZmdoaWpzdHV2d3h5eoKDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uLj5OXm5+jp6vLz9PX29/j5+v/bAEMAAgICAgICAwICAwUDAwMFBgUFBQUGCAYGBgYGCAoICAgICAgKCgoKCgoKCgwMDAwMDA4ODg4ODw8PDw8PDw8PD//bAEMBAgICBAQEBwQEBxALCQsQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEP/dAAQAAf/aAAwDAQACEQMRAD8A/Neiiiv1A/Oz/9k=';
@@ -1424,6 +1425,87 @@ suite(
         '@allrice/contracts',
         './errors.ts',
       ]);
+    });
+
+    it('serves current Run IDs beyond the first authorized session page without crossing login scope', async () => {
+      const a = await generationActor();
+      const sent = await generate(a);
+      for (let n = 0; n < 31; n++)
+        await createChatSession(a.context, {
+          workspaceId: a.scope.workspaceId,
+          employeeAssignmentId: a.assignmentId,
+          title: `Newer idle session ${n}`,
+        });
+      const list = async (owner: Actor, query = '') => {
+        const authenticated = request(owner, 'modules');
+        return sessionListHttp.GET(
+          new Request(
+            `https://example.test/api/v1/sessions?workspaceId=${a.scope.workspaceId}${query}`,
+            { headers: authenticated.headers },
+          ),
+        );
+      };
+      const firstResponse = await list(a);
+      expect(firstResponse.status).toBe(200);
+      const first = await firstResponse.json();
+      expect(first.sessions).toHaveLength(30);
+      expect(
+        first.sessions.some(
+          (row: { id: string }) => row.id === sent.userMessage.sessionId,
+        ),
+      ).toBe(false);
+      const deeperResponse = await list(
+        a,
+        `&cursor=${encodeURIComponent(first.nextCursor)}`,
+      );
+      expect(deeperResponse.status).toBe(200);
+      expect((await deeperResponse.json()).sessions).toContainEqual(
+        expect.objectContaining({
+          id: sent.userMessage.sessionId,
+          ownerId: a.context.actor.id,
+          running: true,
+          activeRunIds: [sent.run.id],
+        }),
+      );
+      await cancelRun(a.context, a.scope.workspaceId, sent.run.id, {
+        reason: 'Synthetic HTTP activity cleanup',
+      });
+      const terminalResponse = await list(
+        a,
+        `&employeeInstanceId=${a.scope.instanceId}`,
+      );
+      expect(terminalResponse.status).toBe(200);
+      const terminal = await terminalResponse.json();
+      // The employee page is still paginated; follow its cursor to the old row.
+      const finalResponse = await list(
+        a,
+        `&employeeInstanceId=${a.scope.instanceId}&cursor=${encodeURIComponent(terminal.nextCursor)}`,
+      );
+      expect(finalResponse.status).toBe(200);
+      expect([
+        ...terminal.sessions,
+        ...(await finalResponse.json()).sessions,
+      ]).toContainEqual(
+        expect.objectContaining({
+          id: sent.userMessage.sessionId,
+          running: false,
+          activeRunIds: [],
+        }),
+      );
+      const other = await actor();
+      const denied = await list(other);
+      expect(denied.status).toBe(403);
+      expect((await denied.json()).error.code).toBe('AUTHORIZATION_DENIED');
+      browser.token = '';
+      expect(
+        (
+          await sessionListHttp.GET(
+            new Request(
+              `https://example.test/api/v1/sessions?workspaceId=${a.scope.workspaceId}`,
+            ),
+          )
+        ).status,
+      ).toBe(401);
     });
 
     async function generationActor(
