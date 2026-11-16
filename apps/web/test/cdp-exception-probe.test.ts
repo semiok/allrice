@@ -36,23 +36,23 @@ it('only resumes an observed pause and retains caught React exceptions', async (
   await f.probe.stop();
 });
 
-it.each(['Debugger.resumed', 'Debugger.globalObjectCleared'])(
-  'does not resume a queued pause invalidated by %s',
-  async (event) => {
-    const f = fixture();
-    f.pause();
-    f.cdp.emit(event);
-    await setImmediate();
-    expect(f.cdp.send).not.toHaveBeenCalled();
-    expect(f.exceptions).toEqual([reactError]);
-    expect(f.failures).toEqual([]);
-    await f.probe.stop();
-  },
-);
+it.each([
+  'Debugger.resumed',
+  'Debugger.globalObjectCleared',
+  'Runtime.executionContextsCleared',
+])('does not resume a queued pause invalidated by %s', async (event) => {
+  const f = fixture();
+  f.pause();
+  f.cdp.emit(event);
+  await setImmediate();
+  expect(f.cdp.send).not.toHaveBeenCalled();
+  expect(f.exceptions).toEqual([reactError]);
+  expect(f.failures).toEqual([]);
+  await f.probe.stop();
+});
 
 it.each([
   { invalidated: true, error: notPaused, expected: [] },
-  { invalidated: false, error: notPaused, expected: [notPaused] },
   {
     invalidated: true,
     error: new Error('transport failed'),
@@ -79,6 +79,24 @@ it.each([
     await f.probe.stop();
   },
 );
+
+it('cannot pass a stale-resume check until its invalidation event arrives', async () => {
+  const f = fixture();
+  f.cdp.send.mockRejectedValueOnce(notPaused);
+  f.pause();
+  let drained = false;
+  const drain = f.probe.drain().then(() => {
+    drained = true;
+  });
+  await setImmediate();
+  expect(drained).toBe(false);
+  expect(f.exceptions).toEqual([reactError]);
+  f.cdp.emit('Runtime.executionContextsCleared');
+  await drain;
+  expect(drained).toBe(true);
+  expect(f.failures).toEqual([]);
+  await f.probe.stop();
+});
 
 it('serializes resumes and does not let a new pause hide an earlier failure', async () => {
   const f = fixture();

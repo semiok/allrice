@@ -6542,6 +6542,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       (cause) => failures.push(cause),
     );
     try {
+      await cdp.send('Runtime.enable');
       await cdp.send('Debugger.enable');
       await cdp.send('Debugger.setPauseOnExceptions', { state: 'all' });
       await page.evaluate(() => {
@@ -6556,6 +6557,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await expect.poll(() => exceptions.length).toBe(1);
       await reload;
       await page.evaluate(() => document.readyState);
+      await probe.drain();
       expect(exceptions[0]).toContain(
         'Maximum update depth exceeded: probe sentinel',
       );
@@ -6613,6 +6615,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       )
         traces.add(match[1]!);
     });
+    await cdp.send('Runtime.enable');
     await cdp.send('Debugger.enable');
     await cdp.send('Debugger.setPauseOnExceptions', { state: 'all' });
     f.state.messages = navigationHistory(100, 2);
@@ -6631,6 +6634,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         { timeout: 5000 },
       )
       .toBe(true);
+    await probe.drain();
     expect(internalErrors).toEqual([]);
     await expect
       .poll(() => [...traces].sort())
@@ -6638,6 +6642,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     await expect
       .poll(() => f.page.getByText('加载过程…', { exact: true }).count())
       .toBe(0);
+    await probe.drain();
     expect(internalErrors).toEqual([]);
     expect(await f.page.getByText(/过程加载失败/).count()).toBe(0);
     expect(await rail.getByRole('button').count()).toBeLessThan(55);
@@ -6658,6 +6663,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     await f.page.getByRole('treeitem', { name: /研究任务 B/ }).click();
     await expect.poll(() => rail.count()).toBe(0);
     expect(await f.page.getByRole('tooltip').count()).toBe(0);
+    await probe.drain();
     expect(internalErrors).toEqual([]);
   }, 30_000);
 
