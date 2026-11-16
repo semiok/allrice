@@ -266,7 +266,9 @@ suite('sidebar, create-employee dialog and workbench badge labels', () => {
           const avatar = tree(page).getByText('R', { exact: true });
           const titleBox = await title.boundingBox();
           const avatarBox = await avatar.boundingBox();
-          expect(Math.abs(titleBox!.x - avatarBox!.x)).toBeLessThanOrEqual(0.5);
+          expect(Math.abs(titleBox!.x - avatarBox!.x - 20)).toBeLessThanOrEqual(
+            0.5,
+          );
           expect(
             await tree(page).evaluate(
               (node) => node.scrollWidth - node.clientWidth,

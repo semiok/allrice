@@ -2221,11 +2221,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ...state.createdEmployeeInstances.map((instance) => instance.id),
         ]).toContain(instanceId);
         expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
-        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
-        expect(route.request().headers()['x-allrice-workspace-id']).toBe(
-          state.workspace,
+        expect(route.request().headers()['x-allrice-organization-id']).toBe(
+          org,
         );
-        if (state.viewer !== user)
+        expect(route.request().headers()['x-allrice-workspace-id']).toBe(
+          url.searchParams.get('workspaceId'),
+        );
+        if (
+          state.viewer !== user ||
+          url.searchParams.get('workspaceId') !== state.workspace
+        )
           return answer({ error: { message: 'No access' } }, 403);
         if (options.employeeDetails && state.employeeDetailStatus !== 200)
           return answer(
@@ -2252,9 +2257,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       );
       if (sceneCatalogTarget && route.request().method() === 'GET') {
         const instanceId = sceneCatalogTarget[1]!;
-        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        expect(route.request().headers()['x-allrice-organization-id']).toBe(
+          org,
+        );
+        expect(route.request().headers()['x-allrice-workspace-id']).toBe(
+          url.searchParams.get('workspaceId'),
+        );
         state.sceneCatalogReads.push({ instanceId, viewerId: state.viewer });
-        if (state.viewer !== user)
+        if (
+          state.viewer !== user ||
+          url.searchParams.get('workspaceId') !== state.workspace
+        )
           return answer({ error: { message: 'No access' } }, 403);
         const custom =
           instanceId === id(8100) ||
@@ -22981,6 +22994,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     async (changed) => {
       const f = await fixture({
         queue: true,
+        employeeDetails: true,
         sidebarActivity: true,
         controlledStream: true,
       });
@@ -23016,6 +23030,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               new URL(value.url()).pathname.endsWith('/modules') &&
               new URL(value.url()).searchParams.get('workspaceId') === id(998),
           );
+          f.state.employeeDetailStatus = 403;
           f.state.viewer = id(999);
           f.state.workspace = id(998);
           f.state.sidebarRunIds[A] = [];
@@ -23195,6 +23210,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           width,
           touch: width === 390,
           appearance,
+          employeeDetails: true,
           sidebarActivity: true,
           controlledStream: true,
           queue: true,
@@ -23218,7 +23234,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             const box = await selected.evaluate((row) => {
               const rect = row.getBoundingClientRect();
               const card = row
-                .closest('[role="region"]')!
+                .closest('section[aria-label]')!
                 .querySelector('[class*="employeeCard"]')!
                 .getBoundingClientRect();
               let left = rect.left,
@@ -23349,6 +23365,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             (response) =>
               new URL(response.url()).pathname === '/api/v1/workspace',
           );
+          f.state.employeeDetailStatus = 403;
           f.state.viewer = id(99);
           await f.page
             .getByRole('button', { name: '查看Rice详情', exact: true })
