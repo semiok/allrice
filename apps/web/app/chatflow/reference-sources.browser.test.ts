@@ -153,6 +153,43 @@ suite('R4 conversation source attribution', () => {
                 }),
               )
               .toBe(true);
+            // DockKit reveals the active tab with smooth scrolling. A visible
+            // source body alone does not mean its tab and close target are ready.
+            await expect
+              .poll(() =>
+                page
+                  .getByRole('tab', { selected: true })
+                  .filter({ hasText: label })
+                  .evaluateAll((tabs) => {
+                    if (tabs.length !== 1) return false;
+                    const tab = tabs[0]!;
+                    const strip = tab.closest('[data-dockkit-strip-tabs]');
+                    const close = tab.querySelector('[data-dockkit-tab-close]');
+                    if (!strip || !close) return false;
+                    const bounds = strip.getBoundingClientRect();
+                    const chip = tab.getBoundingClientRect();
+                    const target = close.getBoundingClientRect();
+                    const sides =
+                      strip.getAttribute('data-dockkit-strip-scroll') ?? '';
+                    const left =
+                      bounds.left + (sides.includes('start') ? 24 : 0);
+                    const right =
+                      bounds.right - (sides.includes('end') ? 24 : 0);
+                    return (
+                      chip.left >= bounds.left - 0.5 &&
+                      chip.right <= bounds.right + 0.5 &&
+                      target.left >= left - 0.5 &&
+                      target.right <= right + 0.5 &&
+                      close.contains(
+                        document.elementFromPoint(
+                          (target.left + target.right) / 2,
+                          (target.top + target.bottom) / 2,
+                        ),
+                      )
+                    );
+                  }),
+              )
+              .toBe(true);
             await page.screenshot({
               path: join(
                 evidence,
