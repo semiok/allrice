@@ -1,4 +1,7 @@
 import concurrent.futures
+import importlib.machinery
+import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -8,6 +11,8 @@ import sys
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 TOOL = Path(__file__).with_name('wake-when')
@@ -54,10 +59,11 @@ sys.exit(int(os.environ.get('QUEUE_EXIT', '0')))
         while any(running(item['pid']) for item in self.started) and time.monotonic() < deadline:
             time.sleep(0.05)
 
-    def invoke(self, source, label='CI check', thread=THREAD, timeout='5s', extra_env=None):
+    def invoke(self, source, label='CI check', thread=THREAD, timeout='5s', extra_env=None,
+               command=None, options=()):
         timeout_args = ['--timeout', timeout] if timeout else []
         return subprocess.run([sys.executable, str(TOOL), '--thread', thread, '--label', label,
-                               *timeout_args, '--', sys.executable, '-c', source],
+                               *timeout_args, *options, '--', *(command or [sys.executable, '-c', source])],
                               env=dict(self.env, **(extra_env or {})), cwd=self.home,
                               capture_output=True, text=True, timeout=12)
 
@@ -96,7 +102,7 @@ sys.exit(int(os.environ.get('QUEUE_EXIT', '0')))
         self.assertEqual((state['outcome'], state['commandExitCode'], state['notification']), ('成功', 0, 'sent'))
         args = self.notifications()[0]
         self.assertEqual(args[:3], ['queue', '--thread', THREAD])
-        self.assertIn('CI check 结束：成功（退出码 0）', args[4])
+        self.assertIn('CI check 结束：成功（真实结论 exit 0；等待命令退出码 0）', args[4])
         self.assertNotIn('最后 30 行', args[4])
         self.assertEqual(len(self.notifications()), 1)
         self.assertIn(str(self.home), Path(item['log']).read_text())
@@ -107,7 +113,7 @@ sys.exit(int(os.environ.get('QUEUE_EXIT', '0')))
     def test_failure_notifies_exit_code_and_only_last_30_lines(self):
         item = self.start('import sys; [print("L"+str(i)) for i in range(40)]; sys.exit(7)')
         state = self.finished(item)
-        self.assertEqual((state['outcome'], state['commandExitCode']), ('失败', 7))
+        self.assertEqual((state['outcome'], state['commandExitCode']), ('等待失败，任务状态未知', 7))
         message = self.notifications()[0][4]
         self.assertIn('退出码 7', message)
         self.assertIn('\nL10\n', message)
@@ -126,8 +132,8 @@ time.sleep(60)
 '''
         item = self.start(source, timeout='1s')
         state = self.finished(item)
-        self.assertEqual((state['outcome'], state['commandExitCode']), ('超时', 124))
-        self.assertIn('超时（退出码 124）', self.notifications()[0][4])
+        self.assertEqual((state['outcome'], state['commandExitCode']), ('等待失败，任务状态未知', 124))
+        self.assertIn('等待命令退出码 124；超时', self.notifications()[0][4])
         for pid in json.loads((self.home / 'children.json').read_text()):
             self.assertFalse(running(pid), str(pid))
         self.assert_released(item)
@@ -267,6 +273,165 @@ time.sleep(60)
         self.finished(item)
         self.assertFalse(stale.exists())
         self.assert_released(item)
+
+    def fake_ci(self):
+        gh = self.home / 'gh'
+        gh.write_text('#!' + sys.executable + '''
+import json, os, sys, time
+from pathlib import Path
+args = sys.argv[1:]
+with Path('gh-calls.jsonl').open('a') as stream:
+    stream.write(json.dumps(args) + '\\n')
+assert args[0] == 'run' and args[1] in ('watch', 'view'), args
+assert args[2] == '43868459286' and args[3:5] == ['--repo', 'semiok/allrice'], args
+mode = os.environ.get('CI_MODE', 'reconnect')
+count_path = Path('watch-count')
+count = int(count_path.read_text()) if count_path.exists() else 0
+if args[1] == 'watch':
+    count += 1
+    count_path.write_text(str(count))
+    if count == 2 and mode == 'reconnect':
+        Path('reattached').touch()
+        while not Path('ci-done').exists(): time.sleep(.02)
+    if mode == 'watch-hang': time.sleep(60)
+    if mode == 'watch-zero': sys.exit(0)
+    print('failed to get run: EOF', flush=True)
+    sys.exit(1)
+if mode == 'query-error' and count == 1:
+    print('HTTP 503: temporarily unavailable', file=sys.stderr)
+    sys.exit(1)
+if mode == 'malformed':
+    print('invalid JSON')
+    sys.exit(0)
+status = 'completed' if count >= 2 or mode in ('success', 'failure', 'cancelled', 'wrong-id') else 'in_progress'
+print(json.dumps(dict(databaseId=7 if mode == 'wrong-id' else 43868459286,
+                     status=status, conclusion=mode if mode in ('failure','cancelled') else 'success')))
+''')
+        gh.chmod(0o755)
+        return [str(gh), 'run', 'watch', '43868459286', '--repo', 'semiok/allrice', '--exit-status']
+
+    def test_eof_reattaches_same_ci_without_early_wake_then_reports_real_success(self):
+        command = self.fake_ci()
+        item = self.start('', command=command, timeout='15s')
+        deadline = time.monotonic() + 9
+        while not (self.home / 'reattached').exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertTrue((self.home / 'reattached').exists())
+        self.assertEqual(self.notifications(), [], 'EOF and in_progress must not wake the thread')
+        self.assertTrue(running(item['pid']))
+        (self.home / 'ci-done').touch()
+        state = self.finished(item)
+        self.assertEqual(state['commandExitCode'], 1, 'even final watch EOF must not override API success')
+        self.assertEqual(state['task'], dict(status='completed', conclusion='success', exitCode=0))
+        self.assertEqual(state['verificationAttempts'], 2)
+        self.assertEqual(len(self.notifications()), 1)
+        self.assertIn('真实结论 success', self.notifications()[0][4])
+        calls = [json.loads(line) for line in (self.home / 'gh-calls.jsonl').read_text().splitlines()]
+        self.assertEqual([call[:2] for call in calls], [['run', 'watch'], ['run', 'view']] * 2)
+        self.assertEqual([call for call in calls if call[1] == 'watch'], [command[1:]] * 2)
+        self.assertIn('EOF', Path(item['log']).read_text())
+        self.assertEqual(json.loads((Path(item['result']).parent / 'ci-state-1.json').read_text())['status'], 'in_progress')
+        self.assert_released(item)
+
+    def test_ci_terminal_failure_and_cancelled_are_not_retried(self):
+        for conclusion in ['failure', 'cancelled']:
+            with self.subTest(conclusion=conclusion):
+                command = self.fake_ci()
+                item = self.start('', command=command, extra_env={'CI_MODE': conclusion})
+                state = self.finished(item)
+                self.assertEqual(state['outcome'], '失败')
+                self.assertEqual(state['task']['conclusion'], conclusion)
+                self.assertEqual(state['verificationAttempts'], 1)
+                self.assertIn('真实结论 ' + conclusion, self.notifications()[-1][4])
+                self.assert_released(item)
+
+    def test_status_query_network_error_is_retried(self):
+        item = self.start('', command=self.fake_ci(), timeout='15s', extra_env={'CI_MODE': 'query-error'})
+        state = self.finished(item)
+        self.assertEqual(state['task']['conclusion'], 'success')
+        self.assertEqual(state['verificationAttempts'], 2)
+        self.assertIn('HTTP 503', Path(item['log']).read_text())
+        self.assertEqual(len(self.notifications()), 1)
+        self.assert_released(item)
+
+    def test_ci_unverified_timeout_is_unknown_even_with_zero_watch_exit(self):
+        for mode in ['watch-zero', 'wrong-id', 'malformed', 'watch-hang']:
+            with self.subTest(mode=mode):
+                item = self.start('', command=self.fake_ci(), timeout='1s', extra_env={'CI_MODE': mode})
+                state = self.finished(item)
+                self.assertEqual(state['task'], dict(status='unknown'))
+                self.assertTrue(state['waitTimedOut'])
+                self.assertIn('等待失败，CI 状态未知', self.notifications()[-1][4])
+                self.assertIn('超时', self.notifications()[-1][4])
+                self.assert_released(item)
+
+    def test_ci_reconnect_cap_and_backoff_do_not_reset_total_timeout(self):
+        loader = importlib.machinery.SourceFileLoader('wake_when_under_test', str(TOOL))
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        command = self.fake_ci()
+        args = SimpleNamespace(command=command, timeout=200, ci=module.ci_target(command), terminal_file=None)
+        state = {}
+        elapsed = [0]
+        def advance(seconds):
+            elapsed[0] += seconds
+        def watch(*_args):
+            advance(10)
+            return 1, False
+        with patch.object(module, 'run_group', side_effect=watch) as run, \
+             patch.object(module, 'verify_ci', return_value=None) as verify, \
+             patch.object(module.time, 'monotonic', side_effect=lambda: elapsed[0]), \
+             patch.object(module.time, 'sleep', side_effect=advance) as sleep:
+            self.assertIsNone(module.wait_for_result(args, self.home, io.BytesIO(), state))
+        self.assertEqual(run.call_count, 5)
+        self.assertEqual(verify.call_count, 5)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [5, 15, 30, 60])
+        self.assertTrue(all(call.args[0] == command for call in run.call_args_list))
+        self.assertEqual([call.args[1] for call in run.call_args_list], [200, 185, 160, 120, 50])
+        self.assertFalse(state['waitTimedOut'])
+        self.assertEqual(state['verificationAttempts'], 5)
+
+    def test_terminal_file_confirms_external_work_after_wait_command_failed_without_rerun(self):
+        receipt = self.home / 'terminal.json'
+        source = 'from pathlib import Path; Path("executed").touch(); print("SSH EOF"); raise SystemExit(1)'
+        item = self.start(source, timeout='12s',
+                          options=['--terminal-file', str(receipt), '--terminal-id', 'deployment-123'])
+        deadline = time.monotonic() + 3
+        while not (self.home / 'executed').exists() and time.monotonic() < deadline:
+            time.sleep(.02)
+        self.assertTrue((self.home / 'executed').exists())
+        self.assertEqual(self.notifications(), [])
+        receipt.write_text(json.dumps(dict(id='deployment-123', status='completed', exitCode=7)))
+        state = self.finished(item)
+        self.assertEqual(state['task']['exitCode'], 7)
+        self.assertIn('真实结论 exit 7；等待命令退出码 1', self.notifications()[0][4])
+        self.assertEqual(Path(item['log']).read_text().count('SSH EOF'), 1)
+        self.assert_released(item)
+
+    def test_terminal_receipt_must_be_fresh_and_match_task(self):
+        receipt = self.home / 'terminal.json'
+        options = ['--terminal-file', str(receipt), '--terminal-id', 'wanted']
+        receipt.write_text(json.dumps(dict(id='wanted', status='completed', exitCode=0)))
+        self.assertEqual(self.invoke('pass', options=options).returncode, 2)
+        receipt.unlink()
+        for record in [dict(id='other', status='completed', exitCode=0),
+                       dict(id='wanted', status='running', exitCode=0),
+                       dict(id='wanted', status='completed', exitCode=True)]:
+            with self.subTest(record=record):
+                source = 'from pathlib import Path; Path("terminal.json").write_text(%r)' % json.dumps(record)
+                item = self.start(source, timeout='1s', options=options)
+                self.assertEqual(self.finished(item)['task']['status'], 'unknown')
+                self.assert_released(item)
+                receipt.unlink()
+
+    def test_ci_requires_fixed_run_repo_and_rejects_external_receipt_override(self):
+        command = self.fake_ci()
+        for argv in [command[:-1], command[:4], command[:3] + ['latest'] + command[4:], command + ['--web']]:
+            self.assertEqual(self.invoke('', command=argv).returncode, 2)
+        self.assertEqual(self.invoke('', command=command, options=[
+            '--terminal-file', str(self.home / 'terminal.json'), '--terminal-id', 'bypass']).returncode, 2)
+        self.assertFalse((self.base / 'qa').exists())
 
     def test_installer_seeds_whitelist_once_and_preserves_thread_rotation_on_upgrade(self):
         repo = self.home / 'repo'
