@@ -208,6 +208,18 @@ if mode.exists():
         self.dog.check_round(now+600)
         self.assertEqual(sum('平安报告' in s for s in self.messages), 1)
 
+    def test_daily_counts_rate_limit_episodes_across_tasks_without_double_count(self):
+        for task, number, day in [('a', 1, '16'), ('a', 2, '16'), ('b', 1, '16'), ('b', 2, '15')]:
+            runtime.save(runtime.root() / task / ('github-rate-limit-%s.json' % number),
+                         dict(at='2026-11-%sT00:01:00+00:00' % day))
+        now = datetime(2026, 11, 16, 1, tzinfo=timezone.utc).timestamp()
+        self.dog.check_round(now)
+        self.dog.check_round(now+600)
+        reports = [s for s in self.messages if '平安报告' in s]
+        self.assertEqual(len(reports), 1)
+        self.assertIn('当日 GitHub 限流次数 3', reports[0])
+        self.assertEqual(runtime.read(runtime.root() / 'dog/state.json')['githubRateLimitCount'], 3)
+
     def test_deploy_terminal_after_cleanup_and_original_exit_is_preserved(self):
         receipt = self.home / 'terminal.json'
         subprocess.run([sys.executable, str(HERE / 'deploy-result.py'), 'start', str(receipt), 'deploy1'], check=True)

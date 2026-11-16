@@ -1,5 +1,7 @@
 # 后台等待与本线唤醒
 
+等 CI 请加 `--interval 60`；新版会自动补 60 秒，显式间隔不得小于 30 秒。正在运行的旧等待不会被安装自动改写。
+
 仓库 Skill 在 [`.agents/skills/wait-and-wake/SKILL.md`](../../.agents/skills/wait-and-wake/SKILL.md)，在任务 worktree 中可用 `$wait-and-wake`。从仓库外启动的旧会话需显式读取这份文件；不安装到 `~/.codex/skills`，不修改 Codex 配置。
 
 在 M1 运行，等待过程中不占 Codex 回合，也不依赖 M5。工具通过 `~/.local/bin/codex queue` 给指定本线发一次回执，区分任务真实结论与等待命令退出码；等待失败／任务失败附最后 30 行诊断日志（长行截断）。回执不是新增业务、合并或部署授权。
@@ -7,16 +9,18 @@
 ```bash
 ~/allrice-dev/bin/wake-when \
   --thread <本线会话UUID> --label '#884 CI' --timeout 3h -- \
-  /opt/homebrew/bin/gh run watch <run-id> --repo semiok/allrice --exit-status
+  /opt/homebrew/bin/gh run watch <run-id> --repo semiok/allrice --exit-status --interval 60
 ```
 
 启动成功后立刻结束本回合；收到回执再继续，不让模型轮询、sleep 或发等待进度。默认最多等待 3 小时，`--timeout` 可写秒数或 `30m`、`3h`。工具自身全部在 M1 运行，执行权限仍取决于原任务授权。
 
 ## 终态核验和重连
 
-CI 使用上面直接传入的 `gh run watch RUN --repo OWNER/REPO --exit-status`，固定 run ID 和仓库；可加 `--interval`／`--compact`。不要包在 shell 中，也不要省略 run ID 或仓库。每次 watch 退出（包括退出码 0），都用同一个 `gh` 的 `run view --json databaseId,status,conclusion` 核对原 run。只有 `completed` 才报告 GitHub 的真实 conclusion；即使 watch 报 EOF，查询到 success 仍报告成功。取消、测试失败等终态不重连。
+CI 使用上面直接传入的 `gh run watch RUN --repo OWNER/REPO --exit-status`，固定 run ID 和仓库；默认自动加 `--interval 60`；可显式加大间隔，低于 30 秒会在启动前拒绝；保留 `--compact`。不要包在 shell 中，也不要省略 run ID 或仓库。每次 watch 退出（包括退出码 0），都用同一个 `gh` 的 `api --include repos/OWNER/REPO/actions/runs/RUN` 核对原 run。只有 `completed` 才报告 GitHub 的真实 conclusion；即使 watch 报 EOF，查询到 success 仍报告成功。取消、测试失败等终态不重连。
 
-EOF、5xx、超时等导致 watch／查询不能确认终态时，按 5、15、30、60 秒退避，最多重新挂接原 run 4 次；绝不执行 `gh run rerun`。重连和查询共用最初的总时限，不重新计时。重试耗尽或总时限到达，只发“等待失败，CI 状态未知”，不能据此认定 CI 红灯。原始 watch 输出和每次 `ci-state-N.json` 都保留。
+EOF、5xx、超时等导致 watch／查询不能确认终态时，按 5、15、30、60 秒退避，最多重新挂接原 run 4 次；绝不执行 `gh run rerun`。重连和查询共用最初的总时限，不重新计时。重试耗尽或总时限到达，只发“等待失败，CI 状态未知”，不能据此认定 CI 红灯。原始 watch 输出和每次 `ci-state-N.http`（响应头及正文）、`ci-state-N.json` 都保留。
+
+403/429 的限流与 EOF 分开：依据响应的 `Retry-After`，或额度为 0 时的 `x-ratelimit-reset` 等到允许重试；两者都有则取较晚时间。缺少有效响应头的限流至少等 60 秒，重复时指数退避、最多每小时一次。冷却期间不请求 GitHub，继续写心跳，不消耗上述 4 次 EOF 重连；始终受原总等待时限约束，超时只报状态未知。普通 403 权限不足不当作额度限流。只重连同一个 run，不换身份或重跑 CI。规则依据 [GitHub 官方限流说明](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api)。
 
 ## 启动并等待完整 M5
 
@@ -80,7 +84,7 @@ TG 复用已安装 monitor 的 send_telegram，不新增机器人或复制凭据
 
 空等检测只读七个白名单线程的 rollout 尾部（最多2MiB），只识别 `event_msg.task_complete.last_agent_message`，新 task_started/turn_aborted/用户消息会取消旧判断。不读取 auth/配置数据库或其他线程正文。已结束回合提到等待CI/M5/部署、超过30分钟且无活动等待/后续已送终态时，每回合提醒一次。自然语言只是保守诊断提示，可能误报/漏报，绝不作为业务授权。Codex事件格式改变时先补夹具和核验，不猜字段。
 
-UTC01:00后的第一轮发送每天一条平安报告（若当时关机，启动后补当天），包含当日成功/失败、需人工核对和TG待送数。路径 `dog/daily/YYYY-MM-DD/telegram.json`，sentAt只代表TG接收。对已核对的 `dog/alerts/<ID>` 用 `m1-dog ack <ID>` 关闭人工待办，原始证据保留。普通等待的 queue 告警也计入待办，`m1-dog status` 的 `pendingAlerts` 给出相对路径（任务目录或 `dog/alerts/<ID>`）；可直接 `m1-dog ack <该相对路径>`。TG 送达不等于人工处理，计数跨日保留；跨日平安报告的传输积压也继续按原退避续送。
+UTC01:00后的第一轮发送每天一条平安报告（若当时关机，启动后补当天），包含当日成功/失败、当日 GitHub 限流次数、需人工核对和TG待送数。限流次数按 UTC 日汇总任务目录 `github-rate-limit-N.json`：每次进入冷却计一次（同次 watch/query 的错误合计一次），不等于账户全部请求的 403 数量；多任务不共享写计数器，重复巡检不重复计数。`dog/state.json.githubRateLimitCount` 显示当前日统计。路径 `dog/daily/YYYY-MM-DD/telegram.json`，sentAt只代表TG接收。对已核对的 `dog/alerts/<ID>` 用 `m1-dog ack <ID>` 关闭人工待办，原始证据保留。普通等待的 queue 告警也计入待办，`m1-dog status` 的 `pendingAlerts` 给出相对路径（任务目录或 `dog/alerts/<ID>`）；可直接 `m1-dog ack <该相对路径>`。TG 送达不等于人工处理，计数跨日保留；跨日平安报告的传输积压也继续按原退避续送。
 
 回滚：先 `m1-dog launchd remove`，只移除本看门狗并备份；若恢复之前已安装的dog，把对应备份plist贴回原 `~/Library/LaunchAgents/ai.bplabs.allrice-m1-dog.plist`，用 `launchctl bootstrap gui/$(id -u) <该plist>` 重新加载。工具版本回滚由已授权维护者用旧提交的 `scripts/m1/install` 切回已保留的版本，不直接改共享bin。重新检查 launchctl、心跳、当日TG；没有旧dog时保持移除即可，wake-when既有任务不受影响。
 

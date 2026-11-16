@@ -3,6 +3,7 @@
 import argparse
 from collections import deque
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import fcntl
 import hashlib
 import json
@@ -196,7 +197,7 @@ def ci_target(command):
     parser.add_argument('run', type=int)
     parser.add_argument('--repo', '-R', required=True)
     parser.add_argument('--exit-status', action='store_true')
-    parser.add_argument('--interval', '-i', type=int, default=3)
+    parser.add_argument('--interval', '-i', type=int, default=60)
     parser.add_argument('--compact', action='store_true')
     try:
         target, extra = parser.parse_known_args(command[3:])
@@ -205,7 +206,12 @@ def ci_target(command):
     if (extra or target.run <= 0 or not target.exit_status or target.interval <= 0
             or not re.fullmatch(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', target.repo)):
         raise ValueError('ambiguous CI watch arguments; use a fixed run ID and OWNER/REPO')
-    return dict(run=target.run, repo=target.repo)
+    if target.interval < 30:
+        raise ValueError('CI watch interval must be at least 30 seconds (default: 60)')
+    # Canonicalize aliases/duplicates so gh cannot silently retain its 3s default.
+    command[:] = [command[0], 'run', 'watch', str(target.run), '--repo', target.repo,
+                  '--exit-status', '--interval', str(target.interval)] + (['--compact'] if target.compact else [])
+    return dict(run=target.run, repo=target.repo, interval=target.interval)
 
 
 def backoff(attempt, deadline, log):
@@ -219,26 +225,132 @@ def backoff(attempt, deadline, log):
     return time.monotonic() < deadline
 
 
+class RateLimited(Exception):
+    def __init__(self, headers=None, status=None):
+        super().__init__('GitHub API rate limited')
+        self.headers = headers or {}
+        self.status = status
+
+
+def http_response(raw):
+    headers, status = {}, None
+    # gh api --include prints response headers only, never request auth headers.
+    raw = raw.replace('\r\n', '\n')
+    while raw.startswith('HTTP/'):
+        block, separator, raw = raw.partition('\n\n')
+        lines = block.splitlines()
+        match = re.match(r'HTTP/\S+ (\d{3})', lines[0])
+        status = int(match[1]) if match else None
+        headers = {k.lower(): v.strip() for line in lines[1:]
+                   for k, colon, v in [line.partition(':')] if colon}
+        if not separator:
+            break
+    return status, headers, raw
+
+
+def rate_limited(text, status=None, headers=None):
+    return (status == 429 or bool(re.search(r'rate[ -]?limit|HTTP\s+429\b', text, re.I))
+            or (status == 403 and (headers or {}).get('x-ratelimit-remaining') == '0'))
+
+
+def cooldown_ci(error, run, state, deadline, log):
+    now = time.time()
+    count = state.get('githubRateLimitCount', 0) + 1
+    until = []
+    headers = error.headers
+    retry = headers.get('retry-after', '')
+    try:
+        until.append(now + int(retry))
+    except ValueError:
+        try:
+            until.append(parsedate_to_datetime(retry).timestamp())
+        except (ValueError, TypeError, OverflowError):
+            pass
+    if headers.get('x-ratelimit-remaining') == '0':
+        try:
+            until.append(int(headers.get('x-ratelimit-reset', '')) + 1)
+        except ValueError:
+            pass
+    # A secondary limit may omit both headers; GitHub specifies >=1 minute.
+    future = [at for at in until if at > now]
+    retry_at = max(future) if future else now + min(3600, 60 * 2 ** min(count - 1, 6))
+    event = dict(at=stamp(), retryAt=retry_at, httpStatus=error.status)
+    runtime.save(run / ('github-rate-limit-%s.json' % count), event)
+    state.update(phase='rate-limit', githubRateLimitCount=count, rateLimitUntil=retry_at)
+    save(run / 'result.json', state)
+    log.write(('\nGitHub rate limited; retry epoch %s (original deadline still applies)\n' % retry_at).encode())
+    # Keep a live supervisor heartbeat during a whole quota window, without a child.
+    end = min(deadline, time.monotonic() + retry_at - now)
+    while time.monotonic() < end:
+        beat()
+        time.sleep(min(30, max(0, end - time.monotonic())))
+    beat()
+    return time.monotonic() < deadline
+
+
 def verify_ci(args, run, attempt, deadline, log):
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         return None
-    # Keep raw status evidence separate from stderr: an EOF must never become JSON.
-    with (run / ('ci-state-%s.json' % attempt)).open('wb', buffering=0) as output:
+    # A single original-run request provides both true state and authoritative
+    # quota headers; no separate rate_limit request or alternate credentials.
+    path = run / ('ci-state-%s.http' % attempt)
+    with path.open('wb', buffering=0) as output:
         code, timed_out = run_group(
-            [args.command[0], 'run', 'view', str(args.ci['run']), '--repo', args.ci['repo'],
-             '--json', 'databaseId,status,conclusion'], min(30, remaining), output, stderr=log)
+            [args.command[0], 'api', '--include', 'repos/%s/actions/runs/%s' %
+             (args.ci['repo'], args.ci['run'])], min(30, remaining), output, stderr=log)
+    status, headers, body = http_response(path.read_text(errors='replace'))
+    if (code or status in (403, 429)) and rate_limited(body, status, headers):
+        raise RateLimited(headers, status)
     if code or timed_out:
         return None
     try:
-        result = json.loads((run / ('ci-state-%s.json' % attempt)).read_text())
-        if (result['databaseId'] != args.ci['run'] or result['status'] != 'completed'
+        result = json.loads(body)
+        save(run / ('ci-state-%s.json' % attempt), result)
+        if (status != 200 or result['id'] != args.ci['run'] or result['status'] != 'completed'
                 or result['conclusion'] not in CI_CONCLUSIONS):
             return None
         return dict(status='completed', conclusion=result['conclusion'],
                     exitCode=0 if result['conclusion'] == 'success' else 1)
     except (ValueError, KeyError, TypeError):
         return None
+
+
+def wait_for_ci(args, run, log, state, deadline):
+    attempt = 0
+    checks = 0
+    while time.monotonic() < deadline:
+        state['phase'] = 'command'
+        start = log.tell()
+        code, timed_out = run_group(args.command, max(0, deadline - time.monotonic()), log,
+                                   command_state=state)
+        state.update(commandExitCode=code, commandTimedOut=timed_out, phase='verification')
+        watch_limited = False
+        if (run / 'command.log').exists():
+            with (run / 'command.log').open('rb') as stream:
+                end = stream.seek(0, os.SEEK_END)
+                stream.seek(max(start, end - 65536))
+                watch_limited = code != 0 and rate_limited(stream.read().decode(errors='replace'))
+        checks += 1
+        state['verificationAttempts'] = checks
+        try:
+            result = verify_ci(args, run, checks, deadline, log)
+            if result:
+                return result
+            if watch_limited:
+                # If the status query itself lost the network, retain the watch
+                # limit signal and use GitHub's bounded secondary-limit fallback.
+                raise RateLimited()
+        except RateLimited as error:
+            if not cooldown_ci(error, run, state, deadline, log):
+                break
+            continue  # Rate limits never consume the EOF reconnect budget.
+        state['phase'] = 'backoff'
+        if not backoff(attempt, deadline, log):
+            break
+        attempt += 1
+    state['waitTimedOut'] = time.monotonic() >= deadline
+    return None
 
 
 def verify_file(args):
@@ -278,19 +390,18 @@ def verify_m5(run, state):
 def wait_for_result(args, run, log, state):
     deadline = time.monotonic() + args.timeout
     state['waitTimedOut'] = False
-    # Reattach only a read-only CI watcher. M5/deploy commands may execute work:
-    # run those exactly once, then consult a caller-supplied terminal receipt.
+    if args.ci:
+        return wait_for_ci(args, run, log, state, deadline)
+    # M5/deploy commands may execute work: run exactly once, then verify receipts.
     for attempt in range(len(RECONNECT_DELAYS) + 1):
-        if attempt == 0 or args.ci:
+        if attempt == 0:
             state['phase'] = 'command'
             code, timed_out = run_group(args.command, max(0, deadline - time.monotonic()), log,
                                        command_state=state)
             state.update(commandExitCode=code, commandTimedOut=timed_out)
         state['phase'] = 'verification'
         state['verificationAttempts'] = attempt + 1
-        if args.ci:
-            result = verify_ci(args, run, attempt + 1, deadline, log)
-        elif args.m5:
+        if args.m5:
             # m5-test has already returned. Missing final evidence is unknown,
             # never grounds to relaunch the full test batch.
             return verify_m5(run, state)
