@@ -1,8 +1,27 @@
-import { BrandMediaError, EmployeeModuleError } from '@allrice/database';
+import {
+  BrandMediaError,
+  EmployeeModuleError,
+  IdentityError,
+} from '@allrice/database';
 import { apiProblem, isRequestValidationError } from '../api-error-response';
 import { brandContentErrorResponse } from '../brand-content/responses';
 
 export function brandMediaErrorResponse(error: unknown) {
+  if (error instanceof IdentityError)
+    return apiProblem({
+      status:
+        error.code === 'tenant_context_invalid' ||
+        error.code === 'authorization_denied'
+          ? 403
+          : 401,
+      code:
+        error.code === 'tenant_context_invalid' ||
+        error.code === 'authorization_denied'
+          ? 'AUTHORIZATION_DENIED'
+          : 'AUTHENTICATION_REQUIRED',
+      message: '当前登录身份无权访问所选工作区，请重新核对。',
+      retryable: false,
+    });
   if (isRequestValidationError(error))
     return apiProblem({
       status: 422,
