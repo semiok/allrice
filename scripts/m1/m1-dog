@@ -49,37 +49,45 @@ def says_waiting(text, ci_conclusions=None):
     # waking a line for documentation, examples or an acknowledgement of rules.
     text = re.sub(r'```.*?(?:```|\Z)|~~~.*?(?:~~~|\Z)', '', text, flags=re.S)
     text = '\n'.join(line for line in text.splitlines() if not line.lstrip().startswith('>'))
+    if re.search(r'规则|示例|假设|引用|原文|转述', text):
+        return False  # a status-shaped example is still not a pending task
     if re.search(r'(?:本线|当前|现在).{0,8}(?:没有|无).{0,10}(?:执行中|进行中|待挂|等待).{0,5}任务|无待挂等待任务', text):
         return False
     conclusions = ci_conclusions if ci_conclusions is not None else runtime.load_tool('wake-when').CI_CONCLUSIONS
-    terminal = r'终态\s*[:：]?\s*[`\"]?(?:' + '|'.join(re.escape(c) for c in sorted(conclusions | {'completed'})) + r')\b'
+    terminal = r'终态\s*(?:为|[:：])?\s*[`\"]?(?:' + '|'.join(re.escape(c) for c in sorted(conclusions | {'completed'})) + r')\b'
     pending, settled = set(), set()
     for line in re.split(r'[。；;\n]', text):
-        if re.search(r'以后|今后|后续|下次|将来|例如|比如|示例|规则|用法|模板|方案|如果|若|假设|收到|确认|请|建议|应该', line):
-            continue
         targets = wait_targets(line)
+        # Explicit terminal evidence takes precedence over acknowledgement prose.
         if re.search(r'已(?:通过|完成|结束|交付|取消|失败|超时)', line) or re.search(terminal, line, re.I):
             settled.update(targets)
             continue
         if re.search(r'(?:无需|不用|不再|未在|不在|并非|没有|不必|无待挂).{0,12}(?:等|wait)', line, re.I):
             settled.update(targets)
             continue
-        status = line.strip().lstrip('-* `')
-        subject = r'(?:(?:本线|我(?:们)?|当前|现在)\s*){0,2}'
-        # Subject and affirmative predicate must be adjacent, not independent
-        # matches anywhere in a sentence containing a quote or another line.
-        direct = re.match(r'^(?:' + subject + r'(?:正在等(?:待)?|仍(?:在)?等(?:待)?|继续等待)\s*|(?:I am|we are|currently|still) waiting\s+(?:(?:for|on)\s+)?)', status, re.I)
-        launched = re.match(r'^' + subject + r'已(?:启动|提交|挂起)\s*', status)
-        if direct:
-            target_text = status[direct.end():]
-        elif launched and re.search(r'[，,]\s*(?:正在|仍在)等待结果[。.!！]?$', status):
-            target_text = status[launched.end():]
-        else:
-            continue
-        target_text = re.split(r'[，,]', target_text, maxsplit=1)[0].lstrip(' *`')
-        if re.match(r'(?:新头\s+)?(?:#\d+\s+)?(?:CI(?![A-Za-z])|M5(?![A-Za-z])|部署|deploy\b|https://)', target_text, re.I):
-            pending.update(wait_targets(target_text))
+        pending.update(direct_wait_targets(line))
     return bool(pending - settled)
+
+
+def direct_wait_targets(line):
+    # Accept a whole, simple status assertion. No arbitrary text between the
+    # subject/predicate/target or after the target; unknown prose fails closed.
+    status = line.strip().removeprefix('- ').replace('**', '')
+    subject = r'(?:(?:本线|我(?:们)?|当前|现在)\s*){0,2}'
+    direct = re.match(r'^(?:' + subject + r'(?:正在等(?:待)?|仍(?:在)?等(?:待)?|继续等待)\s*|(?:I am|we are|currently|still) waiting\s+(?:(?:for|on)\s+)?)', status, re.I)
+    launched = re.match(r'^' + subject + r'已(?:启动|提交|挂起)\s*', status)
+    if not direct and not launched:
+        return set()
+    target_text = status[(direct or launched).end():].replace('`', '').strip()
+    ci = r'(?:CI\s+run\s*[:：#]?\s*\d+|https://[^\s/]+/[^\s/]+/[^\s/]+/actions/runs/\d+)'
+    m5 = r'M5\s*(?:批次|batch)\s*[:：#]?\s*[A-Za-z0-9][A-Za-z0-9_.-]*'
+    deploy = r'(?:部署|deploy)\s*(?:[0-9a-f]{7,40}|(?:任务|批次|版本|id)\s*[:：#]?\s*[A-Za-z0-9][A-Za-z0-9_.-]*)'
+    target = r'(?:新头\s+)?(?:#\d+\s+)?(?:' + '|'.join((ci, m5, deploy)) + ')'
+    suffix = (r'(?:\s*的?\s*(?:(?:执行|运行|最终|ready)\s*)?(?:结果|结束|完成))?'
+              if direct else r'\s*[，,]\s*(?:正在|仍在)等待结果')
+    if not re.fullmatch(target + suffix + r'\s*[.!！]?', target_text, re.I):
+        return set()
+    return wait_targets(target_text)
 
 
 def wait_targets(line):
