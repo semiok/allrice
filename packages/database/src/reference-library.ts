@@ -251,7 +251,7 @@ function publicationAudience(policy: WorkbenchFilePolicy): ReferenceAudience {
 /** Editable publication metadata is separate from the immutable revision pin.
  * Older empty purposes used a display fallback; preserve the actual blank input
  * until an acknowledged edit replaces it in the source metadata. */
-async function readPublicationPurpose(sourceId: string, sql: Sql) {
+export async function readPublicationPurpose(sourceId: string, sql: Sql) {
   const [row] = await sql<{ purpose: string }[]>`
     select case when exists (
       select 1 from allrice_knowledge_reference_actions a

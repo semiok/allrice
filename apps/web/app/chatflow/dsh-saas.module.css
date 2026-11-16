@@ -1749,8 +1749,8 @@ div.composerAttachmentMenu,
 }
 
 /* Allrice public-event adapter over native DSH disclosure chrome. */
-/* Public DSH DisclosureRow/TextShimmer own disclosure, keyboard and motion.
-   Only the approved host spacing, material surface and employee accent differ. */
+/* Public DSH DisclosureRow owns disclosure and keyboard handling.
+   Approved whole-row motion shares the native avatar pulse clock. */
 .processBlock {
   min-width: 0;
   font-family: var(--ar-font-family-ui);
@@ -1931,7 +1931,8 @@ div.composerAttachmentMenu,
   padding: 0;
   background: transparent;
 }
-.processStepDetails pre {
+.processStep .processStepDetails pre {
+  max-height: none;
   margin: 0;
   padding: 8px;
   overflow: visible;

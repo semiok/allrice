@@ -21,6 +21,7 @@ import {
 import {
   referenceSourceAccess,
   referenceStorageObject,
+  readPublicationPurpose,
 } from './reference-library.ts';
 import { assertLegacyReferenceRevision } from './reference-company-templates.ts';
 import { workbenchFileAccess } from './workbench-file-access.ts';
@@ -119,6 +120,10 @@ export async function readReferenceSelection(
         ownership,
       }),
       objectId: o.id as string,
+      // Editable metadata is separate from the immutable historical pin.
+      currentPurpose: publication
+        ? ((await readPublicationPurpose(source.id, sql)) ?? r.description)
+        : r.description,
       object: referenceStorageObject(
         o as Parameters<typeof referenceStorageObject>[0],
       ),

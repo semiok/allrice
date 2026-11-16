@@ -196,6 +196,8 @@ suite('R3 publication search uses complete text and current readers', () => {
       ).references.map((r) => r.sourceId),
     ).toContain(saved.sourceId);
     const after = await prepareReferenceText(reader, saved.pin);
+    expect(before.currentPurpose).toBe('');
+    expect(after.currentPurpose).toBe('新用途专有词');
     expect(after.selection).toEqual(before.selection);
     expect(after.fullText).toEqual(before.fullText);
     expect(
@@ -238,6 +240,9 @@ suite('R3 publication search uses complete text and current readers', () => {
         )
       )[0]?.purpose,
     ).toBe('');
+    expect((await prepareReferenceText(reader, saved.pin)).currentPurpose).toBe(
+      '',
+    );
     expect(
       (await queryReferencePublications(reader, { query: '新用途专有词' }))
         .references,

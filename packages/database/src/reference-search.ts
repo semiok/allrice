@@ -356,6 +356,7 @@ export async function assertPreparedReferencesReadable(
     );
     if (
       !current.publication ||
+      current.currentPurpose !== prepared.currentPurpose ||
       runtimePolicyDigest(current.selection) !==
         runtimePolicyDigest(prepared.selection)
     )
@@ -411,6 +412,7 @@ export async function prepareReferenceText(
   });
   return {
     selection: current.selection,
+    currentPurpose: current.currentPurpose,
     objectId: current.objectId,
     document,
     fullText,

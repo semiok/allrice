@@ -344,6 +344,11 @@ function takeReadingSnapshot(root: HTMLElement) {
     }));
   return {
     active,
+    outsideReading:
+      active instanceof HTMLElement &&
+      !inside &&
+      active !== document.body &&
+      inView(active),
     link:
       inside?.tagName === 'A'
         ? { href: inside.getAttribute('href'), text: inside.textContent }
@@ -440,7 +445,9 @@ export class WorkProcessReadingState extends Component<
       }
     }
     const positioned =
-      stableFocus && restoreProcessPositions(root, saved.positions);
+      stableFocus &&
+      !saved.outsideReading &&
+      restoreProcessPositions(root, saved.positions);
     if (untouchedFocus && !positioned)
       reading?.scrollIntoView({
         block: 'nearest',

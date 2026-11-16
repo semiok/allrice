@@ -212,7 +212,7 @@ suite('approved DSH process alignment', () => {
                 node.getAnimations().map((a) => ({
                   start: a.startTime,
                   duration: a.effect!.getTiming().duration,
-                  easing: a.effect!.getTiming().easing,
+                  easing: getComputedStyle(node).animationTimingFunction,
                 })),
               ),
               children: [...step.querySelectorAll('*')].flatMap((node) =>

@@ -240,6 +240,9 @@ export function MemoryCard(props: {
       if (cause instanceof MemoryClientError && cause.definitive)
         frozen.current = null;
       if (live.current) {
+        // Inline receipts expose only a read after failure/unknown outcome.
+        // Close the confirmation portal so it cannot send a second deletion.
+        if (props.inline) setDeleting(null);
         setUncertain(!(cause instanceof MemoryClientError && cause.definitive));
         setError(
           cause instanceof MemoryClientError ? cause.message : memoryUnknown,

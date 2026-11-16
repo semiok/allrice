@@ -82,7 +82,7 @@ export function browserOperationMaterial(
       {
         label: '输入',
         value: (
-          <pre data-process-content="input">
+          <pre tabIndex={0} data-process-content="input">
             {JSON.stringify(op.command.action, null, 2)}
           </pre>
         ),
@@ -91,7 +91,7 @@ export function browserOperationMaterial(
         label: '结果',
         value:
           op.result != null ? (
-            <pre data-process-content="result">
+            <pre tabIndex={0} data-process-content="result">
               {JSON.stringify(op.result, null, 2)}
             </pre>
           ) : null,
@@ -783,11 +783,11 @@ export function BrowserWorkspacePanel({
                         {op.available ? '' : ' · 授权已失效'}
                       </dt>
                       <dd>
-                        <pre data-process-content="input">
+                        <pre tabIndex={0} data-process-content="input">
                           {JSON.stringify(op.command.action, null, 2)}
                         </pre>
                         {op.result != null && (
-                          <pre data-process-content="result">
+                          <pre tabIndex={0} data-process-content="result">
                             {JSON.stringify(op.result, null, 2)}
                           </pre>
                         )}

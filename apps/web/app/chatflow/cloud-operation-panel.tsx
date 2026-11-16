@@ -169,6 +169,7 @@ function McpApprovalDetails({
           )}
           {details.moreFields > 0 && (
             <pre
+              tabIndex={0}
               aria-label="发送的完整参数"
               data-process-content="approval-arguments"
             >
@@ -213,7 +214,7 @@ export function cloudOperationMaterial(
       {
         label: '输入',
         value: (
-          <pre data-process-content="input">
+          <pre tabIndex={0} data-process-content="input">
             {JSON.stringify(input, null, 2)}
           </pre>
         ),
@@ -236,7 +237,7 @@ export function cloudOperationMaterial(
                 {op.approval.revokedAt ? '，之后已撤回' : ''}
               </p>
             )}
-            <pre data-process-content="result">
+            <pre tabIndex={0} data-process-content="result">
               {op.result
                 ? op.result.output || '没有返回内容。'
                 : '还没有返回内容。'}
@@ -589,7 +590,7 @@ export function CloudOperationCard({
             ['返回代码', op.result?.code ?? '无'],
           ]}
         >
-          <pre data-process-content="result">
+          <pre tabIndex={0} data-process-content="result">
             {op.result
               ? op.result.output || '没有返回内容。'
               : '还没有返回内容。'}
@@ -653,7 +654,11 @@ export function CloudOperationCard({
               ]}
             />
             <InlineProcessFields>
-              <pre aria-label="发送的原始参数" data-process-content="arguments">
+              <pre
+                tabIndex={0}
+                aria-label="发送的原始参数"
+                data-process-content="arguments"
+              >
                 {JSON.stringify(proposal.arguments, null, 2)}
               </pre>
             </InlineProcessFields>
@@ -744,7 +749,11 @@ export function CloudOperationCard({
                     ['工作目录', proposal.path],
                   ]}
                 >
-                  <pre aria-label="云端项目命令" data-process-content="command">
+                  <pre
+                    tabIndex={0}
+                    aria-label="云端项目命令"
+                    data-process-content="command"
+                  >
                     {JSON.stringify(
                       {
                         executable: proposal.executable,
@@ -795,6 +804,7 @@ export function CloudOperationCard({
                 )}
                 <InlineProcessFields>
                   <pre
+                    tabIndex={0}
                     aria-label="云端待执行脚本"
                     data-process-content="script"
                   >
@@ -823,7 +833,7 @@ export function CloudOperationCard({
                     ],
                   ]}
                 >
-                  <pre data-process-content="version">
+                  <pre tabIndex={0} data-process-content="version">
                     {JSON.stringify(
                       {
                         project: proposal.project,

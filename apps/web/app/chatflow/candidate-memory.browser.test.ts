@@ -1123,13 +1123,16 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
             .waitFor();
           expect((await detail(slow.id)).state).toBe('active');
         } else {
-          await deletion(ui.page).getByRole('alert').waitFor();
+          await card(ui.page, slow.id)
+            .getByText('记忆写入 · 结果待确认', { exact: true })
+            .waitFor();
+          expect(await deletion(ui.page).count()).toBe(0);
           expect(
-            await deletion(ui.page).getByRole('alert').textContent(),
+            await card(ui.page, slow.id).getByRole('button').allTextContents(),
+          ).toEqual(['重新读取']);
+          expect(
+            await card(ui.page, slow.id).getByRole('alert').textContent(),
           ).toContain('暂时无法确认操作结果。');
-          await deletion(ui.page)
-            .getByRole('button', { name: '取消', exact: true })
-            .click();
           const stored = (
             await f.db.unsafe(
               'select archived_at from allrice_memories where id=$1',
@@ -1236,7 +1239,16 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await deletion(ui.page)
         .getByRole('button', { name: '删除', exact: true })
         .click();
-      await deletion(ui.page).getByRole('alert').waitFor();
+      await card(ui.page, dropped.id)
+        .getByText('记忆写入 · 结果待确认', { exact: true })
+        .waitFor();
+      expect(await deletion(ui.page).count()).toBe(0);
+      expect(
+        await card(ui.page, dropped.id).getByRole('button').allTextContents(),
+      ).toEqual(['重新读取']);
+      const deletesBeforeRead = httpWrites.filter(
+        (item) => item.id === dropped.id && item.method === 'DELETE',
+      ).length;
       expect(
         (
           await f.db.unsafe(
@@ -1246,6 +1258,20 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         )[0]!.archived_at,
       ).toBeNull();
       failDeleteFor = '';
+      await card(ui.page, dropped.id)
+        .getByRole('button', { name: '重新读取', exact: true })
+        .click();
+      await card(ui.page, dropped.id)
+        .getByText('记忆写入 · 待确认', { exact: true })
+        .waitFor();
+      expect(
+        httpWrites.filter(
+          (item) => item.id === dropped.id && item.method === 'DELETE',
+        ),
+      ).toHaveLength(deletesBeforeRead);
+      await card(ui.page, dropped.id)
+        .getByRole('button', { name: '放弃', exact: true })
+        .click();
       await deletion(ui.page)
         .getByRole('button', { name: '删除', exact: true })
         .click();
@@ -1451,7 +1477,8 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         .filter({ hasText: '记忆读取失败' })
         .waitFor();
       const calls = httpWrites.slice(before);
-      expect(calls).toHaveLength(1);
+      expect(calls).toHaveLength(2);
+      expect(calls[0]!.body).toEqual(calls[1]!.body);
       expect((await collection(instanceId)).counts.active).toBe(1);
       await ui.page.unrouteAll({ behavior: 'wait' });
       await ui.page.getByRole('button', { name: '重试', exact: true }).click();

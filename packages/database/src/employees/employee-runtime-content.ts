@@ -2012,14 +2012,14 @@ export async function executeEmployeeReferenceTool(
           },
         ]
       : [];
-  const metadata = (selection: PreparedReferenceText['selection']) => ({
+  const metadata = ({ selection, currentPurpose }: PreparedReferenceText) => ({
     sourceId: selection.sourceId,
     revisionId: selection.revisionId,
     revision: selection.revision,
     digest: selection.digest,
     checksum: selection.checksum,
     fileName: selection.fileName,
-    purpose: selection.purpose,
+    purpose: currentPurpose,
   });
   const response = (results: KnowledgeRetrievalResult[]) => {
     const excerpt = (entry: (typeof excerpts)[number]) => {
@@ -2064,7 +2064,7 @@ export async function executeEmployeeReferenceTool(
           fullTextCoverage: search.fullTextCoverage,
         }
       : {
-          ...metadata(read!.selection),
+          ...metadata(read!),
           ...(excerpts.length ? excerpt(excerpts[0]!) : readPage),
         };
   };

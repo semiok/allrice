@@ -538,63 +538,6 @@ suite(
             purpose: index === 0 ? '核对经营指标' : '',
             publication: { audienceRevision: index + 2 },
           });
-
-          for (const width of [1440, 390])
-            for (const theme of ['light', 'dark'])
-              it(`prefills edit purpose and cancels without writes at ${width}px ${theme}`, async () => {
-                const page = await pageFor({ kind: 'upload' }, a, width);
-                try {
-                  await uploadFile(page, `用途-${width}-${theme}.txt`);
-                  await purposeInput(page).fill('每月经营报告的格式参考');
-                  await submit(page, '发布');
-                  const saved = await receipt(page);
-                  await open(page, {
-                    kind: 'audience',
-                    sourceId: saved.sourceId,
-                  });
-                  await page.evaluate((theme) => {
-                    document.documentElement.setAttribute('data-theme', theme);
-                    if (theme === 'dark')
-                      document.body.setAttribute('data-ds-dark-theme', '');
-                    else document.body.removeAttribute('data-ds-dark-theme');
-                  }, theme);
-                  expect(await purposeInput(page).inputValue()).toBe(
-                    '每月经营报告的格式参考',
-                  );
-                  expect(
-                    await purposeInput(page).getAttribute('maxlength'),
-                  ).toBe('1000');
-                  const dir = process.env.ALLRICE_CONFIRMED_UI_SCREENSHOTS;
-                  if (dir) {
-                    await mkdir(dir, { recursive: true });
-                    await page.screenshot({
-                      path: resolve(
-                        dir,
-                        `enterprise-${width}-${theme}-edit.png`,
-                      ),
-                      animations: 'disabled',
-                    });
-                  }
-                  const before = writes.length;
-                  await purposeInput(page).fill('取消不保存');
-                  await page
-                    .getByRole('button', { name: '取消', exact: true })
-                    .click();
-                  expect(writes).toHaveLength(before);
-                  await open(page, {
-                    kind: 'audience',
-                    sourceId: saved.sourceId,
-                  });
-                  expect(await purposeInput(page).inputValue()).toBe(
-                    '每月经营报告的格式参考',
-                  );
-                  const box = (await page.getByRole('dialog').boundingBox())!;
-                  expect(box.x).toBeGreaterThanOrEqual(0);
-                  expect(box.x + box.width).toBeLessThanOrEqual(width);
-                } finally {
-                  await page.context().close();
-                }
-              });
         }
         await open(page, { kind: 'delete', sourceId: saved.sourceId });
         const href = `/api/v1/references/revisions/${saved.revisionId}/download?workspaceId=${a.context.workspaceId}`;
@@ -618,6 +561,60 @@ suite(
         await page.context().close();
       }
     }, 60000);
+
+    for (const width of [1440, 390])
+      for (const theme of ['light', 'dark'])
+        it(`prefills edit purpose and cancels without writes at ${width}px ${theme}`, async () => {
+          const page = await pageFor({ kind: 'upload' }, a, width);
+          try {
+            await uploadFile(page, `用途-${width}-${theme}.txt`);
+            await purposeInput(page).fill('每月经营报告的格式参考');
+            await submit(page, '发布');
+            const saved = await receipt(page);
+            await open(page, {
+              kind: 'audience',
+              sourceId: saved.sourceId,
+            });
+            await page.evaluate((theme) => {
+              document.documentElement.setAttribute('data-theme', theme);
+              if (theme === 'dark')
+                document.body.setAttribute('data-ds-dark-theme', '');
+              else document.body.removeAttribute('data-ds-dark-theme');
+            }, theme);
+            expect(await purposeInput(page).inputValue()).toBe(
+              '每月经营报告的格式参考',
+            );
+            expect(await purposeInput(page).getAttribute('maxlength')).toBe(
+              '1000',
+            );
+            const dir = process.env.ALLRICE_CONFIRMED_UI_SCREENSHOTS;
+            if (dir) {
+              await mkdir(dir, { recursive: true });
+              await page.screenshot({
+                path: resolve(dir, `enterprise-${width}-${theme}-edit.png`),
+                animations: 'disabled',
+              });
+            }
+            const before = writes.length;
+            await purposeInput(page).fill('取消不保存');
+            await page
+              .getByRole('button', { name: '取消', exact: true })
+              .click();
+            expect(writes).toHaveLength(before);
+            await open(page, {
+              kind: 'audience',
+              sourceId: saved.sourceId,
+            });
+            expect(await purposeInput(page).inputValue()).toBe(
+              '每月经营报告的格式参考',
+            );
+            const box = (await page.getByRole('dialog').boundingBox())!;
+            expect(box.x).toBeGreaterThanOrEqual(0);
+            expect(box.x + box.width).toBeLessThanOrEqual(width);
+          } finally {
+            await page.context().close();
+          }
+        });
 
     it('keeps failed form data/request IDs while a different tab changes A cookies to B, with neither account written', async () => {
       const page = await pageFor({ kind: 'upload' });

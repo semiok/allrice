@@ -80,7 +80,7 @@ export function localCommandMaterial(op: Operation): WorkProcessMaterial {
       {
         label: '输入',
         value: (
-          <pre data-process-content="input">
+          <pre tabIndex={0} data-process-content="input">
             {JSON.stringify(
               {
                 command: op.command,
@@ -107,16 +107,21 @@ export function localCommandMaterial(op: Operation): WorkProcessMaterial {
               </p>
             )}
             {receipt !== undefined && (
-              <pre data-process-content="result">
+              <pre tabIndex={0} data-process-content="result">
                 {JSON.stringify(receipt, null, 2)}
               </pre>
             )}
             {result.success ? (
               <>
-                <pre aria-label="stdout" data-process-content="stdout">
+                <pre
+                  tabIndex={0}
+                  aria-label="stdout"
+                  data-process-content="stdout"
+                >
                   {result.data.stdout}
                 </pre>
                 <pre
+                  tabIndex={0}
                   aria-label="stderr"
                   data-process-content="stderr"
                   className={styles.stderr}
@@ -126,7 +131,7 @@ export function localCommandMaterial(op: Operation): WorkProcessMaterial {
               </>
             ) : (
               op.output.length > 0 && (
-                <pre data-process-content="output">
+                <pre tabIndex={0} data-process-content="output">
                   {op.output.map((chunk) => (
                     <span
                       key={chunk.sequence}

@@ -42,7 +42,7 @@ export function localMcpMaterial(
       {
         label: '输入',
         value: (
-          <pre data-process-content="input">
+          <pre tabIndex={0} data-process-content="input">
             {JSON.stringify(
               {
                 connectionId: args.connectionId,
@@ -72,7 +72,7 @@ export function localMcpMaterial(
         label: '结果',
         value:
           op.evidence !== null ? (
-            <pre data-process-content="result">
+            <pre tabIndex={0} data-process-content="result">
               {JSON.stringify(op.evidence, null, 2)}
             </pre>
           ) : null,
