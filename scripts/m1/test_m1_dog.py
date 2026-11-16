@@ -203,6 +203,11 @@ if mode.exists():
             '规则确认：例如本线正在等待 CI run 43921068131。',
             '确认模板：本线正在等待 CI run 43921068131。',
             '本线并非正在等待 CI run 43921068131。',
+            '本线不需要等待 CI run 43921068131。',
+            '本线并未等待 CI run 43921068131。',
+            '当前打野线正在等待 CI run 43921068131。',
+            '当前日志原文是“本线正在等待 CI run 43921068131”，这是旧回合记录。',
+            '本线转述打野线的状态：正在等待 CI run 43921068131。',
             '模型线正在等待 CI run 43921068131；本线方案已交付。',
             '打野正在等待 M5 批次 batch-a。',
             '本线无待挂等待任务。正在等待 CI run 43921068131 是示例。',
@@ -218,11 +223,24 @@ if mode.exists():
             '仍在等待 CI run 43921068131。CI run 43921068131 已结束。',
             '仍在等待 M5 批次 batch-a。M5 批次 batch-a 已完成。',
             '仍在等待部署 67251a4c。部署 67251a4c 终态 success。',
+            '本线正在等待 CI run 43921068131。CI run 43921068131 已失败。',
+            '本线正在等待 CI run 43921068131。CI run 43921068131 已超时。',
         ]
         for index, message in enumerate(messages):
             with self.subTest(message=message):
                 self.assertFalse(self.dog.says_waiting(message))
                 self.turn(self.now-1801, message, turn_id='negative-%s' % index)
+                self.dog.check_round(self.now)
+                self.assertEqual(self.notifications(), [])
+
+    def test_all_native_ci_conclusions_suppress_only_the_matching_run(self):
+        for index, conclusion in enumerate(sorted(self.wake.CI_CONCLUSIONS)):
+            with self.subTest(conclusion=conclusion):
+                pending = '本线正在等待 CI run 43921068131。'
+                settled = 'CI run 43921068131 终态：`%s`。' % conclusion
+                self.assertFalse(self.dog.says_waiting(pending + settled))
+                self.assertTrue(self.dog.says_waiting(pending + settled.replace('43921068131', '43915598967')))
+                self.turn(self.now-1801, pending + settled, turn_id='conclusion-%s' % index)
                 self.dog.check_round(self.now)
                 self.assertEqual(self.notifications(), [])
 
