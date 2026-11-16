@@ -442,7 +442,8 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           (i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
         ),
       ].slice(0, options.nativeParents ?? 3);
-      const nativeSummary = (id: string): NativeSubagentSummary => ({
+      const pushedNativeSummaries = new Map<string, NativeSubagentSummary>();
+      const seedNativeSummary = (id: string): NativeSubagentSummary => ({
         rootId: `${nativeWorkspace.id}/${id}`,
         root: { source: 'live', cursor: 8 },
         descendants: Array.from(
@@ -470,6 +471,9 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           }),
         ),
       });
+      const nativeSummary = (id: string): NativeSubagentSummary =>
+        pushedNativeSummaries.get(`${nativeWorkspace.id}/${id}`) ??
+        seedNativeSummary(id);
       let nativeDenied = false;
       let nativeBindingPending = options.nativeStartup ?? false;
       let rejectStartupEvents = false;
@@ -1135,6 +1139,8 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
             nativeProjection = { ...nativeProjection, ...patch };
           },
           push(id: string, summary: NativeSubagentSummary) {
+            if (options.nativeStartup)
+              pushedNativeSummaries.set(summary.rootId, summary);
             nativeFeed.push(
               nativeFixture,
               { type: 'directory', summary },
@@ -1847,6 +1853,23 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
             f.finishRun(A, 'succeeded');
           }
           await expect.poll(f.native.startupStreams).toBe(0);
+          if (outcome === 'ready') {
+            expect(await spinner.count()).toBe(1);
+            const summary = f.native.summary(A);
+            f.native.push(A, {
+              ...summary,
+              descendants: summary.descendants.map((child) =>
+                child.kind === 'child'
+                  ? {
+                      ...child,
+                      running: false,
+                      activity: 'inactive' as const,
+                      timing: { ...child.timing, lastTurnCompleted: true },
+                    }
+                  : child,
+              ),
+            });
+          }
           if (outcome !== 'disconnect')
             await expect.poll(() => spinner.count()).toBe(0);
           expect(new URL(f.page.url()).searchParams.get('session')).toBe(B);
@@ -1935,6 +1958,21 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           expect(await spinner.count()).toBe(1);
           f.finishRun(A, 'succeeded');
           await expect.poll(f.native.startupStreams).toBe(0);
+          expect(await spinner.count()).toBe(1);
+          const summary = f.native.summary(A);
+          f.native.push(A, {
+            ...summary,
+            descendants: summary.descendants.map((child) =>
+              child.kind === 'child'
+                ? {
+                    ...child,
+                    running: false,
+                    activity: 'inactive' as const,
+                    timing: { ...child.timing, lastTurnCompleted: true },
+                  }
+                : child,
+            ),
+          });
           await expect.poll(() => spinner.count()).toBe(0);
           expect(new URL(f.page.url()).searchParams.get('session')).toBe(B);
           expect(
