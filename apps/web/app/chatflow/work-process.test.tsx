@@ -247,7 +247,7 @@ describe('native process display surface', () => {
       ).toHaveLength(1);
     }
     expect(step).toContain('data-status="已完成"');
-    expect(step).toContain('2秒');
+    expect(step).not.toContain('2秒');
     expect(step).not.toContain('100秒');
     expect(step).toContain('远端未成功');
     expect(step).toContain('&lt;script&gt;raw&lt;/script&gt;');
@@ -408,7 +408,7 @@ describe('native process display surface', () => {
     [1300, '1.3秒'],
     [61200, '1分 1.2秒'],
   ] as const)(
-    'keeps the safe activity and recorded %ims beside its outcome as %s',
+    'keeps the safe activity but hides step duration %ims (%s)',
     (elapsed, duration) => {
       const html = render({
         parts: undefined,
@@ -426,7 +426,7 @@ describe('native process display surface', () => {
         ],
       });
       expect(html).toContain('检查入口文件');
-      expect(html).toContain(duration);
+      expect(html).not.toContain(duration);
       expect(html).not.toContain(`已完成 · ${duration}`);
       expect(html).toContain('data-step-id="tool:read"');
       expect(html).not.toContain('过程加载失败');
@@ -526,7 +526,7 @@ describe('native process display surface', () => {
   });
   it.each([
     [true, false, false, '等待回答'],
-    [false, false, false, '工作过程'],
+    [false, false, false, '已完成'],
     [false, true, false, '未完成'],
     [false, false, true, '已停止'],
   ] as const)(

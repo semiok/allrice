@@ -257,13 +257,6 @@ suite('reading a receipt while late native trace changes its group', () => {
     page.locator(`article[data-question-id="dsh-${native}:${call}"]`);
   const searchStep = (page: Page) =>
     page.locator(`#message-${ids.run} [data-step-id="tool:search"]`);
-  const textBox = (node: Locator) =>
-    node.evaluate((node) => {
-      const range = document.createRange();
-      range.selectNodeContents(node);
-      const box = range.getClientRects()[0]!;
-      return { x: box.x, y: box.y, width: box.width, height: box.height };
-    });
   const detailGeometry = (page: Page, target = searchStep(page)) =>
     target
       .locator('dl')
@@ -389,13 +382,12 @@ suite('reading a receipt while late native trace changes its group', () => {
         await page.close();
       }
     });
-    it(`keeps a long result's internal scroll and selected text through regrouping at ${width}px`, async () => {
+    it(`keeps a long result's selected text at the same page reading position through regrouping at ${width}px`, async () => {
       const page = await open(width);
       try {
         await readResult(page);
         const expected = await output(page).evaluate((node) => {
-          node.scrollTop = 900;
-          node.scrollIntoView({ block: 'center' });
+          // Output expands naturally; move the document to the actual text.
           (document.activeElement as HTMLElement)?.blur();
           const text = node.firstChild!;
           const start = text.textContent!.indexOf('结果第 050 行');
@@ -404,13 +396,36 @@ suite('reading a receipt while late native trace changes its group', () => {
           range.setEnd(text, start + 24);
           document.getSelection()!.removeAllRanges();
           document.getSelection()!.addRange(range);
-          return { text: range.toString(), top: node.scrollTop };
+          window.scrollBy(0, range.getBoundingClientRect().top - 200);
+          return {
+            text: range.toString(),
+            y: range.getBoundingClientRect().top,
+          };
+        });
+        expect(
+          await output(page).evaluate(focusedSelectionGeometry),
+        ).toMatchObject({
+          visible: true,
+          contained: true,
+          scrollTop: 0,
         });
         for (const stage of ['prefix', 'split', 'merge', 'append'] as const) {
           await update(page, stage);
-          expect(await output(page).evaluate((node) => node.scrollTop)).toBe(
-            expected.top,
-          );
+          expect(
+            await output(page).evaluate(focusedSelectionGeometry),
+          ).toMatchObject({
+            visible: true,
+            contained: true,
+            scrollTop: 0,
+          });
+          expect(
+            await page.evaluate(
+              () =>
+                document.getSelection()!.getRangeAt(0).getBoundingClientRect()
+                  .top,
+            ),
+            stage,
+          ).toBeCloseTo(expected.y, 0);
           expect(
             await page.evaluate(() => document.getSelection()?.toString()),
           ).toBe(expected.text);
@@ -429,93 +444,74 @@ suite('reading a receipt while late native trace changes its group', () => {
         await page.close();
       }
     });
-    it(`keeps native Tab focus and keyboard selection in the long output at ${width}px`, async () => {
+    it(`keeps Tab focus, keyboard selection and page reading with fully expanded output at ${width}px`, async () => {
       for (const stage of ['prefix', 'split', 'merge'] as const) {
         const page = await open(width);
         try {
           if (stage === 'merge') await update(page, 'split');
           await readResult(page);
           await page.keyboard.press('Tab');
-          expect(
-            await output(page).evaluate(
-              (node) => node === document.activeElement,
-            ),
-            stage,
-          ).toBe(true);
-          await page.keyboard.press('End');
-          await expect
-            .poll(() =>
-              output(page).evaluate(
-                (node) =>
-                  node.scrollHeight - node.clientHeight - node.scrollTop,
-              ),
-            )
-            .toBeLessThan(2);
-          const priorSelection = await output(page).evaluate((node) => {
+          expect(await focused(output(page)), stage).toBe(true);
+          await output(page).evaluate((node) => {
             const text = node.firstChild!;
-            const start = text.textContent!.length - 30;
-            document
-              .getSelection()!
-              .setBaseAndExtent(text, start, text, start + 18);
-            return document.getSelection()!.toString();
+            const start = text.textContent!.indexOf('结果第 050 行');
+            const range = document.createRange();
+            range.setStart(text, start);
+            range.setEnd(text, start + 18);
+            document.getSelection()!.removeAllRanges();
+            document.getSelection()!.addRange(range);
+            window.scrollBy(0, range.getBoundingClientRect().top - 200);
           });
-          expect(
-            await output(page).evaluate(
-              (node) => node === document.activeElement,
-            ),
-            stage,
-          ).toBe(true);
-          await page.keyboard.press('Shift+ArrowRight');
-          const selected = await page.evaluate(() =>
+          const prior = await page.evaluate(() =>
             document.getSelection()!.toString(),
           );
-          expect(selected.length, stage).toBeGreaterThan(0);
-          expect(selected, stage).not.toBe(priorSelection);
-          expect(
-            await output(page).evaluate(
-              (node) => node === document.activeElement,
-            ),
-            stage,
-          ).toBe(true);
-          const before = await output(page).evaluate((node) => node.scrollTop);
+          await page.keyboard.press('Shift+ArrowRight');
+          const selected = await output(page).evaluate(
+            focusedSelectionGeometry,
+          );
+          expect(selected.text, stage).not.toBe(prior);
+          expect(selected.visible, stage).toBe(true);
+          const before = (await output(page).boundingBox())!.y;
           await update(page, stage);
+          expect(await focused(output(page)), stage).toBe(true);
+          expect(
+            await output(page).evaluate(focusedSelectionGeometry),
+          ).toMatchObject({
+            text: selected.text,
+            anchor: selected.anchor,
+            focus: selected.focus,
+            visible: true,
+          });
+          expect((await output(page).boundingBox())!.y, stage).toBeCloseTo(
+            before,
+            0,
+          );
           expect(
             await output(page).evaluate(
-              (node) => node === document.activeElement,
+              (node) => node.scrollHeight - node.clientHeight,
             ),
-            stage,
-          ).toBe(true);
-          expect(
-            await page.evaluate(() => document.getSelection()!.toString()),
-            stage,
-          ).toBe(selected);
-          expect(
-            await output(page).evaluate((node) => node.scrollTop),
-            stage,
-          ).toBe(before);
-          await page.keyboard.press('Home');
-          await expect
-            .poll(() => output(page).evaluate((node) => node.scrollTop))
-            .toBe(0);
+          ).toBe(0);
         } finally {
           await page.close();
         }
       }
     });
   }
-  it('preserves a mouse reading position without any focused control or selection', async () => {
+  it('preserves a page reading position without any focused control or selection', async () => {
     const page = await open(390);
     try {
       await readResult(page);
       await output(page).evaluate((node) => {
-        node.scrollTop = 650;
+        window.scrollBy(0, node.getBoundingClientRect().top + 650);
         (document.activeElement as HTMLElement)?.blur();
         document.getSelection()?.removeAllRanges();
       });
-      await update(page, 'prefix');
-      await update(page, 'split');
-      await update(page, 'merge');
-      expect(await output(page).evaluate((node) => node.scrollTop)).toBe(650);
+      const before = (await output(page).boundingBox())!.y;
+      expect(before).toBe(-650);
+      for (const stage of ['prefix', 'split', 'merge'] as const) {
+        await update(page, stage);
+        expect((await output(page).boundingBox())!.y).toBeCloseTo(before, 0);
+      }
       expect(
         await page.evaluate(() => document.activeElement === document.body),
       ).toBe(true);
@@ -523,6 +519,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.close();
     }
   });
+
   it.each(['field', 'arguments'] as const)(
     'preserves the real selection in %s when a prefix replaces its group',
     async (area) => {
@@ -677,9 +674,7 @@ suite('reading a receipt while late native trace changes its group', () => {
         );
         expect(metrics).toHaveLength(2);
         expect(metrics[0]!.scrollHeight).toBe(metrics[0]!.clientHeight);
-        expect(metrics[1]!.scrollHeight).toBeGreaterThan(
-          metrics[1]!.clientHeight,
-        );
+        expect(metrics[1]!.scrollHeight).toBe(metrics[1]!.clientHeight);
         expect(metrics.every((port) => port.scrollTop === 0)).toBe(true);
         const row = stepToggle(card(page, 1));
         expect(
@@ -753,110 +748,53 @@ suite('reading a receipt while late native trace changes its group', () => {
       }
     },
   );
-  const keepsClippedInputReader = async (focusTarget: 'body' | 'input') => {
-    const page = await open(390);
-    try {
-      await update(page, 'prefix');
-      await update(page, 'split');
-      await stepToggle(card(page, 1)).click();
-      const oldInput = material(page, 1).locator(
-        'pre[data-process-content="input"]',
-      );
-      const selected = await oldInput.evaluate((node, focusTarget) => {
-        (document.activeElement as HTMLElement)?.blur();
-        if (focusTarget === 'input') node.focus({ preventScroll: true });
-        document
-          .getSelection()!
-          .setBaseAndExtent(node.firstChild!, 0, node.firstChild!, 30);
-        node.scrollTop = node.clientHeight / 2;
-        return {
-          text: document.getSelection()!.toString(),
-          scrollTop: node.scrollTop,
-        };
-      }, focusTarget);
-      expect(selected.text.length).toBe(30);
-      expect(selected.scrollTop).toBeGreaterThan(0);
-      // Leave room below the anchor in the approved 24px compact rows.
-      const later = card(page, 28);
-      const port = processBodyOf(page)
-        .locator('[data-process-scrollport]')
-        .nth(1);
-      const portBox = (await port.boundingBox())!;
-      const visiblePort = await receiptGeometry(port);
-      expect(visiblePort.readable).toBe(true);
-      await page.mouse.move(
-        portBox.x + 10,
-        (visiblePort.clip[0]! + visiblePort.clip[1]!) / 2,
-      );
-      await page.mouse.wheel(
-        0,
-        (await later.boundingBox())!.y - visiblePort.clip[0]! - 100,
-      );
-      await expect
-        .poll(async () => (await receiptGeometry(later)).relativeTop)
-        .toBeCloseTo(visiblePort.clip[0]! - portBox.y + 100, 0);
-      const before = await receiptGeometry(later);
-      expect(before.readable).toBe(true);
-      expect(before.port!.scrollTop).toBeGreaterThan(0);
-      const inputBefore = await receiptGeometry(oldInput);
-      expect(inputBefore.readable).toBe(true);
-      expect(inputBefore.port!.scrollTop).toBe(0);
-      const glyph = await oldInput.evaluate((node) => {
-        const box = document
-          .getSelection()!
-          .getRangeAt(0)
-          .getBoundingClientRect();
-        return {
-          top: box.top,
-          bottom: box.bottom,
-          inputTop: node.getBoundingClientRect().top + node.clientTop,
-        };
-      });
-      expect(glyph.bottom).toBeLessThan(glyph.inputTop);
-      expect(glyph.top).toBeGreaterThanOrEqual(
-        Math.max(0, ...inputBefore.ancestors.map((clip) => clip.top)),
-      );
-      expect(glyph.bottom).toBeLessThanOrEqual(
-        Math.min(
-          900,
-          ...inputBefore.ancestors.map((clip) => clip.top + clip.height),
-        ),
-      );
-      expect(
-        await oldInput.evaluate(
-          (node, focusTarget) =>
-            document.activeElement ===
-            (focusTarget === 'input' ? node : document.body),
-          focusTarget,
-        ),
-      ).toBe(true);
-      await update(page, 'merge');
-      const after = await receiptGeometry(later);
-      expect(after.identity).toBe('tool:call-28');
-      expect(after.readable).toBe(true);
-      expect(after.relativeTop).toBeCloseTo(before.relativeTop!, 0);
-      expect(await oldInput.evaluate((node) => node.scrollTop)).toBe(
-        selected.scrollTop,
-      );
-      expect(
-        await page.evaluate(() => document.getSelection()!.toString()),
-      ).toBe(selected.text);
-      expect(
-        await oldInput.evaluate(
-          (node, focusTarget) =>
-            document.activeElement ===
-            (focusTarget === 'input' ? node : document.body),
-          focusTarget,
-        ),
-      ).toBe(true);
-      expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
-    } finally {
-      await page.close();
-    }
-  };
   it.each(['body', 'input'] as const)(
-    'keeps the later reader when an old selection is clipped inside a visible input with %s focus',
-    keepsClippedInputReader,
+    'keeps the later page reader after leaving an old input selection with %s focus',
+    async (focusTarget) => {
+      const page = await open(390);
+      try {
+        await update(page, 'prefix');
+        await update(page, 'split');
+        await stepToggle(card(page, 1)).click();
+        const oldInput = material(page, 1).locator(
+          'pre[data-process-content="input"]',
+        );
+        const text = await oldInput.evaluate((node, focusTarget) => {
+          (document.activeElement as HTMLElement)?.blur();
+          if (focusTarget === 'input') node.focus({ preventScroll: true });
+          document
+            .getSelection()!
+            .setBaseAndExtent(node.firstChild!, 0, node.firstChild!, 30);
+          return document.getSelection()!.toString();
+        }, focusTarget);
+        const later = card(page, 28);
+        await later.evaluate((node) =>
+          node.scrollIntoView({ block: 'center' }),
+        );
+        const before = await receiptGeometry(later);
+        expect(before.readable).toBe(true);
+        expect((await receiptGeometry(oldInput)).readable).toBe(false);
+        await update(page, 'merge');
+        const after = await receiptGeometry(later);
+        expect(after.identity).toBe(before.identity);
+        expect(after.readable).toBe(true);
+        expect(after.box.y).toBeCloseTo(before.box.y, 0);
+        expect(
+          await page.evaluate(() => document.getSelection()!.toString()),
+        ).toBe(text);
+        expect(
+          await oldInput.evaluate(
+            (node, target) =>
+              document.activeElement ===
+              (target === 'input' ? node : document.body),
+            focusTarget,
+          ),
+        ).toBe(true);
+        expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
   );
   const focusedSelectionGeometry = (node: Element) => {
     const selection = document.getSelection()!;
@@ -914,7 +852,7 @@ suite('reading a receipt while late native trace changes its group', () => {
     ['middle', false],
     ['middle', true],
   ] as const)(
-    'keeps the focused input reader with %s visible and backward=%s',
+    'keeps the focused page input reader with %s visible and backward=%s',
     async (shape, backward) => {
       const page = await open(390);
       try {
@@ -924,32 +862,8 @@ suite('reading a receipt while late native trace changes its group', () => {
         const input = material(page, 1).locator(
           'pre[data-process-content="input"]',
         );
-        // Leave room below the anchor in the approved 24px compact rows.
-        const later = card(page, 28);
-        const port = processBodyOf(page)
-          .locator('[data-process-scrollport]')
-          .nth(1);
-        const portBox = (await port.boundingBox())!;
-        const visiblePort = await receiptGeometry(port);
-        expect(visiblePort.readable).toBe(true);
-        await page.mouse.move(
-          portBox.x + 10,
-          (visiblePort.clip[0]! + visiblePort.clip[1]!) / 2,
-        );
-        await page.mouse.wheel(
-          0,
-          (await later.boundingBox())!.y - visiblePort.clip[0]! - 100,
-        );
-        await expect
-          .poll(async () => (await receiptGeometry(later)).relativeTop)
-          .toBeCloseTo(visiblePort.clip[0]! - portBox.y + 100, 0);
-        const oldB = await receiptGeometry(later);
-        expect(oldB.readable).toBe(true);
-        expect(oldB.port!.scrollTop).toBeGreaterThan(0);
-        const inputBox = await receiptGeometry(input);
-        expect(inputBox.readable).toBe(true);
         await input.evaluate(
-          (node, { shape, backward, targetY }) => {
+          (node, { shape, backward }) => {
             node.focus({ preventScroll: true });
             const text = node.firstChild!;
             const end =
@@ -964,20 +878,18 @@ suite('reading a receipt while late native trace changes its group', () => {
                 text,
                 backward ? 0 : end,
               );
-            if (shape === 'middle')
-              node.scrollTop = (node.scrollHeight - node.clientHeight) / 2;
-            else {
-              const point = document.createRange();
-              point.setStart(text, end);
-              point.collapse(true);
-              node.scrollTop += point.getBoundingClientRect().top - targetY;
-            }
+            const point = document.createRange();
+            point.setStart(
+              text,
+              shape === 'middle' ? Math.floor(end / 2) : end,
+            );
+            point.collapse(true);
+            window.scrollBy(
+              0,
+              point.getBoundingClientRect().top - innerHeight / 2,
+            );
           },
-          {
-            shape,
-            backward,
-            targetY: (inputBox.clip[0]! + inputBox.clip[1]!) / 2,
-          },
+          { shape, backward },
         );
         const selected = await input.evaluate(focusedSelectionGeometry);
         expect(selected.active).toBe(true);
@@ -989,27 +901,12 @@ suite('reading a receipt while late native trace changes its group', () => {
         expect(selected.text.length).toBeGreaterThan(30);
         expect(backward ? selected.anchor : selected.focus).toBeGreaterThan(0);
         expect(backward ? selected.focus : selected.anchor).toBe(0);
-        expect(selected.scrollTop).toBeGreaterThan(0);
-        expect(await port.evaluate((node) => node.scrollTop)).toBe(
-          oldB.port!.scrollTop,
-        );
-        const before = await receiptGeometry(input);
-        expect(before.port!.scrollTop).toBe(0);
-        expect(before.readable).toBe(true);
+        const before = (await input.boundingBox())!.y;
         await update(page, 'merge');
-        const after = await receiptGeometry(input);
-        expect(after.identity).toBe('tool:call-1');
-        expect(after.materials).toContain('cloud:reading-1');
-        expect(after.readable).toBe(true);
-        expect(after.relativeTop).toBeCloseTo(before.relativeTop!, 0);
-        const restored = await input.evaluate(focusedSelectionGeometry);
-        expect(restored.active).toBe(true);
-        expect(restored.contained).toBe(true);
-        expect(restored.visible).toBe(true);
-        expect(restored.scrollTop).toBe(selected.scrollTop);
-        expect(restored.text).toBe(selected.text);
-        expect(restored.anchor).toBe(selected.anchor);
-        expect(restored.focus).toBe(selected.focus);
+        expect((await input.boundingBox())!.y).toBeCloseTo(before, 0);
+        expect(await input.evaluate(focusedSelectionGeometry)).toMatchObject(
+          selected,
+        );
         expect(await page.evaluate(() => window.readingWrites)).toEqual([]);
       } finally {
         await page.close();
@@ -1042,13 +939,9 @@ suite('reading a receipt while late native trace changes its group', () => {
           portBox.x + 10,
           (visiblePort.clip[0]! + visiblePort.clip[1]!) / 2,
         );
-        await page.mouse.wheel(
-          0,
-          (await reading.boundingBox())!.y - visiblePort.clip[0]! - 100,
-        );
-        await page.mouse.move(2, 850);
-        const titleBox = (await title.boundingBox())!;
-        await page.mouse.wheel(0, titleBox.y + titleBox.height + 1);
+        await page.mouse.wheel(0, (await reading.boundingBox())!.y - 200);
+        // The document is now the only scroller. Wait for the wheel frame to
+        // land on the receipt before applying a trace update.
         await expect
           .poll(async () => {
             const header = (await title.boundingBox())!;
@@ -1056,7 +949,8 @@ suite('reading a receipt while late native trace changes its group', () => {
             return (
               header.y + header.height < 0 &&
               current.readable &&
-              (current.port?.scrollTop ?? 0) > 0
+              current.window[0]! > 0 &&
+              Math.abs(current.box.y - 200) < 0.5
             );
           })
           .toBe(true);
@@ -1069,7 +963,7 @@ suite('reading a receipt while late native trace changes its group', () => {
           expect(after.identity, stage).toBe(before.identity);
           expect(after.materials, stage).toEqual(before.materials);
           expect(after.readable, stage).toBe(true);
-          expect(after.relativeTop, stage).toBeCloseTo(before.relativeTop!, 0);
+          expect(after.box.y, stage).toBeCloseTo(before.box.y, 0);
           expect(await reading.textContent(), stage).toBe(original);
           expect(
             await focused.evaluate((node) => node === document.activeElement),
@@ -1102,13 +996,7 @@ suite('reading a receipt while late native trace changes its group', () => {
         .first();
       const listBox = (await list.boundingBox())!;
       await page.mouse.move(listBox.x + 10, listBox.y + 30);
-      await page.mouse.wheel(
-        0,
-        (await later.boundingBox())!.y - listBox.y - 100,
-      );
-      await page.mouse.move(2, 850);
-      const groupBox = (await group().boundingBox())!;
-      await page.mouse.wheel(0, groupBox.y + groupBox.height + 1);
+      await page.mouse.wheel(0, (await later.boundingBox())!.y - 200);
       await expect
         .poll(async () => {
           const header = (await group().boundingBox())!;
@@ -1135,7 +1023,9 @@ suite('reading a receipt while late native trace changes its group', () => {
                 clip.top + parent.clientTop + parent.clientHeight,
               );
             }
-            return headerBottom < 0 && bottom > top;
+            return (
+              headerBottom < 0 && bottom > top && Math.abs(box.y - 200) < 0.5
+            );
           }, header.y + header.height);
         })
         .toBe(true);
@@ -1144,6 +1034,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       ).toBe(true);
       const old = (await group().boundingBox())!;
       expect(old.y + old.height).toBeLessThan(0);
+      const before = (await later.boundingBox())!.y;
       for (const stage of ['prefix', 'split', 'merge'] as const) {
         await update(page, stage);
         expect(
@@ -1152,6 +1043,7 @@ suite('reading a receipt while late native trace changes its group', () => {
         const box = (await later.boundingBox())!;
         expect(box.y, stage).toBeLessThan(900);
         expect(box.y + box.height, stage).toBeGreaterThan(0);
+        expect(box.y, stage).toBeCloseTo(before, 0);
       }
     } finally {
       await page.close();
@@ -1300,7 +1192,7 @@ suite('reading a receipt while late native trace changes its group', () => {
       await page.close();
     }
   });
-  it('keeps the approved 260px group, inherits expansion after split and releases choices for a Run or unmount', async () => {
+  it('keeps naturally growing groups, inherits expansion after split and releases choices for a Run or unmount', async () => {
     const page = await open(390, false);
     try {
       const group = () =>
@@ -1317,7 +1209,7 @@ suite('reading a receipt while late native trace changes its group', () => {
           height: getComputedStyle(node.parentElement!).maxHeight,
           overflow: getComputedStyle(node.parentElement!).overflowY,
         })),
-      ).toEqual({ height: '260px', overflow: 'auto' });
+      ).toEqual({ height: 'none', overflow: 'visible' });
       await update(page, 'split');
       for (const row of await group().all())
         expect(await row.getAttribute('aria-expanded')).toBe('true');
@@ -1628,50 +1520,20 @@ suite('reading a receipt while late native trace changes its group', () => {
           await predecessor.focus();
           await page.keyboard.press('Tab');
           evidence.tab = await reviewReadingState(target);
-          // Set only the scroll precondition, without the platform-dependent
-          // End key that failed before attribution. Tab and the real
-          // selection key below still exercise keyboard reading; restoration
-          // must preserve this exact position without fixture intervention.
+          // The approved details grow with content; the document is now the scrollport.
           await target.evaluate((node) => {
-            node.scrollTop = node.scrollHeight;
-          });
-          await page.waitForFunction(
-            (node) =>
-              node!.scrollHeight - node!.clientHeight - node!.scrollTop < 2,
-            handle,
-          );
-          evidence.bottom = await reviewReadingState(target);
-          await target.evaluate((node) => {
-            node.scrollTop = Math.floor(
-              (node.scrollHeight - node.clientHeight) / 2,
+            window.scrollBy(
+              0,
+              node.getBoundingClientRect().top +
+                node.clientHeight / 2 -
+                innerHeight / 2,
             );
           });
-          await page.waitForFunction(
-            (node) =>
-              node!.scrollTop > 0 &&
-              node!.scrollTop < node!.scrollHeight - node!.clientHeight - 20,
-            handle,
-          );
-          await target.evaluate(
-            (node) =>
-              new Promise<void>((resolve) => {
-                let previous = node.scrollTop,
-                  stableFrames = 0;
-                const frame = () => {
-                  stableFrames =
-                    node.scrollTop === previous ? stableFrames + 1 : 0;
-                  previous = node.scrollTop;
-                  if (stableFrames === 3) resolve();
-                  else requestAnimationFrame(frame);
-                };
-                requestAnimationFrame(frame);
-              }),
-          );
           await target.evaluate((node, backward) => {
             const box = node.getBoundingClientRect();
             const point = document.caretRangeFromPoint(
               box.left + 24,
-              box.top + 60,
+              Math.max(0, box.top) + 60,
             )!;
             if (!point || !node.contains(point.startContainer))
               throw Error('No visible stream text point');
@@ -1718,7 +1580,8 @@ suite('reading a receipt while late native trace changes its group', () => {
           const after = evidence.after as typeof before;
           expect((evidence.tab as typeof before).focused).toBe(true);
           expect(before.focused).toBe(true);
-          expect(before.scrollTop).toBeGreaterThan(0);
+          expect(before.windowY).toBeGreaterThan(0);
+          expect(before.scrollHeight).toBe(before.clientHeight);
           expect(before.selection.inside).toBe(true);
           expect(before.selection.text.length).toBeGreaterThan(0);
           expect(before.selection.backward).toBe(direction === 'backward');
@@ -1728,7 +1591,8 @@ suite('reading a receipt while late native trace changes its group', () => {
             oldNodeConnected: false,
             sameNode: false,
           });
-          expect(after.scrollTop).toBe(before.scrollTop);
+          expect(after.scrollTop).toBe(0);
+          expect(after.top).toBeCloseTo(before.top, 0);
           expect(after.focused).toBe(true);
           expect(after.selection).toEqual(before.selection);
           expect(evidence.writes).toEqual([]);
@@ -1794,7 +1658,7 @@ suite('reading a receipt while late native trace changes its group', () => {
           oldNodeConnected: false,
         });
         expect(after.later.focused).toBe(true);
-        expect(before.stream.scrollTop).toBeGreaterThan(0);
+        expect(before.stream.scrollHeight).toBe(before.stream.clientHeight);
         expect(after.stream.scrollTop).toBe(before.stream.scrollTop);
         expect(after.later.windowY).toBeCloseTo(before.later.windowY, 0);
         expect(after.later.top).toBeCloseTo(before.later.top, 0);
@@ -1928,8 +1792,7 @@ suite('reading a receipt while late native trace changes its group', () => {
         const selected =
           choice === 'open'
             ? await result.evaluate((node) => {
-                node.focus();
-                node.scrollTop = 650;
+                node.focus({ preventScroll: true });
                 document
                   .getSelection()!
                   .setBaseAndExtent(
@@ -1938,14 +1801,34 @@ suite('reading a receipt while late native trace changes its group', () => {
                     node.firstChild!,
                     1030,
                   );
-                return document.getSelection()!.toString();
+                const range = document.getSelection()!.getRangeAt(0);
+                window.scrollBy(0, range.getBoundingClientRect().top - 200);
+                return {
+                  text: range.toString(),
+                  y: range.getBoundingClientRect().top,
+                };
               })
-            : '';
+            : null;
+        const selectionBefore = selected
+          ? await result.evaluate(focusedSelectionGeometry)
+          : null;
+        if (selectionBefore)
+          expect(selectionBefore).toMatchObject({
+            visible: true,
+            contained: true,
+            active: true,
+            anchor: 1000,
+            focus: 1030,
+          });
         if (choice === 'closed') {
           await stepToggle(old).focus();
           expect(await focused(stepToggle(old))).toBe(true);
         } else
-          expect(await result.evaluate((node) => node.scrollTop)).toBe(650);
+          expect(
+            await result.evaluate(
+              (node) => node.scrollHeight - node.clientHeight,
+            ),
+          ).toBe(0);
         await update(page, 'prefix');
         const native = page.locator('[data-step-id="tool:cards-pair"]');
         const toggle = stepToggle(native);
@@ -1965,11 +1848,25 @@ suite('reading a receipt while late native trace changes its group', () => {
               .count(),
           ).toBe(1);
           expect(await focused(result)).toBe(true);
-          expect(await result.evaluate((node) => node.scrollTop)).toBe(650);
+          expect(
+            await result.evaluate(
+              (node) => node.scrollHeight - node.clientHeight,
+            ),
+          ).toBe(0);
           expect(
             await page.evaluate(() => document.getSelection()!.toString()),
-          ).toBe(selected);
-          expect(selected.length).toBe(30);
+          ).toBe(selected!.text);
+          expect(selected!.text.length).toBe(30);
+          expect(await result.evaluate(focusedSelectionGeometry)).toEqual(
+            selectionBefore,
+          );
+          expect(
+            await page.evaluate(
+              () =>
+                document.getSelection()!.getRangeAt(0).getBoundingClientRect()
+                  .top,
+            ),
+          ).toBeCloseTo(selected!.y, 0);
         } else {
           expect(await focused(toggle)).toBe(true);
           await toggle.click();
@@ -2575,8 +2472,8 @@ suite('reading a receipt while late native trace changes its group', () => {
                 : 'header, [aria-label="这次要做的事"] > div:first-child, [aria-label="这次要做的事"] > div:nth-child(2), [aria-label="参数"]',
             );
             const overviewFraming = [];
-            // Approved 260px scroller: verify every field remains fully readable
-            // after scrolling it into view, rather than requiring all fields at once.
+            // Naturally growing groups use the page scroll to reach each field;
+            // no process frame may clip it after it enters the viewport.
             for (const anchor of await overviewAnchors.all()) {
               if (view === 'history')
                 await anchor.evaluate((node) =>
@@ -3066,7 +2963,7 @@ suite('reading a receipt while late native trace changes its group', () => {
         const task = page.locator(`#message-${ids.runningRun}`);
         const title =
           status === 'completed'
-            ? '工作过程'
+            ? '已完成'
             : status === 'canceled'
               ? '已停止'
               : '未完成';
@@ -3227,32 +3124,20 @@ suite('reading a receipt while late native trace changes its group', () => {
           expect(geometry.valueX - geometry.labelRight).toBeCloseTo(8, 0);
           expect(geometry.valueY).toBeCloseTo(geometry.labelY, 0);
           expect(geometry.contained).toBe(true);
-          const title = await textBox(
-            searchStep(page).locator('[class*="processStepLabel"]'),
-          );
-          const status = searchStep(page).locator(
-            '[class*="processStepStatus"]',
-          );
-          expect(await status.innerText()).toBe('0.8秒');
-          const statusBox = await textBox(status);
           expect(
-            Math.abs(
-              statusBox.y + statusBox.height / 2 - title.y - title.height / 2,
-            ),
-          ).toBeLessThanOrEqual(2);
+            await searchStep(page)
+              .locator('[class*="processStepStatus"]')
+              .count(),
+          ).toBe(0);
           // Action + description now uses native single-line ellipsis. A text
           // Range includes the hidden tail; compare the actual clipped label.
           const label = searchStep(page).locator('[class*="processStepLabel"]');
-          const labelBox = (await label.boundingBox())!;
           expect(
             await label.evaluate((node) => ({
               overflow: getComputedStyle(node).overflow,
               ellipsis: getComputedStyle(node).textOverflow,
             })),
           ).toEqual({ overflow: 'hidden', ellipsis: 'ellipsis' });
-          expect(statusBox.x).toBeGreaterThanOrEqual(
-            labelBox.x + labelBox.width,
-          );
           expect(
             await page.evaluate(
               () => document.documentElement.scrollWidth <= innerWidth,

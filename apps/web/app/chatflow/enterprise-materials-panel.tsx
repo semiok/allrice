@@ -452,7 +452,7 @@ export function EnterpriseMaterialsPanel(props: {
         <p>管理（只有你能看到）</p>
         <div className={files.detailActions}>
           <button type="button" onClick={() => manage(r, 'audience')}>
-            修改范围
+            编辑资料
           </button>
           <button
             type="button"
@@ -525,7 +525,7 @@ export function EnterpriseMaterialsPanel(props: {
                   {canManage(reference) && props.onManage && (
                     <>
                       {iconAction(
-                        '修改范围',
+                        '编辑资料',
                         <IconEditOutlineRegular size={20} />,
                         () => manage(reference, 'audience'),
                       )}
@@ -811,7 +811,7 @@ function MaterialMenu(props: {
         { id: 'copy', label: '复制链接' },
         ...(props.onManage
           ? [
-              { id: 'audience', label: '修改范围' },
+              { id: 'audience', label: '编辑资料' },
               {
                 id: withdrawal,
                 label: withdrawal === 'revoke' ? '撤销资料' : '删除资料',

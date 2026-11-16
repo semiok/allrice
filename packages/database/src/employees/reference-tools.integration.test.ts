@@ -156,6 +156,29 @@ suite('R3 actual-read receipts and private Run authority', () => {
     expect(reread.fileName).toBe('差旅规定.txt');
   }, 120000);
 
+  it('reads current editable purpose while retaining the same immutable pin and read receipt', async () => {
+    const saved = await x.publish('文件内容和出处保持不变');
+    const run = await x.run();
+    const read = async () =>
+      JSON.parse(
+        (await invoke(run, 'workspace.reference.read', saved.pin)).modelContent,
+      );
+    await read();
+    const originalReceipts = await receipts(run);
+    for (const [index, purpose] of ['只核对金额', ''].entries()) {
+      await changeReferencePublication(x.publisher, saved.sourceId, {
+        workspaceId: x.publisher.workspaceId,
+        requestId: randomUUID(),
+        expectedRevision: index + 1,
+        action: 'edit',
+        audience: { scope: 'company', departmentIds: [] },
+        purpose,
+      });
+      expect(await read()).toMatchObject({ ...saved.pin, purpose });
+      expect(await receipts(run)).toEqual(originalReceipts);
+    }
+  });
+
   it('distinguishes N-1, EOF and out-of-range without empty or invented read receipts', async () => {
     const saved = await x.publish('甲乙丙');
     const run = await x.run();

@@ -61,6 +61,27 @@ const answer: WorkProcessAnswer = {
 };
 
 describe('native question ownership in the process', () => {
+  it('embeds blocking answers only with the exact native call metadata and tool', () => {
+    const input = events();
+    input[1]!.sourceEvent!.payload = {
+      ...input[1]!.sourceEvent!.payload,
+      questionId: 'blocking-request',
+      durable: false,
+    };
+    const accepted = {
+      ...answer,
+      answer: { ...answer.answer, questionId: 'blocking-request' },
+    };
+    const resolve = () =>
+      workProcessQuestions([{ id: 'owner', events: input }], [accepted]);
+    expect([...resolve().embeddedAnswerIds]).toEqual(['answer']);
+    expect(resolve().byOwner.get('owner')?.[0]?.request.durable).toBe(false);
+    input[0]!.payload.toolCallId = 'different-call';
+    expect(resolve().embeddedAnswerIds.size).toBe(0);
+    input[0]!.payload.toolCallId = 'ask';
+    delete input[1]!.sourceEvent!.payload.nativeSessionId;
+    expect(resolve().embeddedAnswerIds.size).toBe(0);
+  });
   it('embeds one exact accepted answer, including a native skipped answer', () => {
     const input = events();
     input.push(

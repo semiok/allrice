@@ -247,6 +247,22 @@ export async function referenceSourceAccess(
 function publicationAudience(policy: WorkbenchFilePolicy): ReferenceAudience {
   return { scope: policy.scope, departmentIds: policy.department_ids };
 }
+
+/** Editable publication metadata is separate from the immutable revision pin.
+ * Older empty purposes used a display fallback; preserve the actual blank input
+ * until an acknowledged edit replaces it in the source metadata. */
+export async function readPublicationPurpose(sourceId: string, sql: Sql) {
+  const [row] = await sql<{ purpose: string }[]>`
+    select case when exists (
+      select 1 from allrice_knowledge_reference_actions a
+      where a.source_id=s.id and a.input->>'action'='edit'
+    ) then s.description else coalesce(r.request_input->>'purpose',r.description) end as purpose
+    from allrice_knowledge_sources s
+    join allrice_knowledge_revisions r on r.knowledge_source_id=s.id and r.status='published'
+    where s.id=${sourceId} and s.publication_kind is not null
+    order by r.revision desc limit 1`;
+  return row?.purpose;
+}
 async function readPublicationPolicy(sourceId: string, sql: Sql, lock = false) {
   const [policy] = await sql<
     WorkbenchFilePolicy[]
@@ -297,6 +313,9 @@ export async function listReferenceRevisions(
     const [publisher] = publication
       ? await sql`select display_name from allrice_users where id=${s.created_by}`
       : [];
+    const purpose = publication
+      ? await readPublicationPurpose(s.id, sql)
+      : undefined;
     if (
       !sourceId &&
       !includeManagedFiles &&
@@ -352,7 +371,7 @@ export async function listReferenceRevisions(
           revision: r.revision,
           ownership,
           fileName: r.file_name,
-          purpose: r.description,
+          purpose: purpose ?? r.description,
           checksum: r.checksum,
           manifestDigest: r.manifest_digest,
           sizeBytes: Number(r.size_bytes),
@@ -1337,12 +1356,15 @@ export async function changeReferencePublication(
     const policy = await readPublicationPolicy(source.id, tx);
     if (!policy || policy.revision !== v.expectedRevision)
       throw new ReferenceLibraryError('version_conflict');
-    if (v.action === 'audience') {
+    if (v.action === 'audience' || v.action === 'edit') {
       await validatePublicationAudience(context, v.audience, tx);
       await tx`update allrice_workbench_file_policies
         set scope=${v.audience.scope},department_ids=${v.audience.departmentIds},revision=revision+1,updated_at=clock_timestamp()
         where object_id=${policy.object_id}`;
-      await tx`update allrice_knowledge_sources set updated_at=clock_timestamp() where id=${source.id}`;
+      if (v.action === 'edit')
+        await tx`update allrice_knowledge_sources set description=${v.purpose},updated_at=clock_timestamp() where id=${source.id}`;
+      else
+        await tx`update allrice_knowledge_sources set updated_at=clock_timestamp() where id=${source.id}`;
     } else {
       if ((v.action === 'delete') !== (source.publication_kind === 'upload'))
         throw new ReferenceLibraryError('source_unavailable');

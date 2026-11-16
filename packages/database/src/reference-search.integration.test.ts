@@ -149,6 +149,122 @@ suite('R3 publication search uses complete text and current readers', () => {
       ...(audience ? { action: 'audience', audience } : { action: 'delete' }),
     });
 
+  it('edits current purpose with audience CAS and audit, while old file pins and copies remain exact', async () => {
+    const saved = await publish('原文件内容固定不变');
+    const reader = await member();
+    const before = await prepareReferenceText(reader, saved.pin);
+    const input = {
+      workspaceId: owner.workspaceId,
+      requestId: randomUUID(),
+      expectedRevision: 1,
+      action: 'edit',
+      audience: { scope: 'company', departmentIds: [] },
+      purpose: '  新用途专有词  ',
+    };
+    expect(saved.reference.purpose).toBe('');
+    await expect(
+      changeReferencePublication(reader, saved.sourceId, input),
+    ).rejects.toThrow();
+    await changeReferencePublication(owner, saved.sourceId, input);
+    await changeReferencePublication(owner, saved.sourceId, input);
+    await expect(
+      changeReferencePublication(owner, saved.sourceId, {
+        ...input,
+        purpose: '不同参数',
+      }),
+    ).rejects.toMatchObject({ code: 'request_conflict' });
+    await expect(
+      changeReferencePublication(owner, saved.sourceId, {
+        ...input,
+        requestId: randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: 'version_conflict' });
+    const [updated] = await listReferencePublications(
+      owner,
+      owner.workspaceId!,
+      saved.sourceId,
+    );
+    expect(updated).toMatchObject({
+      purpose: '新用途专有词',
+      revision: saved.reference.revision,
+      manifestDigest: saved.reference.manifestDigest,
+      publication: { audienceRevision: 2 },
+    });
+    expect(
+      (
+        await queryReferencePublications(reader, { query: '新用途专有词' })
+      ).references.map((r) => r.sourceId),
+    ).toContain(saved.sourceId);
+    const after = await prepareReferenceText(reader, saved.pin);
+    expect(before.currentPurpose).toBe('');
+    expect(after.currentPurpose).toBe('新用途专有词');
+    expect(after.selection).toEqual(before.selection);
+    expect(after.fullText).toEqual(before.fullText);
+    expect(
+      await f.db`select id from allrice_audit_events where resource_id=${saved.sourceId} and action='knowledge.publication.edit'`,
+    ).toHaveLength(1);
+    // The invalid audience cannot partially update purpose, or advance CAS.
+    await expect(
+      changeReferencePublication(owner, saved.sourceId, {
+        ...input,
+        requestId: randomUUID(),
+        expectedRevision: 2,
+        purpose: '不应写入',
+        audience: { scope: 'departments', departmentIds: [randomUUID()] },
+      }),
+    ).rejects.toThrow();
+    expect(
+      (
+        await listReferencePublications(
+          owner,
+          owner.workspaceId!,
+          saved.sourceId,
+        )
+      )[0],
+    ).toMatchObject({
+      purpose: '新用途专有词',
+      publication: { audienceRevision: 2 },
+    });
+    await changeReferencePublication(owner, saved.sourceId, {
+      ...input,
+      requestId: randomUUID(),
+      expectedRevision: 2,
+      purpose: '',
+    });
+    expect(
+      (
+        await listReferencePublications(
+          owner,
+          owner.workspaceId!,
+          saved.sourceId,
+        )
+      )[0]?.purpose,
+    ).toBe('');
+    expect((await prepareReferenceText(reader, saved.pin)).currentPurpose).toBe(
+      '',
+    );
+    expect(
+      (await queryReferencePublications(reader, { query: '新用途专有词' }))
+        .references,
+    ).toHaveLength(0);
+    // An explicit purpose equal to the old empty-purpose display fallback is not blank.
+    await changeReferencePublication(owner, saved.sourceId, {
+      ...input,
+      requestId: randomUUID(),
+      expectedRevision: 3,
+      purpose: '企业资料',
+    });
+    expect(
+      (
+        await listReferencePublications(
+          owner,
+          owner.workspaceId!,
+          saved.sourceId,
+        )
+      )[0]?.purpose,
+    ).toBe('企业资料');
+  });
+
   it('finds the policy at the end of the full document and returns its exact excerpt and citation', async () => {
     const prefix = '介绍与历史背景。'.repeat(600);
     const text = prefix + '差旅上限：每晚九百元。';

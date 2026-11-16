@@ -5065,7 +5065,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           exact: true,
         });
         const header = process.getByRole('button', {
-          name: '工作过程',
+          name: '已完成',
           exact: true,
         });
         const processBody = process.locator('..');
@@ -5100,8 +5100,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const before = await geometry();
           if (input === 'keyboard') await header.press('Enter');
           else if (width < 760)
-            await header.getByText('工作过程', { exact: true }).tap();
-          else await header.getByText('工作过程', { exact: true }).click();
+            await header.getByText('已完成', { exact: true }).tap();
+          else await header.getByText('已完成', { exact: true }).click();
           await tools.waitFor();
           await settle();
           const after = await geometry();
@@ -5730,7 +5730,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           exact: true,
         });
         await process
-          .getByRole('button', { name: '工作过程', exact: true })
+          .getByRole('button', { name: '已完成', exact: true })
           .click();
         const first = owner.locator('[data-step-id="tool:compact-0"]');
         const second = owner.locator('[data-step-id="tool:compact-1"]');
@@ -5758,7 +5758,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             };
           });
         const before = await measure();
-        expect(before).toMatchObject({ height: 24, secondHeight: 24, gap: 0 });
+        expect(before).toMatchObject({ height: 24, secondHeight: 24, gap: 6 });
         expect(
           await first
             .locator('[data-disclosure-row]')
@@ -11564,7 +11564,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           exact: true,
         });
         const processBody = process.locator('..');
-        const toggle = process.getByRole('button', { name: /^工作过程/ });
+        const toggle = process.getByRole('button', { name: /^已完成/ });
         await expect.poll(() => toggle.innerText()).toContain('1 次未成功');
         expect(await toggle.innerText()).toContain('1 次未成功');
         expect(await toggle.getAttribute('aria-expanded')).toBe('false');
@@ -11624,7 +11624,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await groups.evaluate(
             (el) => getComputedStyle(el.parentElement!).maxHeight,
           ),
-        ).toBe('260px');
+        ).toBe('none');
+        expect(
+          await groups.evaluate((el) => {
+            const frame = el.parentElement!;
+            return frame.scrollHeight <= frame.clientHeight;
+          }),
+        ).toBe(true);
         expect(
           await f.page.getByLabel('子智能体任务', { exact: true }).count(),
         ).toBe(0);
@@ -13175,16 +13181,25 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       );
       const timer = process.getByLabel('本轮运行时间');
       await timer.waitFor();
-      const gap = await timer.evaluate((el) => {
-        const title = el
-          .closest('[data-disclosure-header]')
-          ?.querySelector('[data-disclosure-row]');
-        return title
-          ? el.getBoundingClientRect().left -
-              title.getBoundingClientRect().right
-          : -1;
+      const inlineTiming = await timer.evaluate((el) => {
+        const row = el.closest('[data-disclosure-row]')!;
+        const title = row.querySelector('[class*="processTitle"]')!;
+        const titleBox = title.getBoundingClientRect();
+        const timerBox = el.getBoundingClientRect();
+        const rowBox = row.getBoundingClientRect();
+        return {
+          sameContent: el.parentElement === title.parentElement,
+          sameLine: timerBox.top === titleBox.top,
+          followsTitle: timerBox.left >= titleBox.right,
+          insideRow: timerBox.right <= rowBox.right,
+        };
       });
-      expect(gap).toBe(8);
+      expect(inlineTiming).toEqual({
+        sameContent: true,
+        sameLine: true,
+        followsTitle: true,
+        insideRow: true,
+      });
       // Same partial reply followed by native compaction: one status, never a
       // second turn header inside the streamed body or a stale "replying".
       f.state.events.push(
@@ -13221,7 +13236,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .getByText('我先检查项目目录。', { exact: true })
           .isVisible(),
       ).toBe(false);
-      await process.getByRole('button', { name: /^工作过程/ }).click();
+      await process.getByRole('button', { name: /^已完成/ }).click();
       await processBody
         .getByText('我先检查项目目录。', { exact: true })
         .waitFor();
@@ -13771,7 +13786,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         text: f.state.reply,
       });
       await push('run.succeeded', {});
-      await f.page.getByRole('button', { name: /工作过程/ }).click();
+      await f.page.getByRole('button', { name: /^已完成/ }).click();
       await readHistory();
       await second.waitFor();
       expect((await second.boundingBox())!.y).toBeLessThan(
@@ -13785,7 +13800,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.screenshot({ path: '/tmp/allrice-timeline-order.png' });
       await f.page.reload();
       await final.waitFor();
-      await f.page.getByRole('button', { name: /工作过程/ }).click();
+      await f.page.getByRole('button', { name: /^已完成/ }).click();
       await readHistory();
       await second.waitFor();
       expect(await first.count()).toBe(1);
@@ -14224,7 +14239,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         const owner = f.page.locator(`#message-${id(20)}`);
         await owner
           .getByRole('region', { name: '工作过程', exact: true })
-          .getByRole('button', { name: '工作过程', exact: true })
+          .getByRole('button', { name: '已完成', exact: true })
           .click();
         const stopped = owner.locator(
           `[data-step-id="operation:mcp:${id(9401)}"]`,
@@ -14359,7 +14374,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.reload();
       const timing = f.page.getByLabel('本轮运行时间', { exact: true });
       await timing.waitFor();
-      expect(await timing.innerText()).toBe('用时 17秒');
+      expect(await timing.innerText()).toBe('· 用时 17秒');
       const motion = () =>
         f.page.evaluate(() => {
           const reply = document.querySelector(
@@ -14377,11 +14392,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         });
       const [avatarMotion, headerMotion] = await motion();
       expect(avatarMotion!.name).not.toBe('none');
-      expect(headerMotion!.name).toBe('none');
-      expect(headerMotion!.opacity).toBe(1);
+      expect(headerMotion!.name).toBe(avatarMotion!.name);
+      expect(headerMotion!.duration).toBe(avatarMotion!.duration);
+      expect(headerMotion!.duration).toBe('1.4s');
+      expect(headerMotion!.opacity).toBe(avatarMotion!.opacity);
       expect(
         await f.page.locator('[aria-label="工作过程"] [data-shimmer]').count(),
-      ).toBe(1);
+      ).toBe(0);
       await f.page.emulateMedia({ reducedMotion: 'reduce' });
       expect((await motion()).map((item) => item.name)).toEqual([
         'none',
@@ -14390,13 +14407,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.emulateMedia({ reducedMotion: 'no-preference' });
       for (const seconds of [18, 19, 20]) {
         await f.page.clock.runFor(1000);
-        await expect.poll(() => timing.innerText()).toBe(`用时 ${seconds}秒`);
+        await expect.poll(() => timing.innerText()).toBe(`· 用时 ${seconds}秒`);
       }
       // Server updates do not reset the display interval or make it run backwards.
       f.state.runTimings[0]!.timing.phase = 'waiting';
       f.state.runTimings[0]!.timing.wallMs = 19000;
       await f.page.clock.runFor(2000);
-      await expect.poll(() => timing.innerText()).toBe('用时 22秒');
+      await expect.poll(() => timing.innerText()).toBe('· 用时 22秒');
       // The local clock can tick before the server phase receipt commits.
       await expect
         .poll(async () => (await motion()).map((item) => item.name))
@@ -14405,15 +14422,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.state.runTimings[0]!.timing.phase = 'terminal';
       f.state.runTimings[0]!.timing.wallMs = 22500;
       await f.page.clock.runFor(2000);
-      await expect.poll(() => timing.innerText()).toBe('用时 22秒');
+      await expect.poll(() => timing.innerText()).toBe('· 用时 22秒');
       await f.page.clock.runFor(5000);
-      expect(await timing.innerText()).toBe('用时 22秒');
+      expect(await timing.innerText()).toBe('· 用时 22秒');
       f.state.runTimings[0]!.timing.phase = 'queued';
       f.state.runTimings[0]!.timing.wallMs = 0;
       await f.page.reload();
       await timing.waitFor();
       await f.page.clock.runFor(3000);
-      expect(await timing.innerText()).toBe('用时 0秒');
+      expect(await timing.innerText()).toBe('· 用时 0秒');
     } finally {
       await f.close();
     }
@@ -14456,8 +14473,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         f.state.runTimings[0]!.timing.wallMs = 2412460;
         await expect
           .poll(() => timing.innerText(), { timeout: 5000 })
-          .toContain('用时 40分 12秒');
-        expect(await timing.innerText()).toContain('用时 40分 12秒');
+          .toContain('用时 40分12秒');
+        expect(await timing.innerText()).toContain('用时 40分12秒');
         expect(
           await f.page.evaluate(
             () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -14483,7 +14500,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await timing.waitFor();
         expect(await process.getByRole('button').count()).toBe(0);
         expect(await process.locator('[aria-expanded]').count()).toBe(0);
-        expect(await timing.innerText()).toContain('用时 40分 12秒');
+        expect(await timing.innerText()).toContain('用时 40分12秒');
         f.state.runTimings = [];
         await expect.poll(() => timing.count(), { timeout: 5000 }).toBe(0);
       } finally {
@@ -16469,7 +16486,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await captureF3(f.page, 'upload');
       await upload.getByRole('button', { name: '取消', exact: true }).click();
       for (const [reference, action, title] of [
-        [owned!, '修改范围', '修改范围'],
+        [owned!, '编辑资料', '编辑资料'],
         [owned!, '删除资料', '删除这份企业资料？'],
         [file!, '撤销资料', '撤销这份企业资料？'],
       ] as const) {
@@ -16484,7 +16501,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .click();
         const dialog = f.page.getByRole('dialog', { name: title, exact: true });
         await dialog.waitFor();
-        if (action === '修改范围')
+        if (action === '编辑资料')
           expect(
             await dialog
               .getByRole('radio', { name: '全公司', exact: true })
@@ -16499,7 +16516,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ).toContain(`/references/revisions/${reference.revisionId}/download`);
         await captureF3(
           f.page,
-          action === '修改范围'
+          action === '编辑资料'
             ? 'update-scope'
             : action === '撤销资料'
               ? 'revoke'
@@ -16526,7 +16543,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         .waitFor();
       expect(
         await panel
-          .getByRole('button', { name: /^(修改范围|撤销资料|删除资料)$/ })
+          .getByRole('button', { name: /^(编辑资料|撤销资料|删除资料)$/ })
           .count(),
       ).toBe(0);
       expect(

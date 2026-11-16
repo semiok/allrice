@@ -1145,7 +1145,7 @@ div.composerAttachmentMenu,
   width: 18px;
   height: 18px;
   border-radius: 6px;
-  background: var(--dsw-alias-button-info-fill);
+  background: var(--employee-end, var(--dsw-alias-button-info-fill));
 }
 
 .assistantCopy {
@@ -1749,8 +1749,8 @@ div.composerAttachmentMenu,
 }
 
 /* Allrice public-event adapter over native DSH disclosure chrome. */
-/* Public DSH DisclosureRow/TextShimmer own disclosure, keyboard and motion.
-   Only the approved host spacing, material surface and employee accent differ. */
+/* Public DSH DisclosureRow owns disclosure and keyboard handling.
+   Approved whole-row motion shares the native avatar pulse clock. */
 .processBlock {
   min-width: 0;
   font-family: var(--ar-font-family-ui);
@@ -1765,7 +1765,7 @@ div.composerAttachmentMenu,
 .processBlock .processHeader {
   height: 24px;
   min-height: 24px;
-  align-items: baseline;
+  align-items: center;
   line-height: 24px;
 }
 .processHeader > :first-child,
@@ -1781,6 +1781,15 @@ div.composerAttachmentMenu,
   color: var(--dsw-alias-label-tertiary);
   font: 400 12px/24px var(--ar-font-family-ui);
 }
+.processBlock .processTitle,
+.processTiming {
+  font: var(--ar-font-body);
+  line-height: var(--ar-space-6);
+}
+.processHeader > :first-child svg {
+  width: var(--ar-space-4);
+  height: var(--ar-space-4);
+}
 .processBlock [data-disclosure-row]:focus-visible,
 .processStep [data-disclosure-row]:focus-visible {
   outline: 2px solid var(--dsw-alias-state-business-primary);
@@ -1788,29 +1797,20 @@ div.composerAttachmentMenu,
   border-radius: 4px;
 }
 .processDetails {
-  max-height: 260px;
-  overflow-y: auto;
-  scrollbar-gutter: stable;
   color: var(--dsw-alias-label-tertiary);
-  font: 400 12px/22px var(--ar-font-family-ui);
+  font: var(--ar-font-caption);
+  line-height: var(--ar-space-6);
   overflow-wrap: anywhere;
 }
 .processDetails[data-process-scrollport] {
   border: 0.5px solid var(--dsw-alias-border-l2);
-  border-radius: 10px;
+  border-radius: var(--ar-radius-md);
   background: color-mix(
     in srgb,
     var(--dsw-alias-label-primary) 2%,
     var(--dsw-alias-bg-base)
   );
-  padding: 9px 10px 8px;
-}
-.processDetails::-webkit-scrollbar {
-  width: 5px;
-}
-.processDetails::-webkit-scrollbar-thumb {
-  background: var(--dsw-alias-border-l3);
-  border-radius: 4px;
+  padding: var(--ar-space-3) var(--ar-space-4);
 }
 .processDetails p {
   margin: 4px 0;
@@ -1831,6 +1831,9 @@ div.composerAttachmentMenu,
 .processSteps li {
   padding: 0;
 }
+.processSteps > li + li {
+  margin-top: calc(var(--ar-space-3) / 2);
+}
 .processStep {
   min-width: 0;
   container: work-process-step / inline-size;
@@ -1850,7 +1853,7 @@ div.composerAttachmentMenu,
 .processStepRow > :first-child {
   align-self: center;
   margin-top: 0;
-  margin-right: 6px;
+  margin-right: var(--ar-space-2);
   width: 16px;
   height: 16px;
   color: var(--dsw-alias-label-tertiary);
@@ -1858,6 +1861,9 @@ div.composerAttachmentMenu,
 .processStepRow > :first-child svg {
   width: 14px;
   height: 14px;
+}
+.processStepIcon {
+  display: inline-flex;
 }
 .processStepContent {
   flex: 1;
@@ -1893,7 +1899,8 @@ div.composerAttachmentMenu,
 }
 .processStepDetails {
   container: work-process-detail / inline-size;
-  margin: 4px 0 6px 22px;
+  margin: calc(var(--ar-space-3) / 2) 0 calc(var(--ar-space-3) / 2)
+    var(--ar-space-6);
   padding: 12px 16px;
   min-width: 0;
   border-radius: var(--ar-radius-md);
@@ -1905,7 +1912,8 @@ div.composerAttachmentMenu,
    inherit the approved compact gray typography. */
 .processStep .processStepDetails {
   color: var(--dsw-alias-label-tertiary);
-  font: 400 12px/22px var(--ar-font-family-ui);
+  font: var(--ar-font-caption);
+  line-height: var(--ar-space-6);
 }
 .processStep .processStepDetails :is(dt, dd, p, pre, code, strong, span) {
   font: inherit;
@@ -1913,16 +1921,21 @@ div.composerAttachmentMenu,
 }
 .processDetailGrid {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: calc(var(--ar-space-3) / 2) var(--ar-space-2);
   margin: 0;
   align-items: baseline;
 }
-.processStepDetails pre {
-  max-height: 240px;
+.processStepDetails .processStepDetails {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+}
+.processStep .processStepDetails pre {
+  max-height: none;
   margin: 0;
   padding: 8px;
-  overflow: auto;
+  overflow: visible;
   border-radius: 8px;
   background: color-mix(in srgb, currentColor 6%, transparent);
   white-space: pre-wrap;
@@ -1946,9 +1959,6 @@ div.composerAttachmentMenu,
   .processStep [data-disclosure-header] {
     gap: 6px;
   }
-  .processStepDetails {
-    padding: 12px;
-  }
 }
 .processPulse {
   display: inline-flex;
@@ -1960,37 +1970,13 @@ div.composerAttachmentMenu,
 .processStatus {
   color: var(--dsw-alias-label-tertiary);
 }
-.processBlock [data-shimmer] {
-  --dsw-alias-label-shimmer: color-mix(
-    in srgb,
-    var(--dsw-alias-label-tertiary) 75%,
-    var(--dsw-alias-label-primary)
-  );
-}
 .processBlock .processExecuting .processTitle,
 .processBlock .processExecuting > :first-child {
   color: var(--employee-end, var(--dsw-alias-state-business-primary));
 }
-.processBlock .processExecuting [data-shimmer] {
-  --dsw-alias-label-shimmer: color-mix(
-    in srgb,
-    var(--employee-end, var(--dsw-alias-state-business-primary)) 75%,
-    white
-  );
-}
-.processBlock [data-shimmer] > [aria-hidden='true'] > span {
-  mask-image: linear-gradient(
-    105deg,
-    transparent 0%,
-    black 25% 75%,
-    transparent 100%
-  );
-}
-.processBlock [data-shimmer] > [aria-hidden='true'] > span,
-.processBlock [data-shimmer] > [aria-hidden='true'] > span > span {
-  animation-duration: 1.6s;
-  animation-delay: 0s;
-  animation-timing-function: linear;
+.processHeader.processPulse,
+.processStepRow.processPulse {
+  display: flex;
 }
 @media (prefers-reduced-motion: reduce) {
   .processPulse,
@@ -2046,14 +2032,15 @@ div.composerAttachmentMenu,
   min-width: 0;
 }
 .processPart[data-process-member] {
-  margin-bottom: 8px;
+  margin-bottom: calc(var(--ar-space-3) / 2);
 }
 .processPart:not([hidden]) ~ .processPart:not([hidden]) {
   margin-top: 16px;
 }
 .processPart:not([hidden])
   ~ .processPart:not([data-process-member]):not([hidden]) {
-  margin-top: 8px;
+  /* Optical compensation for the reply glyphs, matching the accepted 14px gaps. */
+  margin-top: calc(var(--ar-space-2) + 1px);
 }
 
 .contextCompacting {

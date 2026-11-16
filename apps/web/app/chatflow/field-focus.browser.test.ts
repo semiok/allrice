@@ -179,8 +179,8 @@ suite('fields retain one native focus owner without a fill jump', () => {
               () => window.__focusCapture as Metadata,
             );
             if (name === 'reference-audience') {
-              const dialog = page.getByRole('dialog', { name: '修改范围' });
-              expect(await dialog.locator('textarea').count()).toBe(0);
+              const dialog = page.getByRole('dialog', { name: '编辑资料' });
+              expect(await dialog.locator('textarea').count()).toBe(1);
               expect(await dialog.getByRole('radio').count()).toBe(3);
               await dialog
                 .getByRole('radio', { name: '指定部门', exact: true })
@@ -193,7 +193,8 @@ suite('fields retain one native focus owner without a fill jump', () => {
                   .getByRole('checkbox', { name: '财务部', exact: true })
                   .isChecked(),
               ).toBe(true);
-            } else {
+            }
+            {
               for (const control of metadata.controls) {
                 const field = locate(page, control);
                 await field.waitFor();

@@ -54,6 +54,14 @@ export const ReferencePublicationActionSchema = z.discriminatedUnion('action', [
   z
     .object({
       ...publicationAction,
+      action: z.literal('edit'),
+      audience: ReferenceAudienceSchema,
+      purpose: z.string().trim().max(1000),
+    })
+    .strict(),
+  z
+    .object({
+      ...publicationAction,
       action: z.literal('audience'),
       audience: ReferenceAudienceSchema,
     })

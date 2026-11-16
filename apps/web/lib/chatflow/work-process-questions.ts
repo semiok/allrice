@@ -43,7 +43,11 @@ export function workProcessQuestions(
       const parsed = UserQuestionRequestSchema.safeParse(
         event.sourceEvent.payload,
       );
-      if (!parsed.success || !parsed.data.durable || !parsed.data.callId)
+      if (
+        !parsed.success ||
+        !parsed.data.nativeSessionId ||
+        !parsed.data.callId
+      )
         continue;
       const request = parsed.data;
       const callId = request.callId!;

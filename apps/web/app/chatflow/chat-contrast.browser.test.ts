@@ -238,12 +238,13 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
       .toBeGreaterThanOrEqual(4.5);
     return seen;
   };
-  // Approved rev02–05 uses native tertiary gray in process rows. Assert the
+  // Approved rev7 uses native tertiary gray, 14px titles and 12px steps. Assert the
   // exact native color and typography instead of imposing our older 4.5:1
   // override. The composer, replies and standalone operation panels keep it.
   const nativeProcessText = async (
     node: Locator,
     token = '--dsw-alias-label-tertiary',
+    fontSize: '12px' | '14px' = '12px',
   ) => {
     await node.waitFor();
     const seen = await look(node);
@@ -264,7 +265,7 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
       };
     }, token);
     expect.soft(style.color, await label(node)).toBe(style.expected);
-    expect.soft(style.size).toBe('12px');
+    expect.soft(style.size).toBe(fontSize);
     expect.soft(style.weight).toBe('400');
   };
   /** Words on a gradient (the composer seat's fade): read the painted ground. */
@@ -617,7 +618,11 @@ suite('chat input, questions and receipts read clearly (MET-214)', () => {
 
           // L02 and the failed step, in the work process.
           const process = page.locator('[data-case="process"]');
-          await nativeProcessText(process.getByLabel('本轮运行时间'));
+          await nativeProcessText(
+            process.getByLabel('本轮运行时间'),
+            '--dsw-alias-label-tertiary',
+            '14px',
+          );
           for (const [id, words] of [
             ['think', '分析任务与处理步骤'],
             ['search', '搜索资料 · 本周销售数据'],

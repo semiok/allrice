@@ -242,7 +242,7 @@ const controls: Record<string, FocusControl[]> = {
     },
   ],
   'reference-add': [{ id: 'purpose', label: '用途' }],
-  'reference-audience': [],
+  'reference-audience': [{ id: 'purpose', label: '用途' }],
   deliverables: [
     search('search', '查找文件'),
     select('employee', '按员工筛选'),
@@ -288,12 +288,9 @@ function publish() {
     case: caseName,
     controls: controls[caseName] ?? [],
     actions,
-    staticReason:
-      caseName === 'reference-audience'
-        ? '真实修改范围仅含radio/checkbox；用途不在该编辑入口。'
-        : caseName.startsWith('canvas-')
-          ? '真实交付成果预览；本项只减半固定padding，保留原生缩放和居中。'
-          : undefined,
+    staticReason: caseName.startsWith('canvas-')
+      ? '真实交付成果预览；本项只减半固定padding，保留原生缩放和居中。'
+      : undefined,
     extraViews:
       caseName === 'employee-create'
         ? ['dialog-top', 'dialog-bottom']

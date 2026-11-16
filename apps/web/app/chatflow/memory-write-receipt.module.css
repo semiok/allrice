@@ -1,0 +1,59 @@
+.panel {
+  margin: var(--ar-space-3) 0 0;
+  padding: 0;
+  display: grid;
+  gap: var(--ar-space-3);
+}
+.card {
+  border: 0.5px solid var(--dsw-alias-border-l2);
+  border-radius: var(--ar-radius-md);
+  background: color-mix(
+    in srgb,
+    var(--dsw-alias-label-primary) 2%,
+    var(--dsw-alias-bg-base)
+  );
+  padding: var(--ar-space-3) var(--ar-space-4);
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--dsw-alias-label-secondary);
+  font: var(--ar-font-caption);
+  line-height: var(--ar-space-6);
+}
+.heading {
+  display: flex;
+  align-items: center;
+  gap: var(--ar-space-2);
+  font: var(--ar-font-body);
+  line-height: var(--ar-space-6);
+  font-weight: var(--ar-font-weight-regular);
+  color: var(--dsw-alias-label-tertiary);
+}
+.heading > svg {
+  flex: none;
+}
+.content {
+  margin: var(--ar-space-2) 0 0;
+  white-space: pre-wrap;
+  color: var(--dsw-alias-label-secondary);
+}
+.hint {
+  font: var(--ar-font-caption);
+  line-height: var(--ar-space-6);
+  color: var(--dsw-alias-label-tertiary);
+  margin: var(--ar-space-1) 0 0;
+}
+.error {
+  color: var(--dsw-alias-state-error-primary);
+  margin: var(--ar-space-1) 0 0;
+}
+.heading .error {
+  margin-top: 0;
+}
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--ar-space-2);
+  margin-top: var(--ar-space-3);
+}

@@ -925,7 +925,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       const current = card(ui.page, pending.id);
       await current.waitFor();
       const confirm = current.getByRole('button', {
-        name: '确认并记住',
+        name: '确认',
         exact: true,
       });
       expect(await confirm.isDisabled()).toBe(true);
@@ -940,7 +940,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         .waitFor();
       await expect.poll(() => confirm.isEnabled()).toBe(true);
       await confirm.click();
-      await current.getByText('长期记忆', { exact: true }).waitFor();
+      await current.getByText('记忆写入 · 已确认', { exact: true }).waitFor();
       expect((await detail(pending.id)).state).toBe('active');
     } finally {
       blockedDetailId = '';
@@ -963,17 +963,17 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       const ui = await open('chat', theme, width);
       try {
         await card(ui.page, pending.id)
-          .getByRole('button', { name: '确认并记住', exact: true })
+          .getByRole('button', { name: '确认', exact: true })
           .waitFor();
         expect(await card(ui.page, shared.id).count()).toBe(0);
         expect((await detail(pending.id)).state).toBe('pending');
         const before = httpWrites.length;
         await capture(ui.page, theme + '-chat-before');
         await card(ui.page, pending.id)
-          .getByRole('button', { name: '确认并记住', exact: true })
+          .getByRole('button', { name: '确认', exact: true })
           .click();
         await card(ui.page, pending.id)
-          .getByText('长期记忆', { exact: true })
+          .getByText('记忆写入 · 已确认', { exact: true })
           .waitFor();
         expect(httpWrites.slice(before)).toHaveLength(1);
         expect(httpWrites[before]!.body).toMatchObject({
@@ -996,7 +996,12 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         await deletion(ui.page)
           .getByRole('button', { name: '删除', exact: true })
           .click();
-        await card(ui.page, dropped.id).waitFor({ state: 'detached' });
+        await card(ui.page, dropped.id)
+          .getByText('记忆写入 · 已放弃', { exact: true })
+          .waitFor();
+        expect(await card(ui.page, dropped.id).innerText()).not.toContain(
+          dropped.summary,
+        );
         expect(
           (
             await f.db.unsafe(
@@ -1009,7 +1014,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         await capture(ui.page, theme + '-chat-after');
         await ui.page.reload();
         await card(ui.page, pending.id)
-          .getByText('长期记忆', { exact: true })
+          .getByText('记忆写入 · 已确认', { exact: true })
           .waitFor();
         expect(await card(ui.page, dropped.id).count()).toBe(0);
       } finally {
@@ -1031,10 +1036,10 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         .getByRole('button', { name: '恢复已完成历史', exact: true })
         .click();
       await card(ui.page, pending.id)
-        .getByRole('button', { name: '确认并记住', exact: true })
+        .getByRole('button', { name: '确认', exact: true })
         .click();
       await card(ui.page, pending.id)
-        .getByText('长期记忆', { exact: true })
+        .getByText('记忆写入 · 已确认', { exact: true })
         .waitFor();
       expect(await status.getAttribute('data-live-events')).toBe('1');
       expect(await status.getAttribute('data-trace-state')).toBe('loaded');
@@ -1081,7 +1086,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         );
         await card(ui.page, slow.id)
           .getByRole('button', {
-            name: confirming ? '确认并记住' : '放弃',
+            name: confirming ? '确认' : '放弃',
             exact: true,
           })
           .click();
@@ -1104,7 +1109,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         await expect
           .poll(() =>
             card(ui.page, fast.id)
-              .getByText('长期记忆', { exact: true })
+              .getByText('记忆写入 · 已确认', { exact: true })
               .count(),
           )
           .toBe(1);
@@ -1114,17 +1119,20 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         release();
         if (confirming) {
           await card(ui.page, slow.id)
-            .getByText('长期记忆', { exact: true })
+            .getByText('记忆写入 · 已确认', { exact: true })
             .waitFor();
           expect((await detail(slow.id)).state).toBe('active');
         } else {
-          await deletion(ui.page).getByRole('alert').waitFor();
+          await card(ui.page, slow.id)
+            .getByText('记忆写入 · 结果待确认', { exact: true })
+            .waitFor();
+          expect(await deletion(ui.page).count()).toBe(0);
           expect(
-            await deletion(ui.page).getByRole('alert').textContent(),
+            await card(ui.page, slow.id).getByRole('button').allTextContents(),
+          ).toEqual(['重新读取']);
+          expect(
+            await card(ui.page, slow.id).getByRole('alert').textContent(),
           ).toContain('暂时无法确认操作结果。');
-          await deletion(ui.page)
-            .getByRole('button', { name: '取消', exact: true })
-            .click();
           const stored = (
             await f.db.unsafe(
               'select archived_at from allrice_memories where id=$1',
@@ -1166,14 +1174,14 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       expect(changed.status).toBe(200);
       const before = mutations.length;
       await card(ui.page, pending.id)
-        .getByRole('button', { name: '确认并记住', exact: true })
+        .getByRole('button', { name: '确认', exact: true })
         .click();
       await card(ui.page, pending.id)
         .getByText('记忆已变化，请重新读取后再操作。', { exact: false })
         .waitFor();
       expect(mutations.length).toBe(before);
       await card(ui.page, pending.id)
-        .getByRole('button', { name: '重新读取记忆', exact: true })
+        .getByRole('button', { name: '重新读取', exact: true })
         .click();
       await expect
         .poll(() =>
@@ -1191,7 +1199,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     }
   });
 
-  it('replays a lost confirmation with its original key/CAS and preserves failed delete until final confirmation', async () => {
+  it('rereads a lost confirmation without resending the write and preserves failed delete until final confirmation', async () => {
     const pending = await remember('确认回执丢失的候选'),
       dropped = await remember('放弃失败的候选');
     loseAckFor = pending.id;
@@ -1200,7 +1208,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
     try {
       const before = httpWrites.length;
       const button = card(ui.page, pending.id).getByRole('button', {
-        name: '确认并记住',
+        name: '确认',
         exact: true,
       });
       await button.click();
@@ -1208,18 +1216,22 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       expect((await detail(pending.id)).state).toBe('active');
       expect(
         await card(ui.page, pending.id)
-          .getByText('长期记忆', { exact: true })
+          .getByText('记忆写入 · 已确认', { exact: true })
           .count(),
       ).toBe(0);
-      await button.click();
       await card(ui.page, pending.id)
-        .getByText('长期记忆', { exact: true })
+        .getByText('记忆写入 · 结果待确认', { exact: true })
+        .waitFor();
+      await card(ui.page, pending.id)
+        .getByRole('button', { name: '重新读取', exact: true })
+        .click();
+      await card(ui.page, pending.id)
+        .getByText('记忆写入 · 已确认', { exact: true })
         .waitFor();
       const calls = httpWrites
         .slice(before)
         .filter((item) => item.id === pending.id);
-      expect(calls).toHaveLength(2);
-      expect(calls[0]!.body).toEqual(calls[1]!.body);
+      expect(calls).toHaveLength(1);
       expect(calls[0]!.body.expectedRevision).toBe(1);
       await card(ui.page, dropped.id)
         .getByRole('button', { name: '放弃', exact: true })
@@ -1227,7 +1239,16 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       await deletion(ui.page)
         .getByRole('button', { name: '删除', exact: true })
         .click();
-      await deletion(ui.page).getByRole('alert').waitFor();
+      await card(ui.page, dropped.id)
+        .getByText('记忆写入 · 结果待确认', { exact: true })
+        .waitFor();
+      expect(await deletion(ui.page).count()).toBe(0);
+      expect(
+        await card(ui.page, dropped.id).getByRole('button').allTextContents(),
+      ).toEqual(['重新读取']);
+      const deletesBeforeRead = httpWrites.filter(
+        (item) => item.id === dropped.id && item.method === 'DELETE',
+      ).length;
       expect(
         (
           await f.db.unsafe(
@@ -1237,10 +1258,29 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         )[0]!.archived_at,
       ).toBeNull();
       failDeleteFor = '';
+      await card(ui.page, dropped.id)
+        .getByRole('button', { name: '重新读取', exact: true })
+        .click();
+      await card(ui.page, dropped.id)
+        .getByText('记忆写入 · 待确认', { exact: true })
+        .waitFor();
+      expect(
+        httpWrites.filter(
+          (item) => item.id === dropped.id && item.method === 'DELETE',
+        ),
+      ).toHaveLength(deletesBeforeRead);
+      await card(ui.page, dropped.id)
+        .getByRole('button', { name: '放弃', exact: true })
+        .click();
       await deletion(ui.page)
         .getByRole('button', { name: '删除', exact: true })
         .click();
-      await card(ui.page, dropped.id).waitFor({ state: 'detached' });
+      await card(ui.page, dropped.id)
+        .getByText('记忆写入 · 已放弃', { exact: true })
+        .waitFor();
+      expect(await card(ui.page, dropped.id).innerText()).not.toContain(
+        dropped.summary,
+      );
     } finally {
       loseAckFor = '';
       failDeleteFor = '';
@@ -1274,11 +1314,11 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
             : route.fulfill({ status: 503, json: {} });
         });
         await card(ui.page, fast.id)
-          .getByRole('button', { name: '确认并记住', exact: true })
+          .getByRole('button', { name: '确认', exact: true })
           .click();
         await arrived;
         await card(ui.page, pending.id)
-          .getByRole('button', { name: '确认并记住', exact: true })
+          .getByRole('button', { name: '确认', exact: true })
           .click();
         const error = card(ui.page, pending.id).getByRole('alert');
         await error.waitFor();
@@ -1299,7 +1339,7 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         expect(await error.count()).toBe(1);
         expect(
           await card(ui.page, pending.id)
-            .getByText('长期记忆', { exact: true })
+            .getByText('记忆写入 · 已确认', { exact: true })
             .count(),
         ).toBe(0);
         expect(
@@ -1309,10 +1349,10 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
             .count(),
         ).toBe(0);
         await card(ui.page, pending.id)
-          .getByRole('button', { name: '重新读取记忆', exact: true })
+          .getByRole('button', { name: '重新读取', exact: true })
           .click();
         await card(ui.page, pending.id)
-          .getByText('长期记忆', { exact: true })
+          .getByText('记忆写入 · 已确认', { exact: true })
           .waitFor();
       } finally {
         release();

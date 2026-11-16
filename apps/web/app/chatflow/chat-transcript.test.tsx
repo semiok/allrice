@@ -267,13 +267,14 @@ describe('historical transcript capability gating', () => {
       { employeeName: 'Alan' },
     );
     expect(html).toContain('Alan');
-    // Native shimmer repeats presentation text in a hidden data attribute.
+    // The approved whole-row pulse has one title, without a second text shimmer.
     expect(html.match(/>思考中…</g)).toHaveLength(1);
-    expect(html).toContain('data-shimmer-text="思考中…"');
+    expect(html).toContain('data-executing="true"');
+    expect(html).not.toContain('data-shimmer-text');
     expect(html).not.toContain('Rice');
     expect(html).not.toContain('子智能体任务');
   });
-  it('shows native compaction while history is collapsed and clears it after completion or failure', () => {
+  it('shows native compaction with the running process open and its detail collapsed, then clears the status after completion or failure', () => {
     const event = (
       sequence: number,
       status: 'started' | 'updated' | 'completed' | 'failed',
@@ -341,7 +342,10 @@ describe('historical transcript capability gating', () => {
     expect(interleaved).not.toContain('整理 · 1 项');
     const events = [event(1, 'started', 'start')];
     expect(show(events)).toContain('正在整理对话…');
-    expect(show(events)).not.toContain('aria-expanded="true"');
+    expect(show(events).match(/aria-expanded="(?:true|false)"/g)).toEqual([
+      'aria-expanded="true"',
+      'aria-expanded="false"',
+    ]);
     events.push(event(2, 'updated', 'summary'));
     expect(show(events)).toContain('正在整理对话…');
     for (const status of ['completed', 'failed'] as const) {
@@ -419,7 +423,7 @@ describe('historical transcript capability gating', () => {
         },
       ],
     );
-    for (const text of ['工作过程', '用时 40分 12秒'])
+    for (const text of ['已完成', '，用时 40分12秒'])
       expect(html).toContain(text);
     expect(html).not.toContain('模型请求尝试');
     expect(html).not.toContain('策略来源');
@@ -491,7 +495,8 @@ describe('historical transcript capability gating', () => {
         },
       },
     );
-    expect(executing).toContain('执行中…');
+    expect(executing).toContain('思考中…');
+    expect(executing).toContain('data-executing="true"');
     expect(executing).not.toContain('查询实时行情');
     expect(executing).not.toContain('market.quote');
   });

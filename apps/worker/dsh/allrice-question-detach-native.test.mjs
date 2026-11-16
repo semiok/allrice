@@ -65,6 +65,7 @@ async function fixture({
   child = false,
   extraTool = false,
   configuredTimeout,
+  mode = 'timed',
   modelCallId = 'call_ask_go',
 }) {
   const root = await realpath(
@@ -264,7 +265,7 @@ process.on('SIGUSR2', () => { for (const exit of exits.splice(0)) immediate(exit
     DSH_CWD: root,
     DSH_CODEX_MODEL: 'gpt-5.6-luna',
     DSH_SYSTEM_PROMPT: 'Synthetic question fixture.',
-    ALLRICE_ASK_USER_MODE: 'timed',
+    ALLRICE_ASK_USER_MODE: mode,
     ...(configuredTimeout === undefined
       ? {}
       : { ALLRICE_ASK_USER_TIMEOUT: configuredTimeout }),
@@ -386,6 +387,49 @@ const replyText = (requests, callId) =>
   );
 
 describe('MET-210 timed questions on the AllRice host', () => {
+  it('preserves native blocking call identity for display without claiming a durable question', async () => {
+    const f = await fixture({ mode: 'legacy' });
+    const sessionId = `dsh-${randomUUID()}`;
+    const client = await f.launch();
+    await client.prompt(sessionId, '先问我要不要继续。');
+    const notice = () =>
+      f.notices.find((n) => n.method === 'session.user-question')?.params;
+    await expect.poll(notice, { timeout: 15000 }).toBeDefined();
+    const callId = f.askCall().data.callId;
+    expect(notice()).toMatchObject({
+      nativeSessionId: sessionId,
+      callId,
+      durable: false,
+    });
+    expect(notice().questionId).not.toBe(`${sessionId}:${callId}`);
+    expect((await client.userQuestions(sessionId)).questions).toEqual([]);
+    await client.steer(
+      sessionId,
+      'allrice:user-question:v1:' +
+        JSON.stringify({
+          questionId: notice().questionId,
+          answers: [{ id: 'go', selected: ['继续'] }],
+        }),
+      {
+        inputId: randomUUID(),
+        turnId: `${sessionId}:turn:1`,
+        kind: 'ask_user',
+      },
+    );
+    await expect
+      .poll(
+        () =>
+          f
+            .events()
+            .find(
+              (e) =>
+                e.type === 'tool/result' &&
+                e.data.message.toolCallId === callId,
+            ),
+        { timeout: 15000 },
+      )
+      .toBeDefined();
+  }, 30000);
   it.each([
     ['default', undefined, 120],
     ['N', '2', 2],
