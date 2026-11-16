@@ -1090,6 +1090,9 @@ describe('DshHarnessAdapter', () => {
   }, 30_000);
 
   it('rechecks an image-bearing model input before the first and every later native dispatch, without sending revoked bytes', async () => {
+    // Valid metadata-free 2x2 JPEG; native admission preserves these bytes.
+    const jpeg =
+      '/9j/2wBDAAUDBAQEAwUEBAQFBQUGBwwIBwcHBw8LCwkMEQ8SEhEPERETFhwXExQaFRERGCEYGh0dHx8fExciJCIeJBweHx7/2wBDAQUFBQcGBw4ICA4eFBEUHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh7/wAARCAACAAIDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABQb/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCEgKAI/9k=';
     const runtime = await schedulingRuntime(['AUTHORIZED_IMAGE_REPLY']);
     const input = executionInput({
       prompt: 'Read the selected JPG.',
@@ -1097,7 +1100,7 @@ describe('DshHarnessAdapter', () => {
       images: [
         {
           mediaType: 'image/jpeg',
-          data: 'aW1hZ2UtYnl0ZXM=',
+          data: jpeg,
           name: 'private.jpg',
         },
       ],
@@ -1123,7 +1126,7 @@ describe('DshHarnessAdapter', () => {
       allowed = true;
       const first = await runtime.adapter.execute(input);
       expect(runtime.requests).toHaveLength(1);
-      expect(JSON.stringify(runtime.requests[0])).toContain('aW1hZ2UtYnl0ZXM=');
+      expect(JSON.stringify(runtime.requests[0])).toContain(jpeg);
       input.threadId = first.threadId;
       input.kernel.userMessageId = randomUUID();
       input.kernel.assistantMessageId = randomUUID();
