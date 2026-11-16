@@ -77,13 +77,14 @@ class QaInstanceBuildIdentity(unittest.TestCase):
             definitions, marker, dispatch = f.read().partition('\ncase "${1:-}" in')
         self.assertTrue(marker, 'qa-instance command dispatch marker changed')
         self.script = os.path.join(self.tmp, 'qa-instance')
+        host_stubs = '\nport_busy() { return 1; }\nM1_LAUNCHCTL="$NODE_BIN/launchctl"\n'
         with open(self.script, 'w') as f:
-            f.write(definitions + '\nport_busy() { return 1; }\ncmd_up "$@"\n')
+            f.write(definitions + host_stubs + 'cmd_up "$@"\n')
         shutil.copyfile(os.path.join(HERE, 'lib.sh'), os.path.join(self.tmp, 'lib.sh'))
         shutil.copyfile(os.path.join(HERE, 'qa-lease.py'), os.path.join(self.tmp, 'qa-lease.py'))
         Path(self.tmp, 'rice-standard.json').write_text('{"version":"installed-old","toolNames":["workspace.memory.search"]}')
         self.dispatch_script = os.path.join(self.tmp, 'qa-instance-cli')
-        Path(self.dispatch_script).write_text(definitions + '\nport_busy() { return 1; }\n' + marker + dispatch)
+        Path(self.dispatch_script).write_text(definitions + host_stubs + marker + dispatch)
         dev = os.path.join(self.home, 'allrice-dev')
         os.makedirs(dev)
         with open(os.path.join(dev, '.env'), 'w') as f:
