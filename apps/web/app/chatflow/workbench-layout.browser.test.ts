@@ -23216,7 +23216,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             .fill('新品的日常故事');
           await brand
             .getByRole('button', {
-              name: '让 Rice 想选题 / 换一批',
+              name: '出选题',
               exact: true,
             })
             .click();

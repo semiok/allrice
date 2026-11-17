@@ -42,15 +42,18 @@
 }
 /* MET-224: the plugin's black Open action uses the same geometry as Add. */
 .pluginOpen.pluginOpen.pluginOpen {
-  --ar-action-primary: var(--dsw-static-neutral-bluish-1000);
-  --ar-action-primary-hover: var(--dsw-static-neutral-800);
-  --ar-text-on-primary: var(--dsw-static-neutral-00);
+  background: var(--dsw-static-neutral-bluish-1000);
+  color: var(--dsw-static-neutral-00);
   min-height: 32px;
   padding: 6px 10px;
   font-size: 12px;
   line-height: 18px;
   border-radius: 8px;
   font-weight: var(--ar-font-weight-medium);
+}
+.pluginOpen.pluginOpen.pluginOpen:hover:not(:disabled),
+.pluginOpen.pluginOpen.pluginOpen:active:not(:disabled) {
+  background: var(--dsw-static-neutral-800);
 }
 .add:focus-visible {
   outline: var(--ar-focus-ring-width) solid var(--ar-focus-ring);
