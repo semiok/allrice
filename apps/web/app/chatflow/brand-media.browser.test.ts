@@ -374,6 +374,11 @@ suite('MET-224 main-area brand media text workflow', () => {
     );
     browser = await chromium.launch({
       headless: true,
+      // Use Chromium's software compositor for the exact paint oracle below.
+      // macOS GPU rasterization changes rounded-edge gray values between
+      // screenshots even when an opaque layer fully covers the changed seat.
+      // This keeps zero pixel tolerance; the missing-isolation control stays.
+      args: ['--disable-gpu'],
       executablePath:
         process.env.ALLRICE_TEST_CHROME_EXECUTABLE ??
         (process.platform === 'darwin'
@@ -939,34 +944,41 @@ suite('MET-224 main-area brand media text workflow', () => {
             evidence,
             `native-composer-${surface.width}-${surface.colorScheme}-${name}`,
           );
-          // inert does not stop painting. Keep the compositor layers present
-          // and repaint the entire native seat magenta: no changed pixel may
-          // reach the plugin. Removing a layer changes Chromium's rounded-edge
-          // antialiasing, even when its contents are fully covered.
+          // inert does not stop painting. Keep the native seat and all layers
+          // mounted in both probes. Only the same paint variable changes;
+          // adding/removing layers can rerasterize unrelated alpha edges.
           await page.screenshot({
             path: prefix + '-mounted.png',
             animations: 'disabled',
           });
-          // Assert every pixel where the real native composer can paint. Other
-          // parts of the page (e.g. alpha Tag edges) can rerasterize on damage.
-          const visible = await page.screenshot({
-            path: prefix + '-composer-mounted.png',
-            animations: 'disabled',
-            clip: composerClip,
-          });
           const probe = await page.addStyleTag({
             content:
-              '[data-composer-seat], [data-composer-seat] * { background: magenta !important; color: magenta !important; border-color: magenta !important; box-shadow: none !important; }',
+              '[data-composer-seat], [data-composer-seat] * { background: var(--met224-probe-color) !important; color: var(--met224-probe-color) !important; border-color: var(--met224-probe-color) !important; box-shadow: none !important; }',
           });
           try {
-            const hidden = await page.screenshot({
-              path: prefix + '-composer-probe.png',
+            await seat.evaluate((el) =>
+              el.style.setProperty('--met224-probe-color', 'cyan'),
+            );
+            const cyan = await page.screenshot({
+              path: prefix + '-composer-cyan.png',
               animations: 'disabled',
               clip: composerClip,
             });
-            expect(visible.equals(hidden)).toBe(true);
+            await seat.evaluate((el) =>
+              el.style.setProperty('--met224-probe-color', 'magenta'),
+            );
+            const magenta = await page.screenshot({
+              path: prefix + '-composer-magenta.png',
+              animations: 'disabled',
+              clip: composerClip,
+            });
+            // Every pixel in the native seat/viewport intersection is exact.
+            expect(cyan.equals(magenta)).toBe(true);
           } finally {
             await probe.evaluate((el) => (el as HTMLStyleElement).remove());
+            await seat.evaluate((el) =>
+              el.style.removeProperty('--met224-probe-color'),
+            );
           }
         };
         for (const tab of ['排期表', '选题库', '文章库']) {
@@ -993,6 +1005,10 @@ suite('MET-224 main-area brand media text workflow', () => {
           expect(
             covered.equals(
               await page.screenshot({
+                path: resolve(
+                  evidence,
+                  `native-composer-${surface.width}-${surface.colorScheme}-without-isolation.png`,
+                ),
                 animations: 'disabled',
                 clip: composerClip,
               }),
