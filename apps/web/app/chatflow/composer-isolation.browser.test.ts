@@ -496,6 +496,9 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
       let nextSteps = options.nextSteps;
       let holdNextReply = false;
       let releaseHeldNextReply: (() => void) | undefined;
+      let sessionListGate: Promise<void> | undefined;
+      let releaseSessionList: (() => void) | undefined;
+      let heldSessionLists = 0;
       let releaseNextStepsA!: () => void;
       const nextStepsGate = new Promise<void>((done) => {
         releaseNextStepsA = done;
@@ -869,6 +872,10 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           path === '/api/v1/sessions' &&
           (options.taskSuggestions || options.nativeParents)
         ) {
+          if (sessionListGate) {
+            heldSessionLists++;
+            await sessionListGate;
+          }
           answer(response, {
             sessions: (options.nativeParents ? nativeIds : [A, B]).map(
               fixtureSession,
@@ -1133,6 +1140,16 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           nativeSelectionNames,
           fullRequests: () => nativeFullRequests,
           releaseFull: () => releaseNativeFull(),
+          holdSessionList() {
+            sessionListGate = new Promise<void>((done) => {
+              releaseSessionList = done;
+            });
+          },
+          heldSessionLists: () => heldSessionLists,
+          releaseSessionList() {
+            releaseSessionList?.();
+            sessionListGate = undefined;
+          },
           connections: () => [...nativeFeed.connections],
           summary: nativeSummary,
           updateSession(patch: Partial<Session>) {
@@ -1808,8 +1825,10 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           stage = `release-${outcome}`;
           mark(stage, { streams: f.native.startupStreams() });
           if (outcome === 'ready') f.native.allowReady();
-          else if (outcome === 'terminal') f.finishRun(A, 'canceled');
-          else {
+          else if (outcome === 'terminal') {
+            f.native.holdSessionList();
+            f.finishRun(A, 'canceled');
+          } else {
             f.native.failStartupEvents();
             // Reuse the existing Run transport's bounded reconnect schedule.
             for (let i = 0; i < 8; i++) {
@@ -1850,9 +1869,20 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           expect(reads().every((url) => url.includes('liveOnly=true'))).toBe(
             true,
           );
+          if (outcome === 'terminal') {
+            await expect.poll(f.native.heldSessionLists).toBeGreaterThan(0);
+            expect(await spinner.count()).toBe(1);
+          }
           const count = reads().length;
           await f.page.clock.runFor(6_000);
           expect(reads().length).toBe(count);
+          if (outcome === 'terminal') {
+            f.native.releaseSessionList();
+            await expect.poll(() => reads().length).toBe(count + 1);
+            await expect.poll(() => spinner.count()).toBe(0);
+            await f.page.clock.runFor(6_000);
+            expect(reads().length).toBe(count + 1);
+          }
           if (outcome === 'ready') {
             expect(f.native.startupStreams()).toBe(1);
             await expect.poll(() => parentStatus.count()).toBe(1);
@@ -1904,6 +1934,7 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           );
           throw error;
         } finally {
+          f.native.releaseSessionList();
           await f.close();
         }
       },
