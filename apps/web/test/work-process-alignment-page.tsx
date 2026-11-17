@@ -15,12 +15,17 @@ import { ChatTranscript } from '../app/chatflow/chat-transcript';
 import type { Message } from '../app/chatflow/chatflow-types';
 import { employeeAccentStyle } from '../app/chatflow/employee-navigation';
 import { applyTheme } from '../lib/theme/theme';
+import { projectWorkProgress } from '../lib/chatflow/work-progress';
 import { cloudOperations, ids } from './technical-details-fixtures';
+import { questionAttemptFixture } from './work-process-question-attempt-fixture';
 
 const params = new URLSearchParams(location.search);
 const scene = params.get('scene') ?? 'complete';
 const live = scene === 'running';
 const progressive = params.has('progressive');
+const questionAttempts = params.has('question-attempts')
+  ? questionAttemptFixture(params.has('durable'))
+  : null;
 const approval = params.has('approval');
 const failed = scene === 'failed';
 const at = '2026-11-15T03:00:00.000Z';
@@ -173,6 +178,7 @@ function progressiveEvents(phase: number) {
     type: ChatFlowEventEnvelope['type'],
     payload: Record<string, unknown>,
     sourceType: string,
+    source: Record<string, unknown> = {},
   ) => {
     const sequence = events.at(-1)!.sequence + 1;
     events.push({
@@ -185,7 +191,7 @@ function progressiveEvents(phase: number) {
       sourceEvent: {
         id: `progressive-native-${sequence}`,
         type: sourceType,
-        payload: { turnId: 'turn', stepId: 'think' },
+        payload: source,
         occurredAt: at,
       },
     });
@@ -193,21 +199,44 @@ function progressiveEvents(phase: number) {
   add(
     'harness.native',
     { presentation: 'think', status: 'started', turnId: 'turn' },
-    'llm/reasoning',
+    'assistant/chunk',
+    {
+      turn: 1,
+      step: 0,
+      chunk: { type: 'block-start', blockType: 'reasoning', index: 0 },
+    },
   );
-  if (phase >= 3)
+  if (phase >= 3) {
+    add(
+      'harness.native',
+      { presentation: 'think', status: 'completed', turnId: 'turn' },
+      'assistant/chunk',
+      { turn: 1, step: 0, chunk: { type: 'block-end', index: 0 } },
+    );
     add(
       'assistant.text.delta',
       { replyId: 'answer', text: '先核对现有资料。' },
       'assistant/message',
     );
+  }
   if (phase >= 4)
     add(
       'harness.native',
-      { presentation: 'think', status: 'updated', turnId: 'turn' },
-      'llm/reasoning',
+      { presentation: 'think', status: 'started', turnId: 'turn' },
+      'assistant/chunk',
+      {
+        turn: 1,
+        step: 1,
+        chunk: { type: 'block-start', blockType: 'reasoning', index: 0 },
+      },
     );
   if (phase >= 5) {
+    add(
+      'harness.native',
+      { presentation: 'think', status: 'completed', turnId: 'turn' },
+      'assistant/chunk',
+      { turn: 1, step: 1, chunk: { type: 'block-end', index: 0 } },
+    );
     add(
       'assistant.text.completed',
       { replyId: 'answer', text: '资料已核对完成。' },
@@ -275,6 +304,7 @@ window.fetch = async (input) =>
             !params.has('tool-only') &&
             !params.has('timing-only') &&
             !progressive &&
+            !questionAttempts &&
             materialReady &&
             rows.some(([id]) => id === 'cloud')
               ? [operation]
@@ -288,11 +318,15 @@ declare global {
     alignMaterial: () => void;
     alignTiming: () => void;
     alignPhase: (phase: number) => void;
+    alignQuestionTrace: () => void;
+    alignProgress: () => ReturnType<typeof projectWorkProgress>;
   }
 }
 const root = createRef<HTMLDivElement>();
 function Fixture() {
   const [phase, setPhase] = useState(0);
+  const [questionTrace, setQuestionTrace] = useState(!params.has('late-trace'));
+  window.alignQuestionTrace = () => setQuestionTrace(true);
   const [traceReady, setTraceReady] = useState(!params.has('material-first'));
   const [revision, setRevision] = useState(0);
   const [hasTiming, setTimingReady] = useState(!params.has('preparing'));
@@ -310,6 +344,7 @@ function Fixture() {
     : timingReady && !params.has('timing-only')
       ? eventsFor(traceReady)
       : [];
+  window.alignProgress = () => projectWorkProgress(events, '', running);
   const wallMs =
     progressive && !running ? 67000 : live ? 18000 : failed ? 21000 : 34000;
   const timing: TaskRuntimeTiming = {
@@ -351,39 +386,52 @@ function Fixture() {
         collapseTiming="next-input"
         employeeName={params.get('employee') ?? 'Rice'}
         runTimings={timingReady ? [{ runId: ids.run, timing }] : []}
-        messages={[
-          {
-            id: 'assistant',
-            role: 'assistant',
-            status: running ? 'pending' : failed ? 'failed' : 'completed',
-            runId: progressive || timingReady ? ids.run : null,
-            createdAt: at,
-            content: {
-              text: progressive
-                ? phase >= 5
-                  ? '资料已核对完成。'
-                  : ''
-                : live
-                  ? ''
-                  : failed
-                    ? '缺少“销售金额”列。补齐后就可以继续汇总。'
-                    : '月度汇总已整理完成，异常订单已单独列出。',
+        messages={
+          questionAttempts?.messages ?? [
+            {
+              id: 'assistant',
+              role: 'assistant',
+              status: running ? 'pending' : failed ? 'failed' : 'completed',
+              runId: progressive || timingReady ? ids.run : null,
+              createdAt: at,
+              content: {
+                text: progressive
+                  ? phase >= 5
+                    ? '资料已核对完成。'
+                    : ''
+                  : live
+                    ? ''
+                    : failed
+                      ? '缺少“销售金额”列。补齐后就可以继续汇总。'
+                      : '月度汇总已整理完成，异常订单已单独列出。',
+              },
             },
+            ...(!progressive && rows.some(([id]) => id === 'question')
+              ? [answer]
+              : []),
+          ]
+        }
+        runTraces={{
+          [ids.run]: {
+            status: 'loaded',
+            events: questionAttempts
+              ? questionTrace
+                ? questionAttempts.events
+                : []
+              : events,
           },
-          ...(!progressive && rows.some(([id]) => id === 'question')
-            ? [answer]
-            : []),
-        ]}
-        runTraces={{ [ids.run]: { status: 'loaded', events } }}
+        }}
         runViews={
-          params.has('live-tail')
+          params.has('live-tail') || questionAttempts
             ? {
                 [ids.run]: {
                   runId: ids.run,
                   status: 'running',
                   cursor: null,
                   reconnects: 0,
-                  events: events.slice(-1),
+                  events: questionAttempts
+                    ? questionAttempts.events.slice(-5)
+                    : events.slice(-1),
                 },
               }
             : {}
@@ -399,7 +447,7 @@ function Fixture() {
   );
 }
 applyTheme(params.get('theme') === 'dark' ? 'dark' : 'light');
-if (progressive) {
+if (progressive || questionAttempts) {
   document.body.style.background = 'var(--dsw-alias-bg-base)';
   document.body.style.color = 'var(--dsw-alias-label-primary)';
 }

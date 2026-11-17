@@ -767,7 +767,11 @@ function NativeStepsGroup({
     );
   const live = [...steps]
     .reverse()
-    .find((step) => ['started', 'updated'].includes(step.status));
+    .find(
+      (step) =>
+        !step.historicalQuestion &&
+        ['started', 'updated'].includes(step.status),
+    );
   const preview =
     running && policy.liveProcessDetail
       ? live?.description
@@ -834,8 +838,9 @@ function WorkProcessSteps({
   const [materialReveal] = useProcessMaterialReveal();
   const { steps } = summarizeWorkProcess(items);
   if (!steps.length) return null;
-  const latestActive = steps.findLast((step) =>
-    ['started', 'updated'].includes(step.status),
+  const latestActive = steps.findLast(
+    (step) =>
+      !step.historicalQuestion && ['started', 'updated'].includes(step.status),
   );
   return (
     <ul className={styles.processSteps} aria-label="工作步骤">
@@ -850,8 +855,8 @@ function WorkProcessSteps({
           item &&
           (item.kind === 'tool' || item.kind === 'search') &&
           item.id.startsWith('tool:')
-            ? runActive
-            : running;
+            ? runActive && !item.historicalQuestion
+            : running && !item?.historicalQuestion;
         const materialized = !!renderMaterial && operations.length > 0;
         const unassigned = step.id.startsWith('operation:')
           ? operations[0]
@@ -859,7 +864,9 @@ function WorkProcessSteps({
         const question = questions.find(
           (question) => step.id === `tool:${question.callId}`,
         );
-        const active = ['started', 'updated'].includes(step.status);
+        const active =
+          !step.historicalQuestion &&
+          ['started', 'updated'].includes(step.status);
         const pending = active && step.category !== 'plan';
         const status =
           unassigned?.status ??

@@ -1,5 +1,6 @@
 import type { ChatFlowEventEnvelope } from '@allrice/contracts';
 import { nativeProcessGroups } from './native-process-groups';
+import { workProcessQuestionHistory } from './work-process-question-history';
 import {
   assistantReplies,
   currentAssistantEvents,
@@ -141,7 +142,13 @@ export function projectWorkProgress(
 ) {
   const current = currentWorkProgressEvents(events);
   const replies = assistantReplies(current);
-  const items = projectNativeExperience(current);
+  const currentItems = projectNativeExperience(current);
+  const { history } = workProcessQuestionHistory(events, current);
+  const items = projectNativeExperience([...current, ...history]).map((item) =>
+    currentItems.some((entry) => entry.id === item.id)
+      ? item
+      : { ...item, historicalQuestion: true },
+  );
   const seen = new Set<string>();
   for (const op of operations) {
     const key = workProcessReferenceKey(op);

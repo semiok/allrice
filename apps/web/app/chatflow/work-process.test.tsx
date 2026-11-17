@@ -12,6 +12,9 @@ import {
   type WorkProcessMaterial,
 } from './work-process-material';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
+import { questionAttemptFixture } from '../../test/work-process-question-attempt-fixture';
+import { projectWorkProgress } from '../../lib/chatflow/work-progress';
+import { workProcessQuestions } from '../../lib/chatflow/work-process-questions';
 
 const items: NativeExperienceItem[] = [
   {
@@ -55,6 +58,52 @@ const render = (overrides: Partial<ComponentProps<typeof WorkProcess>> = {}) =>
   );
 
 describe('native process display surface', () => {
+  it.each(['compact', 'standard', 'detailed'] as const)(
+    'does not animate a historical answered call while its answer message is late in %s',
+    (transcriptView) => {
+      const f = questionAttemptFixture();
+      const events = f.events.filter(
+        (event) => event.sequence <= 9 && event.type !== 'tool.failed',
+      );
+      const active = structuredClone(events.at(-1)!);
+      active.eventId = 'active-current';
+      active.sequence += 1;
+      active.type = 'tool.started';
+      active.payload = {
+        attempt: 2,
+        generation: 7,
+        toolCallId: 'active-current',
+        name: 'read',
+      };
+      active.sourceEvent = null;
+      events.push(active);
+      const view = projectWorkProgress(events, '', true);
+      const questions = workProcessQuestions(
+        [{ id: 'owner', events }],
+        [],
+      ).byOwner.get('owner');
+      const html = render({
+        items: view.items,
+        parts: view.parts,
+        questions,
+        running: true,
+        transcriptView,
+      });
+      const previous = html.match(
+        /<div[^>]*data-step-id="tool:ask-1"[^>]*>/,
+      )![0];
+      expect(previous).toContain('data-status="已回答"');
+      expect(previous).not.toContain('data-running');
+      expect(view.items.find((item) => item.id === 'tool:ask-1')?.status).toBe(
+        'started',
+      );
+      const current = html.match(
+        /<div[^>]*data-step-id="tool:active-current"[^>]*>/,
+      )![0];
+      expect(current).toContain('data-running="true"');
+      expect(html).not.toContain('OLD_ATTEMPT_BODY');
+    },
+  );
   it.each([
     [true, false, false, false, '\u00a0用时 18秒'],
     [true, true, false, false, '\u00a0用时 18秒'],

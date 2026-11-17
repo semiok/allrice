@@ -5,6 +5,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ids } from '../../test/technical-details-fixtures';
+import { installProcessAlignmentSampler } from '../../test/work-process-alignment-sampling';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 
 const suite =
@@ -95,6 +96,104 @@ suite('approved DSH process alignment', () => {
       await page.close();
     }
   });
+  it.each([false, true])(
+    'keeps three answered native calls across attempts, late trace and history with durable=%s',
+    async (durable) => {
+      const query = `question-attempts&tool-only${durable ? '&durable' : ''}`;
+      const page = await openPage(`${query}&late-trace`);
+      const errors: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      try {
+        expect(
+          await page.getByText('用答题卡问我', { exact: true }).count(),
+        ).toBe(1);
+        for (const index of [1, 2])
+          expect(
+            await page.locator(`#message-attempt-answer-${index}`).count(),
+          ).toBe(1);
+        const receipts = page.locator(
+          '[data-process-scrollport] article[aria-label="用户确认结果"]',
+        );
+        expect(await receipts.count()).toBe(1);
+        expect(await page.locator('#message-attempt-answer-3').count()).toBe(0);
+        expect(await receipts.getAttribute('data-question-id')).toBe(
+          durable ? `dsh-${ids.session}:ask-3` : 'blocking-3',
+        );
+        await page.evaluate(() => window.alignQuestionTrace());
+        await expect.poll(() => receipts.count()).toBe(3);
+        const check = async () => {
+          expect(
+            await page.locator('article[aria-label="用户确认结果"]').count(),
+          ).toBe(3);
+          for (const index of [1, 2, 3])
+            expect(
+              await page.locator(`#message-attempt-answer-${index}`).count(),
+            ).toBe(0);
+          const ids = await receipts.evaluateAll((nodes) =>
+            nodes.map((node) => node.getAttribute('data-question-id')),
+          );
+          expect(ids.map((id) => id!.split(':').at(-1))).toEqual(
+            durable
+              ? ['ask-1', 'ask-2', 'ask-3']
+              : ['blocking-1', 'blocking-2', 'blocking-3'],
+          );
+          expect(
+            await page.getByText('本轮答题已记录。', { exact: true }).count(),
+          ).toBe(1);
+          expect(
+            await page.getByText('OLD_ATTEMPT_BODY', { exact: true }).count(),
+          ).toBe(0);
+          expect(
+            await page.locator('[data-step-id="tool:old-read"]').count(),
+          ).toBe(0);
+        };
+        await check();
+        const header = page
+          .locator('section[aria-label="工作过程"] [data-disclosure-row]')
+          .first();
+        await header.click();
+        await expect
+          .poll(() => header.getAttribute('aria-expanded'))
+          .toBe('false');
+        expect(await receipts.first().isVisible()).toBe(false);
+        await check();
+        await header.click();
+        await expect
+          .poll(() => header.getAttribute('aria-expanded'))
+          .toBe('true');
+        for (const [index, question, selected] of [
+          [0, '优先安排什么？', '整理资料'],
+          [1, '内容面向谁？', '通勤读者'],
+          [2, '先完成哪一步？', '拟定提纲'],
+        ] as const) {
+          const receipt = receipts.nth(index);
+          await receipt
+            .getByRole('button', { name: '提问 · 1/1 已回答', exact: true })
+            .click();
+          expect(
+            await receipt.getByText(question, { exact: true }).isVisible(),
+          ).toBe(true);
+          expect(
+            await receipt.getByText(selected, { exact: true }).isVisible(),
+          ).toBe(true);
+        }
+        await header.click();
+        await expect
+          .poll(() => header.getAttribute('aria-expanded'))
+          .toBe('false');
+        await check();
+        await page.goto(`${origin}/?${query}`);
+        await expect.poll(() => receipts.count()).toBe(3);
+        await check();
+        await page.reload();
+        await expect.poll(() => receipts.count()).toBe(3);
+        await check();
+        expect(errors).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
+  );
   it('shows each frozen skill name and no explanation or success tail', async () => {
     const page = await openPage('scene=skills');
     const rows = page.locator('[data-step-id]');
@@ -178,94 +277,40 @@ suite('approved DSH process alignment', () => {
   for (const theme of ['light', 'dark'])
     for (const width of [1440, 390]) {
       it(`keeps the same native header, gap and pulse from first trace through named reply and completion at ${width}px ${theme}`, async () => {
-        const page = await openPage(
-          `scene=running&progressive&tool-only&theme=${theme}&employee=文章哥`,
-        );
+        const page = await browser.newPage({
+          viewport: { width, height: 960 },
+        });
+        await page.addInitScript(installProcessAlignmentSampler);
         const errors: string[] = [];
         page.on('pageerror', (error) => errors.push(error.message));
         try {
-          await page.setViewportSize({ width, height: 960 });
-          await page.evaluate(() => document.fonts.ready);
+          await page.goto(
+            `${origin}/?scene=running&progressive&tool-only&theme=${theme}&employee=文章哥`,
+          );
+          expect(
+            await page.evaluate(
+              () => window.alignmentSamplerInstalled.hadHeader,
+            ),
+          ).toBe(false);
           const section = page.locator('section[aria-label="工作过程"]');
           const header = section.locator('[data-disclosure-row]').first();
           let headerTop: number | undefined;
           for (let phase = 0; phase < 6; phase++) {
-            await page.evaluate((phase) => window.alignPhase(phase), phase);
-            await page.locator(`[data-alignment-phase="${phase}"]`).waitFor();
+            const records = await page.evaluate(
+              (phase) => window.alignmentCapture(phase),
+              phase,
+            );
+            expect(records[0]?.source).toBe('commit');
+            for (const record of records) {
+              expect(record.marker).toBe(String(phase));
+              expect(record.visible).toBe(true);
+              expect(record.identity).not.toBeNull();
+              expect(record.measurement).not.toBeNull();
+            }
+            const frames = records.map((record) => record.measurement!);
             expect(
               await page.getByRole('article', { name: '用户确认结果' }).count(),
             ).toBe(0);
-            const frames = await page.evaluate(async () => {
-              const samples = [];
-              for (let i = 0; i < 4; i++) {
-                await new Promise<void>((done) =>
-                  requestAnimationFrame(() => done()),
-                );
-                const section = document.querySelector(
-                  'section[aria-label="工作过程"]',
-                )!;
-                const header = section.querySelector('[data-disclosure-row]')!;
-                const title = header.querySelector('[class*="processTitle"]')!;
-                const timing = header.querySelector(
-                  '[aria-label="本轮运行时间"]',
-                );
-                const arrow = header.firstElementChild!.querySelector('svg')!;
-                const avatar = document.querySelector(
-                  '[class*="assistantIdentity"] i',
-                )!;
-                const frame = document.querySelector(
-                  '[data-process-scrollport]',
-                );
-                const box = header.getBoundingClientRect();
-                const opacity = (node: Element) => {
-                  let result = 1;
-                  for (
-                    let current: Element | null = node;
-                    current;
-                    current = current.parentElement
-                  )
-                    result *= Number(getComputedStyle(current).opacity);
-                  return result;
-                };
-                const text = timing?.firstChild;
-                const space = document.createRange();
-                if (text) {
-                  space.setStart(text, 0);
-                  space.setEnd(text, 1);
-                }
-                samples.push({
-                  top: box.top,
-                  height: box.height,
-                  gap: frame
-                    ? frame.getBoundingClientRect().top - box.bottom
-                    : null,
-                  parts: !!frame && !section.contains(frame),
-                  title: title.textContent,
-                  timing: timing?.textContent ?? null,
-                  space: text ? space.getBoundingClientRect().width : null,
-                  color: [arrow, title, ...(timing ? [timing] : [])].map(
-                    (node) => getComputedStyle(node).color,
-                  ),
-                  avatarColor: getComputedStyle(avatar).backgroundColor,
-                  opacity: [
-                    arrow,
-                    title,
-                    ...(timing ? [timing] : []),
-                    avatar,
-                  ].map(opacity),
-                  clocks: [header, avatar].map((node) =>
-                    node.getAnimations().map((animation) => ({
-                      start: animation.startTime,
-                      pending: animation.pending,
-                      current: animation.currentTime,
-                      duration: animation.effect!.getTiming().duration,
-                      easing: getComputedStyle(node).animationTimingFunction,
-                    })),
-                  ),
-                });
-              }
-              return samples;
-            });
             headerTop ??= frames[0]!.top;
             for (const frame of frames) {
               expect(Math.abs(frame.top - headerTop)).toBeLessThanOrEqual(0.5);
@@ -327,6 +372,30 @@ suite('approved DSH process alignment', () => {
                 settled.clocks[1]![0]!.start,
               );
               expect(new Set(settled.opacity).size).toBe(1);
+            }
+            if (phase === 4) {
+              const view = await page.evaluate(() => window.alignProgress());
+              const initial = view.items.find(
+                (item) => item.id === 'think:1:0:0',
+              )!;
+              const later = view.items.find(
+                (item) => item.id === 'think:1:1:0',
+              )!;
+              const reply = view.parts!.find(
+                (part) => part.id === 'reply:answer',
+              )!;
+              expect(initial.status).toBe('completed');
+              expect(later.status).toBe('started');
+              expect(initial.sequence).toBeLessThan(reply.sequence);
+              expect(later.sequence).toBeGreaterThan(reply.sequence);
+            }
+            if (phase === 5) {
+              expect(
+                await page.locator('[data-step-id="think:1:0:0"]').count(),
+              ).toBe(1);
+              expect(
+                await page.locator('[data-step-id="think:1:1:0"]').count(),
+              ).toBe(1);
             }
             if (phase === 2 || phase === 3) {
               await header.focus();
