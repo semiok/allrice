@@ -1493,12 +1493,13 @@ suite('U1 mounted employee Workflow host', () => {
     await plugins
       .getByRole('heading', { name: '还没有插件', exact: true })
       .waitFor();
-    expect(await plugins.getByRole('button').count()).toBe(0);
+    // MET-224's confirmed design keeps one add entry in the empty plugin group.
+    expect(await plugins.getByRole('button').count()).toBe(1);
     expect(await plugins.getByRole('link').count()).toBe(0);
     expect(
       await root.getByRole('button', { name: '添加插件', exact: true }).count(),
-    ).toBe(0);
-    for (const name of ['添加场景', '添加技能']) {
+    ).toBe(1);
+    for (const name of ['添加插件', '添加场景', '添加技能']) {
       const add = root.getByRole('button', { name, exact: true });
       await add.waitFor();
       expect(await add.getAttribute('type')).toBe('button');
