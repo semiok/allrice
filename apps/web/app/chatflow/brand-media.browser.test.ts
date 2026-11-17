@@ -905,6 +905,18 @@ suite('MET-224 main-area brand media text workflow', () => {
         expect(seatRect).not.toBeNull();
         expect(seatRect!.height).toBeGreaterThan(0);
         expect(seatRect!.y).toBeLessThan(1000);
+        const viewport = page.viewportSize()!;
+        const composerClip = {
+          x: Math.max(0, seatRect!.x),
+          y: Math.max(0, seatRect!.y),
+          width:
+            Math.min(viewport.width, seatRect!.x + seatRect!.width) -
+            Math.max(0, seatRect!.x),
+          height:
+            Math.min(viewport.height, seatRect!.y + seatRect!.height) -
+            Math.max(0, seatRect!.y),
+        };
+        expect(composerClip.height).toBeGreaterThan(0);
         await f.open();
         const insets = await page
           .locator('[data-brand-media-host]')
@@ -931,9 +943,16 @@ suite('MET-224 main-area brand media text workflow', () => {
           // and repaint the entire native seat magenta: no changed pixel may
           // reach the plugin. Removing a layer changes Chromium's rounded-edge
           // antialiasing, even when its contents are fully covered.
-          const visible = await page.screenshot({
+          await page.screenshot({
             path: prefix + '-mounted.png',
             animations: 'disabled',
+          });
+          // Assert every pixel where the real native composer can paint. Other
+          // parts of the page (e.g. alpha Tag edges) can rerasterize on damage.
+          const visible = await page.screenshot({
+            path: prefix + '-composer-mounted.png',
+            animations: 'disabled',
+            clip: composerClip,
           });
           const probe = await page.addStyleTag({
             content:
@@ -941,8 +960,9 @@ suite('MET-224 main-area brand media text workflow', () => {
           });
           try {
             const hidden = await page.screenshot({
-              path: prefix + '-probe.png',
+              path: prefix + '-composer-probe.png',
               animations: 'disabled',
+              clip: composerClip,
             });
             expect(visible.equals(hidden)).toBe(true);
           } finally {
@@ -961,14 +981,22 @@ suite('MET-224 main-area brand media text workflow', () => {
         await page.getByRole('button', { name: 'ⓘ 使用说明' }).click();
         await page.getByRole('dialog', { name: '使用说明' }).waitFor();
         await assertCovered('help');
-        const covered = await page.screenshot({ animations: 'disabled' });
+        const covered = await page.screenshot({
+          animations: 'disabled',
+          clip: composerClip,
+        });
         const conversation = seat.locator('xpath=ancestor::*[@aria-hidden][1]');
         await conversation.evaluate((el) => {
           (el as HTMLElement).style.isolation = 'auto';
         });
         try {
           expect(
-            covered.equals(await page.screenshot({ animations: 'disabled' })),
+            covered.equals(
+              await page.screenshot({
+                animations: 'disabled',
+                clip: composerClip,
+              }),
+            ),
           ).toBe(false);
         } finally {
           await conversation.evaluate((el) =>
