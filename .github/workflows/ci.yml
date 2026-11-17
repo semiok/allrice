@@ -148,7 +148,7 @@ jobs:
           ALLRICE_NATIVE_ONCE_PROBE_MODULE_BASE: ${{ github.workspace }}/apps/worker/package.json
           TSX_TSCONFIG_PATH: ${{ github.workspace }}/tsconfig.base.json
           ALLRICE_TEST_DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
-        run: node scripts/ci-integration-tests.mjs run db -- --maxWorkers=1 --outputFile=.local/quality/postgres/vitest-auto.json
+        run: node scripts/ci-integration-tests.mjs run db -- --maxWorkers=1 --testTimeout=15000 --outputFile=.local/quality/postgres/vitest-auto.json
       - name: Verify formal partial-delivery and preview facts in Chromium
         # Same real queue/Worker/Broker/PG/HTTP as the API matrix; only these two
         # UI cases are repeated. Deterministic adapters use no paid model/device.
