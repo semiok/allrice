@@ -272,16 +272,38 @@ suite('MET-224 main-area brand media text workflow', () => {
         loader: 'tsx',
         resolveDir: resolve('apps/web'),
         contents: `
-        import { useEffect, useMemo, useState } from 'react';
+        import { useEffect, useMemo, useRef, useState } from 'react';
         import { createRoot } from 'react-dom/client';
         import { BrandMediaHost, BrandMediaPluginSection, BrandMediaPluginPicker, useBrandMediaEntry } from './app/chatflow/brand-media/frontend-wiring';
         import { BrandMediaPanel } from './app/chatflow/brand-media/panel';
+        import { ChatComposer } from './app/chatflow/chat-composer';
+        import conversationUi from './app/chatflow/dsh-upstream/ConversationRoot.module.css';
         import './app/dsh-upstream/design-platform.css';
         import './app/dsh-upstream/base.css';
         import '@allrice/ui/tokens.css';
         import './app/styles/base.css';
         import '@allrice/ui/styles.css';
         const ids = ${JSON.stringify(scope)};
+        const nativeComposer = new URLSearchParams(location.search).has('nativeComposer');
+        function NativeConversation({ draft, setDraft }) {
+          const input = useRef(null), file = useRef(null), composing = useRef(false);
+          const noop = () => {};
+          return <div className={conversationUi.root} data-phase="active">
+            <h1>原聊天</h1>
+            <div className={conversationUi.scrollBody}>
+              <div className={conversationUi.viewArea}>保留的会话正文</div>
+              <div className={conversationUi.composerSeat} data-composer-seat>
+                <ChatComposer employeeName="Rice" draft={draft} onDraftChange={setDraft}
+                  composerInput={input} fileInput={file} composing={composing}
+                  attachmentMenuOpen={false} busy={false} isRunning={false} error=""
+                  localWorkspaceOnline={false} bridgeConnectionState="offline" pendingAttachments={[]}
+                  onAttachmentMenuOpenChange={noop} onCancelRun={noop} onLoadBridgeDevices={noop}
+                  onOpenAttachment={noop} onRemoveAttachment={noop} onRetryAttachment={noop}
+                  onSendMessage={noop} onUploadAttachments={noop}/>
+              </div>
+            </div>
+          </div>;
+        }
         function Fixture() {
           const [instanceId, setInstance] = useState(ids.instanceId), [open, setOpen] = useState(false), [serial, setSerial] = useState(0);
           const [draft, setDraft] = useState('未发送的聊天草稿');
@@ -294,14 +316,14 @@ suite('MET-224 main-area brand media text workflow', () => {
           }, []);
           const launch = () => { setSerial(n => n + 1); setOpen(true); };
           return <div style={{ display:'flex', height:'100vh', width:'100vw' }}>
-            <aside aria-label="员工侧栏" style={{ width:300, flexShrink:0 }}>
+            <aside aria-label="员工侧栏" style={{ width:nativeComposer && innerWidth < 700 ? 56 : 300, flexShrink:0 }}>
               <button onClick={() => setOpen(false)}>Rice 员工</button>
               <button onClick={() => { setOpen(false); setInstance(${JSON.stringify(id(5))}); }}>另一个员工</button>
               {controller.picker ? <BrandMediaPluginPicker controller={controller} employeeName={instanceId === ids.instanceId ? 'Rice' : '小米'}/> : <BrandMediaPluginSection controller={controller} headingId="plugins" onOpen={launch}/>}
             </aside>
             <main style={{ display:'flex', flex:1, minWidth:0 }}>
               <BrandMediaHost open={open} serial={serial} panel={controller.client ? <BrandMediaPanel key={instanceId + ':' + serial} client={controller.client} active={open} sessionId={${JSON.stringify(id(6))}} onReturn={() => setOpen(false)}/> : null}>
-                <h1>原聊天</h1><textarea aria-label="聊天草稿" value={draft} onChange={e => setDraft(e.target.value)}/><span aria-label="草稿附件">原附件.pdf</span><button>发送</button>
+                {nativeComposer ? <NativeConversation draft={draft} setDraft={setDraft}/> : <><h1>原聊天</h1><textarea aria-label="聊天草稿" value={draft} onChange={e => setDraft(e.target.value)}/><span aria-label="草稿附件">原附件.pdf</span><button>发送</button></>}
               </BrandMediaHost>
             </main>
           </div>;
@@ -369,6 +391,7 @@ suite('MET-224 main-area brand media text workflow', () => {
   async function fixture(
     options: Partial<State> = {},
     reducedMotion: 'reduce' | 'no-preference' = 'no-preference',
+    nativeComposer?: { width: number; colorScheme: 'light' | 'dark' },
   ) {
     const state: State = {
       installed: new Set([scope.instanceId]),
@@ -386,7 +409,8 @@ suite('MET-224 main-area brand media text workflow', () => {
       ...options,
     };
     const context = await browser.newContext({
-        viewport: { width: 1440, height: 1000 },
+        viewport: { width: nativeComposer?.width ?? 1440, height: 1000 },
+        colorScheme: nativeComposer?.colorScheme ?? 'light',
         reducedMotion,
         timezoneId: 'Asia/Shanghai',
       }),
@@ -732,7 +756,7 @@ suite('MET-224 main-area brand media text workflow', () => {
         500,
       );
     });
-    await page.goto(origin);
+    await page.goto(origin + (nativeComposer ? '?nativeComposer=1' : ''));
     await page.getByRole('heading', { name: '原聊天' }).waitFor();
     await page.evaluate(
       () =>
@@ -828,6 +852,139 @@ suite('MET-224 main-area brand media text workflow', () => {
     await page.getByRole('button', { name: '← 回到对话' }).click();
     await f.close();
   });
+
+  it.each([
+    { width: 1440, colorScheme: 'light' as const },
+    { width: 1440, colorScheme: 'dark' as const },
+    { width: 390, colorScheme: 'light' as const },
+    { width: 390, colorScheme: 'dark' as const },
+  ])(
+    'the actual conversation composer cannot paint through the plugin or help ($width, $colorScheme)',
+    async (surface) => {
+      const f = await fixture({}, 'reduce', surface);
+      const { page } = f;
+      try {
+        await page.evaluate((theme) => {
+          document.body.toggleAttribute('data-ds-dark-theme', theme === 'dark');
+        }, surface.colorScheme);
+        const addButton = page.getByRole('button', {
+          name: '添加插件',
+          exact: true,
+        });
+        const openButton = page.getByRole('button', {
+          name: '打开 品牌自媒体',
+          exact: true,
+        });
+        await openButton.waitFor();
+        const geometry = (element: HTMLElement) => {
+          const style = getComputedStyle(element);
+          return {
+            height: element.getBoundingClientRect().height,
+            padding: style.padding,
+            radius: style.borderRadius,
+            fontSize: style.fontSize,
+          };
+        };
+        expect(await openButton.evaluate(geometry)).toEqual(
+          await addButton.evaluate(geometry),
+        );
+        expect(await openButton.textContent()).not.toContain('↗');
+        expect(
+          await openButton.evaluate((el) => {
+            const style = getComputedStyle(el);
+            return [style.backgroundColor, style.color];
+          }),
+        ).toEqual(['rgb(15, 17, 21)', 'rgb(255, 255, 255)']);
+        const input = page.getByRole('textbox', { name: '给 Rice 的消息' });
+        await input.fill('保留真实输入框的草稿');
+        const seat = page.locator('[data-composer-seat]');
+        expect(await seat.evaluate((el) => getComputedStyle(el).zIndex)).toBe(
+          '7',
+        );
+        const seatRect = await seat.boundingBox();
+        expect(seatRect).not.toBeNull();
+        expect(seatRect!.height).toBeGreaterThan(0);
+        expect(seatRect!.y).toBeLessThan(1000);
+        await f.open();
+        const insets = await page
+          .locator('[data-brand-media-host]')
+          .evaluate((host) => {
+            const outer = host.getBoundingClientRect();
+            const inner = host
+              .querySelector('[data-brand-media-surface]')!
+              .getBoundingClientRect();
+            return [
+              inner.top - outer.top,
+              inner.left - outer.left,
+              outer.right - inner.right,
+              outer.bottom - inner.bottom,
+            ];
+          });
+        for (const inset of insets)
+          expect(Math.abs(inset - 12)).toBeLessThanOrEqual(0.5);
+        const assertCovered = async (name: string) => {
+          const prefix = resolve(
+            evidence,
+            `native-composer-${surface.width}-${surface.colorScheme}-${name}`,
+          );
+          // inert does not stop painting. Keep the compositor layers present
+          // and repaint the entire native seat magenta: no changed pixel may
+          // reach the plugin. Removing a layer changes Chromium's rounded-edge
+          // antialiasing, even when its contents are fully covered.
+          const visible = await page.screenshot({
+            path: prefix + '-mounted.png',
+            animations: 'disabled',
+          });
+          const probe = await page.addStyleTag({
+            content:
+              '[data-composer-seat], [data-composer-seat] * { background: magenta !important; color: magenta !important; border-color: magenta !important; box-shadow: none !important; }',
+          });
+          try {
+            const hidden = await page.screenshot({
+              path: prefix + '-probe.png',
+              animations: 'disabled',
+            });
+            expect(visible.equals(hidden)).toBe(true);
+          } finally {
+            await probe.evaluate((el) => el.remove());
+          }
+        };
+        for (const tab of ['排期表', '选题库', '文章库']) {
+          await page.getByRole('tab', { name: tab, exact: true }).click();
+          if (tab === '文章库')
+            await expect
+              .poll(() => page.getByLabel('文章正文').textContent())
+              .toContain('不可直接改写的正文');
+          await page.evaluate(() => document.fonts.ready);
+          await assertCovered(tab);
+        }
+        await page.getByRole('button', { name: 'ⓘ 使用说明' }).click();
+        await page.getByRole('dialog', { name: '使用说明' }).waitFor();
+        await assertCovered('help');
+        const covered = await page.screenshot({ animations: 'disabled' });
+        const conversation = seat.locator('xpath=ancestor::*[@aria-hidden][1]');
+        await conversation.evaluate((el) => {
+          (el as HTMLElement).style.isolation = 'auto';
+        });
+        try {
+          expect(
+            covered.equals(await page.screenshot({ animations: 'disabled' })),
+          ).toBe(false);
+        } finally {
+          await conversation.evaluate((el) =>
+            (el as HTMLElement).style.removeProperty('isolation'),
+          );
+        }
+        await page.getByRole('button', { name: '关闭使用说明' }).click();
+        await page.getByRole('button', { name: '← 回到对话' }).click();
+        expect(await input.inputValue()).toBe('保留真实输入框的草稿');
+        expect(await input.isVisible()).toBe(true);
+        expect(generates(f.state)).toHaveLength(0);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it('reduced motion disables the main slide and late help responses cannot revive a hidden modal layer', async () => {
     let release!: () => void;
@@ -944,7 +1101,7 @@ suite('MET-224 main-area brand media text workflow', () => {
     await f.open();
     await topicsPage(page);
     expect(
-      await page.getByRole('heading', { name: '已加载 1 个选题' }).isVisible(),
+      await page.getByText('已加载 1 个选题', { exact: true }).isVisible(),
     ).toBe(true);
     await candidatesPage(page);
     expect(
@@ -969,6 +1126,7 @@ suite('MET-224 main-area brand media text workflow', () => {
     });
     expect(selected).not.toHaveProperty('moduleInvocation');
     await page.getByRole('button', { name: '已加入 ✓', exact: true }).waitFor();
+    await page.getByRole('button', { name: '← 选题库', exact: true }).click();
     await page.getByRole('button', { name: '← 回到对话' }).click();
     await f.open();
     await candidatesPage(page);
@@ -982,7 +1140,7 @@ suite('MET-224 main-area brand media text workflow', () => {
     ).toHaveLength(1);
     await page.getByRole('button', { name: '← 选题库' }).click();
     expect(
-      await page.getByRole('heading', { name: '已加载 2 个选题' }).isVisible(),
+      await page.getByText('已加载 2 个选题', { exact: true }).isVisible(),
     ).toBe(true);
     await f.close();
   });
@@ -998,6 +1156,7 @@ suite('MET-224 main-area brand media text workflow', () => {
       .getByRole('button', { name: '加入选题库', exact: true })
       .click();
     await f.page.getByText('选入请求网络中断', { exact: false }).waitFor();
+    await f.page.getByRole('button', { name: '← 选题库', exact: true }).click();
     await f.page.getByRole('button', { name: '← 回到对话' }).click();
     await f.open();
     await candidatesPage(f.page);
@@ -1131,9 +1290,7 @@ suite('MET-224 main-area brand media text workflow', () => {
       .getByRole('button', { name: '文章 20', exact: true })
       .waitFor();
     await topicsPage(f.page);
-    await f.page
-      .getByRole('heading', { name: '1 个选题', exact: true })
-      .waitFor();
+    await f.page.getByText('1 个选题', { exact: true }).waitFor();
     await f.page.getByRole('tab', { name: '文章库', exact: true }).click();
     await f.page
       .getByRole('heading', { name: '文章 20', exact: true })
@@ -1165,7 +1322,7 @@ suite('MET-224 main-area brand media text workflow', () => {
       .getByLabel('内容方向', { exact: true })
       .fill('给通勤上班族想几个新品选题');
     const action = page.getByRole('button', {
-      name: '让 Rice 想选题 / 换一批',
+      name: '出选题',
       exact: true,
     });
     await action.click();
@@ -1203,7 +1360,7 @@ suite('MET-224 main-area brand media text workflow', () => {
       .getByLabel('内容方向', { exact: true })
       .fill('面向上班族的新品选题');
     const action = page.getByRole('button', {
-      name: '让 Rice 想选题 / 换一批',
+      name: '出选题',
       exact: true,
     });
     await action.click();
@@ -1289,19 +1446,27 @@ suite('MET-224 main-area brand media text workflow', () => {
     await modal
       .getByRole('checkbox', { name: '品牌介绍.txt · v2', exact: true })
       .check();
-    expect(await modal.getByText('公司', { exact: true }).isVisible()).toBe(
+    expect(await modal.getByText('全公司', { exact: true }).isVisible()).toBe(
       true,
     );
     await modal.getByRole('button', { name: '加载更多资料' }).click();
     await modal
       .getByRole('checkbox', { name: '客户问题.txt · v2', exact: true })
       .check();
-    await modal.getByRole('button', { name: '添加所选资料' }).click();
+    await modal.getByRole('button', { name: '添加 2 份' }).click();
     await expect.poll(() => page.getByRole('dialog').count()).toBe(0);
+    await page
+      .getByLabel('已选参考资料', { exact: true })
+      .getByText('品牌介绍.txt', { exact: true })
+      .waitFor();
+    await page
+      .getByLabel('已选参考资料', { exact: true })
+      .getByText('客户问题.txt', { exact: true })
+      .waitFor();
     const selected = f.state.requests.filter((req) =>
       req.path.includes('/selection'),
     );
-    expect(selected).toHaveLength(2);
+    expect(selected).toHaveLength(4);
     await page
       .getByRole('button', { name: '添加参考资料', exact: true })
       .click();
@@ -1312,13 +1477,11 @@ suite('MET-224 main-area brand media text workflow', () => {
         .getByRole('checkbox', { name: '客户问题.txt · v2', exact: true })
         .isChecked(),
     ).toBe(true);
-    await modal.getByRole('button', { name: '添加所选资料' }).click();
+    await modal.getByRole('button', { name: '添加 2 份' }).click();
     await page
       .getByLabel('内容方向', { exact: true })
       .fill('把两个企业资料结合起来');
-    await page
-      .getByRole('button', { name: '让 Rice 想选题 / 换一批', exact: true })
-      .click();
+    await page.getByRole('button', { name: '出选题', exact: true }).click();
     await expect.poll(() => generates(f.state).length).toBe(1);
     expect(generates(f.state)[0]!.body!.references).toEqual(
       refs.map((row) => ({
@@ -1336,6 +1499,98 @@ suite('MET-224 main-area brand media text workflow', () => {
     ).toBe(true);
     await f.close();
   });
+
+  it('a cold article reopens exact reference filenames without changing frozen pins or starting a Run', async () => {
+    const stored = article();
+    stored.references = [
+      {
+        origin: 'reference',
+        sourceId: refs[0]!.sourceId,
+        revisionId: refs[0]!.revisionId,
+      },
+      { origin: 'upload', file: { objectId: id(90), checksum } },
+    ];
+    const f = await fixture({ articles: [stored] });
+    try {
+      for (let visit = 0; visit < 2; visit++) {
+        await f.open();
+        await f.page.getByRole('tab', { name: '文章库', exact: true }).click();
+        const chips = f.page.getByLabel('已选参考资料');
+        await chips.getByText('品牌介绍.txt', { exact: true }).waitFor();
+        await chips.getByText('品牌参考.jpg', { exact: true }).waitFor();
+        expect(await chips.textContent()).not.toContain(id(90));
+        await f.page.getByRole('button', { name: '← 回到对话' }).click();
+      }
+      expect(f.state.articles[0]!.references).toEqual(stored.references);
+      expect(f.state.requests.filter((r) => r.method === 'POST')).toHaveLength(
+        0,
+      );
+      expect(
+        f.state.requests.filter((r) =>
+          r.path.includes(`/revisions/${refs[0]!.revisionId}/selection`),
+        ),
+      ).toHaveLength(2);
+      expect(
+        f.state.requests.filter((r) =>
+          r.path.includes(`view=deliverables&objectId=${id(90)}`),
+        ),
+      ).toHaveLength(2);
+    } finally {
+      await f.close();
+    }
+  });
+
+  it.each(['denied', 'mismatched-pin'] as const)(
+    'unavailable reference metadata (%s) never substitutes another filename or mutates the article',
+    async (reason) => {
+      const stored = article();
+      stored.references = [
+        {
+          origin: 'reference',
+          sourceId: refs[0]!.sourceId,
+          revisionId: refs[0]!.revisionId,
+        },
+      ];
+      const f = await fixture({ articles: [stored] });
+      try {
+        await f.page.route('**/references/revisions/*/selection?*', (route) =>
+          route.fulfill({
+            status: reason === 'denied' ? 403 : 200,
+            contentType: 'application/json',
+            body: JSON.stringify(
+              reason === 'denied'
+                ? { message: '无权读取' }
+                : {
+                    viewerId: scope.ownerId,
+                    workspaceId: scope.workspaceId,
+                    selection: {
+                      sourceId: refs[1]!.sourceId,
+                      revisionId: refs[1]!.revisionId,
+                      revision: 2,
+                      fileName: '不属于该冻结版本.txt',
+                      purpose: '',
+                      digest: checksum,
+                      checksum,
+                      ownership: refs[1]!.ownership,
+                    },
+                  },
+            ),
+          }),
+        );
+        await f.open();
+        await f.page.getByRole('tab', { name: '文章库', exact: true }).click();
+        const chips = f.page.getByLabel('已选参考资料');
+        await chips.getByText('资料暂不可读', { exact: true }).waitFor();
+        expect(await chips.textContent()).not.toContain('不属于该冻结版本.txt');
+        expect(f.state.articles[0]!.references).toEqual(stored.references);
+        expect(
+          f.state.requests.filter((r) => r.method === 'POST'),
+        ).toHaveLength(0);
+      } finally {
+        await f.close();
+      }
+    },
+  );
 
   it('upload saves a JPG in private deliverables and nominates its upload pin without publishing or creating an index', async () => {
     const f = await fixture();
@@ -1357,9 +1612,7 @@ suite('MET-224 main-area brand media text workflow', () => {
     await page
       .getByLabel('内容方向', { exact: true })
       .fill('参考这张产品照片想选题');
-    await page
-      .getByRole('button', { name: '让 Rice 想选题 / 换一批', exact: true })
-      .click();
+    await page.getByRole('button', { name: '出选题', exact: true }).click();
     await expect.poll(() => generates(f.state).length).toBe(1);
     expect(generates(f.state)[0]!.body!.references).toEqual([
       { origin: 'upload', file: { objectId: id(90), checksum } },
@@ -1608,7 +1861,7 @@ suite('MET-224 main-area brand media text workflow', () => {
         expect(
           await page
             .getByRole('button', {
-              name: '让 Rice 想选题 / 换一批',
+              name: '出选题',
               exact: true,
             })
             .isDisabled(),
@@ -1630,7 +1883,7 @@ suite('MET-224 main-area brand media text workflow', () => {
         expect(
           await page
             .getByRole('button', {
-              name: '让 Rice 想选题 / 换一批',
+              name: '出选题',
               exact: true,
             })
             .isEnabled(),
@@ -1724,9 +1977,12 @@ suite('MET-224 main-area brand media text workflow', () => {
           .getByRole('checkbox', { name: '品牌介绍.txt · v2', exact: true })
           .check();
         await modal
-          .getByRole('button', { name: '添加所选资料', exact: true })
+          .getByRole('button', { name: '添加 1 份', exact: true })
           .click();
-        await page.getByText('参考资料：1 份', { exact: true }).waitFor();
+        await page
+          .getByLabel('已选参考资料', { exact: true })
+          .getByText('品牌介绍.txt', { exact: true })
+          .waitFor();
         expect(f.state.articles[0]!.revision).toBe(3);
         await expect.poll(() => completedRevision).toBe(3);
         const oldResponse = page.waitForResponse(
@@ -1744,7 +2000,10 @@ suite('MET-224 main-area brand media text workflow', () => {
             .isVisible(),
         ).toBe(true);
         expect(
-          await page.getByText('参考资料：1 份', { exact: true }).isVisible(),
+          await page
+            .getByLabel('已选参考资料', { exact: true })
+            .getByText('品牌介绍.txt', { exact: true })
+            .isVisible(),
         ).toBe(true);
         await page
           .getByRole('button', { name: '复制正文', exact: true })
@@ -1825,7 +2084,7 @@ suite('MET-224 main-area brand media text workflow', () => {
     ).toContain(file.objectId);
     expect(
       await page
-        .getByRole('button', { name: '修改排期', exact: true })
+        .getByRole('button', { name: '改时间', exact: true })
         .isVisible(),
     ).toBe(true);
     await f.close();
@@ -1863,9 +2122,14 @@ suite('MET-224 main-area brand media text workflow', () => {
       expect(generates(f.state)[0]!.body).not.toHaveProperty(field);
     await expect
       .poll(() =>
-        modal.getByRole('button', { name: '生成中…', exact: true }).isEnabled(),
+        modal.getByRole('button', { name: '生成', exact: true }).isEnabled(),
       )
       .toBe(false);
+    await expect
+      .poll(() =>
+        modal.getByRole('button', { name: '生成', exact: true }).textContent(),
+      )
+      .toBe('生成中…');
     expect(
       await modal.getByRole('button', { name: '取消', exact: true }).count(),
     ).toBe(2);
@@ -1993,7 +2257,7 @@ suite('MET-224 main-area brand media text workflow', () => {
       await imagesPage(f);
       expect(
         await modal
-          .getByRole('button', { name: '生成中…', exact: true })
+          .getByRole('button', { name: '生成', exact: true })
           .isEnabled(),
       ).toBe(false);
       expect(generates(f.state)).toHaveLength(2);

@@ -1,5 +1,12 @@
 'use client';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react';
 import {
   BrandMediaCandidatesSchema,
   type BrandMediaArticle,
@@ -16,6 +23,7 @@ import {
   SegmentedTabs,
   Tag,
   HelpDrawer,
+  ReferenceChips,
   ui,
   runActive,
   candidateRequestId,
@@ -27,10 +35,22 @@ import {
   type BrandMediaRun,
 } from './frontend-wiring';
 import { Images } from './images';
+import layout from './panel.module.css';
 type Tab = 'calendar' | 'topics' | 'articles';
 type References = BrandMediaTopic['references'];
 type Cursor = { createdAt: string; id: string };
 const stateNames = { draft: '草稿', scheduled: '已排期', published: '已发布' };
+const stateTones = {
+  draft: 'info',
+  scheduled: 'warning',
+  published: 'success',
+} as const;
+const shortDate = (value: string, timezone: string) =>
+  new Intl.DateTimeFormat('zh-CN', {
+    timeZone: timezone,
+    month: 'numeric',
+    day: 'numeric',
+  }).format(new Date(value));
 const localDate = (date: Date, timezone: string) =>
   new Intl.DateTimeFormat('en-CA', {
     timeZone: timezone,
@@ -59,7 +79,7 @@ export function shiftMonth(month: string, delta: number) {
   const [y, m] = month.split('-').map(Number);
   return new Date(Date.UTC(y!, m! - 1 + delta, 1)).toISOString().slice(0, 7);
 }
-/** Input dates use the browser's same local IANA timezone shown beside them.
+/** Input dates use the browser's local IANA timezone.
  * The server resolves calendar month boundaries independently across DST. */
 export function localSchedule(value: string, timezone: string) {
   const date = new Date(value);
@@ -464,7 +484,10 @@ export function BrandMediaPanel({
       setBusy(false);
     }
   };
-  const renderGeneration = (value: NonNullable<typeof form>) => (
+  const renderGeneration = (
+    value: NonNullable<typeof form>,
+    children?: ReactNode,
+  ) => (
     <GenerationForm
       key={
         value.kind +
@@ -504,96 +527,127 @@ export function BrandMediaPanel({
       }}
       onStarted={() => {
         if (value.kind === 'start') setForm(null);
-        setNotice('已交给当前员工生成，可以回到对话。');
       }}
-    />
+      hasCandidates={
+        value.kind === 'candidates' && candidateDeliveries.length > 0
+      }
+    >
+      {children}
+    </GenerationForm>
   );
   return (
     <section className={ui.page} aria-label="品牌自媒体">
-      <header className={ui.header}>
-        <Button data-brand-return onClick={onReturn}>
-          ← 回到对话
-        </Button>
-        <strong className={ui.brand}>品牌自媒体</strong>
-        <SegmentedTabs
-          className={ui.tabs}
-          label="品牌自媒体页面"
-          value={tab}
-          onChange={setTab}
-          items={[
-            {
-              value: 'calendar',
-              label: '排期表',
-              id: 'brand-calendar-tab',
-              panelId: 'brand-calendar',
-            },
-            {
-              value: 'topics',
-              label: '选题库',
-              id: 'brand-topics-tab',
-              panelId: 'brand-topics',
-            },
-            {
-              value: 'articles',
-              label: '文章库',
-              id: 'brand-articles-tab',
-              panelId: 'brand-articles',
-            },
-          ]}
-        />
-        <Button
-          onClick={() => {
-            void client
-              .help()
-              .then((value) => setHelp(value.content))
-              .catch((cause) => setError(cause.message));
-          }}
-        >
-          ⓘ 使用说明
-        </Button>
-      </header>
-      {error && (
-        <p role="alert">
-          {error} <Button onClick={() => void reload()}>刷新</Button>
-        </p>
-      )}
-      {notice && <p role="status">{notice}</p>}
-      {runs
-        .filter((row) => row.unavailable)
-        .map((row) => (
-          <RunStatus
-            key={row.run.id}
-            row={row}
-            client={client}
-            refresh={reload}
+      {!(tab === 'topics' && form?.kind === 'candidates') && (
+        <header className={ui.header}>
+          <Button data-brand-return onClick={onReturn}>
+            ← 回到对话
+          </Button>
+          <strong className={ui.brand}>品牌自媒体</strong>
+          <SegmentedTabs
+            className={ui.tabs}
+            label="品牌自媒体页面"
+            value={tab}
+            onChange={setTab}
+            items={[
+              {
+                value: 'calendar',
+                label: '排期表',
+                id: 'brand-calendar-tab',
+                panelId: 'brand-calendar',
+              },
+              {
+                value: 'topics',
+                label: '选题库',
+                id: 'brand-topics-tab',
+                panelId: 'brand-topics',
+              },
+              {
+                value: 'articles',
+                label: '文章库',
+                id: 'brand-articles-tab',
+                panelId: 'brand-articles',
+              },
+            ]}
           />
-        ))}
-      <div className={ui.content}>
+          <Button
+            onClick={() => {
+              void client
+                .help()
+                .then((value) => setHelp(value.content))
+                .catch((cause) => setError(cause.message));
+            }}
+          >
+            ⓘ 使用说明
+          </Button>
+        </header>
+      )}
+      <div className={`${ui.content} ${layout.content}`}>
+        {error && (
+          <p role="alert" className={layout.feedback}>
+            {error} <Button onClick={() => void reload()}>刷新</Button>
+          </p>
+        )}
+        {runs
+          .filter((row) => row.unavailable)
+          .map((row) => (
+            <RunStatus
+              key={row.run.id}
+              row={row}
+              client={client}
+              refresh={reload}
+            />
+          ))}
         {tab === 'calendar' && (
           <section
             id="brand-calendar"
             role="tabpanel"
             aria-labelledby="brand-calendar-tab"
           >
-            <div className={ui.actions}>
+            <div className={`${ui.actions} ${layout.toolbar}`}>
               <Button
+                size="sm"
                 aria-label="上个月"
                 onClick={() => setMonth(shiftMonth(month, -1))}
               >
-                ←
+                ‹
               </Button>
-              <h3>{month}</h3>
+              <h3 className={layout.toolbarTitle}>
+                {month.slice(0, 4)} 年 {Number(month.slice(5))} 月
+              </h3>
               <Button
+                size="sm"
                 aria-label="下个月"
                 onClick={() => setMonth(shiftMonth(month, 1))}
               >
-                →
+                ›
               </Button>
-              <span>{timezone}</span>
+              <Button
+                size="sm"
+                onClick={() =>
+                  setMonth(localDate(new Date(), timezone).slice(0, 7))
+                }
+              >
+                回到本月
+              </Button>
             </div>
             <div className={ui.calendar}>
               {naturalWeeks(month).map((week, index) => {
                 const today = localDate(new Date(), timezone),
+                  current = today >= week.start && today <= week.end,
+                  first =
+                    week.start < month + '-01' ? month + '-01' : week.start,
+                  last =
+                    week.end.slice(0, 7) === month
+                      ? week.end
+                      : new Date(
+                          Date.UTC(
+                            Number(month.slice(0, 4)),
+                            Number(month.slice(5)),
+                            0,
+                          ),
+                        )
+                          .toISOString()
+                          .slice(0, 10),
                   items = calendar.filter(
                     (article) =>
                       article.publication.schedule &&
@@ -609,15 +663,22 @@ export function BrandMediaPanel({
                 return (
                   <div
                     className={ui.week}
-                    data-current={today >= week.start && today <= week.end}
+                    data-current={current}
                     key={week.start}
                   >
                     <div className={ui.weekLabel}>
-                      <strong>第 {index + 1} 周</strong>
+                      <strong>
+                        第 {index + 1} 周{current ? ' · 本周' : ''}
+                      </strong>
                       <p>
-                        {week.start.slice(5)} — {week.end.slice(5)}
+                        {Number(first.slice(5, 7))}/{Number(first.slice(8))}
+                        {first !== last && (
+                          <>
+                            {' '}
+                            – {Number(last.slice(5, 7))}/{Number(last.slice(8))}
+                          </>
+                        )}
                       </p>
-                      <p>周一 — 周日</p>
                     </div>
                     <div className={ui.weekItems}>
                       {items.length ? (
@@ -639,11 +700,23 @@ export function BrandMediaPanel({
                             <Button onClick={() => openArticle(article)}>
                               {article.title}
                             </Button>
-                            <Tag>{stateNames[article.publication.state]}</Tag>
+                            <Tag tone={stateTones[article.publication.state]}>
+                              {stateNames[article.publication.state]}
+                            </Tag>
+                            {article.publication.links?.wechat && (
+                              <a href={article.publication.links.wechat}>
+                                公众号 ↗
+                              </a>
+                            )}
+                            {article.publication.links?.xiaohongshu && (
+                              <a href={article.publication.links.xiaohongshu}>
+                                小红书 ↗
+                              </a>
+                            )}
                           </div>
                         ))
                       ) : (
-                        <p>这周还没有排期</p>
+                        <p>这周没有排期</p>
                       )}
                     </div>
                   </div>
@@ -655,18 +728,75 @@ export function BrandMediaPanel({
         {tab === 'topics' && (
           <section
             id="brand-topics"
-            role="tabpanel"
-            aria-labelledby="brand-topics-tab"
+            role={form?.kind === 'candidates' ? undefined : 'tabpanel'}
+            aria-labelledby={
+              form?.kind === 'candidates' ? undefined : 'brand-topics-tab'
+            }
           >
             {form?.kind === 'candidates' ? (
-              renderGeneration(form)
+              renderGeneration(
+                form,
+                <>
+                  {candidatesRun && (
+                    <RunStatus
+                      row={candidatesRun}
+                      client={client}
+                      refresh={reload}
+                      onRetry={() => retry(candidatesRun)}
+                      retrying={busy}
+                    />
+                  )}
+                  {candidateDeliveries.map((candidate, index) => (
+                    <article key={index} className={layout.candidateCard}>
+                      <h4 className={layout.title}>{candidate.title}</h4>
+                      <p className={layout.meta}>{candidate.summary}</p>
+                      <div className={`${ui.actions} ${layout.formActions}`}>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={
+                            busy ||
+                            candidatesRun!.addedCandidates.some(
+                              (added) =>
+                                added.title === candidate.title &&
+                                added.summary === candidate.summary,
+                            )
+                          }
+                          onClick={() => {
+                            const intent = candidatesRun!.invocation.intent;
+                            if (intent.operation !== 'candidates') return;
+                            act(
+                              {
+                                operation: 'topic.add',
+                                candidate,
+                                direction: intent.direction,
+                                references: intent.references,
+                                sourceRunId: candidatesRun!.run.id,
+                              },
+                              `candidate:${candidatesRun!.run.id}:${index}`,
+                            );
+                          }}
+                        >
+                          {candidatesRun!.addedCandidates.some(
+                            (added) =>
+                              added.title === candidate.title &&
+                              added.summary === candidate.summary,
+                          )
+                            ? '已加入 ✓'
+                            : '加入选题库'}
+                        </Button>
+                      </div>
+                    </article>
+                  ))}
+                </>,
+              )
             ) : (
-              <div className={ui.actions}>
-                <h3>
+              <div className={`${ui.actions} ${layout.sectionHeader}`}>
+                <span className={layout.meta}>
                   {topicCursor
                     ? `已加载 ${topics.length} 个选题`
                     : `${topics.length} 个选题`}
-                </h3>
+                </span>
                 <Button
                   variant="primary"
                   onClick={() => setForm({ kind: 'candidates' })}
@@ -675,71 +805,34 @@ export function BrandMediaPanel({
                 </Button>
               </div>
             )}
-            {form?.kind === 'candidates' && candidatesRun && (
-              <RunStatus
-                row={candidatesRun}
-                client={client}
-                refresh={reload}
-                onRetry={() => retry(candidatesRun)}
-                retrying={busy}
-              />
-            )}
-            {form?.kind === 'candidates' &&
-              candidateDeliveries.map((candidate, index) => (
-                <article key={index} className={ui.item}>
-                  <h4>{candidate.title}</h4>
-                  <p>{candidate.summary}</p>
-                  <Button
-                    disabled={
-                      busy ||
-                      candidatesRun!.addedCandidates.some(
-                        (added) =>
-                          added.title === candidate.title &&
-                          added.summary === candidate.summary,
-                      )
-                    }
-                    onClick={() => {
-                      const intent = candidatesRun!.invocation.intent;
-                      if (intent.operation !== 'candidates') return;
-                      act(
-                        {
-                          operation: 'topic.add',
-                          candidate,
-                          direction: intent.direction,
-                          references: intent.references,
-                          sourceRunId: candidatesRun!.run.id,
-                        },
-                        `candidate:${candidatesRun!.run.id}:${index}`,
-                      );
-                    }}
-                  >
-                    {candidatesRun!.addedCandidates.some(
-                      (added) =>
-                        added.title === candidate.title &&
-                        added.summary === candidate.summary,
-                    )
-                      ? '已加入 ✓'
-                      : '加入选题库'}
-                  </Button>
-                </article>
-              ))}
             {form?.kind !== 'candidates' && !topics.length && (
-              <p>还没有选题，先写一句方向，让当前员工想几个候选。</p>
+              <p className={layout.empty}>
+                还没有选题，先写一句方向，让当前员工想几个候选。
+              </p>
             )}
             {form?.kind !== 'candidates' &&
               topics.map((topic) => (
-                <article className={ui.item} key={topic.id}>
-                  <h4>{topic.candidate.title}</h4>
-                  <p>{topic.candidate.summary}</p>
+                <article className={layout.listRow} key={topic.id}>
+                  <div className={layout.rowText}>
+                    <h4 className={layout.title}>{topic.candidate.title}</h4>
+                    <p className={layout.meta}>
+                      {topic.references.length > 0 &&
+                        `${topic.references.length} 份参考资料 · `}
+                      {shortDate(topic.createdAt, timezone)}
+                    </p>
+                  </div>
                   <div className={ui.actions}>
                     <Button
-                      variant="primary"
+                      size="sm"
+                      variant="outline"
                       disabled={busy}
                       onClick={() => setForm({ kind: 'start', topic })}
                     >
                       写正文
                     </Button>
                     <Button
+                      size="sm"
+                      aria-label="删除选题"
                       disabled={busy}
                       onClick={() =>
                         act(
@@ -752,15 +845,17 @@ export function BrandMediaPanel({
                         )
                       }
                     >
-                      删除选题
+                      删除
                     </Button>
                   </div>
                 </article>
               ))}
             {form?.kind !== 'candidates' && topicCursor && (
-              <Button disabled={busy} onClick={() => void pageMore('topics')}>
-                加载更多选题
-              </Button>
+              <div className={layout.feedback}>
+                <Button disabled={busy} onClick={() => void pageMore('topics')}>
+                  加载更多选题
+                </Button>
+              </div>
             )}
           </section>
         )}
@@ -770,35 +865,59 @@ export function BrandMediaPanel({
             role="tabpanel"
             aria-labelledby="brand-articles-tab"
           >
-            <div className={ui.actions}>
-              {(['all', 'draft', 'scheduled', 'published'] as const).map(
-                (value) => (
-                  <Button
-                    key={value}
-                    aria-pressed={state === value}
-                    onClick={() => setState(value)}
-                  >
-                    {value === 'all' ? '全部' : stateNames[value]}
-                  </Button>
-                ),
-              )}
-            </div>
             <div className={ui.split}>
-              <div className={ui.articleList}>
+              <div className={`${ui.articleList} ${layout.articleList}`}>
+                <div className={`${ui.actions} ${layout.filters}`}>
+                  {(['all', 'draft', 'scheduled', 'published'] as const).map(
+                    (value) => (
+                      <Button
+                        key={value}
+                        size="sm"
+                        aria-pressed={state === value}
+                        onClick={() => setState(value)}
+                      >
+                        {value === 'all' ? '全部' : stateNames[value]}
+                      </Button>
+                    ),
+                  )}
+                </div>
                 {articles.length ? (
                   articles.map((article) => (
-                    <div className={ui.item} key={article.id}>
-                      <Button
-                        aria-pressed={selectedId === article.id}
-                        onClick={() => setSelectedId(article.id)}
-                      >
-                        {article.title}
-                      </Button>
-                      <Tag>{stateNames[article.publication.state]}</Tag>
+                    <div
+                      className={layout.listRow}
+                      data-selected={selectedId === article.id}
+                      key={article.id}
+                    >
+                      <div className={layout.rowText}>
+                        <Button
+                          aria-pressed={selectedId === article.id}
+                          onClick={() => setSelectedId(article.id)}
+                        >
+                          {article.title}
+                        </Button>
+                        <p className={layout.meta}>
+                          {article.publication.schedule
+                            ? new Intl.DateTimeFormat('zh-CN', {
+                                timeZone: article.publication.schedule.timezone,
+                                month: 'numeric',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit',
+                              }).format(
+                                new Date(
+                                  article.publication.schedule.plannedAt,
+                                ),
+                              )
+                            : shortDate(article.updatedAt, timezone) + ' 改过'}
+                        </p>
+                      </div>
+                      <Tag tone={stateTones[article.publication.state]}>
+                        {stateNames[article.publication.state]}
+                      </Tag>
                     </div>
                   ))
                 ) : (
-                  <p>还没有文章，从选题开始写正文。</p>
+                  <p className={layout.empty}>还没有文章，从选题开始写正文。</p>
                 )}
                 {articleCursor && (
                   <Button
@@ -809,14 +928,32 @@ export function BrandMediaPanel({
                   </Button>
                 )}
               </div>
-              <article className={ui.articleDetail}>
+              <article
+                className={`${ui.articleDetail} ${layout.articleDetail}`}
+              >
                 {selected && (
                   <>
-                    <header className={ui.header}>
-                      <h3>{selected.title}</h3>
-                      <Tag>{stateNames[selected.publication.state]}</Tag>
+                    <header className={`${ui.actions} ${layout.articleHeader}`}>
+                      <Tag tone={stateTones[selected.publication.state]}>
+                        {stateNames[selected.publication.state]}
+                      </Tag>
+                      <span className={`${layout.meta} ${layout.rowText}`}>
+                        {selected.publication.schedule
+                          ? new Intl.DateTimeFormat('zh-CN', {
+                              timeZone: selected.publication.schedule.timezone,
+                              month: 'numeric',
+                              day: 'numeric',
+                              weekday: 'short',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                            }).format(
+                              new Date(selected.publication.schedule.plannedAt),
+                            )
+                          : shortDate(selected.updatedAt, timezone) + ' 改过'}
+                      </span>
                       {selected.publication.state !== 'published' && (
                         <Button
+                          size="sm"
                           disabled={busy || !body || !selected.body}
                           onClick={() => void copyBody()}
                         >
@@ -825,6 +962,7 @@ export function BrandMediaPanel({
                       )}
                       {selected.publication.state === 'published' ? (
                         <Button
+                          size="sm"
                           disabled={busy}
                           onClick={() =>
                             act(
@@ -843,6 +981,12 @@ export function BrandMediaPanel({
                       ) : (
                         <>
                           <Button
+                            size="sm"
+                            variant={
+                              selected.publication.state === 'draft'
+                                ? 'primary'
+                                : 'ghost'
+                            }
                             disabled={busy}
                             onClick={() =>
                               setPublication({
@@ -852,12 +996,13 @@ export function BrandMediaPanel({
                             }
                           >
                             {selected.publication.state === 'scheduled'
-                              ? '修改排期'
+                              ? '改时间'
                               : '排期'}
                           </Button>
                           {selected.publication.state === 'scheduled' && (
                             <>
                               <Button
+                                size="sm"
                                 disabled={busy}
                                 onClick={() =>
                                   act(
@@ -874,6 +1019,7 @@ export function BrandMediaPanel({
                                 取消排期
                               </Button>
                               <Button
+                                size="sm"
                                 variant="primary"
                                 onClick={() =>
                                   setPublication({
@@ -889,6 +1035,27 @@ export function BrandMediaPanel({
                         </>
                       )}
                     </header>
+                    {notice && (
+                      <p role="status" className={layout.meta}>
+                        {notice}
+                      </p>
+                    )}
+                    {selected.publication.links && (
+                      <div
+                        className={`${ui.actions} ${layout.publicationLinks}`}
+                      >
+                        {selected.publication.links.wechat && (
+                          <a href={selected.publication.links.wechat}>
+                            公众号 ↗
+                          </a>
+                        )}
+                        {selected.publication.links.xiaohongshu && (
+                          <a href={selected.publication.links.xiaohongshu}>
+                            小红书 ↗
+                          </a>
+                        )}
+                      </div>
+                    )}
                     {articleRun && (
                       <RunStatus
                         row={articleRun}
@@ -898,9 +1065,12 @@ export function BrandMediaPanel({
                         retrying={busy}
                       />
                     )}
-                    <div className={ui.body} aria-label="文章正文">
-                      {body ||
-                        (selected.body ? '正在读取正文…' : '正文还未生成')}
+                    <div className={`${ui.body} ${layout.articleBody}`}>
+                      <h3 className={layout.title}>{selected.title}</h3>
+                      <div aria-label="文章正文">
+                        {body ||
+                          (selected.body ? '正在读取正文…' : '正文还未生成')}
+                      </div>
                     </div>
                     <Images
                       key={selected.id}
@@ -925,62 +1095,47 @@ export function BrandMediaPanel({
                         </a>
                       </p>
                     ))}
-                    {selected.publication.schedule && (
-                      <p>
-                        排期：
-                        {new Intl.DateTimeFormat('zh-CN', {
-                          timeZone: selected.publication.schedule.timezone,
-                          dateStyle: 'medium',
-                          timeStyle: 'short',
-                        }).format(
-                          new Date(selected.publication.schedule.plannedAt),
-                        )}{' '}
-                        · {selected.publication.schedule.timezone}
-                      </p>
-                    )}
-                    {selected.publication.links && (
-                      <p>
-                        {selected.publication.links.wechat && (
-                          <a href={selected.publication.links.wechat}>
-                            公众号文章
-                          </a>
-                        )}{' '}
-                        {selected.publication.links.xiaohongshu && (
-                          <a href={selected.publication.links.xiaohongshu}>
-                            小红书笔记
-                          </a>
-                        )}
-                      </p>
-                    )}
-                    <p>参考资料：{selected.references.length} 份</p>
-                    {selected.publication.state !== 'published' && (
-                      <div className={ui.actions}>
-                        {renderGeneration({
-                          kind: 'article',
-                          article: selected,
-                        })}
+                    <div className={layout.referenceLine}>
+                      <span className={layout.meta}>参考资料：</span>
+                      <ReferenceChips
+                        client={client}
+                        references={selected.references}
+                      />
+                      {selected.publication.state !== 'published' && (
                         <Button
+                          size="sm"
                           disabled={busy}
                           onClick={() => setReferenceArticle(selected)}
                         >
                           添加参考资料
                         </Button>
-                        <Button
-                          disabled={busy}
-                          onClick={() =>
-                            act(
-                              {
-                                operation: 'article.delete',
-                                articleId: selected.id,
-                                expectedRevision: selected.revision,
-                              },
-                              'article-delete:' + selected.id,
-                            )
-                          }
-                        >
-                          删除这篇文章
-                        </Button>
-                      </div>
+                      )}
+                    </div>
+                    {selected.publication.state !== 'published' && (
+                      <>
+                        {renderGeneration({
+                          kind: 'article',
+                          article: selected,
+                        })}
+                        <div className={layout.articleDelete}>
+                          <Button
+                            size="sm"
+                            disabled={busy}
+                            onClick={() =>
+                              act(
+                                {
+                                  operation: 'article.delete',
+                                  articleId: selected.id,
+                                  expectedRevision: selected.revision,
+                                },
+                                'article-delete:' + selected.id,
+                              )
+                            }
+                          >
+                            删除这篇文章
+                          </Button>
+                        </div>
+                      </>
                     )}
                   </>
                 )}
@@ -1107,6 +1262,8 @@ function GenerationForm({
   onStarted,
   running,
   active,
+  hasCandidates = false,
+  children,
 }: {
   form:
     | { kind: 'candidates' }
@@ -1124,6 +1281,8 @@ function GenerationForm({
   onStarted: () => void;
   running?: BrandMediaRun;
   active: boolean;
+  hasCandidates?: boolean;
+  children?: ReactNode;
 }) {
   const [text, setText] = useState(''),
     [references, setReferences] = useState<References>(
@@ -1193,42 +1352,42 @@ function GenerationForm({
       setBusy(false);
     }
   };
-  const controls = (
-    <>
-      <p>
-        {form.kind === 'candidates'
-          ? '写一句方向，让当前员工给几个候选，挑中的再加入选题库。'
+  const editor = (
+    <InlineEditor
+      className={layout.editor}
+      value={text}
+      label={
+        form.kind === 'candidates'
+          ? '内容方向'
           : form.kind === 'start'
-            ? '补充本次写作要求，正文由当前员工生成。'
-            : '告诉 Rice 怎么改'}
-      </p>
-      <InlineEditor
-        value={text}
-        label={
-          form.kind === 'candidates'
-            ? '内容方向'
-            : form.kind === 'start'
-              ? '补充写作要求（可选）'
-              : '修改意见'
-        }
-        onChange={setText}
-        onSave={() => void submit()}
-        onCancel={() => {
-          setText('');
-          if (form.kind !== 'article') onClose();
-        }}
-      />
-      {form.kind !== 'article' && (
-        <p>
-          参考资料：{references.length} 份{' '}
-          <Button
-            disabled={busy || !!started.current}
-            onClick={() => setPicker(true)}
-          >
-            添加参考资料
-          </Button>
-        </p>
-      )}
+            ? '补充写作要求（可选）'
+            : '修改意见'
+      }
+      onChange={setText}
+      onSave={() => void submit()}
+      onCancel={() => {
+        setText('');
+        if (form.kind !== 'article') onClose();
+      }}
+    />
+  );
+  const referenceControls = (
+    <div className={layout.field}>
+      <div className={layout.fieldLabel}>参考资料</div>
+      <div className={layout.referenceLine}>
+        <ReferenceChips client={client} references={references} />
+        <Button
+          size="sm"
+          disabled={busy || !!started.current}
+          onClick={() => setPicker(true)}
+        >
+          添加参考资料
+        </Button>
+      </div>
+    </div>
+  );
+  const feedback = (
+    <>
       {error && <p role="alert">{error}</p>}
       {active && picker && (
         <ReferencePicker
@@ -1244,8 +1403,12 @@ function GenerationForm({
     </>
   );
   const button = (
+    label: string,
+    variant: 'primary' | 'outline' = 'primary',
+  ) => (
     <Button
-      variant={form.kind === 'article' ? 'outline' : 'primary'}
+      aria-label={label}
+      variant={variant}
       disabled={
         busy ||
         (!!running && runActive(running)) ||
@@ -1253,13 +1416,7 @@ function GenerationForm({
       }
       onClick={() => void submit()}
     >
-      {busy
-        ? '正在提交…'
-        : form.kind === 'start'
-          ? '开始写'
-          : form.kind === 'article'
-            ? '修改'
-            : '让 Rice 想选题 / 换一批'}
+      {busy ? '正在提交…' : running && runActive(running) ? '生成中…' : label}
     </Button>
   );
   if (form.kind === 'start')
@@ -1272,23 +1429,61 @@ function GenerationForm({
         footer={
           <>
             <Button onClick={onClose}>取消</Button>
-            {button}
+            {button('开始写')}
           </>
         }
       >
-        {controls}
+        <div className={layout.modalFlow}>
+          <div className={layout.field}>
+            <div className={layout.fieldLabel}>选题</div>
+            <strong className={layout.title}>
+              {form.topic.candidate.title}
+            </strong>
+          </div>
+          {referenceControls}
+          <div className={layout.field}>
+            <div className={layout.fieldLabel}>要求（选填）</div>
+            {editor}
+          </div>
+          {feedback}
+        </div>
       </Modal>
     );
+  if (form.kind === 'article')
+    return (
+      <section aria-label="修改正文">
+        <div className={layout.modification}>
+          {editor}
+          {button('修改', 'outline')}
+        </div>
+        {feedback}
+      </section>
+    );
   return (
-    <section aria-label={form.kind === 'candidates' ? '想选题' : '修改正文'}>
-      {form.kind === 'candidates' && (
-        <header className={ui.header}>
-          <Button onClick={onClose}>← 选题库</Button>
-          <h3>想选题</h3>
-        </header>
-      )}
-      {controls}
-      {button}
+    <section aria-label="想选题">
+      <header className={ui.header}>
+        <Button onClick={onClose}>← 选题库</Button>
+        <h3 className={layout.toolbarTitle}>想选题</h3>
+      </header>
+      <div className={layout.formBody}>
+        <div className={layout.field}>
+          <div className={layout.fieldLabel}>方向</div>
+          {editor}
+        </div>
+        {referenceControls}
+        <div className={`${ui.actions} ${layout.formActions}`}>
+          {button('出选题')}
+        </div>
+        {feedback}
+        <div className={hasCandidates ? layout.candidateResults : undefined}>
+          {children}
+        </div>
+        {hasCandidates && (
+          <div className={`${ui.actions} ${layout.formActions}`}>
+            {button('换一批', 'outline')}
+          </div>
+        )}
+      </div>
     </section>
   );
 }
@@ -1346,40 +1541,53 @@ function PublicationForm({
         <>
           <Button onClick={onClose}>取消</Button>
           <Button variant="primary" disabled={busy} onClick={() => void save()}>
-            保存
+            {value.kind === 'schedule' ? '确定' : '确认已发布'}
           </Button>
         </>
       }
     >
-      {value.kind === 'schedule' ? (
-        <>
-          <p>{timezone}</p>
-          <Input
-            type="datetime-local"
-            aria-label="计划发布时间"
-            value={date}
-            onChange={(event) => setDate(event.target.value)}
-          />
-        </>
-      ) : (
-        <>
-          <p>请先在对应平台完成发布，再登记链接。</p>
-          <Input
-            type="url"
-            aria-label="公众号文章链接（选填）"
-            placeholder="公众号文章链接（选填）"
-            value={wechat}
-            onChange={(event) => setWechat(event.target.value)}
-          />
-          <Input
-            type="url"
-            aria-label="小红书笔记链接（选填）"
-            placeholder="小红书笔记链接（选填）"
-            value={xiaohongshu}
-            onChange={(event) => setXiaohongshu(event.target.value)}
-          />
-        </>
-      )}
+      <div className={layout.modalFlow}>
+        {value.kind === 'schedule' ? (
+          <>
+            <p className={layout.meta}>{value.article.title}</p>
+            <label className={layout.field}>
+              <span className={layout.fieldLabel}>发布时间</span>
+              <Input
+                className={layout.editor}
+                type="datetime-local"
+                aria-label="计划发布时间"
+                value={date}
+                onChange={(event) => setDate(event.target.value)}
+              />
+            </label>
+          </>
+        ) : (
+          <>
+            <label className={layout.field}>
+              <span className={layout.fieldLabel}>公众号文章链接（选填）</span>
+              <Input
+                className={layout.editor}
+                type="url"
+                aria-label="公众号文章链接（选填）"
+                placeholder="粘贴公众号文章链接"
+                value={wechat}
+                onChange={(event) => setWechat(event.target.value)}
+              />
+            </label>
+            <label className={layout.field}>
+              <span className={layout.fieldLabel}>小红书笔记链接（选填）</span>
+              <Input
+                className={layout.editor}
+                type="url"
+                aria-label="小红书笔记链接（选填）"
+                placeholder="粘贴小红书笔记链接"
+                value={xiaohongshu}
+                onChange={(event) => setXiaohongshu(event.target.value)}
+              />
+            </label>
+          </>
+        )}
+      </div>
       {error && <p role="alert">{error}</p>}
     </Modal>
   );
@@ -1516,7 +1724,7 @@ function ReferencePicker({
             disabled={busy || (tab === 'upload' && !file)}
             onClick={() => void save()}
           >
-            {tab === 'upload' ? '上传并添加' : '添加所选资料'}
+            {tab === 'upload' ? '上传并添加' : `添加 ${selected.length} 份`}
           </Button>
         </>
       }
@@ -1528,7 +1736,7 @@ function ReferencePicker({
         items={[
           {
             value: 'enterprise',
-            label: '企业资料',
+            label: '从企业资料选',
             id: 'brand-refs-enterprise-tab',
             panelId: 'brand-refs-enterprise',
           },
@@ -1543,14 +1751,16 @@ function ReferencePicker({
       {tab === 'enterprise' ? (
         <div
           role="tabpanel"
+          className={layout.modalFlow}
           id="brand-refs-enterprise"
           aria-labelledby="brand-refs-enterprise-tab"
         >
           <Input
+            className={layout.editor}
             aria-label="搜索企业资料"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜索资料"
+            placeholder="搜索企业资料"
           />
           {rows
             .filter(
@@ -1560,7 +1770,7 @@ function ReferencePicker({
                 !row.companyTemplate,
             )
             .map((row) => (
-              <div key={row.revisionId}>
+              <div className={layout.referenceRow} key={row.revisionId}>
                 <Checkbox
                   disabled={busy}
                   label={row.fileName + ' · v' + row.revision}
@@ -1591,7 +1801,7 @@ function ReferencePicker({
                 />
                 <Tag>
                   {row.publication?.audience.scope === 'company'
-                    ? '公司'
+                    ? '全公司'
                     : row.publication?.audience.scope === 'departments'
                       ? '部门'
                       : '个人'}
@@ -1608,41 +1818,58 @@ function ReferencePicker({
       ) : (
         <div
           role="tabpanel"
+          className={layout.modalFlow}
           id="brand-refs-upload"
           aria-labelledby="brand-refs-upload-tab"
         >
           <Input
+            className={layout.editor}
             type="file"
             aria-label="上传参考文件"
             disabled={busy}
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
           />
-          <p>文件会保存到你的交付成果，作为这次的参考资料。</p>
+          {file && (
+            <div className={layout.selectedFile}>
+              <span>📄 {file.name}</span>
+              <span className={layout.meta}>
+                {new Intl.NumberFormat('zh-CN', {
+                  maximumFractionDigits: 1,
+                }).format(file.size / 1024)}{' '}
+                KB
+              </span>
+            </div>
+          )}
+          <p className={layout.meta}>
+            上传的文件存进你的交付成果，只有你能看。想给部门或全公司用，以后在交付成果里“添加为企业资料”。
+          </p>
         </div>
       )}
       {initial
         .filter((pin) => pin.origin !== 'reference')
-        .map((pin) => (
-          <Checkbox
-            key={pin.file.objectId}
-            label={'已选文件 ' + pin.file.objectId}
-            checked={selected.some(
-              (value) =>
-                value.origin !== 'reference' &&
-                value.file.objectId === pin.file.objectId,
-            )}
-            onChange={(checked) =>
-              setSelected((old) =>
-                checked
-                  ? [...old, pin]
-                  : old.filter(
-                      (value) =>
-                        value.origin === 'reference' ||
-                        value.file.objectId !== pin.file.objectId,
-                    ),
-              )
-            }
-          />
+        .map((pin, index) => (
+          <div className={layout.referenceRow} key={pin.file.objectId}>
+            <Checkbox
+              label={`已选文件 ${index + 1}`}
+              checked={selected.some(
+                (value) =>
+                  value.origin !== 'reference' &&
+                  value.file.objectId === pin.file.objectId,
+              )}
+              onChange={(checked) =>
+                setSelected((old) =>
+                  checked
+                    ? [...old, pin]
+                    : old.filter(
+                        (value) =>
+                          value.origin === 'reference' ||
+                          value.file.objectId !== pin.file.objectId,
+                      ),
+                )
+              }
+            />
+            <ReferenceChips client={client} references={[pin]} />
+          </div>
         ))}
       {error && <p role="alert">{error}</p>}
     </Modal>

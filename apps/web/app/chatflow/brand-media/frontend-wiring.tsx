@@ -331,6 +331,51 @@ export function createBrandMediaClient(
         revisionId: result.selection.revisionId,
       };
     },
+    referenceLabel: async (
+      reference: BrandMediaTopic['references'][number],
+      signal?: AbortSignal,
+    ) => {
+      if (reference.origin === 'reference') {
+        const result = ReferenceInputSelectionResultSchema.parse(
+          await json(
+            `/api/v1/references/revisions/${reference.revisionId}/selection${q}`,
+            scope.headers,
+            { signal },
+          ),
+        );
+        if (
+          result.viewerId !== scope.ownerId ||
+          result.workspaceId !== scope.workspaceId ||
+          result.selection.sourceId !== reference.sourceId ||
+          result.selection.revisionId !== reference.revisionId
+        )
+          throw Error('资料版本或当前权限已变化。');
+        return result.selection.fileName;
+      }
+      const catalog = WorkbenchDeliverablesCatalogSchema.parse(
+        await json(
+          '/api/v1/workbench/files' +
+            q +
+            '&view=deliverables&objectId=' +
+            reference.file.objectId,
+          scope.headers,
+          { signal },
+        ),
+      );
+      const file = catalog.files.find(
+        (entry) =>
+          entry.objectId === reference.file.objectId &&
+          entry.checksum === reference.file.checksum,
+      );
+      if (
+        (catalog.viewerId && catalog.viewerId !== scope.ownerId) ||
+        !file ||
+        !file.ownedByMe ||
+        file.workspaceId !== scope.workspaceId
+      )
+        throw Error('资料暂时不可读。');
+      return file.fileName;
+    },
     upload: async (request: {
       requestId: string;
       fileName: string;
@@ -396,6 +441,47 @@ export function createBrandMediaClient(
   };
 }
 export type BrandMediaClient = ReturnType<typeof createBrandMediaClient>;
+/** Display metadata only. Exact pins and current ACLs remain authoritative;
+ * no label is stored in the business record or reused across client scopes. */
+export function ReferenceChips({
+  client,
+  references,
+}: {
+  client: BrandMediaClient;
+  references: BrandMediaTopic['references'];
+}) {
+  const key = JSON.stringify(references);
+  const [result, setResult] = useState<{
+    client: BrandMediaClient;
+    key: string;
+    labels: string[];
+  } | null>(null);
+  useEffect(() => {
+    const abort = new AbortController();
+    void Promise.all(
+      references.map((reference) =>
+        client
+          .referenceLabel(reference, abort.signal)
+          .catch(() => '资料暂不可读'),
+      ),
+    ).then((labels) => {
+      if (!abort.signal.aborted) setResult({ client, key, labels });
+    });
+    return () => abort.abort();
+  }, [client, key, references]);
+  const current = result?.client === client && result.key === key;
+  return (
+    <div className={css.referenceChips} aria-label="已选参考资料">
+      {references.map((reference, index) => (
+        <Tag tone="neutral" key={JSON.stringify(reference)}>
+          <span className={css.referenceLabel}>
+            {current ? result.labels[index] : '正在读取资料名…'}
+          </span>
+        </Tag>
+      ))}
+    </div>
+  );
+}
 const imageLabels = {
   dialog: '配图原图',
   close: '关闭原图',
@@ -565,6 +651,7 @@ export function BrandMediaPluginSection({
   return (
     <>
       <EmployeePluginSection
+        compactOpen
         headingId={headingId}
         plugins={
           controller.enabled
@@ -706,7 +793,9 @@ export function BrandMediaHost({
         aria-hidden={!open || !shown}
         data-brand-media-host
       >
-        {panel}
+        <div className={css.surface} data-brand-media-surface>
+          {panel}
+        </div>
       </div>
     </div>
   );
@@ -735,8 +824,8 @@ export function HelpDrawer({
         aria-label="使用说明"
         tabIndex={-1}
       >
-        <header className={css.header}>
-          <h3>使用说明</h3>
+        <header className={css.helpHeader}>
+          <h3>使用说明 · 品牌自媒体</h3>
           <Button
             data-modal-autofocus
             onClick={onClose}

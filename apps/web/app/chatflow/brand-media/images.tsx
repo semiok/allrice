@@ -19,6 +19,7 @@ import {
   type BrandMediaClient,
   type BrandMediaRun,
 } from './frontend-wiring';
+import layout from './panel.module.css';
 type Scoped<T> = T extends unknown
   ? Omit<T, 'workspaceId' | 'instanceId'>
   : never;
@@ -197,11 +198,15 @@ export function Images({
         await client.downloadImage(image.file.objectId);
     });
   return (
-    <section aria-label="文章配图">
-      <div className={ui.actions}>
-        <h4>配图 {article.images.length} 张</h4>
+    <section className={layout.imageSection} aria-label="文章配图">
+      <div className={`${ui.actions} ${layout.imageHeader}`}>
+        <h4 className={`${layout.title} ${layout.rowText}`}>
+          配图 {article.images.length} 张
+        </h4>
         {editable && (
           <Button
+            size="sm"
+            variant="outline"
             onClick={() => {
               setTarget(article);
               setError('');
@@ -217,6 +222,8 @@ export function Images({
         )}
         {!!article.images.length && (
           <Button
+            size="sm"
+            variant="outline"
             disabled={busy}
             onClick={() => void download([...article.images])}
           >
@@ -225,13 +232,13 @@ export function Images({
         )}
       </div>
       {error && !(active && target && editable) && <p role="alert">{error}</p>}
-      <div className={ui.actions}>
+      <div className={layout.imageGrid}>
         {article.images.map((image, index) => {
           const label = index === 0 ? '封面图' : `配图 ${index}`;
           return (
             <div
               key={image.file.objectId}
-              className={ui.item}
+              className={layout.imageCard}
               aria-label={label}
             >
               <Image
@@ -240,13 +247,18 @@ export function Images({
                 label={label}
                 active={active}
               />
-              <p>{label}</p>
-              <div className={ui.actions}>
-                <Button disabled={busy} onClick={() => void download([image])}>
+              <p className={layout.imageName}>{label}</p>
+              <div className={`${ui.actions} ${layout.imageActions}`}>
+                <Button
+                  size="sm"
+                  disabled={busy}
+                  onClick={() => void download([image])}
+                >
                   下载
                 </Button>
                 {editable && (
                   <Button
+                    size="sm"
                     disabled={busy}
                     onClick={() =>
                       void work(() =>
@@ -300,21 +312,29 @@ export function Images({
             ]}
           />
           {tab === 'generate' ? (
-            <div id="brand-image-generate" role="tabpanel">
+            <div
+              id="brand-image-generate"
+              role="tabpanel"
+              aria-labelledby="brand-image-generate-tab"
+              className={layout.modalFlow}
+            >
+              <div className={layout.fieldLabel}>画面描述</div>
               <InlineEditor
+                className={layout.editor}
                 label="画面描述"
                 value={description}
                 onChange={setDescription}
                 onSave={() => void work(create)}
                 onCancel={() => setTarget(null)}
               />
-              <div className={ui.actions}>
+              <div className={`${ui.actions} ${layout.formActions}`}>
                 <Button
+                  aria-label="生成"
                   variant="primary"
                   disabled={busy || running || !description.trim()}
                   onClick={() => void work(create)}
                 >
-                  {running ? '生成中…' : row ? '重新生成' : '生成'}
+                  {running ? '生成中…' : '生成'}
                 </Button>
                 {running && (
                   <Button
@@ -372,8 +392,14 @@ export function Images({
               )}
             </div>
           ) : (
-            <div id="brand-image-upload" role="tabpanel">
+            <div
+              id="brand-image-upload"
+              role="tabpanel"
+              aria-labelledby="brand-image-upload-tab"
+              className={layout.modalFlow}
+            >
               <Input
+                className={layout.editor}
                 type="file"
                 disabled={busy}
                 aria-label="选择配图"
@@ -391,7 +417,18 @@ export function Images({
                   upload.current = null;
                 }}
               />
-              <p>支持 PNG、JPG。上传的图片存进你的交付成果，只有你能看。</p>
+              <p className={layout.meta}>支持 PNG、JPG</p>
+              {file && (
+                <div className={layout.selectedFile}>
+                  <span>{file.name}</span>
+                  <span className={layout.meta}>
+                    {new Intl.NumberFormat('zh-CN', {
+                      maximumFractionDigits: 1,
+                    }).format(file.size / 1024)}{' '}
+                    KB
+                  </span>
+                </div>
+              )}
               {file && (
                 <Image
                   client={client}
@@ -400,10 +437,22 @@ export function Images({
                   active={active}
                 />
               )}
+              <p className={layout.meta}>
+                上传的图片存进你的交付成果，只有你能看。
+              </p>
             </div>
           )}
-          <div className={ui.actions}>
+          <div className={`${ui.actions} ${layout.formActions}`}>
             <Button onClick={() => setTarget(null)}>取消</Button>
+            {tab === 'generate' && saved?.file && (
+              <Button
+                variant="outline"
+                disabled={busy || running || !description.trim()}
+                onClick={() => void work(create)}
+              >
+                重新生成
+              </Button>
+            )}
             <Button
               variant="primary"
               disabled={

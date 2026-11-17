@@ -219,35 +219,44 @@ export function EmployeePluginOpenLink({
   children,
   disabled,
   onOpen,
+  compact = false,
 }: {
   href: string;
   pluginName: string;
   children: string;
   disabled?: boolean;
   onOpen?: () => void;
+  compact?: boolean;
 }) {
+  const className = `${css.primaryAction} ${compact ? css.pluginOpen : ''}`;
   return disabled ? (
-    <Button variant="primary" className={css.primaryAction} disabled>
-      {children} <span aria-hidden="true">↗</span>
+    <Button
+      variant="primary"
+      size={compact ? 'sm' : 'md'}
+      className={className}
+      disabled
+    >
+      {children} {!compact && <span aria-hidden="true">↗</span>}
     </Button>
   ) : onOpen ? (
     <Button
       variant="primary"
-      className={css.primaryAction}
+      size={compact ? 'sm' : 'md'}
+      className={className}
       onClick={onOpen}
       aria-label={`${children} ${pluginName}`}
     >
-      {children} <span aria-hidden="true">↗</span>
+      {children} {!compact && <span aria-hidden="true">↗</span>}
     </Button>
   ) : (
     <a
-      className={css.primaryAction}
+      className={className}
       href={href}
       target="_blank"
       rel="noopener noreferrer"
       aria-label={`${children} ${pluginName}，在新标签页打开`}
     >
-      {children} <span aria-hidden="true">↗</span>
+      {children} {!compact && <span aria-hidden="true">↗</span>}
     </a>
   );
 }
@@ -285,6 +294,7 @@ export function EmployeePluginSection({
   plugins,
   onDetails,
   onAdd,
+  compactOpen = false,
 }: {
   headingId: string;
   plugins: ReadonlyArray<{
@@ -296,6 +306,7 @@ export function EmployeePluginSection({
   }>;
   onDetails?: (id: string) => void;
   onAdd?: () => void;
+  compactOpen?: boolean;
 }) {
   return (
     <section
@@ -327,6 +338,7 @@ export function EmployeePluginSection({
               </div>
               <div className={css.pluginActions}>
                 <EmployeePluginOpenLink
+                  compact={compactOpen}
                   href={plugin.href}
                   onOpen={plugin.onOpen}
                   pluginName={plugin.name}
