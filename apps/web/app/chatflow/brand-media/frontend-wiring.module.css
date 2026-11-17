@@ -63,17 +63,23 @@
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
-  border-bottom: 1px solid var(--dsw-alias-border-main, GrayText);
+  border-bottom: 1px solid var(--dsw-alias-border-l4);
   flex-wrap: wrap;
 }
 .brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   padding-left: 10px;
-  border-left: 1px solid var(--dsw-alias-border-main, GrayText);
+  border-left: 1px solid var(--dsw-alias-border-l4);
   white-space: nowrap;
 }
 .tabs {
-  flex: 1;
+  flex: 0 1 auto;
   min-width: 220px;
+}
+.helpAction {
+  margin-left: auto;
 }
 .content {
   overflow: auto;
@@ -93,7 +99,7 @@
   min-height: 100%;
 }
 .articleList {
-  border-right: 1px solid var(--dsw-alias-border-main, GrayText);
+  border-right: 1px solid var(--dsw-alias-border-l4);
   padding-right: 12px;
 }
 .articleDetail {
@@ -102,7 +108,7 @@
 }
 .item {
   padding: 10px 0;
-  border-bottom: 1px solid var(--dsw-alias-border-main, GrayText);
+  border-bottom: 1px solid var(--dsw-alias-border-l4);
 }
 .body {
   white-space: pre-wrap;
@@ -120,7 +126,7 @@
   grid-template-columns: 1fr;
   gap: 4px;
   padding: 14px;
-  border: 1px solid var(--dsw-alias-border-main, GrayText);
+  border: 1px solid var(--dsw-alias-border-l4);
   border-radius: 12px;
 }
 .selectionCard p {
@@ -135,40 +141,49 @@
 }
 /* Approved Monday-Sunday natural week rows. */
 .calendar {
-  border-top: 1px solid var(--dsw-alias-border-main, GrayText);
+  border-top: 1px solid var(--dsw-alias-border-l4);
 }
 .week {
   display: grid;
   grid-template-columns: 150px minmax(0, 1fr);
-  border-bottom: 1px solid var(--dsw-alias-border-main, GrayText);
-  min-height: 92px;
+  border-bottom: 1px solid var(--dsw-alias-border-l4);
 }
 .weekLabel {
-  padding: 12px;
-  background: var(
-    --dsw-alias-bg-tertiary,
-    color-mix(in srgb, CanvasText 4%, Canvas)
-  );
+  padding: 10px 14px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
+  border-right: 1px solid var(--dsw-alias-border-l4);
+  background: var(--dsw-alias-bg-module-platform);
 }
 .weekLabel p {
   margin: 2px 0;
 }
 .weekItems {
-  padding: 12px;
   min-width: 0;
 }
-.week[data-current='true'] {
-  box-shadow: inset 3px 0 Highlight;
+.week[data-current='true'] .weekLabel {
+  color: var(--dsw-alias-state-business-primary);
 }
 .weekItems p {
-  color: var(--dsw-alias-text-secondary, GrayText);
+  margin: 0;
+  padding: 12px;
+  font-size: 12px;
+  color: var(--dsw-alias-label-secondary);
 }
 .event {
   display: flex;
   gap: 10px;
   align-items: center;
   flex-wrap: wrap;
-  padding: 4px 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l4);
+}
+.event:last-child {
+  border-bottom: 0;
+}
+.eventTitle {
+  margin-right: auto;
 }
 /* Approved center-area help drawer. Native modal layer owns focus/Escape. */
 .helpMask {
@@ -186,7 +201,7 @@
   padding: 18px;
   overflow-y: auto;
   background: var(--dsw-alias-bg-base, Canvas);
-  border-left: 1px solid var(--dsw-alias-border-main, GrayText);
+  border-left: 1px solid var(--dsw-alias-border-l4);
   box-shadow: -4px 0 18px #0002;
 }
 .helpHeader {
@@ -216,7 +231,7 @@
   }
   .articleList {
     border-right: 0;
-    border-bottom: 1px solid var(--dsw-alias-border-main, GrayText);
+    border-bottom: 1px solid var(--dsw-alias-border-l4);
     padding: 0 0 12px;
   }
   .articleDetail {
@@ -227,6 +242,8 @@
   }
   .weekLabel {
     padding: 8px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--dsw-alias-border-l4);
   }
   .header {
     gap: 6px;

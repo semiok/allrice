@@ -542,7 +542,9 @@ export function BrandMediaPanel({
           <Button data-brand-return onClick={onReturn}>
             ← 回到对话
           </Button>
-          <strong className={ui.brand}>品牌自媒体</strong>
+          <strong className={ui.brand}>
+            <Tag tone="success">文</Tag>品牌自媒体
+          </strong>
           <SegmentedTabs
             className={ui.tabs}
             label="品牌自媒体页面"
@@ -570,6 +572,7 @@ export function BrandMediaPanel({
             ]}
           />
           <Button
+            className={ui.helpAction}
             onClick={() => {
               void client
                 .help()
@@ -697,7 +700,10 @@ export function BrandMediaPanel({
                                 ),
                               )}
                             </span>
-                            <Button onClick={() => openArticle(article)}>
+                            <Button
+                              className={ui.eventTitle}
+                              onClick={() => openArticle(article)}
+                            >
                               {article.title}
                             </Button>
                             <Tag tone={stateTones[article.publication.state]}>
