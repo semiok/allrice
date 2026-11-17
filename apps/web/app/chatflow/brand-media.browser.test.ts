@@ -946,7 +946,7 @@ suite('MET-224 main-area brand media text workflow', () => {
             });
             expect(visible.equals(hidden)).toBe(true);
           } finally {
-            await probe.evaluate((el) => el.remove());
+            await probe.evaluate((el) => (el as HTMLStyleElement).remove());
           }
         };
         for (const tab of ['排期表', '选题库', '文章库']) {
