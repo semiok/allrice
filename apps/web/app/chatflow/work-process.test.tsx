@@ -59,7 +59,7 @@ const render = (overrides: Partial<ComponentProps<typeof WorkProcess>> = {}) =>
 
 describe('native process display surface', () => {
   it.each(['compact', 'standard', 'detailed'] as const)(
-    'does not animate a historical answered call while its answer message is late in %s',
+    'keeps an answered historical question still and a new question running before the old answer message arrives in %s',
     (transcriptView) => {
       const f = questionAttemptFixture();
       const replySequence = f.events.find(
@@ -78,9 +78,21 @@ describe('native process display surface', () => {
         attempt: 2,
         generation: 7,
         toolCallId: 'active-current',
-        name: 'read',
+        name: 'ask_user_question',
       };
-      active.sourceEvent = null;
+      // A real tool call can precede its question request; question rows remain
+      // directly visible in compact/standard without changing native folding.
+      active.sourceEvent = {
+        id: 'native-active-question',
+        type: 'tool/call',
+        occurredAt: active.occurredAt,
+        payload: {
+          turn: 2,
+          step: 4,
+          callId: 'active-current',
+          name: 'ask_user_question',
+        },
+      };
       events.push(active);
       const view = projectWorkProgress(events, '', true);
       const questions = workProcessQuestions(
