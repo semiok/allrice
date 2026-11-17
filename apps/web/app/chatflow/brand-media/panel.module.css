@@ -1,0 +1,197 @@
+/* MET-224 approved plugin page/article layouts. Native controls keep their styles. */
+.content {
+  padding: 0;
+}
+.toolbar,
+.sectionHeader {
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--dsw-alias-border-l4);
+}
+.toolbarTitle {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+}
+.sectionHeader {
+  justify-content: space-between;
+}
+.feedback,
+.empty {
+  margin: 0;
+  padding: 12px 14px;
+}
+.listRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 14px;
+  border-bottom: 1px solid var(--dsw-alias-border-l4);
+}
+.listRow[data-selected='true'] {
+  background: var(--dsw-alias-state-business-tertiary);
+}
+.rowText {
+  flex: 1;
+  min-width: 0;
+}
+.title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.meta,
+.fieldLabel {
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.formBody {
+  padding: 14px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.formBody > .field + .field {
+  margin-top: 10px;
+}
+.editor {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+}
+.formActions {
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+.candidateResults {
+  margin: 12px -14px 0;
+  padding: 10px 14px 0;
+  border-top: 1px solid var(--dsw-alias-border-l4);
+}
+.candidateCard {
+  margin-bottom: 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 8px;
+}
+.filters {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--dsw-alias-border-l4);
+}
+.articleList {
+  padding: 0;
+}
+.articleDetail {
+  padding: 14px;
+}
+.articleHeader {
+  margin-bottom: 10px;
+}
+.publicationLinks {
+  margin-bottom: 10px;
+}
+.articleBody {
+  padding: 12px 14px;
+  border: 1px solid var(--dsw-alias-border-l4);
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-module-platform);
+  font-size: 13px;
+  line-height: 1.8;
+}
+.articleBody > .title {
+  margin-bottom: 6px;
+  font-size: 15px;
+}
+.referenceLine {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.articleBody ~ .referenceLine {
+  margin-top: 12px;
+}
+.modification {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+}
+.modification > .editor {
+  flex: 1;
+}
+.articleDelete {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--dsw-alias-border-l4);
+}
+.modalFlow {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 12px;
+}
+.referenceRow,
+.selectedFile {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--dsw-alias-border-l4);
+}
+.referenceRow > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+.selectedFile {
+  justify-content: space-between;
+  padding: 9px 12px;
+  border: 1px solid var(--dsw-alias-border-l3);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+.imageSection {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--dsw-alias-border-l4);
+}
+.imageHeader {
+  margin-bottom: 8px;
+}
+.imageGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.imageCard {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--dsw-alias-border-l4);
+  border-radius: 8px;
+}
+.imageName {
+  margin: 0;
+  padding: 6px 8px 2px;
+  font-size: 12px;
+}
+.imageActions {
+  padding: 0 8px 7px;
+}
+@media (max-width: 700px) {
+  .listRow {
+    flex-wrap: wrap;
+  }
+  .imageGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

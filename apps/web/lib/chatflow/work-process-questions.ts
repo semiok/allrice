@@ -8,6 +8,10 @@ import {
 import { projectNativeExperience } from './native-experience';
 import { currentWorkProgressEvents } from './work-progress';
 import { projectPendingUserQuestion } from './user-question-state';
+import {
+  workProcessQuestionAnswered,
+  workProcessQuestionHistory,
+} from './work-process-question-history';
 
 export interface WorkProcessAnswer {
   id: string;
@@ -34,7 +38,14 @@ export function workProcessQuestions(
   const byOwner = new Map<string, WorkProcessQuestion[]>();
   const ownership = new Map<string, WorkProcessQuestion[]>();
   for (const owner of owners) {
-    const events = currentWorkProgressEvents(owner.events);
+    const current = currentWorkProgressEvents(owner.events);
+    const { history, blocked } = workProcessQuestionHistory(
+      owner.events,
+      current,
+    );
+    const events = [...current, ...history].sort(
+      (a, b) => a.sequence - b.sequence,
+    );
     const items = projectNativeExperience(events);
     const pending = projectPendingUserQuestion(events);
     const questions = new Map<string, WorkProcessQuestion>();
@@ -46,7 +57,8 @@ export function workProcessQuestions(
       if (
         !parsed.success ||
         !parsed.data.nativeSessionId ||
-        !parsed.data.callId
+        !parsed.data.callId ||
+        blocked.has(parsed.data.questionId)
       )
         continue;
       const request = parsed.data;
@@ -63,10 +75,8 @@ export function workProcessQuestions(
         request,
         callId,
         pending: pending?.questionId === request.questionId,
-        answered: events.some(
-          (row) =>
-            row.sourceEvent?.type === 'session/user-question-answered' &&
-            row.sourceEvent.payload.questionId === request.questionId,
+        answered: events.some((row) =>
+          workProcessQuestionAnswered(request, row),
         ),
       });
     }

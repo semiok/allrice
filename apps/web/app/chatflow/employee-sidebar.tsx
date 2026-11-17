@@ -26,6 +26,7 @@ import {
   readEmployeeExpansion,
 } from './employee-navigation';
 import css from './employee-sidebar.module.css';
+import { createSessionRunStream } from './session-run-stream';
 import workspaceCss from './dsh-upstream/archive/WorkspaceBrowser.module.css';
 import {
   employeeChoice,
@@ -44,6 +45,7 @@ export function EmployeeSidebar({
   nativeReads,
   collapsed,
   onSelectSession,
+  onEmployeeNavigate,
   onPrepareSession,
   onDetails,
   archive,
@@ -63,6 +65,7 @@ export function EmployeeSidebar({
   nativeReads?: Record<string, NativeSubagentRead>;
   collapsed: boolean;
   onSelectSession: (id: string) => void;
+  onEmployeeNavigate?: (instanceId: string) => void;
   onPrepareSession: (id: string) => void;
   onDetails?: (assignmentId: string) => void;
   excludedEmployeeInstanceIds?: ReadonlySet<string>;
@@ -71,6 +74,110 @@ export function EmployeeSidebar({
   const key = employeePreferenceKey(workspace);
   const root = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState<string[]>([]);
+  const activityScope = `${workspace.organizationId}/${workspace.workspaceId}/${workspace.viewerId}`;
+  const activityCallbacks = useRef({
+    scope: activityScope,
+    reload: archive?.reload,
+  });
+  activityCallbacks.current = { scope: activityScope, reload: archive?.reload };
+  const activityObservers = useRef(
+    new Map<
+      string,
+      {
+        key: string;
+        scope: string;
+        runIds: string[];
+        stream: ReturnType<typeof createSessionRunStream>;
+      }
+    >(),
+  );
+  const activityRequests = JSON.stringify(
+    archive
+      ? sessions
+          .filter(
+            (session) =>
+              visible.includes(session.id) &&
+              session.id !== activeId &&
+              !pendingNativeSessions?.has(session.id) &&
+              session.ownerId === workspace.viewerId &&
+              session.activeRunIds?.length,
+          )
+          .map((session) => [
+            session.id,
+            [...new Set(session.activeRunIds)].sort(),
+          ])
+      : [],
+  );
+  useEffect(() => {
+    const requests = new Map(
+      JSON.parse(activityRequests) as [string, string[]][],
+    );
+    for (const [id, entry] of activityObservers.current) {
+      if (entry.key !== JSON.stringify([activityScope, requests.get(id)])) {
+        entry.stream.deactivate();
+        activityObservers.current.delete(id);
+      }
+    }
+    for (const [sessionId, runIds] of requests) {
+      if (activityObservers.current.has(sessionId)) continue;
+      const stream = createSessionRunStream({
+        sessionId,
+        workspaceId: workspace.workspaceId,
+        tenantHeaders: {
+          'x-allrice-organization-id': workspace.organizationId,
+          'x-allrice-workspace-id': workspace.workspaceId,
+        },
+        loadHistory: async () => {},
+        loadWorkspace: async () => {
+          if (activityCallbacks.current.scope === activityScope)
+            void activityCallbacks.current.reload?.();
+        },
+        setError: () => {},
+      });
+      activityObservers.current.set(sessionId, {
+        key: JSON.stringify([activityScope, runIds]),
+        scope: activityScope,
+        runIds,
+        stream,
+      });
+      stream.activate();
+      for (const runId of runIds) void stream.streamRun(runId);
+    }
+  }, [
+    activityRequests,
+    activityScope,
+    workspace.workspaceId,
+    workspace.organizationId,
+  ]);
+  useEffect(
+    () => () => {
+      for (const { stream } of activityObservers.current.values())
+        stream.deactivate();
+      activityObservers.current.clear();
+    },
+    [activityScope],
+  );
+  useEffect(() => {
+    const reconnect = async () => {
+      const callbacks = activityCallbacks.current;
+      if (callbacks.scope !== activityScope) return;
+      await callbacks.reload?.();
+      if (activityCallbacks.current.scope !== activityScope) return;
+      for (const {
+        scope,
+        stream,
+        runIds,
+      } of activityObservers.current.values()) {
+        if (scope !== activityScope) continue;
+        const { runViews } = stream.getSnapshot();
+        for (const runId of runIds)
+          if (runViews[runId]?.connectionError) void stream.streamRun(runId);
+      }
+    };
+    const online = () => void reconnect();
+    window.addEventListener('online', online);
+    return () => window.removeEventListener('online', online);
+  }, [activityScope]);
   const activeSession = sessions.find((session) => session.id === activeId);
   const { reads: backgroundReads } = useNativeSubagents(
     workspace.workspaceId,
@@ -271,7 +378,10 @@ export function EmployeeSidebar({
                 aria-label={group.label}
                 aria-expanded={rail === group.key}
                 onFocus={() => setRail(group.key)}
-                onClick={() => setRail(group.key)}
+                onClick={() => {
+                  onEmployeeNavigate?.(group.key);
+                  setRail(group.key);
+                }}
               >
                 {Array.from(group.label)[0]}
               </button>
@@ -354,12 +464,13 @@ export function EmployeeSidebar({
                       {Array.from(group.label)[0]}
                     </span>
                   }
-                  onToggle={() =>
+                  onToggle={() => {
+                    onEmployeeNavigate?.(group.key);
                     setExpansion((current) => ({
                       ...current,
                       [group.key]: !group.expanded,
-                    }))
-                  }
+                    }));
+                  }}
                   t={employeeTranslate}
                 />
                 {onNewSession && employee && (

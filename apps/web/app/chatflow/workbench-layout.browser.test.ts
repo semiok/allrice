@@ -55,6 +55,10 @@ import {
   WorkflowPackageSchema,
   BrandContentBoardSchema,
   brandContentTemplateKeys,
+  brandMediaModule,
+  brandMediaRelease,
+  type EmployeeModuleBinding,
+  RunSnapshotSchema,
   workspaceCapabilityIds,
   type WorkspaceCapability,
   type InteractionStatus,
@@ -308,6 +312,25 @@ const A = id(1),
   user = id(5),
   run = id(6);
 const now = '2026-09-20T00:00:00.000Z';
+const sidebarStreams = (page: Page) =>
+  page.evaluate(() =>
+    (
+      JSON.parse(
+        document.documentElement.dataset.runStreams ?? '[]',
+      ) as string[]
+    )
+      .filter((url) => url.startsWith('/api/v1/runs/'))
+      .map((url) => new URL(url, location.href).pathname.split('/')[4]!),
+  );
+const finishSidebarRun = (page: Page, runId: string) =>
+  page.evaluate(
+    (detail) =>
+      window.dispatchEvent(new CustomEvent('allrice-test-stream', { detail })),
+    {
+      runId,
+      body: `data: ${JSON.stringify({ schemaVersion: 3, eventId: id(9901), organizationId: org, workspaceId: workspace, conversationId: A, runId, generation: 1, cursor: `${runId}:1`, sequence: 1, harness: 'dsh', occurredAt: now, sourceEvent: null, type: 'run.succeeded', payload: {} })}\n\n`,
+    },
+  );
 const operationTask = () =>
   RuntimeTaskRefSchema.parse({
     scope: { organizationId: org, workspaceId: workspace, projectId: null },
@@ -784,6 +807,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       employeeCount?: number;
       employeeHistory?: boolean;
       employeeDetails?: boolean;
+      brandMediaBinding?: EmployeeModuleBinding;
       employeeHistoryCount?: number;
       officeHistoryCount?: number;
       touch?: boolean;
@@ -806,6 +830,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       running?: boolean;
       streamingOutput?: boolean;
       controlledStream?: boolean;
+      sidebarActivity?: boolean;
       queue?: boolean;
       brandContent?: { kind: 'general' | 'custom'; registered: boolean };
       scheduledTasks?: AutomationCatalogTask[];
@@ -904,6 +929,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       brandContentBoardReads: 0,
       brandContentLaunches: [] as Array<Record<string, unknown>>,
       historyRunning: options.running ?? false,
+      sidebarRunIds: (options.running ? { [A]: [run] } : {}) as Record<
+        string,
+        string[]
+      >,
       bridgeDevices: [] as BridgeDevice[],
       bridgeError: false,
       bridgeSelections: [] as string[],
@@ -940,6 +969,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         attachmentIds: string[];
         referenceRevisionIds?: string[];
       }>,
+      messageReceiptDelay: null as Promise<void> | null,
       connections: [] as McpConnection[],
       connectionReads: 0,
       connectionError: false,
@@ -1095,6 +1125,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     );
     const withArchive = (item: Session): Session => ({
       ...item,
+      ...(options.sidebarActivity
+        ? {
+            ownerId: user,
+            activeRunIds: state.sidebarRunIds[item.id] ?? [],
+            running: !!state.sidebarRunIds[item.id]?.length,
+          }
+        : {}),
       ...(options.brandContent
         ? {
             employeeInstanceId:
@@ -1143,6 +1180,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     if (options.controlledStream)
       await page.addInitScript(() => {
         const originalFetch = window.fetch.bind(window);
+        const streams = new Map<number, string>();
+        let streamId = 0;
+        const record = () => {
+          document.documentElement.dataset.runStreams = JSON.stringify([
+            ...streams.values(),
+          ]);
+        };
         window.fetch = async (input, init) => {
           const url = new URL(String(input), location.origin);
           if (
@@ -1152,16 +1196,41 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             return originalFetch(input, init);
           let closed = false;
           let cleanup = () => {};
+          const key = ++streamId;
+          document.documentElement.dataset.streamStarted = String(streamId);
           const stream = new ReadableStream<Uint8Array>({
             start(controller) {
-              const push = (event: Event) =>
+              streams.set(key, url.pathname + url.search);
+              record();
+              const push = (event: Event) => {
+                const detail = (
+                  event as CustomEvent<
+                    | string
+                    | { runId: string; body: string }
+                    | { runId: string; close: true }
+                  >
+                ).detail;
+                if (
+                  typeof detail !== 'string' &&
+                  url.pathname !== `/api/v1/runs/${detail.runId}/events`
+                )
+                  return;
+                if (typeof detail !== 'string' && 'close' in detail) {
+                  cleanup();
+                  controller.close();
+                  return;
+                }
                 controller.enqueue(
                   new TextEncoder().encode(
-                    (event as CustomEvent<string>).detail,
+                    typeof detail === 'string' ? detail : detail.body,
                   ),
                 );
+              };
               cleanup = () => {
+                if (closed) return;
                 closed = true;
+                streams.delete(key);
+                record();
                 window.removeEventListener('allrice-test-stream', push);
               };
               window.addEventListener('allrice-test-stream', push);
@@ -1815,6 +1884,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       ) {
         const body = route.request().postDataJSON();
         state.messageInputs.push(body);
+        if (options.sidebarActivity) {
+          const sessionId = path.split('/')[4]!;
+          state.sidebarRunIds[sessionId] = [run];
+          state.messageStatus = 'pending';
+        }
+        if (state.messageReceiptDelay) await state.messageReceiptDelay;
         return answer({
           run: { id: run },
           delivery: 'immediate',
@@ -1843,6 +1918,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const body = route.request().postDataJSON();
           state.messageInputs.push(body);
           const messageId = id(300 + state.messageInputs.length);
+          const assistantMessageId = id(500 + state.messageInputs.length);
           const queued: QueuedMessage = {
             id: messageId,
             runId: id(400 + state.messageInputs.length),
@@ -1856,6 +1932,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             createdAt: now,
           };
           state.queue.push(queued);
+          if (options.sidebarActivity) {
+            const sessionId = path.split('/')[4]!;
+            state.sidebarRunIds[sessionId] = [
+              ...(state.sidebarRunIds[sessionId] ?? []),
+              queued.runId!,
+            ];
+          }
+          if (state.messageReceiptDelay) await state.messageReceiptDelay;
           return answer({
             delivery: 'follow_up',
             fallbackRunId: queued.runId,
@@ -1869,7 +1953,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               createdAt: now,
             },
             assistantMessage: {
-              id: id(500 + state.messageInputs.length),
+              id: assistantMessageId,
               role: 'assistant',
               content: { text: 'Rice 正在处理…' },
               status: 'pending',
@@ -1887,6 +1971,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               { error: { message: '这条消息已开始处理，不能再从队列修改。' } },
               409,
             );
+          const removed = state.queue.find(
+            (item) => item.id === path.split('/').at(-1),
+          );
+          if (options.sidebarActivity && removed?.runId) {
+            const sessionId = path.split('/')[4]!;
+            state.sidebarRunIds[sessionId] = (
+              state.sidebarRunIds[sessionId] ?? []
+            ).filter((runId) => runId !== removed.runId);
+          }
           state.queue = state.queue.filter(
             (item) => item.id !== path.split('/').at(-1),
           );
@@ -1940,13 +2033,24 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         if (body.archived !== undefined) {
           if (body.archived) state.archivedIds.add(target);
           else state.archivedIds.delete(target);
+          if (options.sidebarActivity && body.archived) {
+            state.sidebarRunIds[target] = [];
+            if (target === A) state.messageStatus = 'completed';
+          }
         }
         const changes = state.sessionEdits.get(target) ?? {};
         if (body.title !== undefined) changes.title = body.title;
         if (body.pinned !== undefined)
           changes.pinnedAt = body.pinned ? now : null;
         state.sessionEdits.set(target, changes);
-        return answer({ session: withArchive(session(target)) });
+        const updated = withArchive(session(target));
+        if (options.sidebarActivity) {
+          // PATCH returns the base Session DTO, not the list's activity read.
+          delete updated.running;
+          delete updated.activeRunIds;
+          delete updated.pendingInteraction;
+        }
+        return answer({ session: updated });
       }
       if (path.endsWith('/workspace-selection')) {
         state.bridgeSelections.push(path);
@@ -2062,6 +2166,54 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           }),
         );
       }
+      const moduleCatalogTarget = path.match(
+        /^\/api\/v1\/employee-instances\/([^/]+)\/modules$/,
+      );
+      if (moduleCatalogTarget && route.request().method() === 'GET') {
+        const instanceId = moduleCatalogTarget[1]!;
+        expect([
+          id(7),
+          id(17),
+          id(99),
+          ...(options.brandContent ? [id(8100)] : []),
+          ...state.createdEmployeeInstances.map((instance) => instance.id),
+        ]).toContain(instanceId);
+        expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+        expect(route.request().headers()['x-allrice-organization-id']).toBe(
+          org,
+        );
+        expect(route.request().headers()['x-allrice-workspace-id']).toBe(
+          url.searchParams.get('workspaceId'),
+        );
+        if (
+          state.viewer !== user ||
+          url.searchParams.get('workspaceId') !== state.workspace
+        )
+          return answer({ error: { message: 'No access' } }, 403);
+        if (options.employeeDetails && state.employeeDetailStatus !== 200)
+          return answer(
+            { error: { message: 'No access' } },
+            state.employeeDetailStatus,
+          );
+        if (instanceId === id(7) && state.employeeInstanceArchived) {
+          const response = employeeHubErrorResponse(
+            new EmployeeInstanceError('instance_archived'),
+          );
+          return answer(await response.json(), response.status);
+        }
+        const binding =
+          instanceId === id(7) ? (options.brandMediaBinding ?? null) : null;
+        return answer({
+          modules: [
+            {
+              descriptor: brandMediaModule,
+              binding,
+              available: !binding,
+              enabled: !!binding,
+            },
+          ],
+        });
+      }
       const skillCatalogTarget = path.match(
         /^\/api\/v1\/employee-instances\/([^/]+)\/skills$/,
       );
@@ -2075,11 +2227,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ...state.createdEmployeeInstances.map((instance) => instance.id),
         ]).toContain(instanceId);
         expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
-        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
-        expect(route.request().headers()['x-allrice-workspace-id']).toBe(
-          state.workspace,
+        expect(route.request().headers()['x-allrice-organization-id']).toBe(
+          org,
         );
-        if (state.viewer !== user)
+        expect(route.request().headers()['x-allrice-workspace-id']).toBe(
+          url.searchParams.get('workspaceId'),
+        );
+        if (
+          state.viewer !== user ||
+          url.searchParams.get('workspaceId') !== state.workspace
+        )
           return answer({ error: { message: 'No access' } }, 403);
         if (options.employeeDetails && state.employeeDetailStatus !== 200)
           return answer(
@@ -2106,9 +2263,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       );
       if (sceneCatalogTarget && route.request().method() === 'GET') {
         const instanceId = sceneCatalogTarget[1]!;
-        expect(url.searchParams.get('workspaceId')).toBe(state.workspace);
+        expect(route.request().headers()['x-allrice-organization-id']).toBe(
+          org,
+        );
+        expect(route.request().headers()['x-allrice-workspace-id']).toBe(
+          url.searchParams.get('workspaceId'),
+        );
         state.sceneCatalogReads.push({ instanceId, viewerId: state.viewer });
-        if (state.viewer !== user)
+        if (
+          state.viewer !== user ||
+          url.searchParams.get('workspaceId') !== state.workspace
+        )
           return answer({ error: { message: 'No access' } }, 403);
         const custom =
           instanceId === id(8100) ||
@@ -4527,28 +4692,33 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                   : { error: { message: 'Current content unavailable' } },
             }),
         );
-        await f.page.route(
-          `**/api/v1/employee-instances/${historicalId}/skills?*`,
-          (route) => {
-            const request = route.request();
-            if (request.method() !== 'GET') return route.fallback();
-            const url = new URL(request.url());
-            expect(url.pathname).toBe(
-              `/api/v1/employee-instances/${historicalId}/skills`,
-            );
-            expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
-            expect(url.searchParams.get('workspaceId')).toBe(workspace);
-            expect(request.headers()['x-allrice-workspace-id']).toBe(workspace);
-            expect(historical.ownerId).toBe(f.state.viewer);
-            return route.fulfill({
-              status: currentStatus,
-              json:
-                currentStatus === 409
-                  ? archivedError
-                  : { error: { message: 'Current content unavailable' } },
-            });
-          },
-        );
+        for (const catalog of ['skills', 'modules'] as const) {
+          await f.page.route(
+            `**/api/v1/employee-instances/${historicalId}/${catalog}?*`,
+            (route) => {
+              const request = route.request();
+              if (request.method() !== 'GET') return route.fallback();
+              const url = new URL(request.url());
+              expect(url.pathname).toBe(
+                `/api/v1/employee-instances/${historicalId}/${catalog}`,
+              );
+              expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+              expect(url.searchParams.get('workspaceId')).toBe(workspace);
+              expect(request.headers()['x-allrice-organization-id']).toBe(org);
+              expect(request.headers()['x-allrice-workspace-id']).toBe(
+                workspace,
+              );
+              expect(historical.ownerId).toBe(f.state.viewer);
+              return route.fulfill({
+                status: currentStatus,
+                json:
+                  currentStatus === 409
+                    ? archivedError
+                    : { error: { message: 'Current content unavailable' } },
+              });
+            },
+          );
+        }
         await f.page.route(
           `**/api/v1/employee-instances/${historicalId}/scene-skills/reads?*`,
           (route) => {
@@ -14374,7 +14544,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.reload();
       const timing = f.page.getByLabel('本轮运行时间', { exact: true });
       await timing.waitFor();
-      expect(await timing.innerText()).toBe('· 用时 17秒');
+      expect(await timing.innerText()).toBe('\u00a0用时 17秒');
       const motion = () =>
         f.page.evaluate(() => {
           const reply = document.querySelector(
@@ -14407,13 +14577,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       await f.page.emulateMedia({ reducedMotion: 'no-preference' });
       for (const seconds of [18, 19, 20]) {
         await f.page.clock.runFor(1000);
-        await expect.poll(() => timing.innerText()).toBe(`· 用时 ${seconds}秒`);
+        await expect
+          .poll(() => timing.innerText())
+          .toBe(`\u00a0用时 ${seconds}秒`);
       }
       // Server updates do not reset the display interval or make it run backwards.
       f.state.runTimings[0]!.timing.phase = 'waiting';
       f.state.runTimings[0]!.timing.wallMs = 19000;
       await f.page.clock.runFor(2000);
-      await expect.poll(() => timing.innerText()).toBe('· 用时 22秒');
+      await expect.poll(() => timing.innerText()).toBe('\u00a0用时 22秒');
       // The local clock can tick before the server phase receipt commits.
       await expect
         .poll(async () => (await motion()).map((item) => item.name))
@@ -14422,15 +14594,15 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       f.state.runTimings[0]!.timing.phase = 'terminal';
       f.state.runTimings[0]!.timing.wallMs = 22500;
       await f.page.clock.runFor(2000);
-      await expect.poll(() => timing.innerText()).toBe('· 用时 22秒');
+      await expect.poll(() => timing.innerText()).toBe('\u00a0用时 22秒');
       await f.page.clock.runFor(5000);
-      expect(await timing.innerText()).toBe('· 用时 22秒');
+      expect(await timing.innerText()).toBe('\u00a0用时 22秒');
       f.state.runTimings[0]!.timing.phase = 'queued';
       f.state.runTimings[0]!.timing.wallMs = 0;
       await f.page.reload();
       await timing.waitFor();
       await f.page.clock.runFor(3000);
-      expect(await timing.innerText()).toBe('· 用时 0秒');
+      expect(await timing.innerText()).toBe('\u00a0用时 0秒');
     } finally {
       await f.close();
     }
@@ -22771,7 +22943,12 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     }
   }, 30_000);
   it('uses the native stop-and-archive confirmation, cancel leaves the work running', async () => {
-    const f = await fixture({ archiveActive: true });
+    const f = await fixture({
+      archiveActive: true,
+      sidebarActivity: true,
+      controlledStream: true,
+      running: true,
+    });
     try {
       const row = f.page.locator(`[data-row-key="session:${A}"]`);
       await row.hover();
@@ -22790,11 +22967,787 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         archived: true,
         stopActivity: true,
       });
+      // B remains a background row when its archive receipt arrives. An
+      // unavailable follow-up list must not retain its old Run observer.
+      const b = f.page.locator(`[data-row-key="session:${B}"]`);
+      f.state.sidebarRunIds[B] = [id(406)];
+      await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+      await expect.poll(() => sidebarStreams(f.page)).toContain(id(406));
+      f.state.sessionListError = true;
+      await b.hover();
+      await selectSessionAction(f.page, b, '归档会话');
+      await dialog
+        .getByRole('button', { name: '停止并归档', exact: true })
+        .click();
+      await expect
+        .poll(() => f.state.archiveRequests.at(-1))
+        .toEqual({ archived: true, stopActivity: true });
+      await expect.poll(() => sidebarStreams(f.page)).not.toContain(id(406));
+      await f.page
+        .locator('#chat-sidebar')
+        .getByRole('alert', { name: '会话列表状态' })
+        .waitFor();
+      expect(await b.locator('svg[data-state="ongoing"]').count()).toBe(0);
+      const reads = f.state.sessionListRequests;
+      await finishSidebarRun(f.page, id(406));
+      await f.page.evaluate(() => new Promise(requestAnimationFrame));
+      expect(f.state.sessionListRequests).toBe(reads);
       expect(f.errors).toEqual([]);
     } finally {
       await f.context.close();
     }
   }, 30_000);
+  it.each([
+    'candidates',
+    'start',
+    'article',
+    'image',
+    'scope-changed',
+    'unlisted',
+    'terminal',
+  ] as const)(
+    'projects real plugin %s receipts into the authorized host sidebar without changing the selected chat',
+    async (kind) => {
+      const binding = {
+        organizationId: org,
+        workspaceId: workspace,
+        ownerId: user,
+        instanceId: id(7),
+        release: brandMediaRelease,
+        revision: 1,
+        enabledAt: now,
+        revokedAt: null,
+      };
+      const f = await fixture({
+        employeeDetails: true,
+        sidebarActivity: true,
+        controlledStream: true,
+        brandMediaBinding: binding,
+      });
+      const { page } = f,
+        changed = kind === 'scope-changed',
+        unlisted = kind === 'unlisted',
+        terminal = kind === 'terminal';
+      const sessionId = unlisted ? id(7401) : A,
+        runId = id(7400);
+      const topic = {
+        workspaceId: workspace,
+        instanceId: id(7),
+        id: id(7410),
+        revision: 1,
+        createdAt: now,
+        updatedAt: now,
+        candidate: {
+          title: '宿主里的真实选题',
+          summary: '用于插件接线的合成资料',
+        },
+        direction: '日常故事',
+        sourceRunId: run,
+        references: [],
+      };
+      const article = {
+        workspaceId: workspace,
+        instanceId: id(7),
+        id: id(7420),
+        revision: 1,
+        createdAt: now,
+        updatedAt: now,
+        topicId: topic.id,
+        title: '宿主里的文章',
+        requirements: '',
+        body: null,
+        references: [],
+        images: [],
+        publication: { state: 'draft', schedule: null, links: null },
+      };
+      const snapshot = RunSnapshotSchema.parse({
+        id: runId,
+        organizationId: org,
+        workspaceId: workspace,
+        ownerId: user,
+        status: terminal ? 'succeeded' : 'queued',
+        job: {
+          id: id(7402),
+          organizationId: org,
+          workspaceId: workspace,
+          ownerId: user,
+          status: terminal ? 'succeeded' : 'queued',
+          idempotencyKey: 'plugin-host-receipt',
+          priority: 0,
+          attempt: 0,
+          maxAttempts: 3,
+          availableAt: now,
+          timeoutAt: now,
+          payload: {
+            schemaVersion: 1,
+            type: 'allrice.employee.run',
+            input: {},
+          },
+          lease: null,
+        },
+        cancelRequestedAt: null,
+        result: null,
+        error: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      let accepted: Record<string, unknown> | undefined,
+        receipt: Record<string, unknown> | undefined;
+      let release = () => {},
+        list = () => {};
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      await page.route(
+        (url) =>
+          url.pathname === `/api/v1/employee-instances/${id(7)}/brand-media`,
+        async (route) => {
+          const request = route.request(),
+            url = new URL(request.url());
+          expect(request.headers()['x-allrice-organization-id']).toBe(org);
+          expect(request.headers()['x-allrice-workspace-id']).toBe(workspace);
+          const reply = (body: unknown) =>
+            route.fulfill({
+              status: 200,
+              contentType: 'application/json',
+              body: JSON.stringify(body),
+            });
+          if (request.method() === 'GET') {
+            expect(url.searchParams.get('workspaceId')).toBe(workspace);
+            const view = url.searchParams.get('view');
+            if (view === 'runs')
+              return reply({ runs: receipt ? [receipt] : [] });
+            if (view === 'topics')
+              return reply({ view, items: [topic], nextCursor: null });
+            if (view === 'articles')
+              return reply({ view, items: [article], nextCursor: null });
+            if (view === 'article') return reply({ view, article });
+            if (view === 'calendar') return reply({ view, items: [] });
+            throw Error('Unexpected plugin read ' + view);
+          }
+          expect(request.method()).toBe('POST');
+          const body = request.postDataJSON();
+          if (body.operation === 'article.start')
+            return reply({
+              result: { kind: 'article', article },
+              replayed: false,
+            });
+          expect(['candidates', 'article', 'image']).toContain(body.operation);
+          expect(body).toMatchObject({
+            workspaceId: workspace,
+            instanceId: id(7),
+            sessionId: A,
+          });
+          expect(body).not.toHaveProperty('deliveryMode');
+          accepted = body;
+          receipt = {
+            run: snapshot,
+            sessionId,
+            invocation: { module: binding, intent: body },
+            addedCandidates: [],
+            unavailable: false,
+            submission: null,
+            deliveries: [],
+            image: null,
+          };
+          f.state.sidebarRunIds[sessionId] = terminal ? [] : [runId];
+          await gate;
+          return reply({
+            run: snapshot,
+            invocation: receipt.invocation,
+            userMessage: { sessionId },
+          });
+        },
+      );
+      try {
+        const refreshed = page.waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname === '/api/v1/workspace',
+        );
+        const details = await openOwnerDetails(f);
+        await (await refreshed).finished();
+        await details
+          .getByRole('button', { name: '打开 品牌自媒体', exact: true })
+          .click();
+        const brand = page.getByRole('region', {
+          name: '品牌自媒体',
+          exact: true,
+        });
+        await brand.getByRole('tab', { name: '排期表', exact: true }).waitFor();
+        f.state.sessionListDelay = new Promise<void>((done) => {
+          list = done;
+        });
+        if (kind === 'start') {
+          await brand.getByRole('tab', { name: '选题库', exact: true }).click();
+          await brand
+            .getByRole('button', { name: '写正文', exact: true })
+            .click();
+          await page
+            .getByRole('dialog', { name: '写正文', exact: true })
+            .getByRole('button', { name: '开始写', exact: true })
+            .click();
+        } else if (kind === 'article' || kind === 'image') {
+          await brand.getByRole('tab', { name: '文章库', exact: true }).click();
+          if (kind === 'image') {
+            await brand
+              .getByRole('button', { name: '＋ 加配图', exact: true })
+              .click();
+            const modal = page.getByRole('dialog', {
+              name: '加配图',
+              exact: true,
+            });
+            await modal.getByLabel('画面描述').fill('一张蓝色品牌封面');
+            await modal
+              .getByRole('button', { name: '生成', exact: true })
+              .click();
+          } else {
+            await brand.getByLabel('修改意见').fill('保留结构，增加结尾');
+            await brand
+              .getByRole('button', { name: '修改', exact: true })
+              .click();
+          }
+        } else {
+          await brand.getByRole('tab', { name: '选题库', exact: true }).click();
+          await brand
+            .getByRole('button', { name: '＋ 想选题', exact: true })
+            .click();
+          await brand
+            .getByLabel('内容方向', { exact: true })
+            .fill('新品的日常故事');
+          await brand
+            .getByRole('button', {
+              name: '出选题',
+              exact: true,
+            })
+            .click();
+        }
+        await expect.poll(() => !!accepted).toBe(true);
+        await page.keyboard.press('Escape');
+        await page.locator(`[data-row-key="session:${B}"]`).click();
+        await expect
+          .poll(() =>
+            page.locator('[data-brand-media-host]').getAttribute('data-open'),
+          )
+          .toBe('false');
+        expect(await brand.count()).toBe(0);
+        const input = page.getByRole('textbox', { name: '给 Rice 的消息' });
+        await expect.poll(() => input.isEditable()).toBe(true);
+        await input.fill('B的草稿保留');
+        if (changed) {
+          list();
+          f.state.sessionListDelay = null;
+          f.state.employeeDetailStatus = 403;
+          f.state.viewer = id(999);
+          f.state.workspace = id(998);
+          f.state.sidebarRunIds[A] = [];
+          const scoped = page.waitForResponse(
+            (response) =>
+              new URL(response.url()).pathname.endsWith('/modules') &&
+              new URL(response.url()).searchParams.get('workspaceId') ===
+                id(998),
+          );
+          await page
+            .getByRole('button', { name: '查看Rice详情', exact: true })
+            .click();
+          await (await scoped).finished();
+          await page
+            .getByRole('dialog', { name: /员工详情/ })
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
+          await page
+            .locator('[data-composer-seat]')
+            .getByText('归档列表读取失败，请重试。', { exact: true })
+            .waitFor();
+        }
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+        const reads = f.state.sessionListRequests;
+        const response = page.waitForResponse(
+          (value) =>
+            value.request().method() === 'POST' &&
+            new URL(value.url()).pathname.endsWith('/brand-media'),
+        );
+        release();
+        await (await response).finished();
+        const a = page.locator(`[data-row-key="session:${A}"]`);
+        if (!changed)
+          await expect
+            .poll(() => f.state.sessionListRequests)
+            .toBeGreaterThan(reads);
+        await page.evaluate(() => new Promise(requestAnimationFrame));
+        await expect
+          .poll(() => a.locator('svg[data-state="ongoing"]').count())
+          .toBe(changed || unlisted || terminal ? 0 : 1);
+        expect(
+          await page.locator(`[data-row-key="session:${id(7401)}"]`).count(),
+        ).toBe(0);
+        if (changed) {
+          expect(f.state.sessionListRequests).toBe(reads);
+          expect(await input.count()).toBe(0);
+          expect(await sidebarStreams(page)).toEqual([]);
+        } else {
+          expect(await input.inputValue()).toBe('B的草稿保留');
+          list();
+          f.state.sessionListDelay = null;
+          if (!unlisted && !terminal) {
+            await expect.poll(() => sidebarStreams(page)).toContain(runId);
+            f.state.sidebarRunIds[A] = [];
+            snapshot.status = 'succeeded';
+            snapshot.job.status = 'succeeded';
+            await finishSidebarRun(page, runId);
+            await expect
+              .poll(() => a.locator('svg[data-state="ongoing"]').count())
+              .toBe(0);
+            await expect.poll(() => sidebarStreams(page)).not.toContain(runId);
+          }
+        }
+        expect(
+          await page
+            .locator('[data-chat-scroll]')
+            .getByText('新品的日常故事', { exact: true })
+            .count(),
+        ).toBe(0);
+      } finally {
+        release();
+        list();
+        await f.close();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    'keeps a late accepted send scoped to its original Session (tenant changed=%s)',
+    async (changed) => {
+      const f = await fixture({
+        queue: true,
+        employeeDetails: true,
+        sidebarActivity: true,
+        controlledStream: true,
+      });
+      let receipt = () => {},
+        list = () => {};
+      try {
+        const sidebar = f.page.locator('#chat-sidebar');
+        const a = sidebar.locator(`[data-row-key="session:${A}"]`);
+        const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+        f.state.sessionListDelay = new Promise<void>((done) => {
+          list = done;
+        });
+        const reads = f.state.sessionListRequests;
+        await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+        await expect
+          .poll(() => f.state.sessionListRequests)
+          .toBeGreaterThan(reads);
+        f.state.messageReceiptDelay = new Promise<void>((done) => {
+          receipt = done;
+        });
+        await input.fill('给原会话继续整理资料。');
+        await input.press('Enter');
+        await expect.poll(() => f.state.messageInputs.length).toBe(1);
+        await sidebar.locator(`[data-row-key="session:${B}"]`).click();
+        await input.fill('这里的草稿继续保留。');
+        if (changed) {
+          const scoped = f.page.waitForResponse(
+            (value) =>
+              new URL(value.url()).pathname.endsWith('/modules') &&
+              new URL(value.url()).searchParams.get('workspaceId') === id(998),
+          );
+          const historyDenied = f.page.waitForResponse((value) => {
+            const url = new URL(value.url());
+            return (
+              value.request().method() === 'GET' &&
+              url.pathname === '/api/v1/employee-instances' &&
+              url.searchParams.get('workspaceId') === id(998) &&
+              url.searchParams.get('view') === 'history'
+            );
+          });
+          f.state.employeeDetailStatus = 403;
+          f.state.viewer = id(999);
+          f.state.workspace = id(998);
+          f.state.sidebarRunIds[A] = [];
+          await f.page
+            .getByRole('button', { name: '查看Rice详情', exact: true })
+            .click();
+          await (await scoped).finished();
+          expect((await historyDenied).status()).toBe(403);
+          await f.page
+            .getByRole('dialog', { name: /员工详情/ })
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
+          await f.page
+            .locator('[data-composer-seat]')
+            .getByRole('alert')
+            .getByText('归档列表读取失败，请重试。', { exact: true })
+            .waitFor();
+        }
+        const response = f.page.waitForResponse(
+          (value) =>
+            value.request().method() === 'POST' &&
+            new URL(value.url()).pathname === `/api/v1/sessions/${A}/messages`,
+        );
+        receipt();
+        list();
+        f.state.messageReceiptDelay = f.state.sessionListDelay = null;
+        await (await response).finished();
+        await f.page.evaluate(() => new Promise(requestAnimationFrame));
+        await expect
+          .poll(() => a.locator('svg[data-state="ongoing"]').count())
+          .toBe(changed ? 0 : 1);
+        if (changed) expect(await input.count()).toBe(0);
+        else expect(await input.inputValue()).toBe('这里的草稿继续保留。');
+        expect(
+          await f.page
+            .locator('[data-chat-scroll]')
+            .getByText('给原会话继续整理资料。', { exact: true })
+            .count(),
+        ).toBe(0);
+        if (changed) expect(await sidebarStreams(f.page)).toEqual([]);
+        else await expect.poll(() => sidebarStreams(f.page)).toEqual([id(401)]);
+      } finally {
+        receipt();
+        list();
+        await f.close();
+      }
+    },
+  );
+
+  it('recovers an exhausted background Run stream on online before its old activity read finishes using the original retry budget', async () => {
+    const f = await fixture({
+      queue: true,
+      sidebarActivity: true,
+      controlledStream: true,
+    });
+    let releaseList = () => {};
+    let heldRead: Request | undefined;
+    let heldReadFinished = false;
+    const activityRead = (request: Request) =>
+      request.method() === 'GET' &&
+      new URL(request.url()).pathname === '/api/v1/sessions';
+    f.page.on('requestfinished', (request) => {
+      if (request === heldRead) heldReadFinished = true;
+    });
+    try {
+      const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+      await input.fill('切走后继续执行。');
+      await input.press('Enter');
+      await expect.poll(() => input.isEnabled()).toBe(true);
+      await f.page.locator(`[data-row-key="session:${B}"]`).click();
+      const a = f.page.locator(`[data-row-key="session:${A}"]`);
+      const attempts = () =>
+        f.page.evaluate(() =>
+          Number(document.documentElement.dataset.streamStarted ?? 0),
+        );
+      await f.page.clock.install();
+      for (let index = 0; index < 7; index++) {
+        await expect.poll(attempts).toBe(index + 1);
+        const reads = f.state.sessionListRequests;
+        const exhaustedRead =
+          index === 6 ? f.page.waitForRequest(activityRead) : null;
+        if (index === 6)
+          f.state.sessionListDelay = new Promise<void>((done) => {
+            releaseList = done;
+          });
+        await f.page.evaluate(
+          (runId) =>
+            window.dispatchEvent(
+              new CustomEvent('allrice-test-stream', {
+                detail: { runId, close: true },
+              }),
+            ),
+          id(401),
+        );
+        await f.page.clock.runFor(3000);
+        if (exhaustedRead) {
+          heldRead = await exhaustedRead;
+          await expect.poll(() => f.state.sessionListRequests).toBe(reads + 1);
+          // That request already captured its gate. New online reads stay live.
+          f.state.sessionListDelay = null;
+        }
+      }
+      await f.page.clock.runFor(30000);
+      expect(await attempts()).toBe(7);
+      expect(await a.locator('svg[data-state="ongoing"]').count()).toBe(1);
+      const refreshed = f.page.waitForResponse(
+        (response) =>
+          activityRead(response.request()) && response.request() !== heldRead,
+      );
+      await f.page.evaluate(() => window.dispatchEvent(new Event('online')));
+      await (await refreshed).finished();
+      expect(heldReadFinished).toBe(false);
+      await expect.poll(attempts).toBe(8);
+      await expect.poll(() => sidebarStreams(f.page)).toEqual([id(401)]);
+      releaseList();
+      await expect.poll(() => heldReadFinished).toBe(true);
+      expect(await attempts()).toBe(8);
+      f.state.sidebarRunIds[A] = [];
+      await finishSidebarRun(f.page, id(401));
+      await expect
+        .poll(() => a.locator('svg[data-state="ongoing"]').count())
+        .toBe(0);
+      await f.page.clock.runFor(30000);
+      expect(await attempts()).toBe(8);
+      expect(await sidebarStreams(f.page)).toEqual([]);
+    } finally {
+      f.state.sessionListDelay = null;
+      releaseList();
+      await f.close();
+    }
+  });
+
+  it.each(['edit', 'remove'] as const)(
+    'refreshes queued Run facts after %s without clearing another queued Run',
+    async (action) => {
+      const f = await fixture({
+        queue: true,
+        sidebarActivity: true,
+        controlledStream: true,
+      });
+      try {
+        const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+        const a = f.page.locator(`[data-row-key="session:${A}"]`);
+        for (const text of ['排队一', '排队二']) {
+          await input.fill(text);
+          await input.press('Enter');
+          await expect.poll(() => input.isEnabled()).toBe(true);
+        }
+        await f.page.getByRole('button', { name: /排队消息 · 2/ }).click();
+        const dock = f.page.locator('[data-queue-dock]');
+        for (let index = 0; index < 2; index++) {
+          const reads = f.state.sessionListRequests;
+          await dock
+            .getByRole('button', {
+              name: action === 'edit' ? '重新编辑' : '撤回消息',
+            })
+            .first()
+            .click();
+          await expect.poll(() => f.state.queue.length).toBe(1 - index);
+          await expect
+            .poll(() => f.state.sessionListRequests)
+            .toBeGreaterThan(reads);
+          await expect
+            .poll(() => a.locator('svg[data-state="ongoing"]').count())
+            .toBe(index === 0 ? 1 : 0);
+          if (action === 'edit') {
+            expect(await input.inputValue()).toBe(
+              index === 0 ? '排队一' : '排队二',
+            );
+            await input.fill('');
+          }
+        }
+        expect(f.state.queueActions.map((item) => item.action)).toEqual([
+          action,
+          action,
+        ]);
+        expect(await sidebarStreams(f.page)).toEqual([]);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+
+  for (const width of [1440, 390])
+    for (const appearance of ['light', 'dark'] as const)
+      it(`keeps accepted work running after switching sessions with full native corners at ${width}px ${appearance}`, async () => {
+        const f = await fixture({
+          width,
+          touch: width === 390,
+          appearance,
+          employeeDetails: true,
+          sidebarActivity: true,
+          controlledStream: true,
+          queue: true,
+        });
+        let release = () => {};
+        try {
+          await f.page.emulateMedia({ reducedMotion: 'reduce' });
+          const sidebar = f.page.locator('#chat-sidebar');
+          const a = sidebar.locator(`[data-row-key="session:${A}"]`);
+          const b = sidebar.locator(`[data-row-key="session:${B}"]`);
+          const ongoing = a.locator('svg[data-state="ongoing"]');
+          const open = async () => {
+            if (width === 390) {
+              await f.page
+                .getByRole('button', { name: '展开侧边栏', exact: true })
+                .click();
+              expect(await sidebar.getAttribute('aria-modal')).toBe('true');
+            }
+          };
+          const corners = async (selected: typeof a) => {
+            const box = await selected.evaluate((row) => {
+              const rect = row.getBoundingClientRect();
+              const card = row
+                .closest('section[aria-label]')!
+                .querySelector('[class*="employeeCard"]')!
+                .getBoundingClientRect();
+              let left = Math.max(0, rect.left),
+                right = Math.min(
+                  document.documentElement.clientWidth,
+                  rect.right,
+                ),
+                fixedToViewport = false;
+              for (let at = row.parentElement; at; at = at.parentElement) {
+                const style = getComputedStyle(at);
+                if (fixedToViewport) {
+                  const createsContainingBlock =
+                    style.transform !== 'none' ||
+                    style.filter !== 'none' ||
+                    style.perspective !== 'none' ||
+                    /paint|layout|strict|content/.test(style.contain) ||
+                    /transform|filter|perspective/.test(style.willChange);
+                  if (!createsContainingBlock) continue;
+                  fixedToViewport = false;
+                }
+                if (
+                  ['auto', 'scroll', 'hidden', 'clip'].includes(style.overflowX)
+                ) {
+                  const ancestor = at.getBoundingClientRect();
+                  left = Math.max(left, ancestor.left + at.clientLeft);
+                  right = Math.min(
+                    right,
+                    ancestor.left + at.clientLeft + at.clientWidth,
+                  );
+                }
+                if (style.position === 'fixed') fixedToViewport = true;
+              }
+              const css = getComputedStyle(row);
+              return {
+                left: rect.left,
+                right: rect.right,
+                cardLeft: card.left,
+                cardRight: card.right,
+                visibleLeft: left,
+                visibleRight: right,
+                edgeHits: [rect.left + 1, rect.right - 1].map((x) =>
+                  row.contains(
+                    document.elementFromPoint(x, rect.top + rect.height / 2),
+                  ),
+                ),
+                radius: [
+                  css.borderTopLeftRadius,
+                  css.borderTopRightRadius,
+                  css.borderBottomRightRadius,
+                  css.borderBottomLeftRadius,
+                ],
+              };
+            });
+            expect(Math.abs(box.left - box.cardLeft)).toBeLessThanOrEqual(0.5);
+            expect(Math.abs(box.right - box.cardRight)).toBeLessThanOrEqual(
+              0.5,
+            );
+            expect(Math.abs(box.visibleLeft - box.left)).toBeLessThanOrEqual(
+              0.5,
+            );
+            expect(Math.abs(box.visibleRight - box.right)).toBeLessThanOrEqual(
+              0.5,
+            );
+            expect(box.radius).toEqual(['12px', '12px', '12px', '12px']);
+            expect(box.edgeHits).toEqual([true, true]);
+          };
+          f.state.sessionListDelay = new Promise<void>((done) => {
+            release = done;
+          });
+          let reads = f.state.sessionListRequests;
+          await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+          await expect
+            .poll(() => f.state.sessionListRequests)
+            .toBeGreaterThan(reads);
+          const input = f.page.getByRole('textbox', { name: '给 Rice 的消息' });
+          await input.fill('继续整理资料，完成后给我结果。');
+          await input.press('Enter');
+          await expect.poll(() => f.state.messageInputs.length).toBe(1);
+          expect(f.state.messageInputs[0]).toMatchObject({
+            text: '继续整理资料，完成后给我结果。',
+            deliveryMode: 'follow_up',
+          });
+          await expect.poll(() => input.isEnabled()).toBe(true);
+          await input.fill('接着核对下一份资料。');
+          await input.press('Enter');
+          await expect.poll(() => f.state.messageInputs.length).toBe(2);
+          release();
+          f.state.sessionListDelay = null;
+          await open();
+          await expect.poll(() => ongoing.count()).toBe(1);
+          expect(await a.getAttribute('aria-selected')).toBe('true');
+          await corners(a);
+          await b.click();
+          await open();
+          expect(await b.getAttribute('aria-selected')).toBe('true');
+          expect(await a.getAttribute('aria-selected')).toBe('false');
+          expect(await ongoing.count()).toBe(1);
+          expect(await b.locator('svg[data-state="ongoing"]').count()).toBe(0);
+          await corners(b);
+          const first = id(401),
+            successor = id(402);
+          await expect.poll(() => sidebarStreams(f.page)).toContain(first);
+          // A terminal notice while a list read is in flight must start a
+          // fresh read. The successor keeps this row running independently.
+          f.state.sessionListDelay = new Promise<void>((done) => {
+            release = done;
+          });
+          reads = f.state.sessionListRequests;
+          await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+          await expect
+            .poll(() => f.state.sessionListRequests)
+            .toBeGreaterThan(reads);
+          reads = f.state.sessionListRequests;
+          f.state.sidebarRunIds[A] = [successor];
+          f.state.queue = f.state.queue.filter((item) => item.runId !== first);
+          await finishSidebarRun(f.page, first);
+          await expect
+            .poll(() => f.state.sessionListRequests)
+            .toBeGreaterThan(reads);
+          release();
+          f.state.sessionListDelay = null;
+          await expect.poll(() => sidebarStreams(f.page)).toEqual([successor]);
+          expect(await ongoing.count()).toBe(1);
+          f.state.sidebarRunIds[A] = [];
+          f.state.queue = [];
+          await finishSidebarRun(f.page, successor);
+          await expect.poll(() => ongoing.count()).toBe(0);
+          await expect.poll(() => sidebarStreams(f.page)).toEqual([]);
+          reads = f.state.sessionListRequests;
+          await finishSidebarRun(f.page, successor);
+          await f.page.evaluate(() => new Promise(requestAnimationFrame));
+          expect(f.state.sessionListRequests).toBe(reads);
+          // The same visible record under another viewer cannot retain the
+          // previous owner's observer or apply its late terminal callback.
+          f.state.sidebarRunIds[A] = [id(403)];
+          await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));
+          await expect.poll(() => sidebarStreams(f.page)).toEqual([id(403)]);
+          const employee = sidebar
+            .getByRole('region', { name: 'Rice', exact: true })
+            .getByRole('treeitem')
+            .first();
+          await employee.click();
+          await expect.poll(() => a.count()).toBe(0);
+          await expect.poll(() => sidebarStreams(f.page)).toEqual([]);
+          await employee.click();
+          await expect.poll(() => sidebarStreams(f.page)).toEqual([id(403)]);
+          const identity = f.page.waitForResponse(
+            (response) =>
+              new URL(response.url()).pathname === '/api/v1/workspace',
+          );
+          f.state.employeeDetailStatus = 403;
+          f.state.viewer = id(99);
+          await f.page
+            .getByRole('button', { name: '查看Rice详情', exact: true })
+            .click();
+          await (await identity).finished();
+          await f.page
+            .getByRole('dialog', { name: /员工详情/ })
+            .getByRole('button', { name: '关闭', exact: true })
+            .click();
+          await expect.poll(() => sidebarStreams(f.page)).toEqual([]);
+          reads = f.state.sessionListRequests;
+          await finishSidebarRun(f.page, id(403));
+          await f.page.evaluate(() => new Promise(requestAnimationFrame));
+          expect(f.state.sessionListRequests).toBe(reads);
+          expect(f.errors).toEqual([]);
+        } finally {
+          release();
+          await f.close();
+        }
+      });
+
   it.each([0, 3, 5, 7])(
     'automatically shows up to five employee sessions before offering the rest (%i total)',
     async (total) => {
@@ -22928,6 +23881,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       employeeHistory: true,
       employeeHistoryCount: 35,
       officeHistoryCount: 7,
+      sidebarActivity: true,
+      controlledStream: true,
     });
     let release!: () => void;
     try {
@@ -22936,11 +23891,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         name: 'Office 文档助手',
         exact: true,
       });
+      f.state.sidebarRunIds[B] = [id(405)];
       await office.getByRole('treeitem').first().click();
       const rows = office.locator('[data-row-key^="session:"]');
       await expect.poll(() => rows.count()).toBe(5);
       await office.getByRole('button', { name: '展开其余 2 个会话' }).click();
       await expect.poll(() => rows.count()).toBe(7);
+      await expect.poll(() => sidebarStreams(f.page)).toContain(id(405));
       for (let i = 0; i < 3; i++) {
         f.state.sessionPageDelay = new Promise<void>((done) => {
           release = done;
@@ -22956,10 +23913,19 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(
           await office.getByText('正在加载会话…', { exact: true }).count(),
         ).toBe(0);
+        if (i === 0) {
+          const pendingReads = f.state.sessionPageRequests.length;
+          f.state.sidebarRunIds[B] = [];
+          await finishSidebarRun(f.page, id(405));
+          await expect
+            .poll(() => f.state.sessionPageRequests.length)
+            .toBeGreaterThan(pendingReads);
+        }
         release();
         f.state.sessionPageDelay = null;
         await f.page.waitForTimeout(100);
         expect(await rows.count()).toBe(7);
+        expect(await rows.locator('svg[data-state="ongoing"]').count()).toBe(0);
       }
       f.state.sessionPageError = true;
       await f.page.evaluate(() => window.dispatchEvent(new Event('focus')));

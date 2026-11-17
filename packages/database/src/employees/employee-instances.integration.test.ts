@@ -2608,6 +2608,120 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       updateEmployeeInstance(f.b.context, instance.id, edit),
     ).rejects.toMatchObject({ code: 'not_found' });
   });
+  it('projects current Run IDs on employee pages and preserves a queued successor after the first Run ends', async () => {
+    const f = await setup(),
+      one = await f.custom('Sidebar activity');
+    const first = await profileRun(f, one.id, '请继续整理这份资料。');
+    const successor = await sendChatMessage(
+      f.a.context,
+      f.a.workspaceId,
+      first.sessionId,
+      {
+        text: '接着核对下一份资料。',
+        clientMessageId: randomUUID(),
+        deliveryMode: 'follow_up',
+      },
+    );
+    expect(successor.delivery).toBe('follow_up');
+    const idle = await f.session(one.id);
+    const page = await listChatSessions(f.a.context, f.a.workspaceId, {
+      employeeInstanceId: one.id,
+      limit: 1,
+    });
+    expect(page.sessions[0]).toMatchObject({
+      id: idle.id,
+      running: false,
+      activeRunIds: [],
+    });
+    expect(page.nextCursor).not.toBeNull();
+    const deeper = await listChatSessions(f.a.context, f.a.workspaceId, {
+      employeeInstanceId: one.id,
+      limit: 1,
+      cursor: page.nextCursor!,
+    });
+    const ids = [first.context.runId, successor.run.id].sort();
+    expect(deeper.sessions).toEqual([
+      expect.objectContaining({
+        id: first.sessionId,
+        running: true,
+        activeRunIds: ids,
+      }),
+    ]);
+    const activity = async () =>
+      (await getEmployeeWorkspace(f.a.context, f.a.workspaceId)).sessions.find(
+        (row) => row.id === first.sessionId,
+      )!;
+    expect(await activity()).toMatchObject({
+      running: true,
+      activeRunIds: ids,
+    });
+    await queue.completeJob({
+      workerId: first.context.worker.id,
+      jobId: first.context.jobId,
+      leaseToken: first.worker.leaseToken,
+      result: { text: '合成完成' },
+    });
+    expect(await activity()).toMatchObject({
+      running: true,
+      activeRunIds: [successor.run.id],
+    });
+    const next = await listChatSessions(f.a.context, f.a.workspaceId, {
+      employeeInstanceId: one.id,
+    });
+    expect(
+      next.sessions.find((row) => row.id === first.sessionId),
+    ).toMatchObject({ running: true, activeRunIds: [successor.run.id] });
+    expect(
+      (
+        await listChatSessions(f.b.context, f.b.workspaceId, {
+          employeeInstanceId: one.id,
+        })
+      ).sessions,
+    ).toEqual([]);
+    expect(
+      (await getEmployeeWorkspace(f.b.context, f.b.workspaceId)).sessions.some(
+        (row) => row.id === first.sessionId,
+      ),
+    ).toBe(false);
+    const cancellation = await queue.cancelRun(
+      f.a.context,
+      f.a.workspaceId,
+      successor.run.id,
+      {
+        reason: 'Synthetic sidebar test cleanup',
+      },
+    );
+    expect(cancellation).toMatchObject({
+      status: 'queued',
+      cancelRequestedAt: expect.any(String),
+    });
+    expect(await activity()).toMatchObject({
+      running: true,
+      activeRunIds: [successor.run.id],
+    });
+    await queue.maintainQueue();
+    expect(
+      await queue.getRun(f.a.context, f.a.workspaceId, successor.run.id),
+    ).toMatchObject({
+      status: 'canceled',
+    });
+    expect(await activity()).toMatchObject({
+      running: false,
+      activeRunIds: [],
+    });
+    expect(
+      (
+        await listChatSessions(f.a.context, f.a.workspaceId, {
+          employeeInstanceId: one.id,
+        })
+      ).sessions.find((row) => row.id === first.sessionId),
+    ).toMatchObject({ running: false, activeRunIds: [] });
+    await fixture.db`update allrice_memberships set active=false where user_id=${f.a.user.id} and organization_id=${f.a.organizationId}`;
+    await expect(
+      listChatSessions(f.a.context, f.a.workspaceId),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+  });
+
   it('binds each Session and paginated sidebar group to the chosen instance and rejects cross-instance Session replay', async () => {
     const f = await setup(),
       one = await f.custom('Weekly'),

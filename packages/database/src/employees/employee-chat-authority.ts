@@ -5,6 +5,7 @@ import {
   EmployeeExecutionSnapshotSchema,
   UuidSchema,
   employeeCustomizationToolsForInstance,
+  withPlatformImageTools,
   type ExecutionContext,
   type EmployeeInstance,
 } from '@allrice/contracts';
@@ -71,14 +72,39 @@ export async function assertEmployeeChatExecution(
     throw new DataAccessError('authorization_denied');
   },
 ) {
-  const { ctx, scope } = employeeChatIdentity(input, fail);
+  employeeChatIdentity(input, fail);
   const operation =
     tool === 'automation.create'
       ? { capability: 'automation:write' as const }
       : employeeCustomizationToolsForInstance(before.kind).find(
           (entry) => entry.name === tool,
         );
-  if (!operation || before.ownerId !== scope.actor.id) fail();
+  if (!operation) fail();
+  return assertEmployeeChatToolExecution(
+    tx,
+    input,
+    before,
+    { name: tool, capability: operation.capability },
+    fail,
+  );
+}
+/** Server-selected tool metadata only; module callers must additionally check
+ * their exact frozen/current binding and trusted invocation. */
+export async function assertEmployeeChatToolExecution(
+  tx: postgres.TransactionSql,
+  input: EmployeeChatCall,
+  before: EmployeeInstance,
+  operation: {
+    name: string;
+    capability: 'storage:read' | 'storage:write' | 'automation:write';
+  },
+  fail: () => never = () => {
+    throw new DataAccessError('authorization_denied');
+  },
+) {
+  const { ctx, scope } = employeeChatIdentity(input, fail);
+  const tool = operation.name;
+  if (before.ownerId !== scope.actor.id) fail();
   await assertWorkbenchSession(tx, scope, input.sessionId, true, 'share');
   // Cancellation takes root/job locks before employee authority. NOWAIT
   // uses the existing bounded transaction retry instead of deadlocking.
@@ -119,13 +145,21 @@ export async function assertEmployeeChatExecution(
   )
     fail();
   const capability = operation.capability;
+  const toolNames =
+    tool === 'image.generate'
+      ? withPlatformImageTools(
+          frozen.capabilitySnapshot.bindings.toolNames,
+          frozen.capabilitySnapshot.grantedCapabilities,
+          frozen.modelSnapshot,
+        )
+      : frozen.capabilitySnapshot.bindings.toolNames;
   if (
     frozen.tenantContext.organizationId !== ctx.organizationId ||
     frozen.tenantContext.workspaceId !== ctx.workspaceId ||
     frozen.tenantContext.actorId !== ctx.policySnapshot.subjectId ||
     frozen.tenantContext.policySnapshotId !== ctx.policySnapshot.id ||
     !frozen.capabilitySnapshot.grantedCapabilities.includes(capability) ||
-    !frozen.capabilitySnapshot.bindings.toolNames.includes(tool)
+    !toolNames.includes(tool)
   )
     fail();
   return { text: live.text, snapshot: frozen };

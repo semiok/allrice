@@ -14,7 +14,12 @@ import type {
   EmployeeInstance,
 } from '@allrice/contracts';
 
-import type { History, Session, Workspace } from './chatflow-types';
+import type {
+  History,
+  Session,
+  SessionActivity,
+  Workspace,
+} from './chatflow-types';
 import { readJson } from './chatflow-utils';
 import { employeeChoice, employeeChoices } from './employee-instances';
 import { createSessionSelection } from './session-selection';
@@ -40,6 +45,54 @@ function rememberHistory(
 
 export function useSession({ setError }: UseSessionOptions) {
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const workspaceRef = useRef(workspace);
+  workspaceRef.current = workspace;
+  const workspaceReadGeneration = useRef(0);
+  const applySessionActivities = useCallback(
+    (activities: SessionActivity[], scope: string) => {
+      const current = workspaceRef.current;
+      if (
+        !current ||
+        `${current.organizationId}/${current.workspaceId}/${current.viewerId}` !==
+          scope
+      )
+        return;
+      const byId = new Map(activities.map((row) => [row.id, row]));
+      const replace = (before: Workspace | null) => {
+        if (
+          !before ||
+          `${before.organizationId}/${before.workspaceId}/${before.viewerId}` !==
+            scope
+        )
+          return before;
+        let changed = false;
+        const sessions = before.sessions.map((session) => {
+          const activity = byId.get(session.id);
+          if (
+            !activity ||
+            (session.running === activity.running &&
+              session.activeRunIds?.join() === activity.activeRunIds?.join() &&
+              session.pendingInteraction === activity.pendingInteraction)
+          )
+            return session;
+          changed = true;
+          return { ...session, ...activity };
+        });
+        return changed ? { ...before, sessions } : before;
+      };
+      const next = replace(current);
+      if (next === current) return;
+      // Mirror the existing projection synchronously, so even a response in
+      // this event's microtask sees the new facts. No second activity cache.
+      workspaceRef.current = next;
+      setWorkspace((before) => {
+        const value = replace(before);
+        workspaceRef.current = value;
+        return value;
+      });
+    },
+    [],
+  );
   const [manifest, setManifest] = useState<SaasCapabilityManifest | null>(null);
   const [pendingEmployee, setPendingEmployee] = useState<{
     scope: string;
@@ -126,6 +179,13 @@ export function useSession({ setError }: UseSessionOptions) {
 
   const loadWorkspace = useCallback(
     async (signal?: AbortSignal) => {
+      const ticket = ++workspaceReadGeneration.current;
+      // Array identity is the immutable activity stamp on the existing row.
+      // Keep a request-local snapshot; metadata may still be applied after a
+      // new Run receipt, without restoring that row's older running facts.
+      const activityBefore = new Map(
+        workspaceRef.current?.sessions.map((row) => [row.id, row.activeRunIds]),
+      );
       const scope = selection.capture();
       const [workspaceResult, capabilityResult] = await Promise.all([
         fetch('/api/v1/workspace', { cache: 'no-store', signal }).then(
@@ -142,6 +202,7 @@ export function useSession({ setError }: UseSessionOptions) {
         ),
       ]);
       signal?.throwIfAborted();
+      if (ticket !== workspaceReadGeneration.current) return;
       const nextWorkspace = workspaceResult.workspace;
       const nextScope = `${nextWorkspace.organizationId}/${nextWorkspace.workspaceId}/${nextWorkspace.viewerId}`;
       if (historyScope.current !== nextScope) {
@@ -203,7 +264,40 @@ export function useSession({ setError }: UseSessionOptions) {
           await readJson(response);
         }
       }
+      if (ticket !== workspaceReadGeneration.current) return;
+      const currentWorkspace = workspaceRef.current;
+      if (
+        currentWorkspace &&
+        `${currentWorkspace.organizationId}/${currentWorkspace.workspaceId}/${currentWorkspace.viewerId}` ===
+          nextScope
+      ) {
+        const currentRows = new Map(
+          currentWorkspace.sessions.map((row) => [row.id, row]),
+        );
+        nextWorkspace.sessions = nextWorkspace.sessions.map((row) => {
+          const current = currentRows.get(row.id);
+          return current && current.activeRunIds !== activityBefore.get(row.id)
+            ? {
+                ...row,
+                running: current.running,
+                activeRunIds: current.activeRunIds,
+                pendingInteraction: current.pendingInteraction,
+              }
+            : row;
+        });
+        // A just-created owned Session may predate this older first-page read.
+        nextWorkspace.sessions.push(
+          ...currentWorkspace.sessions.filter(
+            (row) =>
+              row.ownerId === nextWorkspace.viewerId &&
+              row.activeRunIds?.length &&
+              row.activeRunIds !== activityBefore.get(row.id) &&
+              !nextWorkspace.sessions.some((next) => next.id === row.id),
+          ),
+        );
+      }
       setWorkspace(nextWorkspace);
+      workspaceRef.current = nextWorkspace;
       setManifest(capabilityResult.capabilities);
       if (scope.current()) {
         const current = scope.sessionId;
@@ -497,8 +591,13 @@ export function useSession({ setError }: UseSessionOptions) {
                       ? {
                           ...s,
                           ...session,
-                          running: false,
-                          pendingInteraction: undefined,
+                          ...(session.archivedAt
+                            ? {
+                                running: false,
+                                activeRunIds: [],
+                                pendingInteraction: undefined,
+                              }
+                            : {}),
                         }
                       : s,
                   )
@@ -569,6 +668,7 @@ export function useSession({ setError }: UseSessionOptions) {
     newSessionEmployee,
     pendingEmployeeAssignmentId,
     updateSession,
+    applySessionActivities,
     setPendingEmployeeAssignmentId,
     activeId,
     captureSelection: selection.capture,

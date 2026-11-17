@@ -22,6 +22,7 @@ export const TABLE_PREFIXES = [
   'allrice_dsh_',
 ] as const;
 export const EXACT_TABLE_NAMES = [
+  'allrice_employee_module_bindings',
   // Passive legacy development storage remains until a later destructive migration.
   'allrice_development_heads',
   'allrice_development_assignments',

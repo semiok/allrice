@@ -71,6 +71,7 @@ files:
     - apps/worker/test/project-runtime.integration.test.ts
     - packages/browser-control/src/local-preview.integration.test.ts
   browser:
+    - apps/web/app/chatflow/brand-media.browser.test.ts
     - apps/web/app/chatflow/brand-content-panel.test.tsx
     - scripts/test-proxy.browser.test.mjs
     - apps/web/server/project-preview.test.mjs
@@ -89,6 +90,7 @@ files:
     - apps/worker/src/native-schedule-once.test.ts
   db:
     - apps/web/lib/execution/model-failure-api.integration.test.ts
+    - apps/web/lib/brand-media.integration.test.ts
     - apps/web/lib/reference-publications.integration.test.ts
     - apps/web/lib/reference-search.integration.test.ts
     - apps/web/lib/reference-input.integration.test.ts

@@ -1,3 +1,7 @@
+import {
+  BrandMediaInvocationSchema,
+  type BrandMediaInvocation,
+} from '@allrice/contracts';
 import { personalInstanceNameSql } from '../employees/employee-instance-policy.ts';
 import { freezeConversationCapabilities } from './conversation-capabilities.ts';
 import {
@@ -782,6 +786,38 @@ export async function listChatSessions(
   const visible = rows.filter((row) => canReadSession(context, row));
   const page = visible.slice(0, limit);
   const last = page.at(-1);
+  // One activity projection for every authorized page, including employee
+  // pagination. Workspace consumes this same list result below.
+  const activityRows = page.length
+    ? await sql<
+        {
+          session_id: string;
+          active_run_ids: string[];
+          pending_approval: boolean;
+          pending_question: boolean;
+        }[]
+      >`
+    select s.id session_id,
+      array(select er.run_id from allrice_employee_runs er join allrice_runs r on r.id=er.run_id
+        and r.organization_id=er.organization_id and r.workspace_id=er.workspace_id and r.owner_id=er.owner_id
+        where er.session_id=s.id and er.organization_id=s.organization_id and er.workspace_id=s.workspace_id
+          and r.state in ('queued','running') order by er.run_id) active_run_ids,
+      exists(select 1 from allrice_employee_runs er
+        join allrice_approval_requests a on a.run_id=er.run_id
+          and a.organization_id=er.organization_id and a.workspace_id=er.workspace_id
+        join allrice_runtime_operations op on op.id=a.resource_id
+          and op.organization_id=a.organization_id and op.workspace_id=a.workspace_id
+        where er.session_id=s.id and er.owner_id=${requireUser(context)}
+          and a.runtime_request->>'respondentId'=${requireUser(context)}
+          and a.status='pending' and a.runtime_response is null and a.runtime_revoked_at is null
+          and a.runtime_expires_at>now() and op.snapshot->>'status'='waiting_user') pending_approval,
+      exists(select 1 from allrice_employee_runs er join allrice_runs r on r.id=er.run_id
+        join allrice_task_questions q on q.run_id=er.run_id and q.pending
+        where er.session_id=s.id and er.owner_id=${requireUser(context)} and r.state in ('queued','running')) pending_question
+    from allrice_chat_sessions s where s.organization_id=${context.organizationId} and s.workspace_id=${workspaceId}
+      and s.id in ${sql(page.map((row) => row.id))}`
+    : [];
+  const activity = new Map(activityRows.map((row) => [row.session_id, row]));
   // Count readable records independently of the page so that historical
   // employees remain discoverable even when their work is older than page one.
   const employeeGroups = options.includeEmployeeGroups
@@ -814,6 +850,13 @@ export async function listChatSessions(
     sessions: page.map((row) => ({
       ...mapSession(row),
       employeeName: row.employee_name,
+      activeRunIds: activity.get(row.id)?.active_run_ids ?? [],
+      running: !!activity.get(row.id)?.active_run_ids.length,
+      pendingInteraction: activity.get(row.id)?.pending_approval
+        ? ('approval' as const)
+        : activity.get(row.id)?.pending_question
+          ? ('question' as const)
+          : undefined,
     })),
     nextCursor:
       rows.length > limit && last
@@ -1277,6 +1320,7 @@ type ChatMessagePersistenceInput = {
   requestDigest: string;
   options: {
     folderEventId?: string;
+    moduleInvocation?: BrandMediaInvocation;
   };
 };
 
@@ -1434,7 +1478,8 @@ async function persistChatMessageInTransaction(
           message.reviewContinuation ||
           message.changesetAction ||
           message.companyTemplates?.length ||
-          message.referenceRevisionIds?.length))
+          message.referenceRevisionIds?.length ||
+          options.moduleInvocation))
     )
       throw new ArtifactReviewError('input_id_conflict');
     message.text = ChatMessageContentSchema.parse(userMessage.content).text;
@@ -1726,6 +1771,9 @@ async function prepareChatRunBinding(
     {
       context,
       employeeDocuments,
+      ...(input.options.moduleInvocation
+        ? { moduleInvocation: input.options.moduleInvocation }
+        : {}),
       ...(task
         ? {
             taskPersona: {
@@ -2010,11 +2058,29 @@ export async function sendChatMessage(
   input: unknown,
   options: {
     folderEventId?: string;
+    moduleInvocation?: BrandMediaInvocation;
   } = {},
 ) {
   const message = SendChatMessageInputSchema.parse(input);
+  const moduleInvocation = options.moduleInvocation
+    ? BrandMediaInvocationSchema.parse(options.moduleInvocation)
+    : undefined;
+  if (
+    moduleInvocation &&
+    (options.folderEventId ||
+      message.deliveryMode !== 'follow_up' ||
+      message.clientMessageId !== moduleInvocation.intent.requestId ||
+      moduleInvocation.intent.workspaceId !== workspaceId ||
+      (moduleInvocation.intent.sessionId &&
+        moduleInvocation.intent.sessionId !== sessionId))
+  )
+    throw new DataAccessError('authorization_denied');
   const requestDigest = `sha256:${createHash('sha256')
-    .update(JSON.stringify(message))
+    .update(
+      JSON.stringify(
+        moduleInvocation ? { message, moduleInvocation } : message,
+      ),
+    )
     .digest('hex')}`;
   const conversationMessage = message.userQuestionAnswer
     ? `allrice:user-question:v1:${JSON.stringify(message.userQuestionAnswer)}`
@@ -3241,45 +3307,16 @@ export async function getEmployeeWorkspace(
             and workspace_id = ${workspaceId}
             and session_id in ${sql(sessionIds)}
         `;
-  // Read only the already-authorized sidebar page in one query; do not poll
-  // each Session or expose approvals addressed to another member.
-  const sidebarRows =
-    sessionIds.length === 0
-      ? []
-      : await sql<
-          {
-            session_id: string;
-            employee_name: string | null;
-            running: boolean;
-            pending_approval: boolean;
-            pending_question: boolean;
-          }[]
-        >`
-    select s.id as session_id, v.manifest->>'name' as employee_name,
-      exists(select 1 from allrice_employee_runs er join allrice_runs r on r.id=er.run_id
-        where er.session_id=s.id and er.organization_id=s.organization_id
-          and er.workspace_id=s.workspace_id and r.state in ('queued','running')) as running,
-      exists(select 1 from allrice_employee_runs er
-        join allrice_approval_requests a on a.run_id=er.run_id
-          and a.organization_id=er.organization_id and a.workspace_id=er.workspace_id
-        join allrice_runtime_operations op on op.id=a.resource_id
-          and op.organization_id=a.organization_id and op.workspace_id=a.workspace_id
-        where er.session_id=s.id and er.owner_id=${requireUser(context)}
-          and a.runtime_request->>'respondentId'=${requireUser(context)}
-          and a.status='pending' and a.runtime_response is null
-          and a.runtime_revoked_at is null and a.runtime_expires_at>now()
-          and op.snapshot->>'status'='waiting_user') as pending_approval,
-      exists(select 1 from allrice_employee_runs er
-        join allrice_runs r on r.id=er.run_id
-        join allrice_task_questions q on q.run_id=er.run_id and q.pending
-        where er.session_id=s.id and er.owner_id=${requireUser(context)}
-          and r.state in ('queued','running')) as pending_question
-    from allrice_chat_sessions s
+  // Preserve the existing frozen employee-name projection. Activity itself is
+  // already the single authorized-page projection returned by listChatSessions.
+  const sidebarRows = sessionIds.length
+    ? await sql<{ session_id: string; employee_name: string | null }[]>`
+    select s.id session_id,v.manifest->>'name' employee_name from allrice_chat_sessions s
     join allrice_employee_versions v on v.id=s.employee_version_id
       and v.organization_id=s.organization_id and v.workspace_id=s.workspace_id
     where s.organization_id=${context.organizationId} and s.workspace_id=${workspaceId}
-      and s.id in ${sql(sessionIds)}
-  `;
+      and s.id in ${sql(sessionIds)}`
+    : [];
   const sidebarById = new Map(sidebarRows.map((row) => [row.session_id, row]));
   const cachedModels = new Map(
     modelRows.map((row) => [row.session_id, row.snapshot]),
@@ -3363,12 +3400,6 @@ export async function getEmployeeWorkspace(
       return {
         ...session,
         employeeName: row?.employee_name ?? undefined,
-        running: row?.running ?? false,
-        pendingInteraction: row?.pending_approval
-          ? ('approval' as const)
-          : row?.pending_question
-            ? ('question' as const)
-            : undefined,
       };
     }),
     sessionModels,

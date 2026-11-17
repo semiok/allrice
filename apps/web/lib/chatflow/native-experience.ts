@@ -37,6 +37,7 @@ export interface NativeExperienceItem {
   skillName?: string;
   stopped?: boolean;
   modelWait?: boolean;
+  historicalQuestion?: boolean;
   sequence: number;
   lastSequence?: number;
   toolName?: string;

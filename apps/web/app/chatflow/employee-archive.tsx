@@ -11,7 +11,7 @@ import type {
   EmployeeDetailsProfile,
   EmployeeInstance,
 } from '@allrice/contracts';
-import type { Session, Workspace } from './chatflow-types';
+import type { Session, SessionActivity, Workspace } from './chatflow-types';
 import { EmployeeSidebar } from './employee-sidebar';
 import { employeeAccentStyle } from './employee-navigation';
 import {
@@ -120,6 +120,7 @@ export function EmployeeArchiveDialog({
   archive,
   headers,
   onSessionUpdated,
+  onSessionActivities,
   workspace,
   activeId,
   onSelectSession,
@@ -129,6 +130,7 @@ export function EmployeeArchiveDialog({
   archive: Archive;
   headers: Record<string, string>;
   onSessionUpdated: (session: Session) => void;
+  onSessionActivities: (sessions: SessionActivity[], scope: string) => void;
   workspace: Workspace;
   activeId: string | null;
   onSelectSession: (id: string) => void;
@@ -139,6 +141,7 @@ export function EmployeeArchiveDialog({
     workspace,
     headers,
     onUpdated: onSessionUpdated,
+    onActivities: onSessionActivities,
     selectedSession: workspace.sessions.find(
       (session) => session.id === activeId,
     ),

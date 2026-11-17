@@ -1,6 +1,10 @@
-import { SkillResourceReadSchema } from '@allrice/contracts';
-import { readFrozenSkillResource } from '@allrice/database';
+import { SkillResourceReadSchema, brandMediaSkillId } from '@allrice/contracts';
+import {
+  readFrozenSkillResource,
+  readBrandMediaSkill,
+} from '@allrice/database';
 import { readPrivateSkillResource } from '../../personal-skill-storage.js';
+import { brandMediaWorkerCall } from './brand-media.js';
 import type { RiceToolHandler } from '../types.js';
 
 export const readSkillResource: RiceToolHandler = async ({
@@ -21,19 +25,29 @@ export const readSkillResource: RiceToolHandler = async ({
     )?.personal;
     if (personal && !input.sessionId)
       throw Error('personal_skill_session_required');
-    resource = personal
-      ? await readPrivateSkillResource({
-          context: input.context,
-          sessionId: input.sessionId!,
-          ...query,
-          storageRoot: input.storageRoot,
-          signal: input.signal,
-        })
-      : readFrozenSkillResource(
-          input.nativeSkills ?? [],
-          query.skill,
-          query.path,
-        );
+    resource =
+      query.skill === 'brand-media' &&
+      input.nativeSkills?.some(
+        (skill) => skill.id === brandMediaSkillId && skill.name === query.skill,
+      )
+        ? await readBrandMediaSkill(
+            brandMediaWorkerCall({ input, arguments: args }),
+            input.nativeSkills ?? [],
+            query.path,
+          )
+        : personal
+          ? await readPrivateSkillResource({
+              context: input.context,
+              sessionId: input.sessionId!,
+              ...query,
+              storageRoot: input.storageRoot,
+              signal: input.signal,
+            })
+          : readFrozenSkillResource(
+              input.nativeSkills ?? [],
+              query.skill,
+              query.path,
+            );
   }
   const { contentBase64, ...metadata } = resource;
   const text = /^(text\/|application\/(json|javascript)$)/.test(

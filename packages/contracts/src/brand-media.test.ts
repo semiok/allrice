@@ -1,3 +1,23 @@
+import {
+  brandMediaTools,
+  BrandMediaCandidatesResultSchema,
+  BrandMediaArticleResultSchema,
+} from './brand-media-tools.ts';
+import {
+  brandMediaModuleV010,
+  brandMediaModule,
+  brandMediaRelease,
+  brandMediaUsage,
+} from './brand-media-module.ts';
+import {
+  EmployeeExecutionSnapshotV1Schema,
+  EmployeeExecutionSnapshotV2Schema,
+} from './employees.ts';
+import {
+  BrandMediaGenerateInputSchema,
+  BrandMediaInvocationSchema,
+} from './brand-media.ts';
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
   BrandMediaArticleSchema,
@@ -6,6 +26,7 @@ import {
   BrandMediaPublicationSchema,
   BrandMediaReadInputSchema,
   BrandMediaReadResultSchema,
+  BrandMediaReferenceSchema,
   BrandMediaReferencesSchema,
   BrandMediaUserCommandSchema,
   transitionBrandMediaPublication,
@@ -306,5 +327,195 @@ describe('品牌自媒体 s1.3 data contract', () => {
         nextCursor: null,
       }).view,
     ).toBe('articles');
+  });
+});
+
+describe('P3 exact module contracts', () => {
+  it('keeps generated file pins versioned and accepts only immutable upload object/checksum nominations', () => {
+    const upload = {
+      origin: 'upload',
+      file: { objectId: file.objectId, checksum: file.checksum },
+    };
+    expect(BrandMediaReferenceSchema.parse(upload)).toEqual(upload);
+    expect(
+      BrandMediaReferenceSchema.safeParse({ ...upload, file }).success,
+    ).toBe(false);
+    expect(
+      BrandMediaReferenceSchema.safeParse({ origin: 'file', file: upload.file })
+        .success,
+    ).toBe(false);
+    expect(
+      BrandMediaReferenceSchema.safeParse({ ...upload, ownerId: id(1) })
+        .success,
+    ).toBe(false);
+  });
+  it('keeps old snapshot fields absent, publishes a new exact release and signs one user guide resource', () => {
+    expect(EmployeeExecutionSnapshotV1Schema.shape).not.toHaveProperty(
+      'modules',
+    );
+    expect(EmployeeExecutionSnapshotV1Schema.shape).not.toHaveProperty(
+      'moduleInvocation',
+    );
+    expect(
+      EmployeeExecutionSnapshotV2Schema.shape.modules.parse(undefined),
+    ).toBeUndefined();
+    expect(
+      EmployeeExecutionSnapshotV2Schema.shape.moduleInvocation.parse(undefined),
+    ).toBeUndefined();
+    expect(brandMediaModuleV010).toMatchObject({
+      contentVersion: '0.1.0',
+      tools: [],
+      skills: [],
+      views: [],
+    });
+    expect(brandMediaRelease.contentVersion).toBe('0.3.0');
+    expect(brandMediaRelease.digest).not.toBe(brandMediaModuleV010.digest);
+    expect(brandMediaModule.tools).toEqual(
+      brandMediaTools.map((entry) => entry.canonicalName),
+    );
+    expect(brandMediaUsage.checksum).toBe(
+      'sha256:' +
+        createHash('sha256').update(brandMediaUsage.content).digest('hex'),
+    );
+    expect(brandMediaUsage.content).not.toMatch(/workspace\.|CAS|P3|P4/);
+  });
+  it('browser intents exclude trusted facts, runtime controls and body submission', () => {
+    const intent = {
+      ...scope,
+      requestId: id(5),
+      operation: 'candidates',
+      direction: '想几个新品选题',
+      references: [],
+    };
+    expect(BrandMediaGenerateInputSchema.parse(intent)).toEqual(intent);
+    for (const facts of [
+      { module: brandMediaRelease },
+      { moduleInvocation: {} },
+      { deliveryMode: 'steer' },
+      { organizationId: id(9) },
+      { enabled: true },
+      { body: '伪造正文' },
+    ])
+      expect(
+        BrandMediaGenerateInputSchema.safeParse({ ...intent, ...facts })
+          .success,
+      ).toBe(false);
+    expect(BrandMediaInvocationSchema.safeParse({ intent }).success).toBe(
+      false,
+    );
+  });
+  it('keeps every old version pin strict and admits only a tagged immutable upload image nomination', () => {
+    const upload = {
+      source: 'uploaded',
+      origin: 'upload',
+      file: { objectId: file.objectId, checksum: file.checksum },
+    };
+    expect(BrandMediaImagesSchema.parse([upload])).toEqual([upload]);
+    for (const image of [
+      { source: 'uploaded', file: upload.file },
+      { ...upload, source: 'generated', operationId: id(8) },
+      { ...upload, operationId: id(8) },
+      { ...upload, file },
+      { file: upload.file, source: 'generated', operationId: id(8) },
+    ])
+      expect(BrandMediaImagesSchema.safeParse([image]).success).toBe(false);
+    expect(
+      BrandMediaImagesSchema.safeParse([upload, { source: 'uploaded', file }])
+        .success,
+    ).toBe(false);
+    const remove = {
+      ...command,
+      operation: 'article.image.remove',
+      upload: upload.file,
+    };
+    expect(BrandMediaUserCommandSchema.parse(remove)).toEqual(remove);
+    expect(
+      BrandMediaUserCommandSchema.parse({
+        ...command,
+        operation: 'article.image.remove',
+        versionId: file.versionId,
+      }),
+    ).toMatchObject({ versionId: file.versionId });
+    for (const patch of [
+      { versionId: file.versionId },
+      { objectId: file.objectId },
+      { upload: { objectId: file.objectId } },
+    ])
+      expect(
+        BrandMediaUserCommandSchema.safeParse({ ...remove, ...patch }).success,
+      ).toBe(false);
+    expect(
+      BrandMediaArticleSubmissionSchema.safeParse({
+        ...command,
+        title: '正文',
+        body: upload.file,
+      }).success,
+    ).toBe(false);
+  });
+  it('freezes one description and target for image generation, with no references, edit source or browser authority', () => {
+    const intent = {
+      ...command,
+      operation: 'image',
+      description: '暖光下的冬日门店',
+    };
+    expect(BrandMediaGenerateInputSchema.parse(intent)).toEqual(intent);
+    expect(
+      BrandMediaGenerateInputSchema.parse({ ...intent, retryOfRunId: id(10) }),
+    ).toMatchObject({ retryOfRunId: id(10) });
+    for (const patch of [
+      { references: [] },
+      { source: file },
+      { count: 2 },
+      { imageModel: 'auto' },
+      { module: brandMediaRelease },
+      { humanSource: true },
+      { description: '' },
+      { description: 'x'.repeat(4001) },
+    ])
+      expect(
+        BrandMediaGenerateInputSchema.safeParse({ ...intent, ...patch })
+          .success,
+      ).toBe(false);
+    expect(
+      BrandMediaGenerateInputSchema.safeParse({
+        ...intent,
+        articleId: undefined,
+      }).success,
+    ).toBe(false);
+  });
+  it('models nominate text only and actual immutable delivery receipts have a strict success/conflict contract', () => {
+    const candidate = {
+      candidates: [{ title: '新品故事', summary: '真实规格' }],
+    };
+    expect(BrandMediaCandidatesResultSchema.safeParse(candidate).success).toBe(
+      false,
+    );
+    const receipt = { ...candidate, file, runId: id(5), addedToTopics: false };
+    expect(BrandMediaCandidatesResultSchema.parse(receipt)).toEqual(receipt);
+    expect(brandMediaTools[1].input.safeParse(receipt).success).toBe(false);
+    expect(
+      BrandMediaArticleResultSchema.safeParse({
+        articleUpdated: false,
+        file,
+        runId: id(5),
+        conflict: 'version_conflict',
+      }).success,
+    ).toBe(true);
+    expect(
+      BrandMediaArticleResultSchema.safeParse({
+        articleUpdated: true,
+        file,
+        runId: id(5),
+      }).success,
+    ).toBe(false);
+    expect(
+      brandMediaTools[2].input.safeParse({
+        articleId: id(6),
+        expectedRevision: 1,
+        title: '标题',
+        body: '正文',
+        ownerId: id(7),
+      }).success,
+    ).toBe(false);
   });
 });

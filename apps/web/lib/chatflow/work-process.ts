@@ -83,6 +83,7 @@ export interface WorkProcessStep {
   result?: string;
   elapsedMs?: number;
   status: NativeExperienceItem['status'];
+  historicalQuestion?: boolean;
   error?: string;
 }
 
@@ -182,6 +183,7 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
         category,
         label,
         status: item.status,
+        historicalQuestion: item.historicalQuestion,
         title:
           item.toolName === 'ask_user_question'
             ? '提问'
@@ -221,6 +223,7 @@ export function summarizeWorkProcess(items: NativeExperienceItem[]) {
   const active = [...items]
     .filter(
       (item) =>
+        !item.historicalQuestion &&
         (item.modelWait ||
           ['tool', 'search', 'compaction'].includes(item.kind)) &&
         ['started', 'updated'].includes(item.status),
@@ -325,8 +328,9 @@ export function workProcessTitle(
         ['tool', 'search', 'think', 'compaction', 'todo'].includes(item.kind),
     )
     .sort((a, b) => a.sequence - b.sequence);
-  const live = ordered.findLast((item) =>
-    ['started', 'updated'].includes(item.status),
+  const live = ordered.findLast(
+    (item) =>
+      !item.historicalQuestion && ['started', 'updated'].includes(item.status),
   );
   if (running) return live ? title(live, true).text : '正在分析请求';
   const actions = ordered.filter(

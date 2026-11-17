@@ -28,6 +28,7 @@ import {
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import * as hub from './employeehub.ts';
+import * as moduleBindings from './employee-module-bindings.ts';
 import * as personaDigest from '../runtime-policy-digest.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../employee-administration.fixture.ts';
@@ -439,7 +440,27 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
     let active = false,
       beginCalls = 0,
       injected = false;
+    let activeTransaction: TransactionSql | undefined;
     const phases: { active: boolean; beginCalls: number }[] = [];
+    const moduleReads: {
+      active: boolean;
+      beginCalls: number;
+      sameTransaction: boolean;
+      binding: unknown;
+    }[] = [];
+    const readModuleBinding = moduleBindings.readEmployeeModuleBinding;
+    const moduleRead = vi
+      .spyOn(moduleBindings, 'readEmployeeModuleBinding')
+      .mockImplementation(async (...args) => {
+        const phase = {
+          active,
+          beginCalls,
+          sameTransaction: args[0] === activeTransaction,
+        };
+        const binding = await readModuleBinding(...args);
+        moduleReads.push({ ...phase, binding });
+        return binding;
+      });
     const digest = personaDigest.runtimePolicyDigest;
     const fullSource = vi
       .spyOn(personaDigest, 'runtimePolicyDigest')
@@ -466,10 +487,12 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         ...args,
         async (tx: TransactionSql) => {
           active = true;
+          activeTransaction = tx;
           try {
             return await operation(tx);
           } finally {
             active = false;
+            activeTransaction = undefined;
           }
         },
       ]);
@@ -520,10 +543,10 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         sendChatMessage(f.context, f.workspaceId, session.id, message()),
       ).rejects.toThrow('employee_persona_snapshot_invalid');
       expect(injected).toBe(true);
-      // Each send has four real transactions: messages, base Skills (read-only),
-      // personal Skills, then queue admission. Full-source preparation follows
-      // both Skill transactions and precedes the queue transaction.
-      expect(beginCalls).toBe(4);
+      // Each send has five real transactions: messages, module binding query,
+      // base Skills (read-only), personal Skills, then queue admission.
+      // Full-source preparation follows both Skills and precedes queue BEGIN.
+      expect(beginCalls).toBe(5);
       expect(await runCount(f)).toBe(0);
       expect(
         await db`select id from allrice_jobs where organization_id=${f.organizationId}
@@ -535,7 +558,7 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
         and workspace_id=${f.workspaceId} and owner_id=${f.ownerId}`,
       ).toHaveLength(0);
       // The one-shot tamper is exhausted. Exercise an unchanged valid message
-      // through the same production client and all four real transactions.
+      // through the same production client and all five real transactions.
       const sent = await sendChatMessage(
         f.context,
         f.workspaceId,
@@ -560,21 +583,30 @@ suite('normal PERSONA source freeze and original unmigrated producers', () => {
           .employeeVersionId,
       ).toBe(f.versionId);
       expect(await runCount(f)).toBe(1);
-      expect(beginCalls).toBe(8);
+      expect(beginCalls).toBe(10);
+      expect(moduleReads).toEqual(
+        [2, 7].map((beginCalls) => ({
+          active: true,
+          beginCalls,
+          sameTransaction: true,
+          binding: null,
+        })),
+      );
       expect(phases.length).toBeGreaterThan(0);
       expect(
         [...new Set(phases.map((phase) => phase.beginCalls))].sort(),
-      ).toEqual([3, 7]);
+      ).toEqual([4, 9]);
       expect(
         phases.every(
           (phase) =>
-            !phase.active && (phase.beginCalls === 3 || phase.beginCalls === 7),
+            !phase.active && (phase.beginCalls === 4 || phase.beginCalls === 9),
         ),
       ).toBe(true);
     } finally {
       tamper.mockRestore();
       wrap.mockRestore();
       fullSource.mockRestore();
+      moduleRead.mockRestore();
     }
   });
 

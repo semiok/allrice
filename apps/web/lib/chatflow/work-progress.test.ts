@@ -7,6 +7,8 @@ import {
   workProcessReferenceKey,
   type WorkProcessReference,
 } from './work-progress';
+import { questionAttemptFixture } from '../../test/work-process-question-attempt-fixture';
+import { summarizeWorkProcess, workProcessTitle } from './work-process';
 
 function event(
   sequence: number,
@@ -48,6 +50,41 @@ const tool = (seq: number, type: 'tool.started' | 'tool.completed') =>
   });
 
 describe('native reading order adapted to Allrice', () => {
+  it('keeps only the current attempt active while an answered historical call awaits its user message', () => {
+    const f = questionAttemptFixture();
+    const live = f.events.filter(
+      (row) =>
+        row.type !== 'run.succeeded' &&
+        row.type !== 'assistant.text.completed' &&
+        !(row.type === 'tool.failed' && row.payload.toolCallId === 'ask-1'),
+    );
+    const current = structuredClone(live.at(-1)!);
+    current.eventId = 'current-write';
+    current.sequence += 1;
+    current.type = 'tool.started';
+    current.payload = {
+      attempt: 2,
+      generation: 7,
+      toolCallId: 'current-write',
+      name: 'write',
+    };
+    current.sourceEvent = null;
+    const result = projectWorkProgress([...live, current], '', true);
+    expect(result.items.find((item) => item.id === 'tool:ask-1')).toMatchObject(
+      { historicalQuestion: true, status: 'started' },
+    );
+    expect(summarizeWorkProcess(result.items).active).toBe('写入文件');
+    expect(workProcessTitle(result.items, true)).toBe('正在写入文件');
+    expect(isReplyStreaming([...live, current])).toBe(false);
+    const replySequence = live.find(
+      (row) => row.type === 'assistant.text.delta' && row.payload.attempt === 2,
+    )!.sequence;
+    const replyingEvents = live.filter((row) => row.sequence <= replySequence);
+    const replying = projectWorkProgress(replyingEvents, '', true);
+    expect(summarizeWorkProcess(replying.items).active).toBeUndefined();
+    expect(isReplyStreaming(replyingEvents)).toBe(true);
+    expect(JSON.stringify(replying.parts)).not.toContain('OLD_ATTEMPT_BODY');
+  });
   it('uses the current native phase instead of the presence of an earlier reply', () => {
     const events = [reply(1, 'a', '先查询 GitHub')];
     expect(isReplyStreaming(events)).toBe(true);

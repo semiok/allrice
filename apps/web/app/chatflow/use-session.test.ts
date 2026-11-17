@@ -152,6 +152,158 @@ describe('P26 History selection async control flow (synthetic fetch, explicit ho
     vi.unstubAllGlobals();
   });
 
+  it('keeps accepted Run facts through an older Workspace read while applying fresh metadata', async () => {
+    const state = await ready();
+    const reading = state.loadWorkspace();
+    state.applySessionActivities(
+      [{ id: 'A', running: true, activeRunIds: ['run-one'] }],
+      'organization/workspace/undefined',
+    );
+    const refreshed = {
+      ...workspace,
+      canAdminister: true,
+      sessions: [
+        {
+          ...session('A'),
+          title: 'Server title',
+          running: false,
+          activeRunIds: [],
+        },
+      ],
+      employees: [
+        {
+          ...workspace.employees[0]!,
+          currentVersion: {
+            id: 'new-version',
+            manifest: { name: 'Fresh Rice' },
+          },
+        },
+      ],
+    };
+    requests[0]!.result.resolve(Response.json({ workspace: refreshed }));
+    requests[1]!.result.resolve(
+      Response.json({ capabilities: { fresh: true } }),
+    );
+    await reading;
+    expect(render().workspace).toMatchObject({
+      canAdminister: true,
+      sessions: [
+        {
+          id: 'A',
+          title: 'Server title',
+          running: true,
+          activeRunIds: ['run-one'],
+        },
+      ],
+      employees: [{ currentVersion: { manifest: { name: 'Fresh Rice' } } }],
+    });
+    expect(render().manifest).toEqual({ fresh: true });
+  });
+
+  it('does not let old-scope activity invalidate a new tenant Workspace or leak into it', async () => {
+    const state = await ready();
+    const reading = state.loadWorkspace();
+    state.applySessionActivities(
+      [{ id: 'A', running: true, activeRunIds: ['old-run'] }],
+      'organization/workspace/undefined',
+    );
+    requests[0]!.result.resolve(
+      Response.json({
+        workspace: {
+          ...workspace,
+          organizationId: 'new-organization',
+          viewerId: 'new-owner',
+          sessions: [{ ...session('A'), running: false, activeRunIds: [] }],
+        },
+      }),
+    );
+    requests[1]!.result.resolve(
+      Response.json({ capabilities: { tenant: 'new' } }),
+    );
+    await reading;
+    render().applySessionActivities(
+      [{ id: 'A', running: true, activeRunIds: ['late-old-run'] }],
+      'organization/workspace/undefined',
+    );
+    expect(render().workspace).toMatchObject({
+      organizationId: 'new-organization',
+      viewerId: 'new-owner',
+      sessions: [{ running: false, activeRunIds: [] }],
+    });
+    expect(render().manifest).toEqual({ tenant: 'new' });
+  });
+
+  it('applies terminal reads after identical activity and keeps newer terminal facts after intervening changes', async () => {
+    await ready();
+    const scope = 'organization/workspace/undefined';
+    const active = { id: 'A', running: true, activeRunIds: ['run-one'] };
+    const terminal = { id: 'A', running: false, activeRunIds: [] };
+    render().applySessionActivities([active], scope);
+    let reading = render().loadWorkspace();
+    render().applySessionActivities(
+      [{ ...active, activeRunIds: ['run-one'] }],
+      scope,
+    );
+    requests[0]!.result.resolve(
+      Response.json({
+        workspace: {
+          ...workspace,
+          sessions: [{ ...session('A'), ...terminal }],
+        },
+      }),
+    );
+    requests[1]!.result.resolve(Response.json({ capabilities: {} }));
+    await reading;
+    expect(render().workspace?.sessions[0]).toMatchObject(terminal);
+    requests = [];
+    reading = render().loadWorkspace();
+    render().applySessionActivities([active], scope);
+    render().applySessionActivities([terminal], scope);
+    requests[0]!.result.resolve(
+      Response.json({
+        workspace: { ...workspace, sessions: [{ ...session('A'), ...active }] },
+      }),
+    );
+    requests[1]!.result.resolve(Response.json({ capabilities: {} }));
+    await reading;
+    expect(render().workspace?.sessions[0]).toMatchObject(terminal);
+  });
+
+  it('preserves current activity on rename and pin, clearing it only on an archive receipt', async () => {
+    await ready();
+    render().applySessionActivities(
+      [
+        {
+          id: 'A',
+          running: true,
+          activeRunIds: ['queued', 'running'],
+          pendingInteraction: 'question',
+        },
+      ],
+      'organization/workspace/undefined',
+    );
+    render().updateSession({
+      ...session('A'),
+      title: 'Renamed',
+      pinnedAt: '2026-11-16T12:00:00Z',
+    });
+    expect(render().workspace?.sessions[0]).toMatchObject({
+      title: 'Renamed',
+      running: true,
+      activeRunIds: ['queued', 'running'],
+      pendingInteraction: 'question',
+    });
+    render().updateSession({
+      ...session('A'),
+      archivedAt: '2026-11-16T12:01:00Z',
+    });
+    expect(render().workspace?.sessions[0]).toMatchObject({
+      running: false,
+      activeRunIds: [],
+      pendingInteraction: undefined,
+    });
+  });
+
   const settleEffects = () =>
     new Promise<void>((resolve) => setImmediate(resolve));
   const capabilities = {

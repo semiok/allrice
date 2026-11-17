@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import { TimestampSchema, UuidSchema } from './common.ts';
-import { BrandContentVersionRefSchema } from './brand-content.ts';
+import {
+  BrandContentVersionRefSchema,
+  BrandContentFileRefSchema,
+} from './brand-content.ts';
+import { EmployeeModuleBindingSchema } from './employee-modules.ts';
 
 // MET-224 s1.3. Business data only: no Run lifecycle or tool registration.
 const id = UuidSchema.transform((value) => value.toLowerCase());
@@ -19,6 +23,12 @@ export const BrandMediaReferenceSchema = z.discriminatedUnion('origin', [
     .object({ origin: z.literal('reference'), sourceId: id, revisionId: id })
     .strict(),
   z.object({ origin: z.literal('file'), file: BrandMediaFileSchema }).strict(),
+  z
+    .object({
+      origin: z.literal('upload'),
+      file: BrandContentFileRefSchema.pick({ objectId: true, checksum: true }),
+    })
+    .strict(),
 ]);
 export const BrandMediaReferencesSchema = z
   .array(BrandMediaReferenceSchema)
@@ -37,7 +47,7 @@ export const BrandMediaReferencesSchema = z
 export const BrandMediaCandidateSchema = z
   .object({ title: text(240), summary: text(2000) })
   .strict();
-export const BrandMediaImageSchema = z
+export const BrandMediaVersionedImageSchema = z
   .object({
     file: BrandMediaFileSchema,
     source: z.enum(['uploaded', 'generated']),
@@ -47,6 +57,18 @@ export const BrandMediaImageSchema = z
   .refine((image) => (image.source === 'generated') === !!image.operationId, {
     message: 'Only generated images carry the existing image operation ID.',
   });
+/** Uploads have immutable bytes, but no deliverable version. Keep the old
+ * versioned shape strict instead of making its versionId optional. */
+export const BrandMediaImageSchema = z.union([
+  BrandMediaVersionedImageSchema,
+  z
+    .object({
+      source: z.literal('uploaded'),
+      origin: z.literal('upload'),
+      file: BrandContentFileRefSchema.pick({ objectId: true, checksum: true }),
+    })
+    .strict(),
+]);
 export const BrandMediaImagesSchema = z
   .array(BrandMediaImageSchema)
   .refine(
@@ -155,7 +177,7 @@ export const BrandMediaPublicationChangeSchema = z.discriminatedUnion(
     z.object({ action: z.literal('unpublish') }).strict(),
   ],
 );
-export const BrandMediaUserCommandSchema = z.discriminatedUnion('operation', [
+const versionedCommands = z.discriminatedUnion('operation', [
   z
     .object({
       ...command,
@@ -205,6 +227,19 @@ export const BrandMediaUserCommandSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({ ...articleCommand, operation: z.literal('article.delete') })
+    .strict(),
+]);
+export const BrandMediaUserCommandSchema = z.union([
+  versionedCommands,
+  z
+    .object({
+      ...articleCommand,
+      operation: z.literal('article.image.remove'),
+      upload: BrandContentFileRefSchema.pick({
+        objectId: true,
+        checksum: true,
+      }),
+    })
     .strict(),
 ]);
 /** Worker result shape, not a browser command or an implemented tool. */
@@ -327,3 +362,52 @@ export type BrandMediaReadResult = z.infer<typeof BrandMediaReadResultSchema>;
 export type BrandMediaMutationResult = z.infer<
   typeof BrandMediaMutationResultSchema
 >;
+
+/** Browser intent only. Identity, exact module and binding revision are rebuilt
+ * by the authenticated module endpoint, never read from a chat message. */
+const generate = {
+  ...command,
+  sessionId: id.optional(),
+  references: BrandMediaReferencesSchema,
+};
+export const BrandMediaGenerateInputSchema = z.discriminatedUnion('operation', [
+  z
+    .object({
+      ...generate,
+      operation: z.literal('candidates'),
+      direction: text(8000),
+    })
+    .strict(),
+  z
+    .object({
+      ...generate,
+      operation: z.literal('article'),
+      articleId: id,
+      expectedRevision: revision,
+      instructions: text(8000),
+    })
+    .strict(),
+  z
+    .object({
+      ...command,
+      operation: z.literal('image'),
+      sessionId: id.optional(),
+      articleId: id,
+      expectedRevision: revision,
+      description: text(4000),
+      retryOfRunId: id.optional(),
+    })
+    .strict(),
+]);
+export const BrandMediaInvocationSchema = z
+  .object({
+    module: EmployeeModuleBindingSchema,
+    intent: BrandMediaGenerateInputSchema,
+  })
+  .strict();
+export type BrandMediaInvocation = z.infer<typeof BrandMediaInvocationSchema>;
+export type BrandMediaGenerateInput = z.infer<
+  typeof BrandMediaGenerateInputSchema
+>;
+export const brandMediaIntentReferences = (intent: BrandMediaGenerateInput) =>
+  intent.operation === 'image' ? [] : intent.references;

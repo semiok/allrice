@@ -12,6 +12,7 @@ import {
 import type {
   EmployeeSessionGroup,
   Session,
+  SessionActivity,
   Workspace,
 } from './chatflow-types';
 import type { ArchivedFilter } from './dsh-upstream/workspace/tree';
@@ -42,6 +43,7 @@ export function useSessionArchive({
   workspace,
   headers,
   onUpdated,
+  onActivities,
   selectedSession,
   initialFilter = 'default',
   onShowArchived,
@@ -50,12 +52,15 @@ export function useSessionArchive({
   workspace: Workspace | null;
   headers: Record<string, string>;
   onUpdated: (session: Session) => void;
+  onActivities: (sessions: SessionActivity[], scope: string) => void;
   initialFilter?: ArchivedFilter;
   onShowArchived?: () => void;
 }) {
   const scope = `${workspace?.organizationId}/${workspace?.workspaceId}/${workspace?.viewerId}`;
   const currentScope = useRef(scope);
   currentScope.current = scope;
+  const workspaceRef = useRef(workspace);
+  workspaceRef.current = workspace;
   const [filter, setFilter] = useState<ArchivedFilter>(initialFilter);
   const [page, setPage] = useState<
     (Page & { scope: string; filter: ArchivedFilter }) | null
@@ -86,7 +91,10 @@ export function useSessionArchive({
   const toastSeq = useRef(0);
   const workspaceId = workspace?.workspaceId;
   const refreshKey = workspace?.sessions
-    .map((s) => `${s.id}/${s.archivedAt}/${s.pinnedAt}/${s.updatedAt}`)
+    .map(
+      (s) =>
+        `${s.id}/${s.archivedAt}/${s.pinnedAt}/${s.updatedAt}/${s.running}/${s.activeRunIds?.join()}/${s.pendingInteraction}`,
+    )
     .join(',');
   const load = useCallback(
     async (cursor?: string) => {
@@ -172,6 +180,22 @@ export function useSessionArchive({
             );
         if (ticket !== generation.current || currentScope.current !== scope)
           return;
+        // Replace both projections with current server facts. Never union an
+        // old running=true into a terminal read or discard a successor Run.
+        onActivities(
+          [
+            ...result.sessions,
+            ...refreshed.flatMap((item) => item?.sessions ?? []),
+          ]
+            .filter((session) => Array.isArray(session.activeRunIds))
+            .map(({ id, running, activeRunIds, pendingInteraction }) => ({
+              id,
+              running,
+              activeRunIds,
+              pendingInteraction,
+            })),
+          scope,
+        );
         setLoadError(null);
         setPage((old) => {
           const before =
@@ -218,7 +242,7 @@ export function useSessionArchive({
         if (ticket === generation.current) setLoading(false);
       }
     },
-    [filter, headers, scope, workspaceId],
+    [filter, headers, scope, workspaceId, onActivities],
   );
   useEffect(() => {
     void load();
@@ -340,6 +364,18 @@ export function useSessionArchive({
         { nextCursor: result.nextCursor, loading: false, error: '' },
         result.sessions,
       );
+      if (current())
+        onActivities(
+          result.sessions
+            .filter((session) => Array.isArray(session.activeRunIds))
+            .map(({ id, running, activeRunIds, pendingInteraction }) => ({
+              id,
+              running,
+              activeRunIds,
+              pendingInteraction,
+            })),
+          scope,
+        );
     } catch (cause) {
       update({
         nextCursor: cursor ?? null,
@@ -399,6 +435,7 @@ export function useSessionArchive({
                       ...s,
                       ...result.session,
                       running: false,
+                      activeRunIds: [],
                       pendingInteraction: undefined,
                     }
                   : s,
@@ -558,6 +595,58 @@ export function useSessionArchive({
   };
   return {
     sessions,
+    acceptRuns: useCallback(
+      (sessionId: string, runIds: string[]) => {
+        if (!runIds.length || currentScope.current !== scope) return;
+        const cached = pageRef.current;
+        const pageRow =
+          cached?.scope === scope && cached.filter === filter
+            ? cached.sessions.find((row) => row.id === sessionId)
+            : undefined;
+        const workspaceRow = workspaceRef.current?.sessions.find(
+          (row) => row.id === sessionId,
+        );
+        const activeRunIds = [
+          ...new Set([
+            ...(workspaceRow?.activeRunIds ?? []),
+            ...(pageRow?.activeRunIds ?? []),
+            ...runIds,
+          ]),
+        ].sort();
+        const same = (row?: Session) =>
+          !row ||
+          (row.running && row.activeRunIds?.join() === activeRunIds.join());
+        if (same(pageRow) && same(workspaceRow)) return;
+        generation.current++;
+        employeeRequests.current.clear();
+        setLoading(false);
+        const activity = {
+          id: sessionId,
+          activeRunIds,
+          running: true,
+          pendingInteraction:
+            pageRow?.pendingInteraction ?? workspaceRow?.pendingInteraction,
+        };
+        onActivities([activity], scope);
+        setPage((before) =>
+          before?.scope === scope && before.filter === filter
+            ? {
+                ...before,
+                sessions: before.sessions.map((row) =>
+                  row.id === sessionId ? { ...row, ...activity } : row,
+                ),
+                employees: Object.fromEntries(
+                  Object.entries(before.employees ?? {}).map(([id, value]) => [
+                    id,
+                    { ...value, loading: false },
+                  ]),
+                ),
+              }
+            : before,
+        );
+      },
+      [scope, filter, onActivities],
+    ),
     legacyOverlayOpen: rename?.scope === scope,
     filter,
     setFilter,
@@ -567,9 +656,7 @@ export function useSessionArchive({
       loadError?.scope === scope && loadError.filter === filter
         ? loadError.message
         : '',
-    reload: () => {
-      if (!loading) void load();
-    },
+    reload: useCallback(() => load(), [load]),
     employeeGroups: currentPage?.employeeGroups,
     employeePages: currentPage?.employees,
     hasMore: (employeeId: string) => !!cursorFor(employeeId),

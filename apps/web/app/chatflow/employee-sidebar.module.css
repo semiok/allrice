@@ -132,10 +132,9 @@
   cursor: pointer;
 }
 .sessions {
-  /* Native rows reserve 20px for status + title gap. Align their title
-     with the employee avatar, retaining the native status cell and inset. */
+  /* Keep native status/title spacing inside the same visible bounds as the
+     employee card; the selected row retains both native rounded corners. */
   --dsh-workspace-indent: 5px;
-  margin-inline-start: -20px;
   padding-top: 4px;
 }
 .sessions > .draftSession,

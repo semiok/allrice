@@ -5,6 +5,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ids } from '../../test/technical-details-fixtures';
+import { installProcessAlignmentSampler } from '../../test/work-process-alignment-sampling';
 import type { Browser } from '../../../worker/node_modules/playwright-core/index.js';
 
 const suite =
@@ -95,6 +96,116 @@ suite('approved DSH process alignment', () => {
       await page.close();
     }
   });
+  it.each([false, true])(
+    'keeps three answered native calls across attempts, late trace and history with durable=%s',
+    async (durable) => {
+      const query = `question-attempts&tool-only${durable ? '&durable' : ''}`;
+      const page = await openPage(`${query}&late-trace`);
+      const errors: string[] = [];
+      page.on('pageerror', (error) => errors.push(error.message));
+      try {
+        expect(
+          await page.getByText('用答题卡问我', { exact: true }).count(),
+        ).toBe(1);
+        for (const index of [1, 2])
+          expect(
+            await page.locator(`#message-attempt-answer-${index}`).count(),
+          ).toBe(1);
+        const receipts = page.locator(
+          '[data-process-scrollport] article[aria-label="用户确认结果"]',
+        );
+        expect(await receipts.count()).toBe(1);
+        expect(await page.locator('#message-attempt-answer-3').count()).toBe(0);
+        expect(await receipts.getAttribute('data-question-id')).toBe(
+          durable ? `dsh-${ids.session}:ask-3` : 'blocking-3',
+        );
+        await page.evaluate(() => window.alignQuestionTrace());
+        await expect.poll(() => receipts.count()).toBe(3);
+        const check = async () => {
+          expect(
+            await page.locator('article[aria-label="用户确认结果"]').count(),
+          ).toBe(3);
+          expect(await page.locator('[data-process-scrollport]').count()).toBe(
+            1,
+          );
+          expect(
+            await receipts.evaluateAll((nodes) =>
+              nodes.every(
+                (node) =>
+                  node.closest('[data-process-scrollport]') ===
+                  nodes[0]!.closest('[data-process-scrollport]'),
+              ),
+            ),
+          ).toBe(true);
+          for (const index of [1, 2, 3])
+            expect(
+              await page.locator(`#message-attempt-answer-${index}`).count(),
+            ).toBe(0);
+          const ids = await receipts.evaluateAll((nodes) =>
+            nodes.map((node) => node.getAttribute('data-question-id')),
+          );
+          expect(ids.map((id) => id!.split(':').at(-1))).toEqual(
+            durable
+              ? ['ask-1', 'ask-2', 'ask-3']
+              : ['blocking-1', 'blocking-2', 'blocking-3'],
+          );
+          expect(
+            await page.getByText('本轮答题已记录。', { exact: true }).count(),
+          ).toBe(1);
+          expect(
+            await page.getByText('OLD_ATTEMPT_BODY', { exact: true }).count(),
+          ).toBe(0);
+          expect(
+            await page.locator('[data-step-id="tool:old-read"]').count(),
+          ).toBe(0);
+        };
+        await check();
+        const header = page
+          .locator('section[aria-label="工作过程"] [data-disclosure-row]')
+          .first();
+        await header.click();
+        await expect
+          .poll(() => header.getAttribute('aria-expanded'))
+          .toBe('false');
+        expect(await receipts.first().isVisible()).toBe(false);
+        await check();
+        await header.click();
+        await expect
+          .poll(() => header.getAttribute('aria-expanded'))
+          .toBe('true');
+        for (const [index, question, selected] of [
+          [0, '优先安排什么？', '整理资料'],
+          [1, '内容面向谁？', '通勤读者'],
+          [2, '先完成哪一步？', '拟定提纲'],
+        ] as const) {
+          const receipt = receipts.nth(index);
+          await receipt
+            .getByRole('button', { name: '提问 · 1/1 已回答', exact: true })
+            .click();
+          expect(
+            await receipt.getByText(question, { exact: true }).isVisible(),
+          ).toBe(true);
+          expect(
+            await receipt.getByText(selected, { exact: true }).isVisible(),
+          ).toBe(true);
+        }
+        await header.click();
+        await expect
+          .poll(() => header.getAttribute('aria-expanded'))
+          .toBe('false');
+        await check();
+        await page.goto(`${origin}/?${query}`);
+        await expect.poll(() => receipts.count()).toBe(3);
+        await check();
+        await page.reload();
+        await expect.poll(() => receipts.count()).toBe(3);
+        await check();
+        expect(errors).toEqual([]);
+      } finally {
+        await page.close();
+      }
+    },
+  );
   it('shows each frozen skill name and no explanation or success tail', async () => {
     const page = await openPage('scene=skills');
     const rows = page.locator('[data-step-id]');
@@ -177,6 +288,150 @@ suite('approved DSH process alignment', () => {
   });
   for (const theme of ['light', 'dark'])
     for (const width of [1440, 390]) {
+      it(`keeps the same native header, gap and pulse from first trace through named reply and completion at ${width}px ${theme}`, async () => {
+        const page = await browser.newPage({
+          viewport: { width, height: 960 },
+        });
+        await page.addInitScript(installProcessAlignmentSampler);
+        const errors: string[] = [];
+        page.on('pageerror', (error) => errors.push(error.message));
+        try {
+          await page.goto(
+            `${origin}/?scene=running&progressive&tool-only&theme=${theme}&employee=文章哥`,
+          );
+          expect(
+            await page.evaluate(
+              () => window.alignmentSamplerInstalled.hadHeader,
+            ),
+          ).toBe(false);
+          const section = page.locator('section[aria-label="工作过程"]');
+          const header = section.locator('[data-disclosure-row]').first();
+          let headerTop: number | undefined;
+          for (let phase = 0; phase < 6; phase++) {
+            const records = await page.evaluate(
+              (phase) => window.alignmentCapture(phase),
+              phase,
+            );
+            expect(records[0]?.source).toBe('commit');
+            for (const record of records) {
+              expect(record.marker).toBe(String(phase));
+              expect(record.visible).toBe(true);
+              expect(record.identity).not.toBeNull();
+              expect(record.measurement).not.toBeNull();
+            }
+            const frames = records.map((record) => record.measurement!);
+            expect(
+              await page.getByRole('article', { name: '用户确认结果' }).count(),
+            ).toBe(0);
+            headerTop ??= frames[0]!.top;
+            for (const frame of frames) {
+              expect(Math.abs(frame.top - headerTop)).toBeLessThanOrEqual(0.5);
+              expect(Math.abs(frame.height - 24)).toBeLessThanOrEqual(0.5);
+              expect(frame.parts).toBe(phase >= 3);
+              if (phase)
+                expect(Math.abs(frame.gap! - 8)).toBeLessThanOrEqual(0.5);
+              else expect(frame.gap).toBeNull();
+              expect(new Set(frame.color).size).toBe(1);
+              expect(new Set(frame.opacity.slice(0, -1)).size).toBe(1);
+              expect(frame.title).toBe(
+                phase === 5 ? '已完成' : phase === 3 ? '回复中…' : '思考中…',
+              );
+              if (phase < 5) {
+                expect(frame.color[0]).toBe(frame.avatarColor);
+                expect(
+                  frame.clocks.every((clocks) => clocks.length === 1),
+                ).toBe(true);
+                expect(
+                  frame.clocks
+                    .flat()
+                    .every(
+                      (clock) =>
+                        clock.duration === 1400 &&
+                        clock.easing === 'ease-in-out',
+                    ),
+                ).toBe(true);
+                if (frame.clocks[0]![0]!.start === null) {
+                  // rAF is before paint: preserve the pending sample rather
+                  // than treating it as a painted frame or waiting it away.
+                  expect(frame.clocks[0]![0]!.pending).toBe(true);
+                  expect(frame.clocks[0]![0]!.current).toBe(0);
+                } else {
+                  expect(frame.clocks[0]![0]!.start).toBe(
+                    frame.clocks[1]![0]!.start,
+                  );
+                  expect(new Set(frame.opacity).size).toBe(1);
+                }
+              } else {
+                expect(frame.color[0]).toBe(
+                  theme === 'dark'
+                    ? 'rgb(173, 178, 184)'
+                    : 'rgb(129, 133, 140)',
+                );
+                expect(frame.clocks).toEqual([[], []]);
+              }
+              if (phase < 2) expect(frame.timing).toBeNull();
+              else if (phase === 5) expect(frame.timing).toBe('，用时 1分7秒');
+              else {
+                expect(frame.timing).toMatch(/^\u00a0用时 \d+秒$/);
+                expect(frame.space).toBeGreaterThan(0);
+                expect(frame.timing).not.toContain('·');
+              }
+            }
+            if (phase < 5) {
+              const settled = frames.at(-1)!;
+              expect(settled.clocks[0]![0]!.start).not.toBeNull();
+              expect(settled.clocks[0]![0]!.start).toBe(
+                settled.clocks[1]![0]!.start,
+              );
+              expect(new Set(settled.opacity).size).toBe(1);
+            }
+            if (phase === 4) {
+              const view = await page.evaluate(() => window.alignProgress());
+              const initial = view.items.find(
+                (item) => item.id === 'think:1:0:0',
+              )!;
+              const later = view.items.find(
+                (item) => item.id === 'think:1:1:0',
+              )!;
+              const reply = view.parts!.find(
+                (part) => part.id === 'reply:answer',
+              )!;
+              expect(initial.status).toBe('completed');
+              expect(later.status).toBe('started');
+              expect(initial.sequence).toBeLessThan(reply.sequence);
+              expect(later.sequence).toBeGreaterThan(reply.sequence);
+            }
+            if (phase === 5) {
+              expect(
+                await page.locator('[data-step-id="think:1:0:0"]').count(),
+              ).toBe(1);
+              expect(
+                await page.locator('[data-step-id="think:1:1:0"]').count(),
+              ).toBe(1);
+            }
+            if (phase === 2 || phase === 3) {
+              await header.focus();
+              await header.press('Enter');
+              await expect
+                .poll(() => header.getAttribute('aria-expanded'))
+                .toBe('false');
+              expect(
+                await page.locator('[data-process-scrollport]').isVisible(),
+              ).toBe(false);
+              await header.press('Space');
+              await expect
+                .poll(() => header.getAttribute('aria-expanded'))
+                .toBe('true');
+              expect(
+                await page.locator('[data-process-scrollport]').isVisible(),
+              ).toBe(true);
+            }
+          }
+          expect(errors).toEqual([]);
+        } finally {
+          await page.close();
+        }
+      });
       it(`keeps icon/text aligned, multiple details fully open and pulse synchronized at ${width}px ${theme}`, async () => {
         const page = await openPage(
           `scene=running&blocking&theme=${theme}&employee=文章哥`,

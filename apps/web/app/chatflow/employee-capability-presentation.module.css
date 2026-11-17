@@ -40,6 +40,21 @@
 .add {
   font-weight: var(--ar-font-weight-medium);
 }
+/* MET-224: the plugin's black Open action uses the same geometry as Add. */
+.pluginOpen.pluginOpen.pluginOpen {
+  background: var(--dsw-static-neutral-bluish-1000);
+  color: var(--dsw-static-neutral-00);
+  min-height: 32px;
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 18px;
+  border-radius: 8px;
+  font-weight: var(--ar-font-weight-medium);
+}
+.pluginOpen.pluginOpen.pluginOpen:hover:not(:disabled),
+.pluginOpen.pluginOpen.pluginOpen:active:not(:disabled) {
+  background: var(--dsw-static-neutral-800);
+}
 .add:focus-visible {
   outline: var(--ar-focus-ring-width) solid var(--ar-focus-ring);
   outline-offset: 2px;
@@ -406,6 +421,11 @@
   }
 }
 @media (max-width: 700px) {
+  .pluginOpen.pluginOpen.pluginOpen {
+    min-height: 36px;
+    height: 36px;
+    padding: 8px 10px;
+  }
   .add {
     height: 36px;
   }

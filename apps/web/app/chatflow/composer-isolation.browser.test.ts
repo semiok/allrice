@@ -431,6 +431,7 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
       const reads: string[] = [];
       const writes: string[] = [];
       const streams = new Set<ServerResponse>();
+      let terminalEvent: string | undefined;
       const nativeFeed = new NativeSubagentFixtureFeed();
       const nativeWorkspace = { id: B };
       const nativeIds = [
@@ -441,7 +442,8 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           (i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
         ),
       ].slice(0, options.nativeParents ?? 3);
-      const nativeSummary = (id: string): NativeSubagentSummary => ({
+      const pushedNativeSummaries = new Map<string, NativeSubagentSummary>();
+      const seedNativeSummary = (id: string): NativeSubagentSummary => ({
         rootId: `${nativeWorkspace.id}/${id}`,
         root: { source: 'live', cursor: 8 },
         descendants: Array.from(
@@ -469,6 +471,9 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           }),
         ),
       });
+      const nativeSummary = (id: string): NativeSubagentSummary =>
+        pushedNativeSummaries.get(`${nativeWorkspace.id}/${id}`) ??
+        seedNativeSummary(id);
       let nativeDenied = false;
       let nativeBindingPending = options.nativeStartup ?? false;
       let rejectStartupEvents = false;
@@ -491,13 +496,27 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
       let nextSteps = options.nextSteps;
       let holdNextReply = false;
       let releaseHeldNextReply: (() => void) | undefined;
+      let sessionListGate: Promise<void> | undefined;
+      let releaseSessionList: (() => void) | undefined;
+      let heldSessionLists = 0;
       let releaseNextStepsA!: () => void;
       const nextStepsGate = new Promise<void>((done) => {
         releaseNextStepsA = done;
       });
       let nativeProjection: Partial<Session> = {};
+      const sessionActivity = (id: string) => {
+        const activeRunIds = [
+          ...new Set(
+            messages[id]!.flatMap(({ runId, status }) =>
+              runId && status === 'pending' ? [runId] : [],
+            ),
+          ),
+        ];
+        return { activeRunIds, running: activeRunIds.length > 0 };
+      };
       const fixtureSession = (id: string) => ({
         ...session(id),
+        ...(options.nativeStartup ? sessionActivity(id) : {}),
         ...(options.nativeParents
           ? { ownerId: options.nativeOtherOwner && id === A ? A : C }
           : {}),
@@ -853,6 +872,10 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           path === '/api/v1/sessions' &&
           (options.taskSuggestions || options.nativeParents)
         ) {
+          if (sessionListGate) {
+            heldSessionLists++;
+            await sessionListGate;
+          }
           answer(response, {
             sessions: (options.nativeParents ? nativeIds : [A, B]).map(
               fixtureSession,
@@ -934,6 +957,10 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
             'content-type': 'text/event-stream',
             'cache-control': 'no-store',
           });
+          if (terminalEvent) {
+            response.end(terminalEvent);
+            return;
+          }
           response.write(
             `data: ${JSON.stringify(event(options.question, options.programTurn))}\n\n`,
           );
@@ -1113,12 +1140,24 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           nativeSelectionNames,
           fullRequests: () => nativeFullRequests,
           releaseFull: () => releaseNativeFull(),
+          holdSessionList() {
+            sessionListGate = new Promise<void>((done) => {
+              releaseSessionList = done;
+            });
+          },
+          heldSessionLists: () => heldSessionLists,
+          releaseSessionList() {
+            releaseSessionList?.();
+            sessionListGate = undefined;
+          },
           connections: () => [...nativeFeed.connections],
           summary: nativeSummary,
           updateSession(patch: Partial<Session>) {
             nativeProjection = { ...nativeProjection, ...patch };
           },
           push(id: string, summary: NativeSubagentSummary) {
+            if (options.nativeStartup)
+              pushedNativeSummaries.set(summary.rootId, summary);
             nativeFeed.push(
               nativeFixture,
               { type: 'directory', summary },
@@ -1140,6 +1179,7 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
               );
           },
           startupStreams: () => streams.size,
+          runConnections: () => [...streams],
           failStartupEvents() {
             rejectStartupEvents = true;
             for (const response of streams) response.destroy();
@@ -1173,11 +1213,9 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
               item.content.text =
                 outcome === 'succeeded' ? 'Synthetic completed reply' : '';
             }
-          for (const response of streams) {
-            response.end(
-              `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence, cursor: `${runId}:${sequence}`, type: `run.${outcome}`, payload: {} })}\n\n`,
-            );
-          }
+          const terminal = `data: ${JSON.stringify({ ...event(), eventId: 'event-2', sequence, cursor: `${runId}:${sequence}`, type: `run.${outcome}`, payload: {} })}\n\n`;
+          if (options.nativeStartup) terminalEvent = terminal;
+          for (const response of streams) response.end(terminal);
         },
         disconnect() {
           for (const response of streams) response.destroy();
@@ -1776,6 +1814,7 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           });
           await f.choose(B);
           await expect.poll(f.native.startupStreams).toBe(1);
+          const startupConnections = new Set(f.native.runConnections());
           stage = 'clock-before-release';
           mark(stage, {
             url: f.page.url(),
@@ -1786,8 +1825,10 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           stage = `release-${outcome}`;
           mark(stage, { streams: f.native.startupStreams() });
           if (outcome === 'ready') f.native.allowReady();
-          else if (outcome === 'terminal') f.finishRun(A, 'canceled');
-          else {
+          else if (outcome === 'terminal') {
+            f.native.holdSessionList();
+            f.finishRun(A, 'canceled');
+          } else {
             f.native.failStartupEvents();
             // Reuse the existing Run transport's bounded reconnect schedule.
             for (let i = 0; i < 8; i++) {
@@ -1796,8 +1837,26 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
             }
           }
           await expect.poll(() => reads().length).toBeGreaterThan(0);
-          await expect.poll(f.native.startupStreams).toBe(0);
+          await expect
+            .poll(
+              () =>
+                f.native
+                  .runConnections()
+                  .filter((connection) => startupConnections.has(connection))
+                  .length,
+            )
+            .toBe(0);
+          const spinner = f.page.locator(
+            `[data-row-key="session:${A}"] svg[data-state="ongoing"]`,
+          );
+          const a = f.page.locator(`[data-row-key="session:${A}"]`);
+          const parentStatus = a.getByText('进行中', { exact: true });
+          const childStatus = a.getByText('1 个子智能体运行中', {
+            exact: true,
+          });
           if (outcome === 'ready') {
+            await expect.poll(f.native.startupStreams).toBe(1);
+            expect(await spinner.count()).toBe(1);
             await expect
               .poll(
                 () =>
@@ -1806,13 +1865,51 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
               )
               .toBe(1);
             expect(reads().length).toBe(2); // Snapshot GET and one live follow.
-          }
+          } else await expect.poll(f.native.startupStreams).toBe(0);
           expect(reads().every((url) => url.includes('liveOnly=true'))).toBe(
             true,
           );
+          if (outcome === 'terminal') {
+            await expect.poll(f.native.heldSessionLists).toBeGreaterThan(0);
+            expect(await spinner.count()).toBe(1);
+          }
           const count = reads().length;
           await f.page.clock.runFor(6_000);
           expect(reads().length).toBe(count);
+          if (outcome === 'terminal') {
+            f.native.releaseSessionList();
+            await expect.poll(() => reads().length).toBe(count + 1);
+            await expect.poll(() => spinner.count()).toBe(0);
+            await f.page.clock.runFor(6_000);
+            expect(reads().length).toBe(count + 1);
+          }
+          if (outcome === 'ready') {
+            expect(f.native.startupStreams()).toBe(1);
+            await expect.poll(() => parentStatus.count()).toBe(1);
+            f.finishRun(A, 'succeeded');
+          }
+          await expect.poll(f.native.startupStreams).toBe(0);
+          if (outcome === 'ready') {
+            await expect.poll(() => parentStatus.count()).toBe(0);
+            await expect.poll(() => childStatus.count()).toBe(1);
+            expect(await spinner.count()).toBe(1);
+            const summary = f.native.summary(A);
+            f.native.push(A, {
+              ...summary,
+              descendants: summary.descendants.map((child) =>
+                child.kind === 'child'
+                  ? {
+                      ...child,
+                      running: false,
+                      activity: 'inactive' as const,
+                      timing: { ...child.timing, lastTurnCompleted: true },
+                    }
+                  : child,
+              ),
+            });
+          }
+          if (outcome !== 'disconnect')
+            await expect.poll(() => spinner.count()).toBe(0);
           expect(new URL(f.page.url()).searchParams.get('session')).toBe(B);
           expect(
             await f.page.getByText('Existing A', { exact: true }).count(),
@@ -1837,6 +1934,7 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           );
           throw error;
         } finally {
+          f.native.releaseSessionList();
           await f.close();
         }
       },
@@ -1879,10 +1977,50 @@ createRoot(document.getElementById('root')!).render(<StrictMode><LegacyPickerFix
           expect(f.native.startupStreams()).toBe(0);
           await f.respond(overlap ? 1 : 0);
           await expect.poll(f.native.startupStreams).toBe(1);
+          const startupConnections = new Set(f.native.runConnections());
           expect(reads()).toEqual([]);
           f.native.allowReady();
           await expect.poll(() => reads().length).toBeGreaterThan(0);
+          await expect
+            .poll(
+              () =>
+                f.native
+                  .runConnections()
+                  .filter((connection) => startupConnections.has(connection))
+                  .length,
+            )
+            .toBe(0);
+          await expect.poll(f.native.startupStreams).toBe(1);
+          const spinner = f.page.locator(
+            `[data-row-key="session:${A}"] svg[data-state="ongoing"]`,
+          );
+          const a = f.page.locator(`[data-row-key="session:${A}"]`);
+          const parentStatus = a.getByText('进行中', { exact: true });
+          const childStatus = a.getByText('1 个子智能体运行中', {
+            exact: true,
+          });
+          expect(await spinner.count()).toBe(1);
+          await expect.poll(() => parentStatus.count()).toBe(1);
+          f.finishRun(A, 'succeeded');
           await expect.poll(f.native.startupStreams).toBe(0);
+          await expect.poll(() => parentStatus.count()).toBe(0);
+          await expect.poll(() => childStatus.count()).toBe(1);
+          expect(await spinner.count()).toBe(1);
+          const summary = f.native.summary(A);
+          f.native.push(A, {
+            ...summary,
+            descendants: summary.descendants.map((child) =>
+              child.kind === 'child'
+                ? {
+                    ...child,
+                    running: false,
+                    activity: 'inactive' as const,
+                    timing: { ...child.timing, lastTurnCompleted: true },
+                  }
+                : child,
+            ),
+          });
+          await expect.poll(() => spinner.count()).toBe(0);
           expect(new URL(f.page.url()).searchParams.get('session')).toBe(B);
           expect(
             await f.page

@@ -12,6 +12,9 @@ import {
   type WorkProcessMaterial,
 } from './work-process-material';
 import { workProcessPresentation } from '../../lib/chatflow/work-process-presentation';
+import { questionAttemptFixture } from '../../test/work-process-question-attempt-fixture';
+import { projectWorkProgress } from '../../lib/chatflow/work-progress';
+import { workProcessQuestions } from '../../lib/chatflow/work-process-questions';
 
 const items: NativeExperienceItem[] = [
   {
@@ -55,6 +58,100 @@ const render = (overrides: Partial<ComponentProps<typeof WorkProcess>> = {}) =>
   );
 
 describe('native process display surface', () => {
+  it.each(['compact', 'standard', 'detailed'] as const)(
+    'keeps an answered historical question still and a new question running before the old answer message arrives in %s',
+    (transcriptView) => {
+      const f = questionAttemptFixture();
+      const replySequence = f.events.find(
+        (event) =>
+          event.type === 'assistant.text.delta' && event.payload.attempt === 2,
+      )!.sequence;
+      const events = f.events.filter(
+        (event) =>
+          event.sequence <= replySequence && event.type !== 'tool.failed',
+      );
+      const active = structuredClone(events.at(-1)!);
+      active.eventId = 'active-current';
+      active.sequence += 1;
+      active.type = 'tool.started';
+      active.payload = {
+        attempt: 2,
+        generation: 7,
+        toolCallId: 'active-current',
+        name: 'ask_user_question',
+      };
+      // A real tool call can precede its question request; question rows remain
+      // directly visible in compact/standard without changing native folding.
+      active.sourceEvent = {
+        id: 'native-active-question',
+        type: 'tool/call',
+        occurredAt: active.occurredAt,
+        payload: {
+          turn: 2,
+          step: 4,
+          callId: 'active-current',
+          name: 'ask_user_question',
+        },
+      };
+      events.push(active);
+      const view = projectWorkProgress(events, '', true);
+      const questions = workProcessQuestions(
+        [{ id: 'owner', events }],
+        [],
+      ).byOwner.get('owner');
+      const html = render({
+        items: view.items,
+        parts: view.parts,
+        questions,
+        running: true,
+        transcriptView,
+      });
+      const previous = html.match(
+        /<div[^>]*data-step-id="tool:ask-1"[^>]*>/,
+      )![0];
+      expect(previous).toContain('data-status="已回答"');
+      expect(previous).not.toContain('data-running');
+      expect(view.items.find((item) => item.id === 'tool:ask-1')?.status).toBe(
+        'started',
+      );
+      const current = html.match(
+        /<div[^>]*data-step-id="tool:active-current"[^>]*>/,
+      )![0];
+      expect(current).toContain('data-running="true"');
+      expect(html).not.toContain('OLD_ATTEMPT_BODY');
+    },
+  );
+  it.each([
+    [true, false, false, false, '\u00a0用时 18秒'],
+    [true, true, false, false, '\u00a0用时 18秒'],
+    [false, false, false, false, '，用时 18秒'],
+    [false, false, true, false, ' · 用时 18秒'],
+    [false, false, false, true, ' · 用时 18秒'],
+  ] as const)(
+    'keeps the exact timing separator for running/streaming/failed/canceled=%s/%s/%s/%s',
+    (running, streaming, failed, canceled, copy) => {
+      for (const processParts of [undefined, parts]) {
+        const html = render({
+          parts: processParts,
+          running,
+          streaming,
+          failed,
+          canceled,
+          timing: {
+            activeMs: 18000,
+            waitingMs: 0,
+            wallMs: 18000,
+            timeoutMs: 900000,
+            remainingMs: running ? 882000 : null,
+            phase: running ? 'active' : 'terminal',
+            sources: [],
+            calls: null,
+          },
+        });
+        expect(html.replace(/<[^>]+>/g, '')).toContain(copy);
+      }
+    },
+  );
   it('projects each native create/list failure receipt and its safe reason into the process', () => {
     const events: ChatFlowEventEnvelope[] = [
       'subagent',

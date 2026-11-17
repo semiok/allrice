@@ -7,7 +7,7 @@ import type * as SubscriptionHome from '../codex-subscription-home.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { createServer, type ServerResponse } from 'node:http';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -582,6 +582,7 @@ async function schedulingRuntime(
   )[],
   options: {
     beforeFinish?: (requestIndex: number) => Promise<void>;
+    vision?: boolean;
     usage?: readonly {
       prompt_tokens: number;
       completion_tokens: number;
@@ -650,9 +651,33 @@ async function schedulingRuntime(
   });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
+  let cordisConfig: string | undefined;
+  if (options.vision) {
+    // Only this synthetic model's temporary profile declares image support.
+    // Keep unknown production models and all existing fixtures text-only.
+    cordisConfig = resolve(root, 'vision.cordis.yml');
+    await symlink(
+      resolve(import.meta.dirname, '../../node_modules'),
+      resolve(root, 'node_modules'),
+      'dir',
+    );
+    const profile = await readFile(
+      resolve(import.meta.dirname, '../../dsh/allrice-restricted.cordis.yml'),
+      'utf8',
+    );
+    expect(profile).toContain('        api: openai-completions\n');
+    await writeFile(
+      cordisConfig,
+      profile.replace(
+        '        api: openai-completions\n',
+        '        api: openai-completions\n        defaultInput: [text, image]\n',
+      ),
+    );
+  }
   const adapter = new DshHarnessAdapter({
     credentialResolver: { resolve: async () => ({ apiKey: 'synthetic-only' }) },
     runtimeRoot: root,
+    cordisConfig,
     requestTimeoutMs: 15_000,
   });
   adapters.push(adapter);
@@ -1084,6 +1109,60 @@ describe('DshHarnessAdapter', () => {
         /CHECKPOINT_ONE|OLD_MESSAGE|FIRST_REQUEST|FIRST_REPLY/,
       );
       expect(runtime.requests).toHaveLength(3);
+    } finally {
+      await runtime.close();
+    }
+  }, 30_000);
+
+  it('rechecks image input before the first execute and the next execute on a reused thread, without sending revoked bytes', async () => {
+    // Valid metadata-free 2x2 JPEG; native admission preserves these bytes.
+    const jpeg =
+      '/9j/2wBDAAUDBAQEAwUEBAQFBQUGBwwIBwcHBw8LCwkMEQ8SEhEPERETFhwXExQaFRERGCEYGh0dHx8fExciJCIeJBweHx7/2wBDAQUFBQcGBw4ICA4eFBEUHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh7/wAARCAACAAIDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAf/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABQb/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCEgKAI/9k=';
+    const runtime = await schedulingRuntime(['AUTHORIZED_IMAGE_REPLY'], {
+      vision: true,
+    });
+    const input = executionInput({
+      prompt: 'Read the selected JPG.',
+      provider: runtime.provider,
+      images: [
+        {
+          mediaType: 'image/jpeg',
+          data: jpeg,
+          name: 'private.jpg',
+        },
+      ],
+    });
+    input.workDirectory = runtime.root;
+    let allowed = false;
+    input.contentGuard = {
+      generationId: randomUUID(),
+      check: async () => {
+        if (!allowed)
+          throw new HandlerError(
+            'EMPLOYEE_CONTENT_UNAVAILABLE',
+            'upload revoked',
+            false,
+          );
+      },
+    };
+    try {
+      await expect(runtime.adapter.execute(input)).rejects.toMatchObject({
+        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+      });
+      expect(runtime.requests).toHaveLength(0);
+      allowed = true;
+      const first = await runtime.adapter.execute(input);
+      expect(runtime.requests).toHaveLength(1);
+      expect(JSON.stringify(runtime.requests[0])).toContain(jpeg);
+      input.threadId = first.threadId;
+      input.kernel.userMessageId = randomUUID();
+      input.kernel.assistantMessageId = randomUUID();
+      input.kernel.userRequest = 'Read it again.';
+      allowed = false;
+      await expect(runtime.adapter.execute(input)).rejects.toMatchObject({
+        code: 'EMPLOYEE_CONTENT_UNAVAILABLE',
+      });
+      expect(runtime.requests).toHaveLength(1);
     } finally {
       await runtime.close();
     }

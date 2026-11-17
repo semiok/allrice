@@ -531,7 +531,14 @@ export async function executeEmployeeRun({
           }
         },
       }
-    : undefined;
+    : resolved.executionSnapshot?.schemaVersion === 2 &&
+        resolved.executionSnapshot.moduleInvocation
+      ? {
+          generationId: `module-${execution.context.runId}`,
+          check: () =>
+            assertEmployeeContentContext(contentScope, null, workflowLease),
+        }
+      : undefined;
   const companyMaterials = resolved.promptSnapshot.companyAssets
     ? await prepareCompanyRunMaterials(
         execution.context,
