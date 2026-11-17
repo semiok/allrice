@@ -18,6 +18,7 @@ import {
   UpdateEmployeeInstanceInputSchema,
   UserMonthlyQuotaSchema,
   WorkspaceReadinessSchema,
+  brandMediaModule,
   defaultUserPreferences,
   defaultWorkAutomation,
   employeeColorPalette,
@@ -283,6 +284,35 @@ suite('U1 Rice full persona from the real employee entry', () => {
       }
       if (request.method() === 'GET' && path.endsWith('/content'))
         return route.fulfill(json(resolved(target!)));
+      const moduleCatalog = path.match(
+        /^\/api\/v1\/employee-instances\/([^/]+)\/modules$/,
+      );
+      if (moduleCatalog && request.method() === 'GET') {
+        const instance = instances.find((item) => item.id === moduleCatalog[1]);
+        expect(instance).toBeDefined();
+        expect(instance!.organizationId).toBe(id(3));
+        expect(instance!.workspaceId).toBe(id(4));
+        expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+        expect(url.searchParams.get('workspaceId')).toBe(instance!.workspaceId);
+        expect(request.headers()['x-allrice-workspace-id']).toBe(
+          instance!.workspaceId,
+        );
+        expect(request.headers()['x-allrice-organization-id']).toBe(
+          instance!.organizationId,
+        );
+        return route.fulfill(
+          json({
+            modules: [
+              {
+                descriptor: brandMediaModule,
+                binding: null,
+                available: true,
+                enabled: false,
+              },
+            ],
+          }),
+        );
+      }
       if (
         path.startsWith('/api/v1/employee-instances/') &&
         instances.some(

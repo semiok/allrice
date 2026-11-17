@@ -14,6 +14,7 @@ import {
   WorkbenchArtifactSchema,
   WorkspaceReadinessSchema,
   workspaceCapabilityIds,
+  brandMediaModule,
   defaultUserPreferences,
   defaultWorkAutomation,
   EmployeeInstanceSchema,
@@ -534,7 +535,9 @@ suite('U1 mounted employee Workflow host', () => {
         expect([id(7), id(17), id(107), id(117)]).toContain(target);
         const supported =
           (method === 'GET' &&
-            ['', 'content', 'scene-skills', 'skills'].includes(resource)) ||
+            ['', 'content', 'scene-skills', 'skills', 'modules'].includes(
+              resource,
+            )) ||
           (method === 'POST' &&
             [
               'scene-skills/preview',
@@ -566,6 +569,22 @@ suite('U1 mounted employee Workflow host', () => {
           return route.fulfill(
             problem(403, 'AUTHORIZATION_DENIED', 'Access denied'),
           );
+        if (resource === 'modules' && method === 'GET') {
+          expect([...url.searchParams.keys()]).toEqual(['workspaceId']);
+          expect(request.headers()['x-allrice-organization-id']).toBe(id(3));
+          return route.fulfill(
+            json({
+              modules: [
+                {
+                  descriptor: brandMediaModule,
+                  binding: null,
+                  available: true,
+                  enabled: false,
+                },
+              ],
+            }),
+          );
+        }
         if (resource === 'content' && method === 'GET')
           return route.fulfill(json(details(target)));
         if (!resource && method === 'GET') {

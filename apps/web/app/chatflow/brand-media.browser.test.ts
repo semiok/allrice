@@ -1604,6 +1604,7 @@ suite('MET-224 main-area brand media text workflow', () => {
         if (holdOld) expect(oldFinished).toBe(false);
         await page.clock.resume();
         await candidatesPage(page);
+        await page.getByLabel('内容方向', { exact: true }).fill('面向通勤族');
         expect(
           await page
             .getByRole('button', {
