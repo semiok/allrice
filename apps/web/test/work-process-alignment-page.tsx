@@ -430,7 +430,7 @@ function Fixture() {
                   cursor: null,
                   reconnects: 0,
                   events: questionAttempts
-                    ? questionAttempts.events.slice(-5)
+                    ? questionAttempts.liveTail
                     : events.slice(-1),
                 },
               }

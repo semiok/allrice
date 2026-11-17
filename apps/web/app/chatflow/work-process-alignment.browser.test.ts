@@ -125,6 +125,18 @@ suite('approved DSH process alignment', () => {
           expect(
             await page.locator('article[aria-label="用户确认结果"]').count(),
           ).toBe(3);
+          expect(await page.locator('[data-process-scrollport]').count()).toBe(
+            1,
+          );
+          expect(
+            await receipts.evaluateAll((nodes) =>
+              nodes.every(
+                (node) =>
+                  node.closest('[data-process-scrollport]') ===
+                  nodes[0]!.closest('[data-process-scrollport]'),
+              ),
+            ),
+          ).toBe(true);
           for (const index of [1, 2, 3])
             expect(
               await page.locator(`#message-attempt-answer-${index}`).count(),

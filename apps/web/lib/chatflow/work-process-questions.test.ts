@@ -92,8 +92,15 @@ describe('native question ownership in the process', () => {
       ]);
       expect(view.items[0]).toMatchObject({
         historicalQuestion: true,
-        status: 'info',
+        status: durable ? 'completed' : 'info',
       });
+      const groups = view.parts!.filter((part) => part.kind === 'steps');
+      expect(groups).toHaveLength(1);
+      expect(groups[0]!.items.map((item) => item.id)).toEqual([
+        'tool:ask-1',
+        'tool:ask-2',
+        'tool:ask-3',
+      ]);
       expect(JSON.stringify(view)).not.toMatch(/OLD_ATTEMPT_BODY|old-read/);
       expect(view.finalText).toBe('本轮答题已记录。');
       expect(
@@ -104,11 +111,37 @@ describe('native question ownership in the process', () => {
       expect(resolve([...f.events, ...f.events]).byOwner.get('owner')).toEqual(
         result.byOwner.get('owner'),
       );
-      expect([...resolve(f.events.slice(-5)).embeddedAnswerIds]).toEqual([
+      expect([...resolve(f.liveTail).embeddedAnswerIds]).toEqual([
         f.answers[2]!.id,
       ]);
       expect(resolve().embeddedAnswerIds.size).toBe(3);
       if (durable) {
+        expect(
+          f.events.some(
+            (event) =>
+              event.sourceEvent?.type === 'session/user-question-answered',
+          ),
+        ).toBe(false);
+        const foreground = f.events.find(
+          (event) => event.sourceEvent?.type === 'session/user-questions',
+        )!;
+        const pending = f.events.find(
+          (event) =>
+            event.type === 'tool.completed' &&
+            event.payload.toolCallId === 'ask-2',
+        )!;
+        expect(foreground.payload.attempt).toBe(1);
+        expect(pending.payload.attempt).toBe(1);
+        expect(pending.sourceEvent!.payload.message).toMatchObject({
+          toolCallId: 'ask-2',
+          content: [{ type: 'text', text: '{"pending":true}' }],
+        });
+        expect(foreground.sequence).toBeLessThan(pending.sequence);
+        expect(
+          resolve(f.events, [])
+            .byOwner.get('owner')
+            ?.every((question) => question.answered && !question.pending),
+        ).toBe(true);
         const withoutCall = f.events.filter(
           (event) => event.payload.toolCallId !== 'ask-1',
         );
@@ -121,6 +154,79 @@ describe('native question ownership in the process', () => {
       }
     },
   );
+  it.each(['missing', 'session', 'call', 'run', 'generation'])(
+    'keeps the old timed answer outside without matching settled authority: %s',
+    (mismatch) => {
+      const f = questionAttemptFixture(true);
+      const settled = structuredClone(
+        f.events.find(
+          (event) => event.sourceEvent?.type === 'session/user-questions',
+        )!,
+      );
+      for (const event of f.events) {
+        const questions = event.sourceEvent?.payload.questions;
+        if (
+          questions &&
+          typeof questions === 'object' &&
+          'settled' in questions &&
+          Array.isArray(questions.settled)
+        )
+          questions.settled = questions.settled.filter(
+            (question) => question.callId !== f.requests[0]!.callId,
+          );
+      }
+      settled.eventId += '-mismatched';
+      settled.sequence = f.events.at(-1)!.sequence + 1;
+      if (mismatch === 'session')
+        settled.sourceEvent!.payload.sessionId = 'another-session';
+      if (mismatch === 'call')
+        settled.sourceEvent!.payload.questions = {
+          active: [],
+          settled: [
+            { callId: 'another-call', answers: f.answers[0]!.answer.answers },
+          ],
+        };
+      if (mismatch === 'run') settled.runId = 'another-run';
+      if (mismatch === 'generation') {
+        settled.generation = 6;
+        settled.payload.generation = 6;
+      }
+      if (mismatch !== 'missing') f.events.push(settled);
+      const result = workProcessQuestions(
+        [{ id: 'owner', events: f.events }],
+        f.answers,
+      );
+      expect([...result.embeddedAnswerIds]).toEqual(
+        f.answers.slice(1).map((answer) => answer.id),
+      );
+      expect(
+        projectWorkProgress(f.events, '', false).items.map((item) => item.id),
+      ).not.toContain('tool:ask-1');
+    },
+  );
+  it('does not call a successful timed pending tool an answered question', () => {
+    const f = questionAttemptFixture(true);
+    const tail = f.liveTail.filter(
+      (event) =>
+        !['session/user-questions', 'run/end'].includes(
+          event.sourceEvent?.type ?? '',
+        ),
+    );
+    const result = tail.find((event) => event.type === 'tool.completed')!;
+    result.sourceEvent!.payload.message = {
+      toolCallId: 'ask-3',
+      content: [{ type: 'text', text: '{"pending":true}' }],
+    };
+    const question = workProcessQuestions(
+      [{ id: 'owner', events: tail }],
+      [],
+    ).byOwner.get('owner')![0]!;
+    expect(question).toMatchObject({
+      callId: 'ask-3',
+      pending: true,
+      answered: false,
+    });
+  });
   it('keeps independent native sessions when their call and question identities differ', () => {
     const f = questionAttemptFixture();
     const request = f.events.find(

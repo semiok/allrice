@@ -1,8 +1,41 @@
 import {
   UserQuestionRequestSchema,
   type ChatFlowEventEnvelope,
+  type UserQuestionRequest,
 } from '@allrice/contracts';
 import { projectNativeExperience } from './native-experience';
+
+/** Read native answer authority, never a tool's successful return alone. */
+export function workProcessQuestionAnswered(
+  request: UserQuestionRequest,
+  event: ChatFlowEventEnvelope,
+) {
+  const source = event.sourceEvent;
+  if (source?.type === 'session/user-question-answered')
+    return source.payload.questionId === request.questionId;
+  if (
+    source?.type !== 'session/user-questions' ||
+    !request.durable ||
+    !request.nativeSessionId ||
+    !request.callId
+  )
+    return false;
+  const { sessionId, questions } = source.payload;
+  return (
+    sessionId === request.nativeSessionId &&
+    !!questions &&
+    typeof questions === 'object' &&
+    'settled' in questions &&
+    Array.isArray(questions.settled) &&
+    questions.settled.some(
+      (settled: unknown) =>
+        !!settled &&
+        typeof settled === 'object' &&
+        'callId' in settled &&
+        settled.callId === request.callId,
+    )
+  );
+}
 
 /** Only answered question receipts may survive an execution attempt change.
  * The current body, activity and every other tool retain their original filter.
@@ -70,8 +103,7 @@ export function workProcessQuestionHistory(
     }
     const answered = all.filter(
       (row) =>
-        row.sourceEvent?.type === 'session/user-question-answered' &&
-        row.sourceEvent.payload.questionId === request.questionId &&
+        workProcessQuestionAnswered(request, row) &&
         row.sequence > event.sequence,
     );
     if (

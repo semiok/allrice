@@ -76,15 +76,13 @@ describe('native reading order adapted to Allrice', () => {
     expect(summarizeWorkProcess(result.items).active).toBe('写入文件');
     expect(workProcessTitle(result.items, true)).toBe('正在写入文件');
     expect(isReplyStreaming([...live, current])).toBe(false);
-    const replying = projectWorkProgress(
-      live.filter((row) => row.sequence <= 9),
-      '',
-      true,
-    );
+    const replySequence = live.find(
+      (row) => row.type === 'assistant.text.delta' && row.payload.attempt === 2,
+    )!.sequence;
+    const replyingEvents = live.filter((row) => row.sequence <= replySequence);
+    const replying = projectWorkProgress(replyingEvents, '', true);
     expect(summarizeWorkProcess(replying.items).active).toBeUndefined();
-    expect(isReplyStreaming(live.filter((row) => row.sequence <= 9))).toBe(
-      true,
-    );
+    expect(isReplyStreaming(replyingEvents)).toBe(true);
     expect(JSON.stringify(replying.parts)).not.toContain('OLD_ATTEMPT_BODY');
   });
   it('uses the current native phase instead of the presence of an earlier reply', () => {

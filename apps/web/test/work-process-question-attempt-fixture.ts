@@ -30,6 +30,12 @@ export function questionAttemptFixture(durable = false) {
       },
     ],
   }));
+  const answerItems = (index: number) => [
+    {
+      id: requests[index]!.questions[0]!.id,
+      selected: [requests[index]!.questions[0]!.options![0]!.label],
+    },
+  ];
   const events: ChatFlowEventEnvelope[] = [];
   const add = (
     attempt: number,
@@ -72,7 +78,12 @@ export function questionAttemptFixture(durable = false) {
       'tool.started',
       { toolCallId: request.callId, name: 'ask_user_question' },
       'tool/call',
-      { callId: request.callId, name: 'ask_user_question' },
+      {
+        turn: attempt,
+        step: index,
+        callId: request.callId,
+        name: 'ask_user_question',
+      },
     );
     add(
       attempt,
@@ -82,13 +93,46 @@ export function questionAttemptFixture(durable = false) {
       { ...request },
     );
   };
-  const answered = (index: number) =>
+  const answered = (index: number, attempt = 2) =>
     add(
-      2,
+      attempt,
       'harness.native',
       { presentation: 'context', status: 'completed', turnId: 'turn' },
-      'session/user-question-answered',
-      { questionId: requests[index]!.questionId },
+      durable ? 'session/user-questions' : 'session/user-question-answered',
+      durable
+        ? {
+            sessionId: nativeSessionId,
+            questions: {
+              active: [],
+              settled: requests.slice(0, index + 1).map((request, i) => ({
+                callId: request.callId,
+                answers: answerItems(i),
+              })),
+            },
+          }
+        : { questionId: requests[index]!.questionId },
+    );
+  const result = (index: number, attempt: number, pending = false) =>
+    add(
+      attempt,
+      'tool.completed',
+      { toolCallId: requests[index]!.callId, name: 'ask_user_question' },
+      'tool/result',
+      {
+        turn: attempt,
+        step: index,
+        message: {
+          toolCallId: requests[index]!.callId,
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify(
+                pending ? { pending: true } : { answers: answerItems(index) },
+              ),
+            },
+          ],
+        },
+      },
     );
   add(1, 'run.started', {}, 'run/start');
   add(
@@ -105,49 +149,53 @@ export function questionAttemptFixture(durable = false) {
     { callId: 'old-read', name: 'read' },
   );
   start(0, 1);
-  add(
-    1,
-    'tool.failed',
-    { toolCallId: 'ask-1', name: 'ask_user_question' },
-    'tool/result',
-    { callId: 'ask-1', questionWait: true, error: { code: 'ASK_ABORTED' } },
-  );
+  if (durable) {
+    // A is answered in the foreground; B returns pending before the next attempt.
+    result(0, 1);
+    answered(0, 1);
+    start(1, 1);
+    result(1, 1, true);
+  } else
+    add(
+      1,
+      'tool.failed',
+      { toolCallId: 'ask-1', name: 'ask_user_question' },
+      'tool/result',
+      { callId: 'ask-1', questionWait: true, error: { code: 'ASK_ABORTED' } },
+    );
   add(2, 'run.started', {}, 'run/start');
-  answered(0);
+  answered(durable ? 1 : 0);
+  for (const index of durable ? [2] : [1, 2]) {
+    start(index, 2);
+    if (durable) result(index, 2);
+    answered(index);
+    if (!durable) result(index, 2);
+  }
+  const replyId = `${nativeSessionId}:2:3`;
   add(
     2,
     'assistant.text.delta',
-    { replyId: 'current', text: '本轮答题已记录。' },
-    'assistant/message',
+    { replyId, text: '本轮答题已记录。' },
+    'assistant/live-chunk',
+    {
+      turn: 2,
+      step: 3,
+      chunk: { type: 'text-delta', index: 0, text: '本轮答题已记录。' },
+    },
   );
-  for (const index of [1, 2]) {
-    start(index, 2);
-    answered(index);
-    add(
-      2,
-      'tool.completed',
-      { toolCallId: requests[index]!.callId, name: 'ask_user_question' },
-      'tool/result',
-      { callId: requests[index]!.callId },
-    );
-  }
   add(
     2,
     'assistant.text.completed',
-    { replyId: 'current', text: '本轮答题已记录。' },
+    { replyId, text: '本轮答题已记录。' },
     'assistant/message',
+    { turn: 2, step: 3 },
   );
   add(2, 'run.succeeded', {}, 'run/end');
   const answers: WorkProcessAnswer[] = requests.map((request, index) => ({
     id: `attempt-answer-${index + 1}`,
     answer: {
       questionId: request.questionId,
-      answers: [
-        {
-          id: request.questions[0]!.id,
-          selected: [request.questions[0]!.options![0]!.label],
-        },
-      ],
+      answers: answerItems(index),
     },
     text: `合成问题${index + 1}：${request.questions[0]!.options![0]!.label}`,
     status: 'adopted',
@@ -183,5 +231,12 @@ export function questionAttemptFixture(durable = false) {
       },
     })),
   ];
-  return { events, messages, requests, answers };
+  const liveTail = events.slice(
+    events.findIndex(
+      (event) =>
+        event.sourceEvent?.type === 'session/user-question' &&
+        event.sourceEvent.payload.callId === requests[2]!.callId,
+    ),
+  );
+  return { events, liveTail, messages, requests, answers };
 }

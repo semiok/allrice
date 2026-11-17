@@ -8,7 +8,10 @@ import {
 import { projectNativeExperience } from './native-experience';
 import { currentWorkProgressEvents } from './work-progress';
 import { projectPendingUserQuestion } from './user-question-state';
-import { workProcessQuestionHistory } from './work-process-question-history';
+import {
+  workProcessQuestionAnswered,
+  workProcessQuestionHistory,
+} from './work-process-question-history';
 
 export interface WorkProcessAnswer {
   id: string;
@@ -72,10 +75,8 @@ export function workProcessQuestions(
         request,
         callId,
         pending: pending?.questionId === request.questionId,
-        answered: events.some(
-          (row) =>
-            row.sourceEvent?.type === 'session/user-question-answered' &&
-            row.sourceEvent.payload.questionId === request.questionId,
+        answered: events.some((row) =>
+          workProcessQuestionAnswered(request, row),
         ),
       });
     }

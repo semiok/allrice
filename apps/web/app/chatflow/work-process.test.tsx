@@ -62,8 +62,13 @@ describe('native process display surface', () => {
     'does not animate a historical answered call while its answer message is late in %s',
     (transcriptView) => {
       const f = questionAttemptFixture();
+      const replySequence = f.events.find(
+        (event) =>
+          event.type === 'assistant.text.delta' && event.payload.attempt === 2,
+      )!.sequence;
       const events = f.events.filter(
-        (event) => event.sequence <= 9 && event.type !== 'tool.failed',
+        (event) =>
+          event.sequence <= replySequence && event.type !== 'tool.failed',
       );
       const active = structuredClone(events.at(-1)!);
       active.eventId = 'active-current';
