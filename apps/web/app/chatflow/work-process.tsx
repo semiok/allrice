@@ -312,7 +312,7 @@ export function WorkProcess({
       {timing ? (
         <>
           <span className={styles.processTitle} aria-label="本轮运行时间">
-            {completed ? '，' : ' · '}
+            {completed ? '，' : running ? '\u00a0' : ' · '}
             用时{' '}
             <RunElapsedTime
               timing={timing}
@@ -576,10 +576,12 @@ export function WorkProcess({
         expandable={display.canFold}
         expandOnRowClick
         keepContentWhenOpen
+        className={
+          display.open && expandable ? styles.processExpanded : undefined
+        }
         rowClassName={`${reasoning.row} ${styles.processHeader} ${executingTitle ? `${styles.processExecuting} ${styles.processPulse}` : ''}`}
         leadingClassName={reasoning.leading}
         titleClassName={`${reasoning.title} ${styles.processTitle} ${microStatus ? styles.processStatus : ''}`}
-        chevronClassName={reasoning.chevron}
         onToggle={toggle}
         collapsedContent={
           <>

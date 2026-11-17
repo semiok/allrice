@@ -55,6 +55,37 @@ const render = (overrides: Partial<ComponentProps<typeof WorkProcess>> = {}) =>
   );
 
 describe('native process display surface', () => {
+  it.each([
+    [true, false, false, false, '\u00a0用时 18秒'],
+    [true, true, false, false, '\u00a0用时 18秒'],
+    [false, false, false, false, '，用时 18秒'],
+    [false, false, true, false, ' · 用时 18秒'],
+    [false, false, false, true, ' · 用时 18秒'],
+  ] as const)(
+    'keeps the exact timing separator for running/streaming/failed/canceled=%s/%s/%s/%s',
+    (running, streaming, failed, canceled, copy) => {
+      for (const processParts of [undefined, parts]) {
+        const html = render({
+          parts: processParts,
+          running,
+          streaming,
+          failed,
+          canceled,
+          timing: {
+            activeMs: 18000,
+            waitingMs: 0,
+            wallMs: 18000,
+            timeoutMs: 900000,
+            remainingMs: running ? 882000 : null,
+            phase: running ? 'active' : 'terminal',
+            sources: [],
+            calls: null,
+          },
+        });
+        expect(html.replace(/<[^>]+>/g, '')).toContain(copy);
+      }
+    },
+  );
   it('projects each native create/list failure receipt and its safe reason into the process', () => {
     const events: ChatFlowEventEnvelope[] = [
       'subagent',

@@ -177,6 +177,180 @@ suite('approved DSH process alignment', () => {
   });
   for (const theme of ['light', 'dark'])
     for (const width of [1440, 390]) {
+      it(`keeps the same native header, gap and pulse from first trace through named reply and completion at ${width}px ${theme}`, async () => {
+        const page = await openPage(
+          `scene=running&progressive&tool-only&theme=${theme}&employee=文章哥`,
+        );
+        const errors: string[] = [];
+        page.on('pageerror', (error) => errors.push(error.message));
+        try {
+          await page.setViewportSize({ width, height: 960 });
+          await page.evaluate(() => document.fonts.ready);
+          const section = page.locator('section[aria-label="工作过程"]');
+          const header = section.locator('[data-disclosure-row]').first();
+          let headerTop: number | undefined;
+          for (let phase = 0; phase < 6; phase++) {
+            await page.evaluate((phase) => window.alignPhase(phase), phase);
+            await page.locator(`[data-alignment-phase="${phase}"]`).waitFor();
+            expect(
+              await page.getByRole('article', { name: '用户确认结果' }).count(),
+            ).toBe(0);
+            const frames = await page.evaluate(async () => {
+              const samples = [];
+              for (let i = 0; i < 4; i++) {
+                await new Promise<void>((done) =>
+                  requestAnimationFrame(() => done()),
+                );
+                const section = document.querySelector(
+                  'section[aria-label="工作过程"]',
+                )!;
+                const header = section.querySelector('[data-disclosure-row]')!;
+                const title = header.querySelector('[class*="processTitle"]')!;
+                const timing = header.querySelector(
+                  '[aria-label="本轮运行时间"]',
+                );
+                const arrow = header.firstElementChild!.querySelector('svg')!;
+                const avatar = document.querySelector(
+                  '[class*="assistantIdentity"] i',
+                )!;
+                const frame = document.querySelector(
+                  '[data-process-scrollport]',
+                );
+                const box = header.getBoundingClientRect();
+                const opacity = (node: Element) => {
+                  let result = 1;
+                  for (
+                    let current: Element | null = node;
+                    current;
+                    current = current.parentElement
+                  )
+                    result *= Number(getComputedStyle(current).opacity);
+                  return result;
+                };
+                const text = timing?.firstChild;
+                const space = document.createRange();
+                if (text) {
+                  space.setStart(text, 0);
+                  space.setEnd(text, 1);
+                }
+                samples.push({
+                  top: box.top,
+                  height: box.height,
+                  gap: frame
+                    ? frame.getBoundingClientRect().top - box.bottom
+                    : null,
+                  parts: !!frame && !section.contains(frame),
+                  title: title.textContent,
+                  timing: timing?.textContent ?? null,
+                  space: text ? space.getBoundingClientRect().width : null,
+                  color: [arrow, title, ...(timing ? [timing] : [])].map(
+                    (node) => getComputedStyle(node).color,
+                  ),
+                  avatarColor: getComputedStyle(avatar).backgroundColor,
+                  opacity: [
+                    arrow,
+                    title,
+                    ...(timing ? [timing] : []),
+                    avatar,
+                  ].map(opacity),
+                  clocks: [header, avatar].map((node) =>
+                    node.getAnimations().map((animation) => ({
+                      start: animation.startTime,
+                      pending: animation.pending,
+                      current: animation.currentTime,
+                      duration: animation.effect!.getTiming().duration,
+                      easing: getComputedStyle(node).animationTimingFunction,
+                    })),
+                  ),
+                });
+              }
+              return samples;
+            });
+            headerTop ??= frames[0]!.top;
+            for (const frame of frames) {
+              expect(Math.abs(frame.top - headerTop)).toBeLessThanOrEqual(0.5);
+              expect(Math.abs(frame.height - 24)).toBeLessThanOrEqual(0.5);
+              expect(frame.parts).toBe(phase >= 3);
+              if (phase)
+                expect(Math.abs(frame.gap! - 8)).toBeLessThanOrEqual(0.5);
+              else expect(frame.gap).toBeNull();
+              expect(new Set(frame.color).size).toBe(1);
+              expect(new Set(frame.opacity.slice(0, -1)).size).toBe(1);
+              expect(frame.title).toBe(
+                phase === 5 ? '已完成' : phase === 3 ? '回复中…' : '思考中…',
+              );
+              if (phase < 5) {
+                expect(frame.color[0]).toBe(frame.avatarColor);
+                expect(
+                  frame.clocks.every((clocks) => clocks.length === 1),
+                ).toBe(true);
+                expect(
+                  frame.clocks
+                    .flat()
+                    .every(
+                      (clock) =>
+                        clock.duration === 1400 &&
+                        clock.easing === 'ease-in-out',
+                    ),
+                ).toBe(true);
+                if (frame.clocks[0]![0]!.start === null) {
+                  // rAF is before paint: preserve the pending sample rather
+                  // than treating it as a painted frame or waiting it away.
+                  expect(frame.clocks[0]![0]!.pending).toBe(true);
+                  expect(frame.clocks[0]![0]!.current).toBe(0);
+                } else {
+                  expect(frame.clocks[0]![0]!.start).toBe(
+                    frame.clocks[1]![0]!.start,
+                  );
+                  expect(new Set(frame.opacity).size).toBe(1);
+                }
+              } else {
+                expect(frame.color[0]).toBe(
+                  theme === 'dark'
+                    ? 'rgb(173, 178, 184)'
+                    : 'rgb(129, 133, 140)',
+                );
+                expect(frame.clocks).toEqual([[], []]);
+              }
+              if (phase < 2) expect(frame.timing).toBeNull();
+              else if (phase === 5) expect(frame.timing).toBe('，用时 1分7秒');
+              else {
+                expect(frame.timing).toMatch(/^\u00a0用时 \d+秒$/);
+                expect(frame.space).toBeGreaterThan(0);
+                expect(frame.timing).not.toContain('·');
+              }
+            }
+            if (phase < 5) {
+              const settled = frames.at(-1)!;
+              expect(settled.clocks[0]![0]!.start).not.toBeNull();
+              expect(settled.clocks[0]![0]!.start).toBe(
+                settled.clocks[1]![0]!.start,
+              );
+              expect(new Set(settled.opacity).size).toBe(1);
+            }
+            if (phase === 2 || phase === 3) {
+              await header.focus();
+              await header.press('Enter');
+              await expect
+                .poll(() => header.getAttribute('aria-expanded'))
+                .toBe('false');
+              expect(
+                await page.locator('[data-process-scrollport]').isVisible(),
+              ).toBe(false);
+              await header.press('Space');
+              await expect
+                .poll(() => header.getAttribute('aria-expanded'))
+                .toBe('true');
+              expect(
+                await page.locator('[data-process-scrollport]').isVisible(),
+              ).toBe(true);
+            }
+          }
+          expect(errors).toEqual([]);
+        } finally {
+          await page.close();
+        }
+      });
       it(`keeps icon/text aligned, multiple details fully open and pulse synchronized at ${width}px ${theme}`, async () => {
         const page = await openPage(
           `scene=running&blocking&theme=${theme}&employee=文章哥`,
