@@ -421,6 +421,8 @@ def evaluate(r, findings, ran=()):
             opens[key] = recent
             muted_until = 0 if f.get('noRepeat') else r.state.get('muted', {}).get(key, {}).get('mutedUntil', 0)
             cur = alerts[key] = dict(f, since=now, notifiedAt=now, notifiedSeverity=sev, incidentId=str(uuid.uuid4()))
+            if key == 'quota':
+                cur['notifiedQuotaExhausted'] = bool(f.get('quotaExhausted'))
             r.state.get('mutedRecoveries', {}).pop(key, None)
             event = 'opened'
             if muted_until > now:
@@ -436,10 +438,15 @@ def evaluate(r, findings, ran=()):
                 r.state.setdefault('notifiedOnce', {}).update({i: now for i in once})
             continue
         escalated = RANK[sev] > RANK[cur['notifiedSeverity']] or bool(once and not already)
+        if key == 'quota' and f.get('quotaExhausted') and not cur.get('notifiedQuotaExhausted'):
+            escalated = True  # 95%+ and exhausted are both critical, but exhaustion must notify immediately.
+        repeat_minutes = 24 * 60 if key == 'quota' else cfg['repeatMinutes'][sev]
         since, inc, notified, muted = cur['since'], cur['incidentId'], cur['notifiedAt'], cur.get('mutedUntil', 0)
         cur.update(f, since=since, incidentId=inc)
         if escalated:
             cur.update(notifiedAt=now, notifiedSeverity=sev, silentOpen=False, mutedUntil=0)  # told: no longer muted
+            if key == 'quota' and f.get('quotaExhausted'):
+                cur['notifiedQuotaExhausted'] = True
             r.state.get('muted', {}).pop(key, None)
             events.append({'event': 'escalated', 'finding': f, 'alert': cur, 'silent': False})
             incident(r, 'monitor_alert', sev, f, cur, event='escalated')
@@ -451,7 +458,7 @@ def evaluate(r, findings, ran=()):
             r.state.get('muted', {}).pop(key, None)
             events.append({'event': 'reminder', 'finding': f, 'alert': cur, 'silent': False})
             incident(r, 'monitor_alert', sev, f, cur, event='reminder')
-        elif not f.get('noRepeat') and muted <= now and (cur.get('silentOpen') or now - notified >= cfg['repeatMinutes'][sev] * 60):
+        elif not f.get('noRepeat') and muted <= now and (cur.get('silentOpen') or now - notified >= repeat_minutes * 60):
             cur.update(notifiedAt=now, notifiedSeverity=max(sev, cur['notifiedSeverity'], key=RANK.get), silentOpen=False)
             events.append({'event': 'reminder', 'finding': f, 'alert': cur, 'silent': False})
             incident(r, 'monitor_alert', sev, f, cur, event='reminder')
@@ -1040,6 +1047,7 @@ def check_subscription(r):
     if not rows:
         return [finding('subscription', 'critical', '模型订阅不可用', '没有启用的 Codex 订阅槽位', 'm1-model-subscription.md', step)]
     auth, auth_sev, quota, quota_sev, judged, auth_unsure, quota_unsure = [], 'ok', [], 'ok', False, False, False
+    quota_exhausted = False
     unreadable = r.state.setdefault('quotaUnreadable', {})
     high = r.state.setdefault('quotaHigh', {})  # slot -> windows that were at or above the warning line
     for row in rows:
@@ -1066,6 +1074,7 @@ def check_subscription(r):
         high[slot] = sorted(set(k for k, v in measured.items() if v >= r.cfg['quotaWarnPercent']) |
                             set(k for k, v in limits.items() if v) | (set(high.get(slot, [])) - set(seen)))
         if any(b.get('limitReached') for b in buckets):
+            quota_exhausted = True
             quota.append('%s 额度已用完' % name)
             quota_sev, judged = 'critical', True
         elif used:
@@ -1086,7 +1095,8 @@ def check_subscription(r):
     out = [finding('subscription', auth_sev, '模型订阅异常', '；'.join(auth), 'm1-model-subscription.md', step)
            if auth_sev != 'ok' or not auth_unsure else unknown('subscription')]
     if judged and not (quota_unsure and quota_sev == 'ok'):
-        out.append(finding('quota', quota_sev, '模型订阅额度', '；'.join(quota), 'm1-model-subscription.md', step))
+        out.append(dict(finding('quota', quota_sev, '模型订阅额度', '；'.join(quota), 'm1-model-subscription.md', step),
+                        quotaExhausted=quota_exhausted))
     else:
         out.append(unknown('quota'))
     return out
