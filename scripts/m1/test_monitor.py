@@ -415,6 +415,47 @@ class Checks(unittest.TestCase):
                 findings, ran = monitor.run_checks(r, [('subscription', monitor.check_subscription, False, None)])
             self.assertEqual([e for e in step(r, findings, at, ran) if e[1] == 'quota'], want, at)
 
+    def test_quota_daily_reminder_still_escalates_to_exhausted_immediately(self):
+        r = make_round()
+
+        def judge(at, used=97, reached=False):
+            r.now = at
+            row = {'slot': 2, 'label': 'quota-test', 'status': 'connected', 'detail': '', 'ageSeconds': 1,
+                   'quota': {'buckets': [{'limitId': 'codex', 'limitReached': reached,
+                                         'windows': [{'slot': 'primary', 'status': 'available', 'usedPercent': used}]}]}}
+            with mock.patch.object(monitor.Round, 'psql', return_value=json.dumps([row])):
+                findings, ran = monitor.run_checks(r, [('subscription', monitor.check_subscription, False, None)])
+            events = monitor.evaluate(r, findings, ran)
+            return [e['event'] for e in events], monitor.compose(r, events)
+
+        self.assertEqual(judge(0)[0], ['opened'])
+        # Simulate an existing alert written by the previous installed monitor.
+        r.state['alerts']['quota'].pop('notifiedQuotaExhausted')
+        for at in [hour * 3600 for hour in range(1, 24)] + [86400 - 1]:
+            self.assertEqual(judge(at), ([], []), at)
+        self.assertEqual(judge(86400)[0], ['reminder'])
+        events, messages = judge(86460, reached=True)
+        self.assertEqual(events, ['escalated'])
+        self.assertIn('额度已用完', ''.join(messages))
+        # Persisted notification state also suppresses an hourly repeat after restart.
+        r.state = json.loads(json.dumps(r.state))
+        self.assertEqual(judge(86460 + 3600, reached=True), ([], []))
+        self.assertEqual(judge(86460 + 86400 - 1, reached=True), ([], []))
+        self.assertEqual(judge(86460 + 86400, reached=True)[0], ['reminder'])
+        self.assertEqual(judge(86460 + 86400 + 1, used=20)[0], ['recovered'])
+
+    def test_quota_warning_escalation_and_exhaustion_do_not_wait_for_daily_reminder(self):
+        r = make_round()
+        for at, used, reached, want in [(0, 85, False, ['opened']), (240, 97, False, ['escalated']),
+                                        (480, 97, True, ['escalated']), (720, 97, False, []),
+                                        (960, 97, True, [])]:
+            r.now = at
+            row = {'slot': 1, 'label': 'quota-test', 'status': 'connected', 'detail': '', 'ageSeconds': 1,
+                   'quota': {'buckets': [{'limitReached': reached, 'windows': [{'status': 'available', 'usedPercent': used}]}]}}
+            with mock.patch.object(monitor.Round, 'psql', return_value=json.dumps([row])):
+                findings = monitor.check_subscription(r)
+            self.assertEqual([e['event'] for e in monitor.evaluate(r, findings)], want, at)
+
     def test_quota_limit_alert_needs_the_provider_to_clear_it(self):
         r = make_round()
 
