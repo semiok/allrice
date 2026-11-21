@@ -9,6 +9,12 @@ import type {
   PersonVmMemoryGuestPlan,
   PersonVmStartingScope,
 } from './guest-bootstrap.ts';
+import {
+  nativeWebAuthArtifact,
+  NATIVE_WEB_AUTH_READER,
+  parseNativeWebAuth,
+  type PersonVmNativeWebAuthRequest,
+} from './native-web-auth.ts';
 
 type NativeCommand = (
   args: string[],
@@ -49,7 +55,7 @@ export async function bootstrapMicrosandbox(input: {
   name: string;
   cleanupTimeoutMs: number;
   command: NativeCommand;
-}): Promise<Pick<PersonVmBootstrapScope, 'launch'>> {
+}): Promise<Pick<PersonVmBootstrapScope, 'launch' | 'readNativeWebAuth'>> {
   const { scope, name, command } = input;
   const plan = structuredClone(input.plan); // Trusted configuration snapshot, not guest authority.
   const paths = new Set<string>();
@@ -179,6 +185,29 @@ export async function bootstrapMicrosandbox(input: {
     await rm(stage, { recursive: true, force: true });
   }
   return Object.freeze({
+    readNativeWebAuth: async (request: PersonVmNativeWebAuthRequest) => {
+      const { path, maxBytes } = nativeWebAuthArtifact(request);
+      await scope.assertCurrent();
+      const text = await command(
+        [
+          'exec',
+          name,
+          '--no-stdin',
+          '--no-tty',
+          '--timeout',
+          `${request.timeoutMs}ms`,
+          '--',
+          'node',
+          '-e',
+          NATIVE_WEB_AUTH_READER,
+          path,
+          String(maxBytes),
+        ],
+        scope.signal,
+      );
+      await scope.assertCurrent();
+      return parseNativeWebAuth(text, request);
+    },
     launch: async (spec: PersonVmGuestCommand) => {
       commandInput(spec);
       if (

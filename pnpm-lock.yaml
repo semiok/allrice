@@ -285,6 +285,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@allrice/person-vm':
+        specifier: workspace:*
+        version: link:../../packages/person-vm
       '@allrice/browser-control':
         specifier: workspace:*
         version: link:../../packages/browser-control

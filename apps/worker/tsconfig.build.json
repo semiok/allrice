@@ -9,5 +9,6 @@
     "rootDir": "src",
     "sourceMap": true
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/native-web/owner.native.integration.test.ts"]
 }

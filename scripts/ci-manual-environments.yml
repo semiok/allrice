@@ -40,6 +40,9 @@ rules:
     - apps/worker/src/repository-repair/
 files:
   native:
+    - packages/person-vm/src/native-web-auth.test.ts
+    - apps/worker/src/native-web/owner.test.ts
+    - apps/worker/src/native-web/transport.test.ts
     - apps/web/server/native-subagent-follow.test.mjs
     - apps/worker/dsh/allrice-native-accounting.test.mjs
     - apps/rice-bridge/src/credential-files.test.ts
@@ -66,6 +69,7 @@ files:
     - scripts/rice-bridge-pdf-guardian.test.mjs
     - scripts/rice-bridge-terminal-runtime.test.mjs
   manual:
+    - apps/worker/src/native-web/owner.native.integration.test.ts
     - apps/rice-bridge/src/local-browser-login.native.test.ts
     - apps/worker/src/browser-control/driver.production.integration.test.ts
     - apps/worker/src/browser-control/static-browser.native.integration.test.ts
@@ -122,6 +126,9 @@ extra:
     - apps/worker/test/p25/native-schedule-recurring.integration.test.ts
     - apps/worker/test/p25/platform-quality-recurring.integration.test.ts
 tags:
+  manual:ALLRICE_NATIVE_WEB_TEST_CLI:
+    reason: Complete compatible-OS public DSH 0.2.1-rc.2 package artifact with pinned CLI hash; starts its actual Web profile in a synthetic HOME. No dummy protocol server, credentials, model or shared Dev.
+    command: ALLRICE_NATIVE_WEB_TEST_CLI="$NATIVE_WEB_TEST_CLI" pnpm exec vitest run {file} --maxWorkers=1
   manual:ALLRICE_OFFICE_PREVIEW_DIR:
     reason: Actual native Office renderer output from the task sandbox; requires docx.json, xlsx.json and pptx.json OfficeRenderResponse documents plus their rendered page bytes, produced by the external Office rendering environment.
     command: ALLRICE_OFFICE_PREVIEW_DIR="$OFFICE_PREVIEW_DIR" pnpm exec vitest run {file} --maxWorkers=2

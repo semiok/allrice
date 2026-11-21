@@ -1,3 +1,4 @@
+import type { PersonVmBootstrapScope } from './guest-bootstrap.ts';
 import {
   lstat,
   mkdtemp,
@@ -9,6 +10,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
+import { mkdir } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MicrosandboxPersonVm } from './microsandbox.ts';
@@ -59,6 +61,10 @@ else if(a[0]==='cp'){
  const meta=fs.statSync(a[1]);(v.copies??=[]).push({target:a[2],mode:meta.mode&511,contents:fs.readFileSync(a[1],'utf8')});
 }
 else if(a[0]==='exec'){
+ if(!a.includes('--detach')){
+  const cmd=a.slice(a.indexOf('--')+1);
+  process.exit(require('node:child_process').spawnSync(process.execPath,cmd.slice(1),{stdio:'inherit'}).status??1);
+ }
  if(!a.includes('--detach')||!a.includes('--no-stdin')||!a.includes('--no-tty'))process.exit(42);
  const id=require('node:crypto').randomUUID(),cmd=a.slice(a.indexOf('--')+1),init=cmd.includes('/work/memory/init.cjs');
  (v.jobs??={})[id]={cmd,code:init&&mode==='init-error'?23:0};save();
@@ -137,6 +143,41 @@ save();
 }
 
 describe('Microsandbox public CLI protocol through real child processes (no actual VM)', () => {
+  it('真实service scope把固定nonce reader送入原生exec；argv无资格，过期scope拒绝读取', async () => {
+    const f = await bootstrapFixture(),
+      dshHome = await directory(),
+      nonce = randomUUID();
+    await mkdir(join(dshHome, 'native-web'));
+    const authenticatedUrl = `http://127.0.0.1:32179/?token=${'a'.repeat(43)}`;
+    await writeFile(
+      join(dshHome, 'native-web', `auth-${nonce}.json`),
+      JSON.stringify({ v: 1, nonce, authenticatedUrl }),
+    );
+    const request = {
+      dshHome,
+      nonce,
+      origin: 'http://127.0.0.1:32179/',
+      timeoutMs: 3000,
+    };
+    let read!: NonNullable<PersonVmBootstrapScope['readNativeWebAuth']>;
+    f.h.runtime.start = async (_binding, _signal, scope) => {
+      read = scope.readNativeWebAuth!;
+      expect(await read(request)).toEqual({ authenticatedUrl });
+    };
+    await f.service.prewarm(f.rc, { trigger: 'page' }, signal());
+    const calls = await f.calls();
+    expect(
+      calls.some(
+        (args) =>
+          args[0] === 'exec' &&
+          !args.includes('--detach') &&
+          args.includes('--timeout'),
+      ),
+    ).toBe(true);
+    expect(JSON.stringify(calls)).not.toContain('a'.repeat(43));
+    await expect(read(request)).rejects.toMatchObject({ code: 'LEASE_LOST' });
+    expect(await f.calls()).toEqual(calls);
+  });
   it('service真实启动入口按cp/mode→managed init wait→固定launcher/env，running不重init', async () => {
     const f = await bootstrapFixture();
     await f.service.prewarm(f.rc, { trigger: 'page' }, signal());

@@ -3,6 +3,10 @@ import {
   type PersonVmBinding,
   type PersonVmRuntimePort,
 } from './contract.ts';
+import type {
+  PersonVmNativeWebAuthRequest,
+  PersonVmNativeWebAuth,
+} from './native-web-auth.ts';
 
 /** Host-only structural projection of MET267's public VmMemoryGuestPlan. */
 export type PersonVmMemoryGuestPlan = Readonly<{
@@ -35,12 +39,16 @@ export interface PersonVmBootstrapScope extends PersonVmStartingScope {
   /** Only after person memory init; always prepends the installed native launcher.
    * The runtime owner retains the returned job, not this expiring startup scope. */
   launch(command: PersonVmGuestCommand): Promise<PersonVmManagedJob>;
+  /** Fixed nonce artifact only, captured privately. Missing provider support fails closed. */
+  readNativeWebAuth?(
+    request: PersonVmNativeWebAuthRequest,
+  ): Promise<PersonVmNativeWebAuth>;
 }
 export interface PersonVmGuestBootstrapPort {
   bootstrap(
     scope: PersonVmStartingScope,
     plan: PersonVmMemoryGuestPlan,
-  ): Promise<Pick<PersonVmBootstrapScope, 'launch'>>;
+  ): Promise<Pick<PersonVmBootstrapScope, 'launch' | 'readNativeWebAuth'>>;
 }
 
 /** Internal service kernel: the actual lease stays owned through callback and
@@ -96,6 +104,12 @@ export async function bootstrapPersonVm(input: {
         ...scope,
         launch: (command: PersonVmGuestCommand) =>
           track(() => launcher.launch(command)),
+        ...(launcher.readNativeWebAuth
+          ? {
+              readNativeWebAuth: (request: PersonVmNativeWebAuthRequest) =>
+                track(() => launcher.readNativeWebAuth!(request)),
+            }
+          : {}),
       }),
     );
   } finally {

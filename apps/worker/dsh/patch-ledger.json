@@ -159,6 +159,14 @@
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-employee-documents.mjs",
       "reason": "Supply current V2 memory and identity-only frozen employee documents through public systemPrompt.context and exact-Agent PERSONA_PREFIX_SECTION shadowing on an admitted root. Optional PERSONA has an independent 16384-byte budget and derives only from verified frozen source; admitted descendants read only current PERSONA. Ordinary human USER/MEMORY keep existing owner/instance eligibility; V2 human Runs carry all summary ordinals and complete native text reads metered only by the existing memory Run ledger. Persona-only and scheduled inputs carry empty MEMORY and no memory tools or read ledger; retired V1 documents, source/search tools and budgets are rejected. Native persona, snapshot update/clear/resume/fork and history stay native. No new permission, private interface or alternate lifecycle."
+    },
+    {
+      "id": "allrice-native-web-local-auth-v1",
+      "issue": "MET-273",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/dsh/allrice-native-web-owner.mjs",
+      "reason": "Host-only local-auth publication through public connection.authenticatedUrl and Cordis lifecycle. A host-minted nonce and exact predeclared loopback endpoint bind bounded private retrieval to the current VM bootstrap lease. Native Node Connection, Gateway and SessionController own protocol/control; the Worker joins its own HTTP/WS and exact native job without a stdio bridge, SaaS identity from guest claims, or editor/idle readiness inference."
     }
   ]
 }

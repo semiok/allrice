@@ -9,6 +9,11 @@ export type {
   PersonVmGuestBootstrapPort,
 } from './guest-bootstrap.ts';
 export * from './admission-contract.ts';
+export {
+  nativeWebAuthArtifact,
+  type PersonVmNativeWebAuth,
+  type PersonVmNativeWebAuthRequest,
+} from './native-web-auth.ts';
 export * from './admission-boundary.ts';
 export { PersonVmAdmissionHost } from './admission-host.ts';
 export { PersonVmService, sameVmBinding } from './person-vm.ts';

@@ -175,6 +175,50 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
     expect(joined).toBe(true);
     expect(h.log.slice(-2)).toEqual(['native:stop', 'disk:detach']);
   });
+  it('未await的auth读取仍join；callback结束后不再泄露资格，也不能先stop/detach', async () => {
+    const h = harness(),
+      rc = context();
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>((done) => {
+      enter = done;
+    });
+    const joined = new Promise<void>((done) => {
+      release = done;
+    });
+    const bootstrap = h.native.bootstrap;
+    h.native.bootstrap = async (scope) => ({
+      ...(await bootstrap(
+        scope,
+        await h.runtime.memoryGuestPlan(scope.binding, scope.signal),
+      )),
+      readNativeWebAuth: async () => {
+        enter();
+        await joined;
+        return { authenticatedUrl: 'must not escape' };
+      },
+    });
+    let reading!: Promise<unknown>;
+    h.runtime.start = async (_binding, _signal, scope) => {
+      reading = scope.readNativeWebAuth!({
+        dshHome: '/work/person',
+        nonce: randomUUID(),
+        origin: 'http://127.0.0.1:32179/',
+        timeoutMs: 3000,
+      });
+      void reading.catch(() => {});
+      await entered;
+    };
+    const start = h.service.prewarm(rc, { trigger: 'page' }, signal());
+    const failed = expect(start).rejects.toMatchObject({
+      code: 'CLEANUP_INCOMPLETE',
+    });
+    await entered;
+    expect(h.log).not.toContain('native:stop');
+    release();
+    await failed;
+    await expect(reading).rejects.toMatchObject({ code: 'LEASE_LOST' });
+    expect(h.log.slice(-2)).toEqual(['native:stop', 'disk:detach']);
+  });
   it('缺实际bootstrap依赖在egress/attach/create前拒绝', async () => {
     const h = harness(),
       rc = context();
