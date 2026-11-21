@@ -246,7 +246,10 @@ integration(
         socket.on('error', () => {});
         if (!accepting) {
           rejectedConnections++;
-          socket.destroy();
+          // Explicit RST, not a platform-dependent graceful FIN. postgres.js
+          // retries a FIN during StartupMessage while retaining its initial
+          // query; this fixture needs an actual first-connect error to recover.
+          socket.resetAndDestroy();
           return;
         }
         const upstream = createConnection({

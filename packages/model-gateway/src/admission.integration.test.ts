@@ -533,10 +533,18 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
       await close().catch((error) => failures.push(error));
     await settle([...clients].map((client) => client.end({ timeout: 0 })));
     if (admin && schema) {
-      const [row] = await admin<{ count: number }[]>`
-        select count(*)::int as count from pg_stat_activity
-        where application_name like ${prefix + '-owned-%'}`;
-      if (row?.count !== 0) failures.push(new Error('owned PG clients remain'));
+      // Driver end joins the local socket, not PostgreSQL's independent
+      // backend teardown. Still require zero owned backends before disposal;
+      // do not terminate them or turn a persistent leak into a passing check.
+      await expect
+        .poll(async () => {
+          const [row] = await admin<{ count: number }[]>`
+            select count(*)::int as count from pg_stat_activity
+            where application_name like ${prefix + '-owned-%'}`;
+          return row?.count;
+        })
+        .toBe(0)
+        .catch((error) => failures.push(error));
       // Unsafe permits may still exist. Test storage disposal is NOT recovery.
       await admin.unsafe(`drop schema if exists "${schema}" cascade`);
     }
