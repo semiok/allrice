@@ -674,6 +674,24 @@ importers:
         specifier: 0.8.3
         version: 0.8.3
 
+  packages/approval-gateway:
+    dependencies:
+      '@allrice/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@allrice/person-vm':
+        specifier: workspace:*
+        version: link:../person-vm
+      '@modelcontextprotocol/sdk':
+        specifier: 1.30.0
+        version: 1.30.0(zod@4.4.3)
+      postgres:
+        specifier: ^3.4.7
+        version: 3.4.9
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
   packages/browser-control:
     dependencies:
       '@allrice/contracts':
