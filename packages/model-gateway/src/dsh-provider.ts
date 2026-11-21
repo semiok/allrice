@@ -64,11 +64,15 @@ export function createDshGatewayProvider(
   };
 }
 
-/** Guest-side public DSH provider seam. The endpoint is supplied by the host's
- * managed route, not a model credential. It carries no person/tenant authority.
- * No reconnect, retry, credential refresh or tool protocol is invented here. */
+/** Guest-side public DSH provider seam. The host supplies the managed endpoint
+ * and optional VM-local egress capability, never an upstream model credential.
+ * Neither supplies person/tenant authority. No reconnect, retry, credential
+ * refresh or tool protocol is invented here. */
 export class GatewayLlmAdapter extends LlmAdapter {
-  constructor(private readonly endpoint: string) {
+  constructor(
+    private readonly endpoint: string,
+    private readonly egressCapability?: string,
+  ) {
     super();
   }
   override async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -90,6 +94,9 @@ export class GatewayLlmAdapter extends LlmAdapter {
       headers: {
         'content-type': 'application/json',
         'x-allrice-model-contract': String(MODEL_GATEWAY_CONTRACT_VERSION),
+        ...(this.egressCapability === undefined
+          ? {}
+          : { authorization: 'Bearer ' + this.egressCapability }),
       },
       body: JSON.stringify({
         messages,

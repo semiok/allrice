@@ -8,7 +8,7 @@
 
 moduleId=`host-model-gateway`；owner=MET-268；contractVersion=`MODEL_GATEWAY_CONTRACT_VERSION=1`，包0.1.0。producer/consumer仅支持v1；HTTP header版本不符拒绝，不声称支持未来schema。DSH单代`0.2.1-rc.2`，源码commit`687f282e8625c6b8d11ff58211a90524be2e4317`（`apps/worker/dsh/distribution.json`），Node22.23.2。此服务不是EmployeeModuleRelease，使用宿主gatewayRelease/employeeRelease精确pin。
 
-公开根入口`@allrice/model-gateway`，无deep exports。新增出口sourceAtSha=`9934c160951ac493c22e87be51fce09f5122f344`，符号清单位于`packages/model-gateway/src/index.ts`，具名合同位于`src/contract.ts`，方法分别在`src/gateway.ts`、`src/dsh-provider.ts`、`src/postgres-store.ts`、`src/transport.ts`（原生关闭观察位于内部`src/native-close.ts`，无新增公开出口）。该提交的产品源码与本记录封版时相同；每个方法与下列具名type一一对应，JSON检查器不建立信任。
+公开根入口`@allrice/model-gateway`，无deep exports。初版出口sourceAtSha=`9934c160951ac493c22e87be51fce09f5122f344`，符号清单位于`packages/model-gateway/src/index.ts`，具名合同位于`src/contract.ts`，方法分别在`src/gateway.ts`、`src/dsh-provider.ts`、`src/postgres-store.ts`、`src/transport.ts`（原生关闭观察位于内部`src/native-close.ts`，无新增公开出口）。后续公开方法增量以下文为准；每个方法与下列具名type一一对应，JSON检查器不建立信任。
 
 | 允许符号                                                                                                 | 用途/来源                                                                             |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
@@ -52,6 +52,15 @@ owner数据：`allrice_model_gateway_calls`仅不可变可信调用claim和请�
 | `createDshGatewayProvider(llm,route)`                 | 现有subscription loader已初始化的LlmRuntime；prepareCall固定adapter代际。route必须是同provider/model与SSE，`classify`固定host model/refresh endpoints；未分类外发拒绝。凭据owner必须用withGatewayAuthTransaction包住完整原生modify/modifyRecord和持久化Promise，漏接refresh在外发前拒绝。生产API实现注入同GatewayProvider合同 |
 | `withGatewayAuthTransaction(operation)`               | 仅在现有宿主凭据owner公开modify/modifyRecord外围追踪完整Promise；刷新开始后保留原生独立15秒signal及锁内落盘。不能只包网络fetch，也不能把模型signal重新传给refresh                                                                                                                                                             |
 | `GatewayLlmAdapter.stream(options)`                   | guest公开DSH端口，只把原生消息/工具/控制项送受管host endpoint；不持上游凭据、不增加retry/reconnect/账户路由，native signal传实际HTTP                                                                                                                                                                                          |
+
+`new GatewayLlmAdapter(endpoint, egressCapability?)` 显式消费同一 VM/epoch 投送的
+`GuestEgressAccess`：宿主装配从 `access.origin` 拼固定 `/v1/stream` endpoint，
+把 `access.capability` 作为第二参数。非 undefined 时只加本地 Bearer 头；未传不加，
+空值/错值交既有出口拒绝，不读环境变量、不刷新或隐式补值。本地资格不是上游模型
+secret，也不授 person/tenant/native-call 权限；不进入 URL、业务 body 或账本。
+固定 contract/content-type、native signal 和 redirect:error 保留。managed model
+只有 model gateway 持 permit；出口只核资格，当前 Host/epoch/现权/撤权门卫仍须生效。
+本参数不代表真实 guest 配置投送或完整生产 assertCall 身份装配已经完成。
 
 ModelCallBinding每次调用必有current RequestContext、PersonVmBinding、员工实例/release、allriceThreadRef、native instance/profile/session/root/parent/call、run/execution、executionGeneration、gatewayRelease和host provider/model。root parent必须null，child必须有parent/root映射；实际谱系/归属由authority从当前host/原生descriptor事实核验，字符串形状不是信任。workspaceId沿原RequestContext可null。ownerId每个真实宿主进程/transport owner独立产生，重启不能复用旧ownerId冒领恢复。
 
