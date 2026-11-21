@@ -438,17 +438,17 @@ export function createModelGateway(options: {
                   joinFailure ??= error;
                 }
               }
-              if (!joined)
-                throw new ModelGatewayError('LEDGER_UNAVAILABLE', {
-                  cause:
-                    operationFailed && operationFailure !== joinFailure
-                      ? new AggregateError(
-                          [operationFailure, joinFailure],
-                          'request join unknown',
-                        )
-                      : joinFailure,
-                });
             }
+            if (!joined)
+              throw new ModelGatewayError('LEDGER_UNAVAILABLE', {
+                cause:
+                  operationFailed && operationFailure !== joinFailure
+                    ? new AggregateError(
+                        [operationFailure, joinFailure],
+                        'request join unknown',
+                      )
+                    : joinFailure,
+              });
             return operationFailed
               ? { ok: false, error: operationFailure }
               : { ok: true, value: terminalReply! };
