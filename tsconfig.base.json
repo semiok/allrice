@@ -28,6 +28,7 @@
         "packages/office-runtime/src/pdf-reader.ts"
       ],
       "@allrice/project-runtime": ["packages/project-runtime/src/index.ts"],
+      "@allrice/person-vm": ["packages/person-vm/src/index.ts"],
       "@allrice/database/technical-contracts": [
         "packages/database/src/platform-technical-contracts.ts"
       ],
