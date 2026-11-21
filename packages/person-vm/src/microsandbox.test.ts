@@ -1,13 +1,14 @@
 import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MicrosandboxPersonVm } from './microsandbox.ts';
 import { runCommand } from './process.ts';
 import { signal } from './test-support.ts';
 
 const temporary: string[] = [];
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const path of temporary.splice(0))
     await rm(path, { recursive: true, force: true });
 });
@@ -20,6 +21,7 @@ async function directory() {
 
 describe('Microsandbox public CLI protocol through real child processes (no actual VM)', () => {
   it('空MSB_HOME公开pull预置、2G硬帽、默认deny、固定host端口、真正stop/start命令', async () => {
+    vi.stubEnv('ALLRICE_PERSON_VM_SYNTHETIC_HOST_SECRET', 'must-not-inherit');
     const root = await directory();
     const binary = join(root, 'msb-fixture');
     await writeFile(
@@ -96,13 +98,19 @@ fs.writeFileSync(f,JSON.stringify(v));
     );
     expect(create.args).not.toContain('--idle-timeout');
     expect(create.args).not.toContain('--replace');
-    expect(create.envKeys).toEqual([
-      'HOME',
-      'LANG',
-      'MSB_CONFIG_PATH',
-      'MSB_HOME',
-      'PATH',
-    ]);
+    for (const call of calls) {
+      // CoreFoundation can inject this key into a macOS child with an explicit
+      // env. Permit only that platform key; every other key remains exact.
+      expect(
+        call.envKeys.filter(
+          (key) =>
+            process.platform !== 'darwin' || key !== '__CF_USER_TEXT_ENCODING',
+        ),
+      ).toEqual(['HOME', 'LANG', 'MSB_CONFIG_PATH', 'MSB_HOME', 'PATH']);
+      expect(call.envKeys).not.toContain(
+        'ALLRICE_PERSON_VM_SYNTHETIC_HOST_SECRET',
+      );
+    }
     const config = JSON.parse(
       await readFile(join(root, 'mount/msb-config.json'), 'utf8'),
     );

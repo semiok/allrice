@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   lstat,
+  copyFile,
   mkdtemp,
   readFile,
   realpath,
@@ -88,9 +89,12 @@ describe('APFS adapter protocol and private filesystem (not actual encryption ac
     });
     await disk.detach(ref, signal());
     const cold = await disk.move(ref, 'cold', signal());
+    // A caller whose DB commit failed can repeat the stale source safely.
+    expect(await disk.move(ref, 'cold', signal())).toEqual(cold);
     await disk.attach(cold, signal());
     await disk.detach(cold, signal());
     const warm = await disk.move(cold, 'warm', signal());
+    expect(await disk.move(cold, 'warm', signal())).toEqual(warm);
     expect(hash(await readFile(image))).toBe(original);
     expect(inputCount).toBe(3);
     const create = calls.find((call) => call.args[0] === 'create')!;
@@ -107,6 +111,67 @@ describe('APFS adapter protocol and private filesystem (not actual encryption ac
     await disk.delete(warm, signal());
     await disk.delete(warm, signal());
     await expect(keys.read(ref.vmId)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+  it('创建前失败可重试原key；部分盘或双位置歧义保留原字节且拒绝', async () => {
+    const root = await directory(),
+      volume = join(root, 'volume');
+    const keys = new FilePersonVmKeyStore(join(root, 'keys'));
+    let creates = 0,
+      partial = false;
+    const runner: CommandRunner = async ({ args }) => {
+      if (args[0] === 'create') {
+        creates += 1;
+        if (partial) {
+          await writeFile(args.at(-1)!, 'partial-image');
+          throw new Error('synthetic partial create');
+        }
+        if (creates === 1)
+          throw new Error('synthetic pre-image create failure');
+        await writeFile(args.at(-1)!, 'completed-image');
+      }
+      return '';
+    };
+    const disk = new ApfsPersonVmDisk({
+      root: volume,
+      keys,
+      capacityGiB: 40,
+      runner,
+    });
+    const ref = { vmId: randomUUID(), tier: 'warm' as const };
+    await expect(disk.create(ref, signal())).rejects.toThrow(
+      'synthetic pre-image',
+    );
+    const firstKey = await keys.read(ref.vmId),
+      keyDigest = hash(firstKey);
+    firstKey.fill(0);
+    await disk.create(ref, signal());
+    const secondKey = await keys.read(ref.vmId);
+    expect(hash(secondKey)).toBe(keyDigest);
+    secondKey.fill(0);
+    expect((await disk.inspect(ref.vmId, signal())).state).toBe('ready');
+    const image = join(volume, 'warm', ref.vmId + '.sparseimage');
+    await copyFile(image, join(volume, 'cold', ref.vmId + '.sparseimage'));
+    expect((await disk.inspect(ref.vmId, signal())).state).toBe('unknown');
+    await expect(disk.move(ref, 'cold', signal())).rejects.toMatchObject({
+      code: 'PROVIDER_FAILED',
+    });
+    expect(await readFile(image, 'utf8')).toBe('completed-image');
+    partial = true;
+    const unfinished = { vmId: randomUUID(), tier: 'warm' as const };
+    await expect(disk.create(unfinished, signal())).rejects.toThrow(
+      'synthetic partial',
+    );
+    const attempted = creates;
+    await expect(disk.create(unfinished, signal())).rejects.toMatchObject({
+      code: 'PROVIDER_FAILED',
+    });
+    expect(creates).toBe(attempted);
+    expect(
+      await readFile(
+        join(volume, 'warm', unfinished.vmId + '.sparseimage'),
+        'utf8',
+      ),
+    ).toBe('partial-image');
   });
   it('keystore拒绝软链和路径穿越，不覆写已存在盘', async () => {
     const root = await directory(),
@@ -130,14 +195,19 @@ describe('APFS adapter protocol and private filesystem (not actual encryption ac
       keys,
       capacityGiB: 40,
       runner: async (command) => {
-        await writeFile(command.args.at(-1)!, 'fixture');
+        if (command.args[0] === 'create')
+          await writeFile(command.args.at(-1)!, 'fixture');
         return '';
       },
     });
     const ref = { vmId, tier: 'warm' as const };
     await disk.create(ref, signal());
-    await expect(disk.create(ref, signal())).rejects.toMatchObject({
-      code: 'PROVIDER_FAILED',
-    });
+    const original = hash(
+      await readFile(join(volume, 'warm', vmId + '.sparseimage')),
+    );
+    await disk.create(ref, signal());
+    expect(
+      hash(await readFile(join(volume, 'warm', vmId + '.sparseimage'))),
+    ).toBe(original);
   });
 });

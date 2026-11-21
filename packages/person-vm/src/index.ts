@@ -3,6 +3,7 @@ export { PersonVmService, sameVmBinding } from './person-vm.ts';
 export {
   PostgresPersonVmStore,
   type PersonVmStore,
+  type PersonVmSqlFactory,
   type VmHold,
   type PersonVmLeaseOwner,
   type PersonVmLeaseFencePort,
@@ -17,4 +18,5 @@ export {
   type PersonVmDiskPort,
   type PersonVmKeyStore,
   type PersonDisk,
+  type PersonVmDiskInspection,
 } from './encrypted-disk.ts';

@@ -85,32 +85,67 @@ function isConnectionFailure(error: unknown): boolean {
   );
 }
 
-// A reserved postgres.js connection cannot be used/released after onclose.
-// Use the public pool hook; this store requires its own lifecycle pool, not the Web pool.
-const poolWatchers = new WeakMap<postgres.Sql, Set<() => void>>();
-function watchConnection(sql: postgres.Sql, lost: () => void) {
-  let watchers = poolWatchers.get(sql);
-  if (!watchers) {
-    watchers = new Set();
-    poolWatchers.set(sql, watchers);
-    const previous = sql.options.onclose;
-    sql.options.onclose = (id) => {
-      try {
-        previous?.(id);
-      } finally {
-        for (const callback of watchers!) callback();
-      }
-    };
-  }
-  watchers.add(lost);
-  return () => {
-    watchers!.delete(lost);
-  };
-}
-function lostConnection(): never {
-  throw Object.assign(new Error('VM_STORE_CONNECTION_LOST'), {
+/** Return a NEW, unopened, exclusive max:1 client on every call. The store owns end(). */
+export type PersonVmSqlFactory = () => postgres.Sql;
+
+const usedClients = new WeakSet<postgres.Sql>();
+function lostConnection() {
+  return Object.assign(new Error('VM_STORE_CONNECTION_LOST'), {
     code: 'CONNECTION_CLOSED',
   });
+}
+
+// postgres.js 3.4.9 release() unconditionally reopens a reservation, and a fatal
+// close can retain query/errorResponse until the next ReadyForQuery. Never reuse
+// that client. A fresh dedicated client also makes onclose identify this session.
+class VmSqlSession {
+  private failure: unknown;
+  private disposing = false;
+  private readonly closed: Promise<void>;
+  constructor(readonly client: postgres.Sql) {
+    if (usedClients.has(client) || client.options.max !== 1)
+      throw new Error('VM_STORE_REQUIRES_NEW_SINGLE_CONNECTION_CLIENT');
+    usedClients.add(client);
+    let notifyClosed!: () => void;
+    this.closed = new Promise((resolve) => {
+      notifyClosed = resolve;
+    });
+    this.invalidate = (error) => {
+      this.failure ??= error;
+      notifyClosed();
+    };
+    const previous = client.options.onclose;
+    client.options.onclose = (id) => {
+      if (!this.disposing) this.invalidate(lostConnection());
+      previous?.(id);
+    };
+  }
+  private readonly invalidate: (error: unknown) => void;
+  get connectionFailure() {
+    return this.failure;
+  }
+  async query<T>(operation: () => PromiseLike<T>): Promise<T> {
+    if (this.failure) throw this.failure;
+    try {
+      return await Promise.race([
+        operation(),
+        this.closed.then(() => {
+          throw this.failure;
+        }),
+      ]);
+    } catch (error) {
+      // FATAL can reject before onclose. Prevent failure audit/save from issuing
+      // another query in that interval; physical VM cleanup can still proceed.
+      if (isConnectionFailure(error)) this.invalidate(error);
+      throw error;
+    }
+  }
+  async end() {
+    this.disposing = true;
+    // This client has no other owners or later callers. Destroy its protocol
+    // state rather than release/reconnect it, including on the failure path.
+    await this.client.end({ timeout: 0 });
+  }
 }
 
 function fromRow(row: Record<string, unknown>): VmRecord {
@@ -152,58 +187,64 @@ export function bindingOf(row: VmRecord): PersonVmBinding {
 export class PostgresPersonVmStore implements PersonVmStore {
   private readonly settledOrphans = new Map<string, string>();
   constructor(
-    private readonly sql: postgres.Sql,
+    private readonly openSql: PersonVmSqlFactory,
     private readonly fence?: PersonVmLeaseFencePort,
   ) {}
   async read(personId: string) {
-    const [row] = await this
-      .sql`select * from person_virtual_machines where person_id=${personId}`;
-    return row ? fromRow(row) : null;
+    const session = new VmSqlSession(this.openSql());
+    try {
+      const [row] = await session.query(
+        () =>
+          session.client`select * from person_virtual_machines where person_id=${personId}`,
+      );
+      return row ? fromRow(row) : null;
+    } finally {
+      await session.end();
+    }
   }
   async withLease<T>(
     personId: string,
     options: { now: () => Date; ttlMs: number },
     work: (lease: VmLease) => Promise<T>,
   ) {
-    const sql = await this.sql.reserve();
-    let connectionLost = false;
-    const unwatch = watchConnection(this.sql, () => {
-      connectionLost = true;
-    });
-    const connected = () => {
-      if (connectionLost) lostConnection();
-    };
+    const session = new VmSqlSession(this.openSql());
+    const sql = session.client;
     const token = randomUUID();
     let locked = false;
-    let failedConnection = false;
     let bodyError: unknown;
     let result!: T;
     const expires = () =>
       new Date(options.now().getTime() + options.ttlMs).toISOString();
     try {
-      const [lock] =
-        await sql`select pg_try_advisory_lock(hashtextextended(${'person-vm:' + personId},0)) as locked`;
+      const [lock] = await session.query(
+        () =>
+          sql`select pg_try_advisory_lock(hashtextextended(${'person-vm:' + personId},0)) as locked`,
+      );
       if (!lock?.locked) throw new PersonVmError('LEASE_CONFLICT');
       locked = true;
-      const [stored] =
-        await sql`select * from person_virtual_machines where person_id=${personId}`;
+      const [stored] = await session.query(
+        () =>
+          sql`select * from person_virtual_machines where person_id=${personId}`,
+      );
       const row = stored ? fromRow(stored) : null;
       // Expiry is NOT proof the previous owner/operation is fenced. Never steal on TTL alone.
       if (row?.leaseOwner) throw new PersonVmError('LEASE_CONFLICT');
       if (row)
-        await sql`update person_virtual_machines set lease_owner=${token},lease_expires_at=${expires()} where person_id=${personId}`;
+        await session.query(
+          () =>
+            sql`update person_virtual_machines set lease_owner=${token},lease_expires_at=${expires()} where person_id=${personId}`,
+        );
       const guard = async () => {
-        connected();
-        const [current] =
-          await sql`update person_virtual_machines set lease_expires_at=${expires()}
-          where person_id=${personId} and lease_owner=${token} returning vm_id`;
+        const [current] = await session.query(
+          () => sql`update person_virtual_machines set lease_expires_at=${expires()}
+          where person_id=${personId} and lease_owner=${token} returning vm_id`,
+        );
         if (!current) throw new PersonVmError('LEASE_LOST');
       };
       const lease: VmLease = {
         row,
         guard,
         save: async (record) => {
-          connected();
           if (record.personId !== personId)
             throw new PersonVmError('LEASE_LOST');
           const values = {
@@ -228,52 +269,49 @@ export class PostgresPersonVmStore implements PersonVmStore {
             idle_since: record.idleSince,
             activity_observed_at: record.activityObservedAt,
           };
-          const rows =
-            await sql`insert into person_virtual_machines ${sql(values)}
+          const rows = await session.query(
+            () => sql`insert into person_virtual_machines ${sql(values)}
             on conflict (person_id) do update set
               vm_id=excluded.vm_id,phase=excluded.phase,disk_tier=excluded.disk_tier,disk_retained=excluded.disk_retained,
               native_created=excluded.native_created,instance_id=excluded.instance_id,lease_epoch=excluded.lease_epoch,
               egress_receipt=excluded.egress_receipt,gateway_ports=excluded.gateway_ports,holds=excluded.holds,
               last_activity_at=excluded.last_activity_at,stopped_at=excluded.stopped_at,idle_since=excluded.idle_since,
               activity_observed_at=excluded.activity_observed_at,lease_expires_at=excluded.lease_expires_at,updated_at=now()
-            where person_virtual_machines.lease_owner=${token} returning vm_id`;
+            where person_virtual_machines.lease_owner=${token} returning vm_id`,
+          );
           if (rows.length !== 1) throw new PersonVmError('LEASE_LOST');
         },
         audit: async (record, event) => {
-          connected();
-          await sql`insert into person_vm_audit(vm_id,person_id,organization_id,request_id,action,result,error_code,lease_epoch)
-            values(${record.vmId},${record.personId},${record.organizationId},${event.requestId},${event.action},${event.result},${event.errorCode ?? null},${record.leaseEpoch})`;
+          await session.query(
+            () => sql`insert into person_vm_audit(vm_id,person_id,organization_id,request_id,action,result,error_code,lease_epoch)
+            values(${record.vmId},${record.personId},${record.organizationId},${event.requestId},${event.action},${event.result},${event.errorCode ?? null},${record.leaseEpoch})`,
+          );
         },
       };
       result = await work(lease);
     } catch (error) {
       bodyError = error;
-      failedConnection = isConnectionFailure(error);
     } finally {
-      if (locked) {
-        try {
-          // A broken connection leaves a durable orphan lease for explicit fenced recovery.
-          if (!failedConnection && !connectionLost)
-            await sql`update person_virtual_machines set lease_owner=null,lease_expires_at=null where person_id=${personId} and lease_owner=${token}`;
-          if (!failedConnection && !connectionLost)
-            await sql`select pg_advisory_unlock(hashtextextended(${'person-vm:' + personId},0))`;
-        } catch (error) {
-          failedConnection = true;
-          bodyError ??= error;
-        } finally {
-          // work() has settled, including the provider's joined child promises.
-          if (failedConnection || connectionLost)
-            this.settledOrphans.set(personId, token);
-          if (connectionLost && !bodyError)
-            bodyError = Object.assign(new Error('VM_STORE_CONNECTION_LOST'), {
-              code: 'CONNECTION_CLOSED',
-            });
-          unwatch();
-          if (!failedConnection && !connectionLost) sql.release();
+      try {
+        // A broken session leaves a durable orphan for explicit fenced recovery.
+        if (locked && !session.connectionFailure) {
+          await session.query(
+            () =>
+              sql`update person_virtual_machines set lease_owner=null,lease_expires_at=null where person_id=${personId} and lease_owner=${token}`,
+          );
+          await session.query(
+            () =>
+              sql`select pg_advisory_unlock(hashtextextended(${'person-vm:' + personId},0))`,
+          );
         }
-      } else {
-        unwatch();
-        if (!failedConnection && !connectionLost) sql.release();
+      } catch (error) {
+        bodyError ??= error;
+      } finally {
+        // work() and physical cleanup have settled before this local fence exists.
+        if (locked && session.connectionFailure)
+          this.settledOrphans.set(personId, token);
+        bodyError ??= session.connectionFailure;
+        await session.end();
       }
     }
     if (bodyError) throw bodyError;
@@ -285,23 +323,20 @@ export class PostgresPersonVmStore implements PersonVmStore {
     work: (lease: VmLease) => Promise<T>,
   ) {
     options.signal.throwIfAborted();
-    const sql = await this.sql.reserve();
-    let connectionLost = false;
-    const unwatch = watchConnection(this.sql, () => {
-      connectionLost = true;
-    });
-    const connected = () => {
-      if (connectionLost) lostConnection();
-    };
+    const session = new VmSqlSession(this.openSql());
+    const sql = session.client;
     let locked = false;
-    let broken = false;
     try {
-      const [lock] =
-        await sql`select pg_try_advisory_lock(hashtextextended(${'person-vm:' + personId},0)) as locked`;
+      const [lock] = await session.query(
+        () =>
+          sql`select pg_try_advisory_lock(hashtextextended(${'person-vm:' + personId},0)) as locked`,
+      );
       if (!lock?.locked) throw new PersonVmError('LEASE_CONFLICT');
       locked = true;
-      const [stored] =
-        await sql`select * from person_virtual_machines where person_id=${personId}`;
+      const [stored] = await session.query(
+        () =>
+          sql`select * from person_virtual_machines where person_id=${personId}`,
+      );
       if (!stored) throw new PersonVmError('NOT_FOUND');
       const row = fromRow(stored);
       const token = row.leaseOwner;
@@ -324,49 +359,51 @@ export class PostgresPersonVmStore implements PersonVmStore {
         );
       }
       const guard = async () => {
-        connected();
-        const [found] =
-          await sql`update person_virtual_machines set lease_expires_at=${new Date(options.now().getTime() + options.ttlMs)} where person_id=${personId} and lease_owner=${token} returning vm_id`;
+        const [found] = await session.query(
+          () =>
+            sql`update person_virtual_machines set lease_expires_at=${new Date(options.now().getTime() + options.ttlMs)} where person_id=${personId} and lease_owner=${token} returning vm_id`,
+        );
         if (!found) throw new PersonVmError('LEASE_LOST');
       };
       const result = await work({
         row,
         guard,
         save: async (value) => {
-          connected();
           if (
             value.vmId !== row.vmId ||
             value.personId !== personId ||
             value.leaseEpoch !== row.leaseEpoch
           )
             throw new PersonVmError('LEASE_LOST');
-          const [found] =
-            await sql`update person_virtual_machines set phase=${value.phase},native_created=${value.nativeCreated},stopped_at=${value.stoppedAt},egress_receipt=${value.egressReceipt ? sql.json(value.egressReceipt as postgres.JSONValue) : null},updated_at=now()
-            where person_id=${personId} and lease_owner=${token} and lease_epoch=${row.leaseEpoch} returning vm_id`;
+          const [found] = await session.query(
+            () => sql`update person_virtual_machines set phase=${value.phase},disk_tier=${value.diskTier},native_created=${value.nativeCreated},stopped_at=${value.stoppedAt},egress_receipt=${value.egressReceipt ? sql.json(value.egressReceipt as postgres.JSONValue) : null},updated_at=now()
+            where person_id=${personId} and lease_owner=${token} and lease_epoch=${row.leaseEpoch} returning vm_id`,
+          );
           if (!found) throw new PersonVmError('LEASE_LOST');
         },
         audit: async (value, event) => {
-          connected();
-          await sql`insert into person_vm_audit(vm_id,person_id,organization_id,request_id,action,result,error_code,lease_epoch)
-            values(${value.vmId},${value.personId},${value.organizationId},${event.requestId},${event.action},${event.result},${event.errorCode ?? null},${value.leaseEpoch})`;
+          await session.query(
+            () => sql`insert into person_vm_audit(vm_id,person_id,organization_id,request_id,action,result,error_code,lease_epoch)
+            values(${value.vmId},${value.personId},${value.organizationId},${event.requestId},${event.action},${event.result},${event.errorCode ?? null},${value.leaseEpoch})`,
+          );
         },
       });
-      connected();
-      const [released] =
-        await sql`update person_virtual_machines set lease_owner=null,lease_expires_at=null where person_id=${personId} and lease_owner=${token} returning vm_id`;
+      const [released] = await session.query(
+        () =>
+          sql`update person_virtual_machines set lease_owner=null,lease_expires_at=null where person_id=${personId} and lease_owner=${token} returning vm_id`,
+      );
       if (!released) throw new PersonVmError('LEASE_LOST');
       this.settledOrphans.delete(personId);
       return result;
-    } catch (error) {
-      broken = isConnectionFailure(error);
-      throw error;
     } finally {
       try {
-        if (locked && !connectionLost && !broken)
-          await sql`select pg_advisory_unlock(hashtextextended(${'person-vm:' + personId},0))`;
+        if (locked && !session.connectionFailure)
+          await session.query(
+            () =>
+              sql`select pg_advisory_unlock(hashtextextended(${'person-vm:' + personId},0))`,
+          );
       } finally {
-        unwatch();
-        if (!connectionLost && !broken) sql.release();
+        await session.end();
       }
     }
   }

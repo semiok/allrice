@@ -16,6 +16,89 @@ import {
 } from './test-support.ts';
 
 describe('host lifecycle service entrypoints (synthetic runtime; not real VM acceptance)', () => {
+  it('建盘前失败后同vmId重试；部分盘不覆写、不以空盘替换', async () => {
+    const h = harness(),
+      rc = context();
+    const create = h.disk.create;
+    let fail = true;
+    h.disk.create = async (...args) => {
+      if (fail) {
+        fail = false;
+        throw new PersonVmError('PROVIDER_FAILED');
+      }
+      return create(...args);
+    };
+    await expect(h.service.create(rc, signal())).rejects.toMatchObject({
+      code: 'PROVIDER_FAILED',
+    });
+    const first = (await h.service.read(rc, signal()))!;
+    expect(h.disks.size).toBe(0);
+    expect(
+      (await h.service.prewarm(rc, { trigger: 'page' }, signal())).vmId,
+    ).toBe(first.vmId);
+    const other = harness(),
+      otherRc = context();
+    let partialAttempts = 0;
+    other.disk.create = async (ref) => {
+      partialAttempts += 1;
+      other.partialDisks.add(ref.vmId);
+      throw new PersonVmError('PROVIDER_FAILED');
+    };
+    await expect(other.service.create(otherRc, signal())).rejects.toMatchObject(
+      { code: 'PROVIDER_FAILED' },
+    );
+    const partial = (await other.service.read(otherRc, signal()))!;
+    await expect(other.service.create(otherRc, signal())).rejects.toMatchObject(
+      { code: 'PROVIDER_FAILED' },
+    );
+    expect((await other.service.read(otherRc, signal()))!.vmId).toBe(
+      partial.vmId,
+    );
+    expect(other.partialDisks.has(partial.vmId)).toBe(true);
+    expect(partialAttempts).toBe(1);
+    expect(other.log).not.toContain('disk:delete');
+  });
+  it('采样间短job完全结束也不能把瞬时0累积为连续20min空闲', async () => {
+    const h = harness(),
+      { rc } = await running(h);
+    for (let elapsed = 0; elapsed < PERSON_VM_IDLE_MS; elapsed += 5000) {
+      h.advance(2000);
+      h.setActivity({ activeJobs: 1 });
+      h.advance(1000);
+      h.setActivity({ activeJobs: 0 });
+      h.advance(2000);
+      expect((await h.service.reconcileIdle(rc, signal())).phase).toBe(
+        'running',
+      );
+    }
+    expect(h.log).not.toContain('native:stop');
+    expect(h.log).not.toContain('egress:revoke');
+  });
+  it('最终0快照之后原生工作开始，普通stop/delete/takeover仍拒绝', async () => {
+    const store = new MemoryStore(),
+      h = harness(store),
+      { rc } = await running(h);
+    const observe = h.runtime.activity;
+    h.runtime.activity = async (...args) => {
+      const snapshot = await observe(...args);
+      h.setActivity({ activeJobs: 1 });
+      return snapshot;
+    };
+    await expect(h.service.stop(rc, signal())).rejects.toMatchObject({
+      code: 'ACTIVITY_UNKNOWN',
+    });
+    h.setActivity({ activeJobs: 0 });
+    await expect(h.service.delete(rc, {}, signal())).rejects.toMatchObject({
+      code: 'ACTIVITY_UNKNOWN',
+    });
+    h.setActivity({ activeJobs: 0 });
+    store.rows.get(rc.actor.id)!.phase = 'failed';
+    await expect(h.service.start(rc, signal())).rejects.toMatchObject({
+      code: 'ACTIVITY_UNKNOWN',
+    });
+    expect(h.log).not.toContain('native:stop');
+    expect(h.log).not.toContain('egress:revoke');
+  });
   it('进入员工页和首次输入共用本人的盘/VM，read不会把persisted running冒称ready', async () => {
     const h = harness(),
       rc = context();
@@ -108,6 +191,7 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
   it('已存原生配置只接受每VM固定host端口，资格epoch轮换', async () => {
     const h = harness(),
       { rc, binding } = await running(h);
+    h.states.set((await h.service.resolve(rc, signal())).vmId, 'stopped');
     await h.service.stop(rc, signal());
     h.setPorts([38991]);
     await expect(h.service.start(rc, signal())).rejects.toMatchObject({
@@ -180,14 +264,18 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
     await h.service.releaseHold(rc, binding, id, signal());
     expect((await idleFor(h, rc, PERSON_VM_IDLE_MS - 1)).phase).toBe('running');
     h.advance(2);
-    expect((await h.service.reconcileIdle(rc, signal())).phase).toBe('stopped');
+    expect((await h.service.reconcileIdle(rc, signal())).phase).toBe('running');
+    expect(h.log).not.toContain('native:stop');
   });
   it('停满7天才冷；旧活动7天也不能让刚停VM立刻冷（时间夹具，未实等）', async () => {
     const h = harness(),
       { rc, binding } = await running(h);
     h.advance(PERSON_VM_COLD_MS + 1);
     expect((await h.service.reconcileIdle(rc, signal())).phase).toBe('running');
-    expect((await idleFor(h, rc, PERSON_VM_IDLE_MS)).phase).toBe('stopped');
+    expect((await idleFor(h, rc, PERSON_VM_IDLE_MS)).phase).toBe('running');
+    // No native idle gate exists. Model an already physically stopped VM here.
+    h.states.set(binding.vmId, 'stopped');
+    await h.service.stop(rc, signal());
     expect(h.log).not.toContain('disk:cold');
     h.advance(PERSON_VM_COLD_MS - 1);
     expect((await h.service.reconcileIdle(rc, signal())).phase).toBe('stopped');
@@ -209,6 +297,7 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
       h.log.push('egress:revoke-failed');
       throw new PersonVmError('EGRESS_UNAVAILABLE');
     };
+    h.states.set(binding.vmId, 'stopped');
     await expect(h.service.stop(rc, signal())).rejects.toMatchObject({
       code: 'CLEANUP_INCOMPLETE',
     });
@@ -218,6 +307,7 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
     expect(h.states.get(binding.vmId)).toBe('stopped');
     const h2 = harness(),
       running2 = await running(h2);
+    h2.states.set(running2.binding.vmId, 'stopped');
     h2.native.stop = async () => {
       throw new PersonVmError('PROVIDER_FAILED');
     };
@@ -285,6 +375,7 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
     const store = new MemoryStore(),
       h = harness(store),
       { rc, binding } = await running(h);
+    h.states.set(binding.vmId, 'stopped');
     expect((await h.service.delete(rc, {}, signal())).diskRetained).toBe(true);
     expect(h.disks.has(binding.vmId)).toBe(true);
     expect((await h.service.create(rc, signal())).vmId).toBe(binding.vmId);
@@ -312,13 +403,14 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
   it('真实停止后重复stop不重置停机7天时钟', async () => {
     const h = harness(),
       { rc } = await running(h);
+    h.states.set((await h.service.resolve(rc, signal())).vmId, 'stopped');
     await h.service.stop(rc, signal());
     h.advance(PERSON_VM_COLD_MS - 1);
     await h.service.stop(rc, signal());
     h.advance(2);
     expect((await h.service.reconcileIdle(rc, signal())).phase).toBe('cold');
   });
-  it('18min仍活跃，20min首次空闲开始新窗口；观察断档也不能算连续空闲', async () => {
+  it('18min活跃、20min首次0及后续轮询均不能证明连续空闲', async () => {
     const h = harness(),
       { rc } = await running(h);
     h.setActivity({ activeTurns: 1 });
@@ -329,7 +421,8 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
     expect((await h.service.reconcileIdle(rc, signal())).phase).toBe('running');
     h.advance(PERSON_VM_IDLE_MS);
     expect((await h.service.reconcileIdle(rc, signal())).phase).toBe('running');
-    expect((await idleFor(h, rc, PERSON_VM_IDLE_MS)).phase).toBe('stopped');
+    expect((await idleFor(h, rc, PERSON_VM_IDLE_MS)).phase).toBe('running');
+    expect(h.log).not.toContain('native:stop');
   });
   it('native readiness异常不会被read或stale binding放行', async () => {
     const h = harness(),
@@ -341,7 +434,7 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
       h.service.assertCurrentBinding(rc, binding, signal()),
     ).rejects.toMatchObject({ code: 'EGRESS_UNAVAILABLE' });
   });
-  it('同一可信调用链的活动探针可重入当前binding校验，不误判其他worker租约', async () => {
+  it('活动探针可重入当前binding；瞬时0仍无原子停机保证而拒绝', async () => {
     const h = harness(),
       { rc } = await running(h);
     h.runtime.activity = async (binding) => {
@@ -356,11 +449,15 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
         pendingApprovals: 0,
       };
     };
-    expect((await h.service.stop(rc, signal())).phase).toBe('stopped');
+    await expect(h.service.stop(rc, signal())).rejects.toMatchObject({
+      code: 'ACTIVITY_UNKNOWN',
+    });
+    expect(h.log).not.toContain('native:stop');
   });
   it('撤销耗尽单步budget后仍使用新信号尝试物理stop', async () => {
     const h = harness(),
-      { rc } = await running(h);
+      { rc, binding } = await running(h);
+    h.states.set(binding.vmId, 'stopped');
     h.options.cleanupTimeoutMs = 5;
     h.egress.revoke = async (_receipt, _reason, revokeSignal) => {
       await new Promise((resolve) => setTimeout(resolve, 15));
@@ -389,6 +486,7 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
     };
     await h.service.prewarm(rc, { trigger: 'page' }, signal());
     const first = await h.service.resolve(rc, signal());
+    h.states.set((await h.service.resolve(rc, signal())).vmId, 'stopped');
     await h.service.stop(rc, signal());
     await h.service.start(rc, signal());
     release();

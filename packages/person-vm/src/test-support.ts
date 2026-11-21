@@ -76,6 +76,8 @@ export function harness(store: PersonVmStore = new MemoryStore()) {
   const now = () => new Date(time);
   const log: string[] = [];
   const disks = new Set<string>();
+  const diskTiers = new Map<string, PersonDisk['tier']>();
+  const partialDisks = new Set<string>();
   const mounts = new Set<string>();
   const states = new Map<
     string,
@@ -91,14 +93,24 @@ export function harness(store: PersonVmStore = new MemoryStore()) {
     },
   };
   const disk: PersonVmDiskPort = {
+    inspect: async (id) =>
+      partialDisks.has(id)
+        ? { state: 'unknown' }
+        : disks.has(id)
+          ? { state: 'ready', disk: { vmId: id, tier: diskTiers.get(id)! } }
+          : { state: 'absent' },
     create: async (ref) => {
       log.push('disk:create');
-      if (disks.has(ref.vmId)) throw new PersonVmError('PROVIDER_FAILED');
+      if (partialDisks.has(ref.vmId))
+        throw new PersonVmError('PROVIDER_FAILED');
+      if (disks.has(ref.vmId)) return;
       disks.add(ref.vmId);
+      diskTiers.set(ref.vmId, ref.tier);
     },
     attach: async (ref) => {
       log.push('disk:attach');
-      if (!disks.has(ref.vmId)) throw new PersonVmError('PROVIDER_FAILED');
+      if (!disks.has(ref.vmId) || diskTiers.get(ref.vmId) !== ref.tier)
+        throw new PersonVmError('PROVIDER_FAILED');
       mounts.add(ref.vmId);
       return '/synthetic/' + ref.vmId;
     },
@@ -109,12 +121,14 @@ export function harness(store: PersonVmStore = new MemoryStore()) {
     move: async (ref, tier) => {
       log.push('disk:' + tier);
       if (mounts.has(ref.vmId)) throw new PersonVmError('CLEANUP_INCOMPLETE');
+      diskTiers.set(ref.vmId, tier);
       return { ...ref, tier };
     },
     delete: async (ref: PersonDisk) => {
       log.push('disk:delete');
       if (mounts.has(ref.vmId)) throw new PersonVmError('CLEANUP_INCOMPLETE');
       disks.delete(ref.vmId);
+      diskTiers.delete(ref.vmId);
     },
   };
   const native: PersonVmNativePort = {
@@ -201,6 +215,8 @@ export function harness(store: PersonVmStore = new MemoryStore()) {
     states,
     mounts,
     disks,
+    diskTiers,
+    partialDisks,
     active,
     advance: (ms: number) => {
       time += ms;
@@ -227,7 +243,7 @@ export async function running(h: ReturnType<typeof harness>, rc = context()) {
   await h.service.prewarm(rc, { trigger: 'page' }, signal());
   return { rc, binding: await h.service.resolve(rc, signal()) };
 }
-/** Deterministic continuous snapshots; no wall-clock 20-minute wait. */
+/** Deterministic instantaneous samples, never proof of continuous native idle. */
 export async function idleFor(
   h: ReturnType<typeof harness>,
   rc: RequestContext,

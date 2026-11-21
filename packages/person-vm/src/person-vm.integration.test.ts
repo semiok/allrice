@@ -1,11 +1,52 @@
 import postgres from 'postgres';
-import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { assertRuntimeFixtureDatabase } from '../../database/src/runtime-fixture-database.ts';
 import { PostgresPersonVmStore } from './store.ts';
 import { PersonVmError, PERSON_VM_COLD_MS } from './contract.ts';
 import { context, harness, running, signal } from './test-support.ts';
+import { ApfsPersonVmDisk, FilePersonVmKeyStore } from './encrypted-disk.ts';
+import type { CommandRunner } from './process.ts';
+
+// Actual adapter and filesystem renames, with a synthetic hdiutil protocol.
+// These bytes are NOT encrypted and no VM, mount, or hdiutil process is started.
+async function syntheticDisk() {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'ar-vm-pg-')));
+  const attachments = new Map<string, string>();
+  const payload = 'synthetic-container-' + randomUUID();
+  const runner: CommandRunner = async ({ executable, args, input }) => {
+    if (executable === '/usr/bin/plutil') return Buffer.from(input!).toString();
+    if (args[0] === 'info')
+      return JSON.stringify({
+        images: [...attachments].map(([image, mount]) => ({
+          'image-path': image,
+          'system-entities': [{ 'mount-point': mount }],
+        })),
+      });
+    if (args[0] === 'create') await writeFile(args.at(-1)!, payload);
+    else if (args[0] === 'imageinfo') {
+      if ((await readFile(args[1]!, 'utf8')) !== payload)
+        throw new Error('synthetic corrupt image');
+    } else if (args[0] === 'attach')
+      attachments.set(args[1]!, args[args.indexOf('-mountpoint') + 1]!);
+    else if (args[0] === 'detach') {
+      for (const [image, mount] of attachments)
+        if (mount === args[1]) attachments.delete(image);
+    } else throw new Error('unexpected hdiutil protocol');
+    return '';
+  };
+  const volume = join(root, 'volume');
+  const disk = new ApfsPersonVmDisk({
+    root: volume,
+    keys: new FilePersonVmKeyStore(join(root, 'keys')),
+    capacityGiB: 40,
+    runner,
+  });
+  return { root, volume, disk, attachments };
+}
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -16,7 +57,29 @@ suite(
   () => {
     const schema = 'person_vm_' + randomUUID().replaceAll('-', '');
     const appName = 'person-vm-test-' + randomUUID();
+    const workerClosures: Promise<void>[] = [];
+    const workerNames: string[] = [];
+    let workerQueries = 0;
     let admin: postgres.Sql, db: postgres.Sql, store: PostgresPersonVmStore;
+    function openWorker() {
+      let closed!: () => void;
+      workerClosures.push(
+        new Promise<void>((resolve) => {
+          closed = resolve;
+        }),
+      );
+      const name = appName + '-' + workerClosures.length;
+      workerNames.push(name);
+      return postgres(process.env.ALLRICE_TEST_DATABASE_URL!, {
+        max: 1,
+        onnotice: () => {},
+        onclose: () => closed(),
+        debug: () => {
+          workerQueries += 1;
+        },
+        connection: { search_path: schema, application_name: name },
+      });
+    }
     beforeAll(async () => {
       const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
       assertRuntimeFixtureDatabase(url);
@@ -25,7 +88,8 @@ suite(
       db = postgres(url.toString(), {
         max: 1,
         onnotice: () => {},
-        connection: { search_path: schema, application_name: appName },
+        // Fixture inspection/teardown must not borrow a lifecycle-owned client.
+        connection: { search_path: schema },
       });
       await db.unsafe(
         await readFile(
@@ -36,7 +100,7 @@ suite(
           'utf8',
         ),
       );
-      store = new PostgresPersonVmStore(db);
+      store = new PostgresPersonVmStore(openWorker);
     });
     afterEach(async () => {
       await db?.unsafe('truncate person_vm_audit, person_virtual_machines');
@@ -48,9 +112,9 @@ suite(
         await admin.end({ timeout: 2 });
       }
     });
-    async function terminateWorker() {
+    async function terminateWorker(name = workerNames.at(-1)!) {
       const rows =
-        await admin`select pid from pg_stat_activity where application_name=${appName}`;
+        await admin`select pid from pg_stat_activity where application_name=${name}`;
       expect(rows).toHaveLength(1);
       const [killed] =
         await admin`select pg_terminate_backend(${rows[0]!.pid}) as killed`;
@@ -74,6 +138,7 @@ suite(
       expect(JSON.stringify(first)).not.toMatch(
         /ownerToken|leaseOwner|bindingId|sparseimage/,
       );
+      h.states.set(binding.vmId, 'stopped'); // Already off; ordinary running stop has no native gate yet.
       await h.service.stop(rc, signal());
       h.advance(PERSON_VM_COLD_MS + 1);
       expect((await h.service.reconcileIdle(rc, signal())).phase).toBe('cold');
@@ -92,15 +157,9 @@ suite(
       );
     });
     it('两个worker并发争同一人，数据库lease拒绝第二次开停且不重复native create', async () => {
-      // Each worker needs its own pool; max:1 on the same pool would queue before lock admission.
-      const url = process.env.ALLRICE_TEST_DATABASE_URL!;
-      const db2 = postgres(url, {
-        max: 1,
-        onnotice: () => {},
-        connection: { search_path: schema },
-      });
+      // Every operation owns a fresh session, so admission reaches the DB lock.
       const first = harness(store),
-        second = harness(new PostgresPersonVmStore(db2)),
+        second = harness(new PostgresPersonVmStore(openWorker)),
         rc = context();
       await first.service.create(rc, signal());
       let release!: () => void, entered!: () => void;
@@ -126,7 +185,6 @@ suite(
       } finally {
         release();
         await opening;
-        await db2.end({ timeout: 2 });
       }
       expect(await db`select vm_id from person_virtual_machines`).toHaveLength(
         1,
@@ -145,7 +203,75 @@ suite(
       expect((await store.read(rc.actor.id))!.leaseOwner).toBe(null);
       expect((await h.service.start(rc, signal())).ready).toBe(true);
     });
-    it('真实pg_terminate_backend后同进程settled fence恢复；新进程未知fence不能TTL偷租约', async () => {
+    it('普通真实SQL错误释放owner，不因SQL错误一概永久封死租约', async () => {
+      const h = harness(store),
+        rc = context();
+      await h.service.create(rc, signal());
+      await expect(
+        store.withLease(
+          rc.actor.id,
+          { now: h.now, ttlMs: 90000 },
+          async (lease) => {
+            await lease.audit(lease.row!, {
+              requestId: 'synthetic-invalid-uuid',
+              action: 'synthetic',
+              result: 'failed',
+            });
+          },
+        ),
+      ).rejects.toMatchObject({ code: '22P02' });
+      expect((await store.read(rc.actor.id))!.leaseOwner).toBe(null);
+      expect((await h.service.start(rc, signal())).ready).toBe(true);
+    });
+    it('两个真实独占连接：A断线不使B失效，B收尾后仍可重新领取', async () => {
+      const a = harness(store),
+        b = harness(store),
+        rcA = context(),
+        rcB = context();
+      await a.service.create(rcA, signal());
+      await b.service.create(rcB, signal());
+      let release!: () => void, entered!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      b.runtime.start = async () => {
+        entered();
+        await gate;
+      };
+      const opening = b.service.start(rcB, signal());
+      try {
+        await started;
+        await expect(
+          store.withLease(
+            rcA.actor.id,
+            { now: a.now, ttlMs: 90000 },
+            async (lease) => {
+              await terminateWorker();
+              await lease.guard();
+            },
+          ),
+        ).rejects.toBeDefined();
+      } finally {
+        release();
+        await opening;
+      }
+      expect((await store.read(rcB.actor.id))!.leaseOwner).toBe(null);
+      await store.withLease(
+        rcB.actor.id,
+        { now: b.now, ttlMs: 90000 },
+        async (lease) => {
+          await lease.guard();
+        },
+      );
+      expect((await b.service.resolve(rcB, signal())).personId).toBe(
+        rcB.actor.id,
+      );
+      expect(b.log.filter((item) => item === 'native:create')).toHaveLength(1);
+    });
+    it('真实PG恢复活动探针重入同一lease；外部请求无权借恢复frame准入', async () => {
       const h = harness(store),
         { rc, binding } = await running(h);
       await expect(
@@ -158,31 +284,103 @@ suite(
           },
         ),
       ).rejects.toBeDefined();
-      const orphan = await store.read(rc.actor.id);
-      expect(orphan!.leaseOwner).not.toBe(null);
       h.advance(90001);
-      const unknown = new PostgresPersonVmStore(db);
-      const unknownHost = harness(unknown);
-      unknownHost.advance(90001);
-      await expect(
-        unknownHost.service.recoverExpired(rc, signal()),
-      ).rejects.toMatchObject({ code: 'LEASE_CONFLICT' });
-      expect(unknownHost.log).not.toContain('egress:revoke');
-      h.setActivity({ activeSubtasks: 1 });
+      let probed = false;
+      h.runtime.activity = async (current) => {
+        await h.service.assertCurrentBinding(rc, current, signal());
+        const external = context(rc.organizationId, rc.actor.id);
+        await expect(
+          h.service.assertCurrentBinding(external, current, signal()),
+        ).rejects.toMatchObject({ code: 'LEASE_CONFLICT' });
+        probed = true;
+        return {
+          binding: current,
+          observedAt: h.now().toISOString(),
+          state: 'known',
+          activeTurns: 0,
+          activeJobs: 0,
+          activeSubtasks: 0,
+          pendingApprovals: 0,
+        };
+      };
+      // Reentry succeeds, but no VM-wide freeze exists; zero still cannot stop running work.
       await expect(
         h.service.recoverExpired(rc, signal()),
-      ).rejects.toMatchObject({ code: 'VM_ACTIVE' });
-      expect(h.states.get(binding.vmId)).toBe('running');
-      h.setActivity({ activeSubtasks: 0 });
+      ).rejects.toMatchObject({ code: 'ACTIVITY_UNKNOWN' });
+      expect(probed).toBe(true);
+      expect(h.log).not.toContain('native:stop');
+      h.states.set(binding.vmId, 'stopped');
+      h.advance(90001); // The in-frame guard renewed the old owner's recovery lease.
       expect((await h.service.recoverExpired(rc, signal())).phase).toBe(
         'stopped',
       );
       expect((await store.read(rc.actor.id))!.leaseOwner).toBe(null);
-      expect(h.states.get(binding.vmId)).toBe('stopped');
-      expect(h.mounts.size).toBe(0);
-      expect(h.active.size).toBe(0);
-      expect((await h.service.start(rc, signal())).ready).toBe(true);
     });
+    it.each(['query-race', 'closed-before-guard'] as const)(
+      '真实pg_terminate_backend (%s) 后同进程settled fence恢复；新进程未知fence不能TTL偷租约',
+      async (order) => {
+        const h = harness(store),
+          { rc, binding } = await running(h);
+        await expect(
+          store.withLease(
+            rc.actor.id,
+            { now: h.now, ttlMs: 90000 },
+            async (lease) => {
+              const closed = workerClosures.at(-1)!;
+              await terminateWorker();
+              if (order === 'closed-before-guard') await closed;
+              let loss: unknown;
+              try {
+                await lease.guard();
+              } catch (error) {
+                loss = error;
+              }
+              expect(loss).toBeDefined();
+              const issued = workerQueries;
+              await expect(lease.guard()).rejects.toBe(loss);
+              await expect(lease.save(lease.row!)).rejects.toBe(loss);
+              await expect(
+                lease.audit(lease.row!, {
+                  requestId: rc.requestId,
+                  action: 'synthetic',
+                  result: 'failed',
+                }),
+              ).rejects.toBe(loss);
+              expect(workerQueries).toBe(issued);
+              throw loss;
+            },
+          ),
+        ).rejects.toBeDefined();
+        const orphan = await store.read(rc.actor.id);
+        expect(orphan!.leaseOwner).not.toBe(null);
+        h.advance(90001);
+        const unknown = new PostgresPersonVmStore(openWorker);
+        const unknownHost = harness(unknown);
+        unknownHost.advance(90001);
+        await expect(
+          unknownHost.service.recoverExpired(rc, signal()),
+        ).rejects.toMatchObject({ code: 'LEASE_CONFLICT' });
+        expect(unknownHost.log).not.toContain('egress:revoke');
+        h.setActivity({ activeSubtasks: 1 });
+        await expect(
+          h.service.recoverExpired(rc, signal()),
+        ).rejects.toMatchObject({ code: 'VM_ACTIVE' });
+        expect(h.states.get(binding.vmId)).toBe('running');
+        h.setActivity({ activeSubtasks: 0 });
+        await expect(
+          h.service.recoverExpired(rc, signal()),
+        ).rejects.toMatchObject({ code: 'ACTIVITY_UNKNOWN' });
+        h.states.set(binding.vmId, 'stopped');
+        expect((await h.service.recoverExpired(rc, signal())).phase).toBe(
+          'stopped',
+        );
+        expect((await store.read(rc.actor.id))!.leaseOwner).toBe(null);
+        expect(h.states.get(binding.vmId)).toBe('stopped');
+        expect(h.mounts.size).toBe(0);
+        expect(h.active.size).toBe(0);
+        expect((await h.service.start(rc, signal())).ready).toBe(true);
+      },
+    );
     it('native create完成但host save的真实PG连接断开，恢复能认领已有原盘而不是永久false', async () => {
       const h = harness(store),
         rc = context();
@@ -199,6 +397,14 @@ suite(
       expect(saved!.leaseOwner).not.toBe(null);
       expect(saved!.nativeCreated).toBe(false);
       expect(h.states.get(saved!.vmId)).toBe('stopped');
+      expect(h.mounts.size).toBe(0);
+      expect(h.active.size).toBe(0);
+      expect(h.log.indexOf('egress:revoke')).toBeLessThan(
+        h.log.indexOf('native:stop'),
+      );
+      expect(h.log.indexOf('native:stop')).toBeLessThan(
+        h.log.indexOf('disk:detach'),
+      );
       h.advance(90001);
       expect((await h.service.recoverExpired(rc, signal())).phase).toBe(
         'stopped',
@@ -210,6 +416,63 @@ suite(
       );
       expect(h.log).toContain('native:start');
     });
+    it.each(['cold', 'warm'] as const)(
+      '真实rename到%s后PG连接断开，恢复按完成凭据找回原盘字节',
+      async (target) => {
+        const fixture = await syntheticDisk();
+        const h = harness(store),
+          rc = context();
+        for (const key of [
+          'inspect',
+          'create',
+          'attach',
+          'detach',
+          'move',
+          'delete',
+        ] as const)
+          Object.assign(h.disk, {
+            [key]: fixture.disk[key].bind(fixture.disk),
+          });
+        try {
+          const { binding } = await running(h, rc);
+          const image = (tier: string) =>
+            join(fixture.volume, tier, binding.vmId + '.sparseimage');
+          const digest = (bytes: Buffer) =>
+            createHash('sha256').update(bytes).digest('hex');
+          const original = digest(await readFile(image('warm')));
+          h.states.set(binding.vmId, 'stopped');
+          await h.service.stop(rc, signal());
+          h.advance(PERSON_VM_COLD_MS + 1);
+          if (target === 'warm') await h.service.reconcileIdle(rc, signal());
+          const move = h.disk.move;
+          h.disk.move = async (...args) => {
+            const actual = await move(...args);
+            await terminateWorker();
+            return actual;
+          };
+          await expect(
+            target === 'cold'
+              ? h.service.reconcileIdle(rc, signal())
+              : h.service.start(rc, signal()),
+          ).rejects.toBeDefined();
+          expect(digest(await readFile(image(target)))).toBe(original);
+          const stale = (await store.read(rc.actor.id))!;
+          expect(stale.diskTier).toBe(target === 'cold' ? 'warm' : 'cold');
+          expect(stale.leaseOwner).not.toBe(null);
+          h.disk.move = move;
+          h.advance(90001);
+          await h.service.recoverExpired(rc, signal());
+          expect((await store.read(rc.actor.id))!.diskTier).toBe(target);
+          expect((await h.service.start(rc, signal())).ready).toBe(true);
+          expect(digest(await readFile(image('warm')))).toBe(original);
+          expect(h.log.filter((item) => item === 'native:create')).toHaveLength(
+            1,
+          );
+        } finally {
+          await rm(fixture.root, { recursive: true, force: true });
+        }
+      },
+    );
     it('个人盘无employee级联关系；删盘拒绝及最终显式删除审计真正落库', async () => {
       const h = harness(store),
         { rc, binding } = await running(h);
@@ -218,6 +481,7 @@ suite(
       expect(constraints.map((row) => row.definition).join('\n')).not.toMatch(
         /employee|ON DELETE CASCADE/i,
       );
+      h.states.set(binding.vmId, 'stopped');
       await h.service.delete(rc, {}, signal());
       expect((await store.read(rc.actor.id))!.diskRetained).toBe(true);
       expect(h.disks.has(binding.vmId)).toBe(true);

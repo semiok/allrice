@@ -58,7 +58,8 @@ export interface PersonVmAuthority {
 export type PersonVmActivity = Readonly<{
   binding: PersonVmBinding;
   observedAt: string;
-  /** Native facts; unknown/stale/disconnected must never be interpreted as idle. */
+  /** Instantaneous native facts; zero does NOT prove a continuous idle interval
+   * or freeze future admission. No VM-wide stop guarantee is implemented. */
   state: 'known' | 'unknown';
   activeTurns: number;
   activeJobs: number;

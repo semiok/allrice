@@ -8,7 +8,6 @@ import {
 import {
   PersonVmError,
   PERSON_VM_COLD_MS,
-  PERSON_VM_IDLE_MS,
   type PersonVmAction,
   type PersonVmActivity,
   type PersonVmAuthority,
@@ -128,21 +127,31 @@ export class PersonVmService implements PersonVmHostPort {
       async (lease) => {
         if (lease.row)
           this.checkOrganization(lease.row, identity.organizationId);
-        const frame = {
-          active: true,
-          requestId: context.requestId,
-          personId: identity.personId,
-          lease,
-        };
-        return this.currentLease.run(frame, async () => {
-          try {
-            return await work(lease, identity);
-          } finally {
-            frame.active = false;
-          }
-        });
+        return this.inLeaseFrame(context, identity.personId, lease, () =>
+          work(lease, identity),
+        );
       },
     );
+  }
+  private inLeaseFrame<T>(
+    context: RequestContext,
+    personId: string,
+    lease: VmLease,
+    work: () => Promise<T>,
+  ) {
+    const frame = {
+      active: true,
+      requestId: context.requestId,
+      personId,
+      lease,
+    };
+    return this.currentLease.run(frame, async () => {
+      try {
+        return await work();
+      } finally {
+        frame.active = false;
+      }
+    });
   }
   private required(row: VmRecord | null) {
     if (!row || row.phase === 'deleted' || !row.diskRetained)
@@ -158,8 +167,15 @@ export class PersonVmService implements PersonVmHostPort {
   }
   async create(context: RequestContext, signal: AbortSignal) {
     return this.leased(context, 'create', signal, async (lease, identity) => {
-      if (lease.row && lease.row.phase !== 'deleted') return view(lease.row);
-      if (lease.row?.diskRetained) {
+      const retry =
+        lease.row &&
+        !lease.row.instanceId &&
+        !lease.row.nativeCreated &&
+        lease.row.diskRetained &&
+        (lease.row.phase === 'failed' || lease.row.phase === 'starting');
+      if (lease.row && lease.row.phase !== 'deleted' && !retry)
+        return view(lease.row);
+      if (lease.row?.diskRetained && !retry) {
         lease.row.phase = lease.row.diskTier === 'cold' ? 'cold' : 'stopped';
         await lease.save(lease.row);
         await lease.audit(lease.row, {
@@ -169,25 +185,28 @@ export class PersonVmService implements PersonVmHostPort {
         });
         return view(lease.row);
       }
-      const row: VmRecord = {
-        vmId: randomUUID(),
-        ...identity,
-        phase: 'starting',
-        diskTier: 'warm',
-        diskRetained: true,
-        nativeCreated: false,
-        instanceId: null,
-        leaseEpoch: 0,
-        leaseOwner: null,
-        leaseExpiresAt: null,
-        egressReceipt: null,
-        gatewayPorts: [],
-        holds: [],
-        lastActivityAt: this.now().toISOString(),
-        stoppedAt: null,
-        idleSince: null,
-        activityObservedAt: null,
-      };
+      const row: VmRecord = retry
+        ? lease.row!
+        : {
+            vmId: randomUUID(),
+            ...identity,
+            phase: 'starting',
+            diskTier: 'warm',
+            diskRetained: true,
+            nativeCreated: false,
+            instanceId: null,
+            leaseEpoch: 0,
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            egressReceipt: null,
+            gatewayPorts: [],
+            holds: [],
+            lastActivityAt: this.now().toISOString(),
+            stoppedAt: null,
+            idleSince: null,
+            activityObservedAt: null,
+          };
+      row.phase = 'starting';
       await lease.save(row); // Persist ownership before creating disk/key side effects.
       await lease.audit(row, {
         requestId: context.requestId,
@@ -197,11 +216,20 @@ export class PersonVmService implements PersonVmHostPort {
       try {
         signal.throwIfAborted();
         await lease.guard();
-        await this.options.disk.create(
-          { vmId: row.vmId, tier: row.diskTier },
-          signal,
-        );
-        row.phase = 'stopped';
+        let inspected = await this.options.disk.inspect(row.vmId, signal);
+        if (inspected.state === 'unknown')
+          throw new PersonVmError('PROVIDER_FAILED');
+        if (inspected.state === 'absent') {
+          await this.options.disk.create(
+            { vmId: row.vmId, tier: row.diskTier },
+            signal,
+          );
+          inspected = await this.options.disk.inspect(row.vmId, signal);
+        }
+        if (inspected.state !== 'ready')
+          throw new PersonVmError('PROVIDER_FAILED');
+        row.diskTier = inspected.disk.tier;
+        row.phase = row.diskTier === 'cold' ? 'cold' : 'stopped';
         row.stoppedAt = this.now().toISOString();
         await lease.save(row);
         await lease.audit(row, {
@@ -253,7 +281,15 @@ export class PersonVmService implements PersonVmHostPort {
       gatewayPorts: Object.freeze([...value.gatewayPorts]),
     });
   }
-  private async mounted(row: VmRecord, signal: AbortSignal) {
+  private async mounted(row: VmRecord, signal: AbortSignal, lease: VmLease) {
+    const inspected = await this.options.disk.inspect(row.vmId, signal);
+    if (inspected.state !== 'ready') throw new PersonVmError('PROVIDER_FAILED');
+    if (row.diskTier !== inspected.disk.tier) {
+      row.diskTier = inspected.disk.tier;
+      if (row.phase === 'cold' || row.phase === 'stopped')
+        row.phase = row.diskTier === 'cold' ? 'cold' : 'stopped';
+      await lease.save(row);
+    }
     const mount = await this.options.disk.attach(
       { vmId: row.vmId, tier: row.diskTier },
       signal,
@@ -283,7 +319,7 @@ export class PersonVmService implements PersonVmHostPort {
       if (!this.options.egress) throw new PersonVmError('EGRESS_UNAVAILABLE');
       if (!this.options.runtime) throw new PersonVmError('RUNTIME_NOT_READY');
       if (row.phase === 'running') {
-        await this.mounted(row, signal);
+        await this.mounted(row, signal, lease);
         await this.ready(row, signal);
         return view(row, true);
       }
@@ -293,7 +329,7 @@ export class PersonVmService implements PersonVmHostPort {
         row.phase === 'starting' ||
         row.egressReceipt
       ) {
-        await this.takeoverSafe(row, signal);
+        await this.takeoverSafe(row, signal, lease);
         await this.cleanup(row, lease, 'takeover');
       }
       row.leaseEpoch += 1;
@@ -336,7 +372,7 @@ export class PersonVmService implements PersonVmHostPort {
           row.diskTier = 'warm';
           await lease.save(row);
         }
-        await this.mounted(row, signal);
+        await this.mounted(row, signal, lease);
         await lease.guard();
         await this.options.egress.assertActive(receipt, signal);
         const state = await this.options.native.status(binding, signal);
@@ -423,13 +459,22 @@ export class PersonVmService implements PersonVmHostPort {
     if (counts.some((value) => value > 0)) throw new PersonVmError('VM_ACTIVE');
     return snapshot;
   }
-  private async takeoverSafe(row: VmRecord, signal: AbortSignal) {
+  private async takeoverSafe(
+    row: VmRecord,
+    signal: AbortSignal,
+    lease: VmLease,
+  ) {
     if (row.holds.length > 0) throw new PersonVmError('VM_ACTIVE');
     if (!row.instanceId) return;
-    await this.mounted(row, signal);
+    await this.mounted(row, signal, lease);
     const state = await this.options.native.status(bindingOf(row), signal);
     if (state === 'unknown') throw new PersonVmError('ACTIVITY_UNKNOWN');
-    if (state === 'running') await this.inactive(row, signal);
+    if (state === 'running') {
+      await this.inactive(row, signal);
+      // Instantaneous zero counts neither cover the intervening window nor
+      // freeze native admission. No public VM-wide primitive is wired yet.
+      throw new PersonVmError('ACTIVITY_UNKNOWN');
+    }
   }
   private async cleanup(
     row: VmRecord,
@@ -455,7 +500,7 @@ export class PersonVmService implements PersonVmHostPort {
     const signal = AbortSignal.timeout(this.options.cleanupTimeoutMs);
     try {
       if (row.instanceId) {
-        await this.mounted(row, signal);
+        await this.mounted(row, signal, lease);
         const binding = bindingOf(row);
         await this.options.native.stop(binding, signal);
         const state = await this.options.native.status(binding, signal);
@@ -484,8 +529,8 @@ export class PersonVmService implements PersonVmHostPort {
     return this.leased(context, 'stop', signal, async (lease) => {
       const row = this.required(lease.row);
       if (row.holds.length > 0) throw new PersonVmError('VM_ACTIVE');
-      if (row.phase === 'running') await this.inactive(row, signal);
-      if (row.phase === 'failed') await this.takeoverSafe(row, signal);
+      if (row.phase === 'running' || row.phase === 'failed')
+        await this.takeoverSafe(row, signal, lease);
       if (row.phase === 'starting') throw new PersonVmError('ACTIVITY_UNKNOWN');
       if (
         (row.phase === 'cold' || row.phase === 'stopped') &&
@@ -542,7 +587,7 @@ export class PersonVmService implements PersonVmHostPort {
           });
         }
       }
-      if (row.phase === 'running') await this.inactive(row, signal);
+      if (row.phase === 'running') await this.takeoverSafe(row, signal, lease);
       if (row.holds.length > 0 || row.phase === 'starting')
         throw new PersonVmError('VM_ACTIVE');
       const action = input.deleteDisk ? 'delete-disk' : 'delete';
@@ -553,7 +598,8 @@ export class PersonVmService implements PersonVmHostPort {
       });
       try {
         if (row.instanceId && row.diskRetained) {
-          if (row.phase !== 'running') await this.takeoverSafe(row, signal);
+          if (row.phase !== 'running')
+            await this.takeoverSafe(row, signal, lease);
           await this.cleanup(row, lease, 'delete');
         }
         if (input.deleteDisk && row.diskRetained) {
@@ -589,7 +635,6 @@ export class PersonVmService implements PersonVmHostPort {
   async reconcileIdle(context: RequestContext, signal: AbortSignal) {
     return this.leased(context, 'stop', signal, async (lease) => {
       const row = this.required(lease.row);
-      const elapsed = this.now().getTime() - Date.parse(row.lastActivityAt);
       if (row.phase === 'starting' || row.phase === 'failed') return view(row);
       if (row.phase === 'running') {
         let snapshot: PersonVmActivity;
@@ -608,35 +653,13 @@ export class PersonVmService implements PersonVmHostPort {
           }
           throw error;
         }
-        const observed = Date.parse(snapshot.observedAt);
-        const previous = row.activityObservedAt
-          ? Date.parse(row.activityObservedAt)
-          : NaN;
-        if (
-          !row.idleSince ||
-          !Number.isFinite(previous) ||
-          observed < previous ||
-          observed - previous > this.options.activityMaxAgeMs
-        ) {
-          row.idleSince = this.now().toISOString();
-        }
+        // Polling 0 cannot prove a continuous idle interval or freeze a job
+        // beginning after this read. Automatic running-VM reclamation remains
+        // disabled until a real native window/admission guarantee is available.
+        row.idleSince = null;
         row.activityObservedAt = snapshot.observedAt;
-        const continuouslyIdleFor =
-          this.now().getTime() -
-          Math.max(Date.parse(row.idleSince), Date.parse(row.lastActivityAt));
-        if (
-          continuouslyIdleFor < PERSON_VM_IDLE_MS ||
-          elapsed < PERSON_VM_IDLE_MS
-        ) {
-          await lease.save(row);
-          return view(row);
-        }
-        await this.cleanup(row, lease, 'stop');
-        await lease.audit(row, {
-          requestId: context.requestId,
-          action: 'idle-stop',
-          result: 'succeeded',
-        });
+        await lease.save(row);
+        return view(row);
       }
       const stoppedFor = row.stoppedAt
         ? this.now().getTime() - Date.parse(row.stoppedAt)
@@ -708,29 +731,36 @@ export class PersonVmService implements PersonVmHostPort {
       async (lease) => {
         const row = this.required(lease.row);
         this.checkOrganization(row, identity.organizationId);
-        await this.takeoverSafe(row, signal);
-        await lease.audit(row, {
-          requestId: context.requestId,
-          action: 'recover',
-          result: 'started',
-        });
-        try {
-          await this.cleanup(row, lease, 'takeover');
-          await lease.audit(row, {
-            requestId: context.requestId,
-            action: 'recover',
-            result: 'succeeded',
-          });
-          return view(row);
-        } catch (error) {
-          await lease.audit(row, {
-            requestId: context.requestId,
-            action: 'recover',
-            result: 'failed',
-            errorCode: safeError(error).code,
-          });
-          throw error;
-        }
+        return this.inLeaseFrame(
+          context,
+          identity.personId,
+          lease,
+          async () => {
+            await this.takeoverSafe(row, signal, lease);
+            await lease.audit(row, {
+              requestId: context.requestId,
+              action: 'recover',
+              result: 'started',
+            });
+            try {
+              await this.cleanup(row, lease, 'takeover');
+              await lease.audit(row, {
+                requestId: context.requestId,
+                action: 'recover',
+                result: 'succeeded',
+              });
+              return view(row);
+            } catch (error) {
+              await lease.audit(row, {
+                requestId: context.requestId,
+                action: 'recover',
+                result: 'failed',
+                errorCode: safeError(error).code,
+              });
+              throw error;
+            }
+          },
+        );
       },
     );
   }
