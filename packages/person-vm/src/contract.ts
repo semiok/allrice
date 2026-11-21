@@ -23,9 +23,16 @@ export type PersonVmEgressReceipt = Readonly<{
 }>;
 
 export interface PersonVmEgressPort {
-  prepare(binding: PersonVmBinding, signal: AbortSignal): Promise<PersonVmEgressReceipt>;
-  assertActive(receipt: PersonVmEgressReceipt, signal: AbortSignal): Promise<void>;
-  /** Idempotent for this exact epoch. Revoke external capabilities/routes. */
+  prepare(
+    binding: PersonVmBinding,
+    signal: AbortSignal,
+  ): Promise<PersonVmEgressReceipt>;
+  assertActive(
+    receipt: PersonVmEgressReceipt,
+    signal: AbortSignal,
+  ): Promise<void>;
+  /** Idempotent for this exact epoch. Revoke routes/capabilities, cancel and join
+   * owned in-flight streams; the egress owner records unknown external effects. */
   revoke(
     receipt: PersonVmEgressReceipt,
     reason: 'stop' | 'failure' | 'takeover' | 'delete',
@@ -33,10 +40,15 @@ export interface PersonVmEgressPort {
   ): Promise<void>;
 }
 
-export type PersonVmAction = 'read' | 'create' | 'start' | 'stop' | 'delete' | 'delete-disk';
+export type PersonVmAction =
+  'read' | 'create' | 'start' | 'stop' | 'delete' | 'delete-disk';
 export interface PersonVmAuthority {
   /** Recheck current server-side identity/membership on EVERY call. */
-  authorize(context: RequestContext, action: PersonVmAction, signal: AbortSignal): Promise<{
+  authorize(
+    context: RequestContext,
+    action: PersonVmAction,
+    signal: AbortSignal,
+  ): Promise<{
     /** Globally stable allrice_users identity, normally context.actor.id. */
     personId: string;
     organizationId: string;
@@ -46,7 +58,8 @@ export interface PersonVmAuthority {
 export type PersonVmActivity = Readonly<{
   binding: PersonVmBinding;
   observedAt: string;
-  /** Native facts; unknown/stale/disconnected must never be interpreted as idle. */
+  /** Instantaneous native facts; zero does NOT prove a continuous idle interval
+   * or freeze future admission. No VM-wide stop guarantee is implemented. */
   state: 'known' | 'unknown';
   activeTurns: number;
   activeJobs: number;
@@ -57,9 +70,15 @@ export type PersonVmActivity = Readonly<{
 export interface PersonVmRuntimePort {
   /** DSH startup/configuration stays with the native runtime owner. */
   start(binding: PersonVmBinding, signal: AbortSignal): Promise<void>;
-  activity(binding: PersonVmBinding, signal: AbortSignal): Promise<PersonVmActivity>;
+  activity(
+    binding: PersonVmBinding,
+    signal: AbortSignal,
+  ): Promise<PersonVmActivity>;
   /** 401/reachable is NOT ready. Must prove authenticated editor + send capability. */
-  readiness(binding: PersonVmBinding, signal: AbortSignal): Promise<{
+  readiness(
+    binding: PersonVmBinding,
+    signal: AbortSignal,
+  ): Promise<{
     binding: PersonVmBinding;
     authenticated: boolean;
     editorReady: boolean;
@@ -73,6 +92,7 @@ export type PersonVmView = Readonly<{
   organizationId: string;
   phase: 'stopped' | 'starting' | 'running' | 'cold' | 'failed' | 'deleted';
   ready: boolean;
+  /** Persisted retention ownership; failed/starting does not prove image bytes exist. */
   diskRetained: boolean;
   lastActivityAt: string;
   /** No ownerToken, key material, mount paths, or egress credentials. */
@@ -94,7 +114,10 @@ export type PersonVmErrorCode =
   | 'NOT_FOUND';
 
 export class PersonVmError extends Error {
-  constructor(readonly code: PersonVmErrorCode, options?: ErrorOptions) {
+  constructor(
+    readonly code: PersonVmErrorCode,
+    options?: ErrorOptions,
+  ) {
     super(code, options);
     this.name = 'PersonVmError';
   }
@@ -104,9 +127,56 @@ export class PersonVmError extends Error {
 export interface PersonVmPort {
   create(context: RequestContext, signal: AbortSignal): Promise<PersonVmView>;
   start(context: RequestContext, signal: AbortSignal): Promise<PersonVmView>;
-  prewarm(context: RequestContext, input: { trigger: 'page' | 'input' }, signal: AbortSignal): Promise<PersonVmView>;
-  read(context: RequestContext, signal: AbortSignal): Promise<PersonVmView | null>;
+  prewarm(
+    context: RequestContext,
+    input: { trigger: 'page' | 'input' },
+    signal: AbortSignal,
+  ): Promise<PersonVmView>;
+  read(
+    context: RequestContext,
+    signal: AbortSignal,
+  ): Promise<PersonVmView | null>;
   stop(context: RequestContext, signal: AbortSignal): Promise<PersonVmView>;
   /** Default keeps the encrypted disk. Employee deletion must not call this. */
-  delete(context: RequestContext, input: { deleteDisk?: boolean }, signal: AbortSignal): Promise<PersonVmView>;
+  delete(
+    context: RequestContext,
+    input: { deleteDisk?: boolean },
+    signal: AbortSignal,
+  ): Promise<PersonVmView>;
+  /** Host gateway only: resolve current authority; never cache as lasting permission. */
+  resolve(
+    context: RequestContext,
+    signal: AbortSignal,
+  ): Promise<PersonVmBinding>;
+  assertCurrentBinding(
+    context: RequestContext,
+    binding: PersonVmBinding,
+    signal: AbortSignal,
+  ): Promise<void>;
+}
+
+export type PersonVmHoldKind =
+  'turn' | 'job' | 'subtask' | 'approval' | 'host-operation';
+/** Trusted host orchestration only. No hold/fencing handle is granted to the guest. */
+export interface PersonVmHostPort extends PersonVmPort {
+  reconcileIdle(
+    context: RequestContext,
+    signal: AbortSignal,
+  ): Promise<PersonVmView>;
+  recoverExpired(
+    context: RequestContext,
+    signal: AbortSignal,
+  ): Promise<PersonVmView>;
+  acquireHold(
+    context: RequestContext,
+    binding: PersonVmBinding,
+    input: { kind: PersonVmHoldKind; operationId: string },
+    signal: AbortSignal,
+  ): Promise<string>;
+  releaseHold(
+    context: RequestContext,
+    binding: PersonVmBinding,
+    holdId: string,
+    signal: AbortSignal,
+  ): Promise<void>;
 }
