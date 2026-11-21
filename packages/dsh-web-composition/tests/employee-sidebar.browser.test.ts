@@ -124,6 +124,15 @@ const sidebarGeometry = (view: Page, selector = '#chat-sidebar') =>
         lineHeight: style.lineHeight,
         letterSpacing: style.letterSpacing,
         fontSmoothing: style.getPropertyValue('-webkit-font-smoothing'),
+        textAutospace: style.getPropertyValue('text-autospace'),
+        cornerShape: style.getPropertyValue('corner-shape'),
+        labelSecondary: style
+          .getPropertyValue('--dsw-alias-label-secondary')
+          .trim(),
+        labelTertiary: style
+          .getPropertyValue('--dsw-alias-label-tertiary')
+          .trim(),
+        leafText: node.childElementCount ? null : node.textContent,
         color: style.color,
         backgroundColor: style.backgroundColor,
         hovered: node.matches(':hover'),
@@ -131,6 +140,25 @@ const sidebarGeometry = (view: Page, selector = '#chat-sidebar') =>
       };
     };
     const tree = frame.querySelector('[role="tree"][aria-label="员工与工作"]');
+    // The old compact main owns a 57px anchor track; the native slot is inside
+    // its own bordered column. Neither hidden anchor is the fixed overlay.
+    let column = frame,
+      grid = frame.parentElement;
+    while (grid && getComputedStyle(grid).display !== 'grid') {
+      column = grid;
+      grid = grid.parentElement;
+    }
+    const firstTrack = grid
+      ? parseFloat(getComputedStyle(grid).gridTemplateColumns)
+      : NaN;
+    const columnStyle = getComputedStyle(column);
+    const columnInset =
+      column === frame
+        ? 0
+        : parseFloat(columnStyle.borderLeftWidth) +
+          parseFloat(columnStyle.borderRightWidth) +
+          parseFloat(columnStyle.paddingLeft) +
+          parseFloat(columnStyle.paddingRight);
     return {
       viewport: { width: innerWidth, height: innerHeight },
       compact: matchMedia('(max-width: 760px)').matches,
@@ -146,6 +174,14 @@ const sidebarGeometry = (view: Page, selector = '#chat-sidebar') =>
       parent: read(frame.parentElement),
       layout: read(frame.parentElement?.parentElement ?? null),
       body: read(document.body),
+      hostGrid: read(grid),
+      hostColumn: read(column),
+      anchorBudget: {
+        kind: column === frame ? 'grid-track' : 'column-content',
+        firstTrack,
+        columnInset,
+        width: firstTrack - columnInset,
+      },
       tree: read(tree),
       groups: [...(tree?.querySelectorAll(':scope > section') ?? [])].map(
         (group) => {
@@ -218,6 +254,9 @@ const sidebarVisualDifferences = (
       'lineHeight',
       'letterSpacing',
       'fontSmoothing',
+      'textAutospace',
+      'cornerShape',
+      'leafText',
       'color',
       'backgroundColor',
       'hovered',
@@ -950,11 +989,13 @@ suite('real AllRice sidebar in installed native profiles', () => {
             .waitFor();
         }
         await prepareSidebarCapture(page);
-        expect(
-          await page.evaluate(
-            () => document.documentElement.scrollWidth > innerWidth,
-          ),
-        ).toBe(false);
+        expect
+          .soft(
+            await page.evaluate(
+              () => document.documentElement.scrollWidth > innerWidth,
+            ),
+          )
+          .toBe(false);
         const nativeFrame = page.locator('#chat-sidebar');
         const frameBox = await nativeFrame.boundingBox();
         const native = nativeFrame.locator(':scope > div').last();
@@ -1008,17 +1049,9 @@ suite('real AllRice sidebar in installed native profiles', () => {
             join(artifacts, 'sidebar-visual-comparison.jsonl'),
             `${JSON.stringify(comparison)}\n`,
           );
+          return { current, previous };
         };
-        expect(
-          Math.abs(
-            (await legacy.locator('#chat-sidebar').boundingBox())!.width -
-              frameBox!.width,
-          ),
-        ).toBeLessThanOrEqual(0.5);
-        expect(
-          Math.abs((await old.boundingBox())!.width - box!.width),
-        ).toBeLessThanOrEqual(0.5);
-        await capturePair('preview');
+        const { current, previous } = await capturePair('preview');
         await page.screenshot({
           animations: 'disabled',
           path: join(artifacts, `native-page-${width}-${theme}.png`),
@@ -1029,6 +1062,47 @@ suite('real AllRice sidebar in installed native profiles', () => {
           path: join(artifacts, `base3x-page-${width}-${theme}.png`),
           fullPage: true,
         });
+        const guards = {
+          width,
+          theme,
+          nativeAnchor: {
+            actual: current.frame!.rect.width,
+            budget: current.anchorBudget,
+          },
+          legacyAnchor: {
+            actual: previous.frame!.rect.width,
+            budget: previous.anchorBudget,
+          },
+          desktopAnchorDifference: current.compact
+            ? null
+            : Math.abs(previous.frame!.rect.width - frameBox!.width),
+          visibleRootDifference: Math.abs(
+            previous.root!.rect.width - box!.width,
+          ),
+        };
+        // Capture both pages and their CSS budgets before any geometry guard.
+        // Soft assertions still fail this test, but preserve all eight pairs.
+        await appendFile(
+          join(artifacts, 'sidebar-width-guards.jsonl'),
+          `${JSON.stringify(guards)}\n`,
+        );
+        expect
+          .soft(
+            Math.abs(
+              guards.nativeAnchor.actual - guards.nativeAnchor.budget.width,
+            ),
+          )
+          .toBeLessThanOrEqual(0.5);
+        expect
+          .soft(
+            Math.abs(
+              guards.legacyAnchor.actual - guards.legacyAnchor.budget.width,
+            ),
+          )
+          .toBeLessThanOrEqual(0.5);
+        if (guards.desktopAnchorDifference !== null)
+          expect.soft(guards.desktopAnchorDifference).toBeLessThanOrEqual(0.5);
+        expect.soft(guards.visibleRootDifference).toBeLessThanOrEqual(0.5);
         await page.evaluate(
           (size) => window.__allriceSidebarTest!.baseline(true, size),
           frameBox!.width,
@@ -1048,15 +1122,19 @@ suite('real AllRice sidebar in installed native profiles', () => {
             ),
           })}\n`,
         );
-        expect(
-          Math.abs((await baseline.boundingBox())!.width - frameBox!.width),
-        ).toBeLessThanOrEqual(0.5);
-        expect(
-          Math.abs(
-            (await baseline.locator(':scope > div').last().boundingBox())!
-              .width - box!.width,
-          ),
-        ).toBeLessThanOrEqual(0.5);
+        expect
+          .soft(
+            Math.abs((await baseline.boundingBox())!.width - frameBox!.width),
+          )
+          .toBeLessThanOrEqual(0.5);
+        expect
+          .soft(
+            Math.abs(
+              (await baseline.locator(':scope > div').last().boundingBox())!
+                .width - box!.width,
+            ),
+          )
+          .toBeLessThanOrEqual(0.5);
         await baseline.screenshot({
           animations: 'disabled',
           path: join(artifacts, `shared-frame-baseline-${width}-${theme}.png`),
@@ -1074,12 +1152,12 @@ suite('real AllRice sidebar in installed native profiles', () => {
           .click();
         await settle(page);
         await settle(legacy);
-        expect(
-          await page.locator('[data-row-key^="session:"]').count(),
-        ).toBeGreaterThan(30);
-        expect(
-          await legacy.locator('[data-row-key^="session:"]').count(),
-        ).toBeGreaterThan(30);
+        expect
+          .soft(await page.locator('[data-row-key^="session:"]').count())
+          .toBeGreaterThan(30);
+        expect
+          .soft(await legacy.locator('[data-row-key^="session:"]').count())
+          .toBeGreaterThan(30);
         await capturePair('expanded');
         await page
           .getByRole('button', { name: '收起更多会话', exact: true })
@@ -1094,17 +1172,21 @@ suite('real AllRice sidebar in installed native profiles', () => {
             .getByRole('button', { name: '设置', exact: true })
             .focus();
           await page.keyboard.press('Tab');
-          expect(
-            await page
-              .getByRole('button', { name: '收起侧边栏', exact: true })
-              .evaluate((node) => node === document.activeElement),
-          ).toBe(true);
+          expect
+            .soft(
+              await page
+                .getByRole('button', { name: '收起侧边栏', exact: true })
+                .evaluate((node) => node === document.activeElement),
+            )
+            .toBe(true);
           await page.keyboard.press('Escape');
-          expect(
-            await page
-              .getByRole('dialog', { name: '任务与历史', exact: true })
-              .count(),
-          ).toBe(0);
+          expect
+            .soft(
+              await page
+                .getByRole('dialog', { name: '任务与历史', exact: true })
+                .count(),
+            )
+            .toBe(0);
         }
       }
     await writeFile(
@@ -1161,6 +1243,7 @@ suite('real AllRice sidebar in installed native profiles', () => {
     );
     expect(errors).toEqual([]);
     expect(legacyRequests).toEqual([]);
+    expect(comparisons).toHaveLength(8);
     expect(
       comparisons.filter(
         ({ geometryDifferences, pixels }) =>

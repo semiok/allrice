@@ -3,6 +3,8 @@ body {
   /* Existing AllRice sidebar budget; native ui-theme exposes the local seat
      through --dsh-scrollbar-width. Keep its 5px default outside this sidebar. */
   --allrice-sidebar-scrollbar-width: 8px;
+  --allrice-sidebar-label-secondary: var(--dsw-static-neutral-bluish-700);
+  --allrice-sidebar-label-tertiary: var(--dsw-static-neutral-bluish-600);
   --allrice-sidebar-bg: #f8f9fb;
   --allrice-employee-bg: #f0f2f5;
   --allrice-sidebar-hover: #e9ecf1;
@@ -11,6 +13,8 @@ body {
 }
 
 body[data-ds-dark-theme] {
+  --allrice-sidebar-label-secondary: var(--dsw-static-neutral-bluish-300);
+  --allrice-sidebar-label-tertiary: var(--dsw-static-neutral-bluish-400);
   --allrice-sidebar-bg: #191b20;
   --allrice-employee-bg: #24272d;
   --allrice-sidebar-hover: #30353d;

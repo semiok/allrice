@@ -4,6 +4,9 @@
  * These are local inheritance boundaries, not replacements for native globals. */
 .surface {
   --dsh-scrollbar-width: var(--allrice-sidebar-scrollbar-width);
+  --dsw-alias-label-secondary: var(--allrice-sidebar-label-secondary);
+  --dsw-alias-label-tertiary: var(--allrice-sidebar-label-tertiary);
+  --dsw-corner-shape: round;
   font-family: var(
     --ds-font-family-ui,
     Inter,
@@ -13,6 +16,8 @@
   );
   -webkit-font-smoothing: auto;
   -moz-osx-font-smoothing: auto;
+  /* The legacy shell leaves the browser's initial CJK/Latin spacing intact. */
+  text-autospace: no-autospace;
 }
 
 :where(.surface, .surface *) {
