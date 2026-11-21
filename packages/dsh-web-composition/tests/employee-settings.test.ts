@@ -179,6 +179,53 @@ describe('native shell launcher lifetime', () => {
     expect(host.unbind).toHaveBeenCalledOnce();
   });
 
+  it('invalidates a captured callback on same-scope disposal while a new launcher still opens', () => {
+    const { host, model, scope } = setupModel();
+    const currentScope = scope();
+    const oldNative = nativeLauncher();
+    const off = model.bindLauncher(currentScope, oldNative);
+    const oldOpen = [...host.launchers][0]!.openSettings;
+    off();
+    oldOpen();
+    expect(oldNative.openSettings).not.toHaveBeenCalled();
+    expect(host.unbind).toHaveBeenCalledOnce();
+    const nextNative = nativeLauncher();
+    const nextOff = model.bindLauncher(currentScope, nextNative);
+    const nextOpen = [...host.launchers][0]!.openSettings;
+    oldOpen();
+    nextOpen();
+    expect(oldNative.openSettings).not.toHaveBeenCalled();
+    expect(nextNative.openSettings).toHaveBeenCalledOnce();
+    off();
+    expect(host.unbind).toHaveBeenCalledOnce();
+    expect(scope()).toBe(currentScope);
+    expect(currentScope.signal.aborted).toBe(false);
+    nextOff();
+    nextOpen();
+    expect(nextNative.openSettings).toHaveBeenCalledOnce();
+    expect(host.unbind).toHaveBeenCalledTimes(2);
+  });
+
+  it('invalidates before owner cleanup, including a reentrant callback and cleanup error', () => {
+    const { host, model, scope } = setupModel();
+    const native = nativeLauncher();
+    let capturedOpen = () => {};
+    const unbind = vi.fn(() => {
+      capturedOpen();
+      throw new Error('owner cleanup failed');
+    });
+    host.port.bindNativeLauncher = (launcher) => {
+      capturedOpen = launcher.openSettings;
+      return unbind;
+    };
+    const off = model.bindLauncher(scope(), native);
+    expect(() => off()).toThrow('owner cleanup failed');
+    capturedOpen();
+    expect(native.openSettings).not.toHaveBeenCalled();
+    off();
+    expect(unbind).toHaveBeenCalledOnce();
+  });
+
   it('immediately releases a launcher when the owner changes identity during binding', () => {
     const { host, model, scope } = setupModel();
     const bind = host.port.bindNativeLauncher;

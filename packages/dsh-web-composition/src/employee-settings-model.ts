@@ -105,18 +105,19 @@ export class EmployeeSettingsModel {
     native: SettingsLauncherOwnerProps,
   ) {
     if (!this.current(scope)) return () => {};
+    let bound = true;
     const unbind = this.port.bindNativeLauncher({
       scopeKey: scope.key,
       settingsOpen: native.settingsOpen,
       openSettings: () => {
-        if (this.current(scope)) native.openSettings();
+        if (bound && this.current(scope)) native.openSettings();
       },
     });
     if (!this.current(scope)) {
+      bound = false;
       unbind();
       return () => {};
     }
-    let bound = true;
     const dispose = () => {
       if (!bound) return;
       bound = false;
