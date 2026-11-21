@@ -317,7 +317,9 @@ describe.sequential(
       expect(f.store.slots.get(f.binding.vm.personId)?.size).toBe(1);
       expect(f.admission.records.size).toBe(1);
       expect(f.admission.finished).toHaveLength(0);
+      expect(f.admission.finishCalls).toHaveLength(1);
       expect([...f.admission.records.values()][0]!.pending.size).toBe(0);
+      expect([...f.admission.records.values()][0]!.unsafe).toBe(true);
       expect([...f.store.rows.values()]).toMatchObject([
         {
           dispatchObserved: true,
@@ -377,7 +379,9 @@ describe.sequential(
       expect(f.store.slots.get(f.binding.vm.personId)?.size).toBe(1);
       expect(f.admission.records.size).toBe(1);
       expect(f.admission.finished).toHaveLength(0);
+      expect(f.admission.finishCalls).toHaveLength(1);
       expect([...f.admission.records.values()][0]!.pending.size).toBe(0);
+      expect([...f.admission.records.values()][0]!.unsafe).toBe(true);
     });
 
     it('HTTP错误保留offloadImages，原生compaction-image-offload仍记录卸载并返回retry', async () => {

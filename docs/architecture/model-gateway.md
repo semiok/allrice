@@ -84,9 +84,9 @@ slot在reader EOF、成功awaited cancel，或原生实际请求关闭被确认�
 
 新增依赖只从 `@allrice/person-vm` 根出口消费：
 `PersonVmAdmissionBoundary/Permit`、`PersonVmAdmissionPort` 及其 lease/observation/subscription。
-合同 sourceAtSha=`8115ae6124126eb66a4bdd9fd995ce6549bc7140`；
+合同及 callback/finish 语义 sourceAtSha=`c041d94c6984463c9ff9a068cba0db58ebc91e16`；
 `admission-contract.ts` blob=`9a2ae42938b7dcaa4f15c3a572c602340b190b5e`，
-`admission-boundary.ts` blob=`0333a7a76d9bd48e7c9fcbdf366783bf5af7d5c3`，均原字节搬运。
+`admission-boundary.ts` blob=`727c0acfe94250322aa09a19fac78e82969a24ea`，均原字节搬运。
 根 barrel 仅追加这两条 export；0250 及 shared authority/recovery 属模型 owner。
 
 `handle` 在读取业务 body、claim、provider、8slot 或任何刷新工作前 `admit`；
@@ -108,9 +108,12 @@ employee/release/Run/thread/native root-parent-call/generation/route，不自动
 正常 provider 业务失败在确认实际 join 后作为本地 outcome 返回，再在 finish 后传给调用者。
 receipt 写失败与实际关闭事实分别记录：已经真实关闭仍保留原账本错误/slot，不能据错误码
 伪造活动；reader cancel/fetch 拒绝且没有独立真实关闭确认则保留 unknown wire facts/slot。
-当前 8115 producer 的 finish 不保留 callback 拒绝，因此真实 drain/iterator 收尾未知时
-本片暂不调用它来清空 permit；本地 callbacks 仍实际 settle，返回既有错误。
-模型 owner 的 sticky-unsafe 修订、精确源码及 unknown 恢复公开合同尚待交付，不能报全链 ready。
+queued/activate 均以 fulfilled 的 consumer 本地 outcome 表示确认实际 join 的业务失败/合作取消，
+在所有 callback 及 finish 之外抛原错；该 outcome 不新增公共 API 或 wire 协议。
+真实 drain/iterator 收尾未知仍拒绝两层 callback，finally 总调用 finish 取消/join 本端资源。
+producer 的 sticky unsafe 在 CLEANUP_INCOMPLETE 后保留 durable permit；首次业务/真实 join
+错误与 cleanup 错误一起保留，不把 finally 失败改成成功。没有跨 owner 未知恢复或完整执行
+重解析的消费装配证据，不能报全链 ready；producer 的测试不能替代本消费者真实接线回归。
 
 五面沿本模块记录：本增量仅 host 后端/当前身份门卫及租约接线；MCP、员工 UI、后台
 均无新增需求，资料级别不适用（运维事实不授数据权）。不改变 DSH Agent/工具/子智能体

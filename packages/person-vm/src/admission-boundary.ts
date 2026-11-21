@@ -18,7 +18,11 @@ export type PersonVmAdmissionPermit = Readonly<{
 /** Shared PG producer for BOTH participants; not a per-process gate map.
  * Enter before memory/8-slot/refresh waits or entry/native side effects.
  * Every owned wait/transport/transaction must run through queued/activate so
- * finish can cancel and JOIN actual work before releasing the durable permit. */
+ * finish can cancel and JOIN actual work before releasing the durable permit.
+ * Callback fulfilment certifies its actual children joined. After confirmed
+ * join, return a local business/cancellation outcome and throw its original
+ * error OUTSIDE all callbacks. Rejection after callback entry means unknown
+ * join, even if an outer callback catches it; finish retains the permit. */
 export interface PersonVmAdmissionBoundary {
   admit(
     context: RequestContext,
@@ -54,6 +58,7 @@ export interface PersonVmAdmissionBoundary {
   ): Promise<PersonVmBinding>;
   /** Idempotent joined close: cancel and await every queued/active callback,
    * then release the durable permit. A failed join/DB write retains it as
-   * unknown, never manufactures zero or automatically thaws a gate. */
+   * unknown, never manufactures zero or automatically thaws a gate. A failure
+   * before any callback enters may release after its own resources join. */
   finish(permit: PersonVmAdmissionPermit): Promise<void>;
 }

@@ -51,9 +51,11 @@ export class FixtureAdmission implements PersonVmAdmissionBoundary {
       state: 'queued' | 'active' | 'deferred';
       controller: AbortController;
       pending: Set<Promise<unknown>>;
+      unsafe: boolean;
     }
   >();
   finished: PersonVmAdmissionPermit[] = [];
+  finishCalls: PersonVmAdmissionPermit[] = [];
   deferred = deferred();
   activated = deferred();
   waiting = deferred();
@@ -137,6 +139,7 @@ export class FixtureAdmission implements PersonVmAdmissionBoundary {
       state: disposition,
       controller,
       pending: new Set(),
+      unsafe: false,
     });
     if (disposition === 'deferred') this.deferred.resolve();
     return permit;
@@ -194,18 +197,30 @@ export class FixtureAdmission implements PersonVmAdmissionBoundary {
     signal: AbortSignal,
   ) {
     const record = this.records.get(permit)!;
-    const pending = Promise.resolve().then(() =>
-      operation(AbortSignal.any([signal, permit.signal])),
-    );
+    const pending = Promise.resolve().then(async () => {
+      const current = AbortSignal.any([signal, permit.signal]);
+      current.throwIfAborted(); // Before callback entry, not an unknown child.
+      try {
+        return await operation(current);
+      } catch (error) {
+        record.unsafe = true;
+        throw error;
+      }
+    });
     record.pending.add(pending);
     void pending.finally(() => record.pending.delete(pending)).catch(() => {});
     return pending;
   }
   async finish(permit: PersonVmAdmissionPermit) {
+    this.finishCalls.push(permit);
     const record = this.records.get(permit);
     if (!record) return;
     record.controller.abort(new Error('fixture finish'));
     await Promise.allSettled([...record.pending]);
+    if (record.unsafe)
+      throw Object.assign(new Error('fixture actual join unknown'), {
+        code: 'CLEANUP_INCOMPLETE',
+      });
     if (this.failFinish) throw new ModelGatewayError('LEDGER_UNAVAILABLE');
     this.records.delete(permit);
     this.finished.push(permit);

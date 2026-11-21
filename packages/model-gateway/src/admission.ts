@@ -1,10 +1,13 @@
 import { ModelGatewayError } from './contract.ts';
 import type { ModelCallBinding, ModelGatewayAdmission } from './contract.ts';
 
+/** Consumer-local value, not a wire contract or a new person-vm API. */
+type Outcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
 /** Local Promise ownership only. Gate/permit/ACK/cursor authority stays in the
  * injected shared host. One activation owns the SAME real request, including
  * iterator shutdown, HTTP drain and the credential owner's complete transaction. */
-export async function runGatewayAdmission(
+export async function runGatewayAdmission<T>(
   admission: ModelGatewayAdmission,
   binding: ModelCallBinding,
   operationId: string,
@@ -12,8 +15,8 @@ export async function runGatewayAdmission(
   operation: (
     signal: AbortSignal,
     activate: () => Promise<void>,
-  ) => Promise<void>,
-): Promise<void> {
+  ) => Promise<Outcome<T>>,
+): Promise<T> {
   const { boundary } = admission;
   const permit = await boundary.admit(
     binding.context,
@@ -21,11 +24,13 @@ export async function runGatewayAdmission(
     { participant: 'gateway', operationId },
     signal,
   );
-  let work: Promise<void> | undefined;
-  let activation: Promise<void> | undefined;
-  let unknownJoin = false;
+  let work: Promise<Outcome<T>> | undefined;
+  let activation: Promise<Outcome<T>> | undefined;
+  let outcome: Outcome<T> | undefined;
   let failed = false;
   let failure: unknown;
+  let cleanupFailed = false;
+  let cleanupFailure: unknown;
   try {
     signal.throwIfAborted();
     if (permit.disposition === 'deferred') {
@@ -35,7 +40,7 @@ export async function runGatewayAdmission(
       signal.throwIfAborted();
       throw new ModelGatewayError('EXECUTION_REBIND_REQUIRED');
     }
-    await boundary.queued(
+    outcome = await boundary.queued(
       permit,
       (queuedSignal) => {
         const activeCancellation = new AbortController();
@@ -63,7 +68,7 @@ export async function runGatewayAdmission(
                 try {
                   if (activeSignal.aborted) cancel();
                   accept(); // The callback really entered; dispatch may proceed.
-                  await work;
+                  return await work!;
                 } finally {
                   activeSignal.removeEventListener('abort', cancel);
                 }
@@ -78,14 +83,7 @@ export async function runGatewayAdmission(
         };
         // Defer invocation one microtask so activate always sees this exact
         // real Promise. No synthetic never-settling work or completion signal.
-        work = Promise.resolve()
-          .then(() => operation(workSignal, activate))
-          .catch((error: unknown) => {
-            // The caller handles ordinary provider failures after confirmed
-            // join; only an unconfirmed actual drain is allowed to escape.
-            unknownJoin = true;
-            throw error;
-          });
+        work = Promise.resolve().then(() => operation(workSignal, activate));
         return work;
       },
       signal,
@@ -96,24 +94,30 @@ export async function runGatewayAdmission(
     failure = error;
   } finally {
     await Promise.allSettled([work, activation]);
-    // 8115ae61 finish ignores callback rejection. Until the producer supplies
-    // an explicit unknown-join recovery contract, retain the durable permit.
-    // All local callbacks still settle; a rejected Promise is never fake idle.
-    if (!unknownJoin) {
-      try {
-        await boundary.finish(permit);
-      } catch (cleanupError) {
-        failure = new ModelGatewayError('LEDGER_UNAVAILABLE', {
-          cause: failed
-            ? new AggregateError(
-                [failure, cleanupError],
-                'admission cleanup failed',
-              )
-            : cleanupError,
-        });
-        failed = true;
-      }
+    // c041d94c finish still cancels/joins its own resources after an entered
+    // callback rejects. Its sticky unsafe proof retains the durable permit.
+    try {
+      await boundary.finish(permit);
+    } catch (cleanupError) {
+      cleanupFailed = true;
+      cleanupFailure = cleanupError;
     }
   }
+  // A boundary can reject its own listener cleanup AFTER work returned a
+  // confirmed-join business failure. Keep that earlier outcome as well as both
+  // callback/finish errors; never replace the original evidence in finally.
+  const errors: unknown[] = outcome && !outcome.ok ? [outcome.error] : [];
+  if (failed && !errors.includes(failure)) errors.push(failure);
+  if (cleanupFailed) errors.push(cleanupFailure);
+  if (cleanupFailed || (failed && errors.length > 1))
+    throw new ModelGatewayError('LEDGER_UNAVAILABLE', {
+      cause:
+        errors.length === 1
+          ? errors[0]
+          : new AggregateError(errors, 'admission cleanup failed'),
+    });
   if (failed) throw failure;
+  const result = outcome!;
+  if (!result.ok) throw result.error;
+  return result.value;
 }

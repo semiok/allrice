@@ -255,9 +255,6 @@ export function createModelGateway(options: {
         await options.authority.assertCall(binding, currentSignal);
         currentSignal.throwIfAborted();
       };
-      let terminalReply: StreamChunk | undefined;
-      let operationFailure: unknown;
-      let operationFailed = false;
       try {
         await assertCurrent(signal);
         if (
@@ -267,7 +264,7 @@ export function createModelGateway(options: {
             String(MODEL_GATEWAY_CONTRACT_VERSION)
         )
           throw new ModelGatewayError('INVALID_INPUT');
-        await runGatewayAdmission(
+        const terminalReply = await runGatewayAdmission<StreamChunk>(
           options.admission,
           binding,
           `${options.ownerId}:${randomUUID()}`,
@@ -279,6 +276,9 @@ export function createModelGateway(options: {
             let exhausted = false;
             let joinFailure: unknown;
             let joined = true;
+            let terminalReply: StreamChunk | undefined;
+            let operationFailure: unknown;
+            let operationFailed = false;
             try {
               const input = await readInput(request, signal);
               const digest =
@@ -361,47 +361,47 @@ export function createModelGateway(options: {
                     ).failure,
                   },
                 };
-                return;
-              }
-              if (
-                !terminal ||
-                !['stop', 'tool-calls', 'max-tokens'].includes(
-                  terminal.reason.kind,
+              } else {
+                if (
+                  !terminal ||
+                  !['stop', 'tool-calls', 'max-tokens'].includes(
+                    terminal.reason.kind,
+                  )
                 )
-              )
-                throw new ModelGatewayError('PROVIDER_FAILED');
-              if (
-                !last ||
-                last.outcome !== 'closed' ||
-                last.httpStatus === null ||
-                last.httpStatus < 200 ||
-                last.httpStatus >= 300 ||
-                !(
-                  last.terminal === 'completed' ||
-                  (terminal.reason.kind === 'max-tokens' &&
-                    last.terminal === 'incomplete' &&
-                    last.terminalReason === 'max_output_tokens')
+                  throw new ModelGatewayError('PROVIDER_FAILED');
+                if (
+                  !last ||
+                  last.outcome !== 'closed' ||
+                  last.httpStatus === null ||
+                  last.httpStatus < 200 ||
+                  last.httpStatus >= 300 ||
+                  !(
+                    last.terminal === 'completed' ||
+                    (terminal.reason.kind === 'max-tokens' &&
+                      last.terminal === 'incomplete' &&
+                      last.terminalReason === 'max_output_tokens')
+                  )
                 )
-              )
-                throw new ModelGatewayError('MISSING_UPSTREAM_TERMINAL');
-              if (last.usage.usageComplete && last.usage.cacheUsageKnown) {
-                const usage = last.usage;
-                await send(
-                  response,
-                  {
-                    type: 'usage',
-                    usage: {
-                      inputTokens:
-                        usage.inputTokens! - usage.cachedInputTokens!,
-                      outputTokens: usage.outputTokens!,
-                      cacheReadTokens: usage.cachedInputTokens!,
-                      totalTokens: usage.totalTokens!,
+                  throw new ModelGatewayError('MISSING_UPSTREAM_TERMINAL');
+                if (last.usage.usageComplete && last.usage.cacheUsageKnown) {
+                  const usage = last.usage;
+                  await send(
+                    response,
+                    {
+                      type: 'usage',
+                      usage: {
+                        inputTokens:
+                          usage.inputTokens! - usage.cachedInputTokens!,
+                        outputTokens: usage.outputTokens!,
+                        cacheReadTokens: usage.cachedInputTokens!,
+                        totalTokens: usage.totalTokens!,
+                      },
                     },
-                  },
-                  signal,
-                );
+                    signal,
+                  );
+                }
+                terminalReply = terminal;
               }
-              terminalReply = terminal;
             } catch (error) {
               // Business failure is a value until actual shutdown has joined. A
               // normal upstream refusal must not leave an unknown admission item.
@@ -424,8 +424,15 @@ export function createModelGateway(options: {
                 // A receipt write can fail AFTER actual HTTP/transactions
                 // joined. Retain its exact DB slot and business error, without
                 // inventing still-running activity from an error code.
+                operationFailure = operationFailed
+                  ? new ModelGatewayError('LEDGER_UNAVAILABLE', {
+                      cause: new AggregateError(
+                        [operationFailure, error],
+                        'receipt and request failure',
+                      ),
+                    })
+                  : error;
                 operationFailed = true;
-                operationFailure = error;
                 if (!transport!.joinKnown) {
                   joined = false;
                   joinFailure ??= error;
@@ -433,14 +440,22 @@ export function createModelGateway(options: {
               }
               if (!joined)
                 throw new ModelGatewayError('LEDGER_UNAVAILABLE', {
-                  cause: joinFailure,
+                  cause:
+                    operationFailed && operationFailure !== joinFailure
+                      ? new AggregateError(
+                          [operationFailure, joinFailure],
+                          'request join unknown',
+                        )
+                      : joinFailure,
                 });
             }
+            return operationFailed
+              ? { ok: false, error: operationFailure }
+              : { ok: true, value: terminalReply! };
           },
         );
-        if (operationFailed) throw operationFailure;
         await assertCurrent(signal);
-        if (terminalReply) await send(response, terminalReply, signal);
+        await send(response, terminalReply, signal);
         response.end();
       } catch (error) {
         controller.abort(error);
