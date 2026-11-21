@@ -20,14 +20,57 @@ const save = (path, data) =>
   writeFileSync(path, JSON.stringify(data, null, 2) + '\n');
 const checksum = (bytes) =>
   'sha256:' + createHash('sha256').update(bytes).digest('hex');
+const logFormats = new Map([
+  ['Run existing tests and retain their original evidence', 'node-tap'],
+  [
+    'Unit-test the M1 monitor (standard-library Python, no services)',
+    'python-unittest',
+  ],
+]);
 
-// Only GitHub API metadata and original JSON are read. Artifact code is never run.
+export function logFailures(job, log) {
+  const failures = [];
+  for (const [index, line] of log.text.split('\n').entries()) {
+    const stamped = line.match(/^(\d{4}-\d\d-\d\dT\S+Z) (.*)$/);
+    if (!stamped) continue;
+    const time = Date.parse(stamped[1]);
+    const step = job.steps.find(
+      (item) =>
+        item.conclusion === 'failure' &&
+        logFormats.has(item.name) &&
+        time >= Date.parse(item.started_at) &&
+        time < Date.parse(item.completed_at) + 1000,
+    );
+    const format = logFormats.get(step?.name);
+    const tap =
+      format === 'node-tap' && stamped[2].match(/^\s*not ok \d+ - (.+)$/);
+    const python =
+      format === 'python-unittest' &&
+      stamped[2].match(/^(?:FAIL|ERROR): (\S+ \(.+\)(?: .*)?)$/);
+    const name = tap?.[1] ?? python?.[1];
+    if (!name || (tap && /\s+# (?:TODO|SKIP)(?:\s|$)/i.test(name))) continue;
+    failures.push({
+      gate: job.name,
+      file: null,
+      name,
+      provenance: 'job-log',
+      format,
+      evidence: log.evidence,
+      line: index + 1,
+      url: `${job.html_url}#step:${step.number}:1`,
+    });
+  }
+  return failures;
+}
+
+// Only GitHub API metadata and original evidence are read. Artifact code is never run.
 export function summarize({
   repository,
   trigger,
   run,
   jobs = [],
   originals = [],
+  logs = [],
   errors = [],
 }) {
   const problems = [...errors];
@@ -67,6 +110,20 @@ export function summarize({
         url: `${job.html_url}#step:${step.number}:1`,
       });
     }
+    const log = logs.find(
+      (item) =>
+        item.jobId === job?.id &&
+        item.runId === trigger.id &&
+        item.runAttempt === 1 &&
+        item.headSha === trigger.head_sha,
+    );
+    if (log && job) failedTests.push(...logFailures(job, log));
+    else if (
+      job?.steps?.some(
+        (step) => step.conclusion === 'failure' && logFormats.has(step.name),
+      )
+    )
+      problems.push(`${gate}: original runner job log unavailable`);
     const artifact = originals.find(
       (item) => item.name === `repository-ci-${gate}-1`,
     );
@@ -144,6 +201,7 @@ export function summarize({
                 gate,
                 file: file.name,
                 name: test.fullName,
+                provenance: 'vitest-json',
                 evidence: `${collection.name}/${prefix}vitest.json`,
                 url: job?.html_url ?? runUrl,
               });
@@ -202,6 +260,7 @@ export function summarize({
     failedSteps,
     evidenceProblems: problems,
     originals: originals.map(({ name, id, digest }) => ({ name, id, digest })),
+    logs: logs.map((log) => ({ ...log, text: undefined })),
   };
 }
 
@@ -280,7 +339,7 @@ export function main() {
   const repository = process.env.GITHUB_REPOSITORY;
   const directory = resolve('.local/nightly-ci');
   mkdirSync(directory, { recursive: true });
-  const data = { repository, trigger, originals: [], errors: [] };
+  const data = { repository, trigger, originals: [], logs: [], errors: [] };
   try {
     if (
       event.action !== 'completed' ||
@@ -294,6 +353,42 @@ export function main() {
     const base = `repos/${repository}/actions/runs/${trigger.id}`;
     data.run = api(`${base}/attempts/1`);
     data.jobs = pages(`${base}/attempts/1/jobs`, 'jobs');
+    save(resolve(directory, 'source-api.json'), {
+      run: data.run,
+      jobs: data.jobs,
+    });
+    for (const job of data.jobs.filter(
+      (item) =>
+        gates.includes(item.name) &&
+        item.run_id === trigger.id &&
+        item.run_attempt === 1 &&
+        item.head_sha === trigger.head_sha &&
+        ['failure', 'cancelled', 'timed_out'].includes(item.conclusion),
+    )) {
+      try {
+        const text = gh([
+          'api',
+          `repos/${repository}/actions/jobs/${job.id}/logs`,
+        ]);
+        const evidence = `job-logs/${job.id}.log`;
+        mkdirSync(resolve(directory, 'job-logs'), { recursive: true });
+        writeFileSync(resolve(directory, evidence), text, { flag: 'wx' });
+        data.logs.push({
+          jobId: job.id,
+          gate: job.name,
+          runId: trigger.id,
+          runAttempt: 1,
+          headSha: trigger.head_sha,
+          evidence,
+          digest: checksum(text),
+          text,
+        });
+      } catch (error) {
+        data.errors.push(
+          `${job.name}: original job log unavailable: ${error.message}`,
+        );
+      }
+    }
     const artifacts = pages(`${base}/artifacts`, 'artifacts');
     save(resolve(directory, 'source-api.json'), {
       run: data.run,
@@ -331,7 +426,7 @@ export function main() {
         (summary.firstFailureUrl
           ? `[First failure](${summary.firstFailureUrl})\n\n`
           : '') +
-        `Structured failed test names: ${summary.failedTests.length}. Empty does not prove zero failures; inspect failedSteps/evidenceProblems.\n`,
+        `Failed test names from original JSON or runner logs: ${summary.failedTests.length}. Empty does not prove zero failures; inspect failedSteps/evidenceProblems.\n`,
     );
   console.log(
     `${summary.status}: ${summary.sourceUrl}; evidence: .local/nightly-ci/summary.json`,

@@ -35,11 +35,15 @@ schedule receipt 使用独立 `allrice.repository-nightly-ci.v1` scope；push/PR
 每个原始 ZIP 先核 API 的 source run/repository/head、大小和 SHA256，再只读 JSON；
 不执行 artifact 内的代码。`source-api.json` 与原 ZIP 一并保留便于核验。
 
-`failedTests` 只取现有 Vitest 原始 `testResults[].assertionResults[]` 的 failed 项，
-包含测试名、文件、原件位置和 job 链接。Node 自测、Python unittest、构建、安装等
-门禁没有这份结构化测试名时，保留 `failedSteps` 和首败 step/job 链接，
-`evidenceComplete=false`；空 `failedTests` 不代表零个失败。取消、超时、缺原件、
-摘要收集 API/校验失败均记 failure，不伪造测试名，不自动补跑。
+`failedTests` 优先取现有 Vitest 原始 `testResults[].assertionResults[]` 的 failed 项，
+标 `provenance=vitest-json`。Node 自测及 Python unittest 从同 attempt 1 的失败 job
+原日志提取：只在原 CI 对应 runner 失败步骤的时间范围内识别 TAP `not ok N - name`
+（不含 TODO/SKIP）及 unittest `FAIL: method (...)` / `ERROR: method (...)`，
+标 `provenance=job-log`、格式、原日志行号及准确的原 step 链接，不匹配构建或任意诊断文字。
+原日志保存在 `job-logs/<job-id>.log`，`logs` 记录 job/run/attempt/head、证据路径及 SHA256。
+失败 job 的日志不可用时仍为缺证；空 `failedTests` 不表示零失败。构建、安装等非测试
+失败保留 `failedSteps` 和首败链接，不虚构测试名称。取消、超时、缺原件、摘要收集
+API/校验失败均记 failure，不自动补跑；所有原测试命令、断言与时限保持原样。
 
 次晨所属线查看首败并保留原件；无关不稳定项只按用户“补跑一次”的单独授权处理，
 产品问题在当批修。看护读取和向规划线汇总由现有看护负责；本实现不增加常驻同步器、

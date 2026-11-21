@@ -47,6 +47,7 @@ function fixture() {
       number: number;
       conclusion: string;
       completed_at: string;
+      started_at?: string;
     }[],
   }));
   const originals = gates.flatMap((gate, i) => {
@@ -240,17 +241,152 @@ it('keeps attempt 1 separate when a later manual attempt triggers the summary', 
 });
 
 const roots: string[] = [];
+const nodeStep = 'Run existing tests and retain their original evidence';
+const pythonStep =
+  'Unit-test the M1 monitor (standard-library Python, no services)';
+const nodeLog = [
+  '2026-11-21T01:00:01.250Z TAP version 13',
+  '2026-11-21T01:00:02.250Z # Subtest: retains the first failure',
+  '2026-11-21T01:00:03.250Z not ok 1 - retains the first failure',
+  '2026-11-21T01:00:04.250Z not ok 2 - future behavior # TODO',
+].join('\n');
+const pythonLog = [
+  '2026-11-21T01:00:01.250Z FAIL: test_quota_alert (test_monitor.QuotaTests.test_quota_alert)',
+  '2026-11-21T01:00:02.250Z ERROR: test_probe (test_monitor.ProbeTests.test_probe)',
+].join('\n');
+function failStep(data: ReturnType<typeof fixture>, name: string) {
+  data.run.conclusion = 'failure';
+  data.jobs[0].conclusion = 'failure';
+  data.jobs[0].steps.push({
+    name,
+    number: 9,
+    conclusion: 'failure',
+    started_at: '2026-11-21T01:00:00Z',
+    completed_at: '2026-11-21T01:00:09Z',
+  });
+  data.originals = data.originals.filter(
+    (item) => !item.name.includes('validate'),
+  );
+}
+function originalLog(data: ReturnType<typeof fixture>, text: string) {
+  return {
+    jobId: data.jobs[0].id,
+    gate: 'validate',
+    runId: 42,
+    runAttempt: 1,
+    headSha: sha,
+    text,
+    evidence: `job-logs/${data.jobs[0].id}.log`,
+    digest: 'sha256:' + createHash('sha256').update(text).digest('hex'),
+  };
+}
+it.each(['node', 'python'])(
+  'keeps real %s failure names and original log provenance without changing test entrypoints',
+  (runner) => {
+    const data = fixture();
+    failStep(data, runner === 'node' ? nodeStep : pythonStep);
+    const log = originalLog(data, runner === 'node' ? nodeLog : pythonLog);
+    const result = summarize({ ...data, logs: [log] });
+    expect(result).toMatchObject({
+      status: 'failure',
+      evidenceComplete: false,
+      failureKind: 'tests',
+      firstFailureUrl: `${data.jobs[0].html_url}#step:9:1`,
+    });
+    expect(result.failedTests.map((test) => test.name)).toEqual(
+      runner === 'node'
+        ? ['retains the first failure']
+        : [
+            'test_quota_alert (test_monitor.QuotaTests.test_quota_alert)',
+            'test_probe (test_monitor.ProbeTests.test_probe)',
+          ],
+    );
+    expect(
+      result.failedTests.every(
+        (test) =>
+          test.provenance === 'job-log' &&
+          test.evidence === log.evidence &&
+          test.line > 0 &&
+          test.url === result.firstFailureUrl,
+      ),
+    ).toBe(true);
+    expect(result.logs[0]).toMatchObject({
+      digest: log.digest,
+      runAttempt: 1,
+      jobId: log.jobId,
+    });
+    expect(result.logs[0].text).toBeUndefined();
+  },
+);
+it('does not turn build errors or diagnostic samples into failed test names', () => {
+  const data = fixture();
+  failStep(data, 'Build all workspace production packages');
+  const log = originalLog(
+    data,
+    '2026-11-21T01:00:01.250Z error TS2307: Cannot find module\n' +
+      nodeLog +
+      '\n' +
+      pythonLog,
+  );
+  expect(summarize({ ...data, logs: [log] })).toMatchObject({
+    status: 'failure',
+    failureKind: 'steps',
+    failedTests: [],
+  });
+});
+it('ignores runner names outside the failed step time and rejects attempt-2 log substitution', () => {
+  const data = fixture();
+  failStep(data, nodeStep);
+  const log = originalLog(
+    data,
+    '2026-11-21T01:02:00.250Z not ok 1 - another step',
+  );
+  expect(summarize({ ...data, logs: [log] }).failedTests).toEqual([]);
+  Object.assign(log, { text: nodeLog, runAttempt: 2 });
+  expect(summarize({ ...data, logs: [log] })).toMatchObject({
+    status: 'failure',
+    evidenceComplete: false,
+    failedTests: [],
+  });
+});
 afterEach(() =>
   roots
     .splice(0)
     .forEach((root) => rmSync(root, { recursive: true, force: true })),
 );
-it.each(['success', 'digest', 'null-digest', 'api'])(
+it.each([
+  'success',
+  'digest',
+  'null-digest',
+  'api',
+  'node-log',
+  'python-log',
+  'build-log',
+  'logs-api',
+])(
   'CLI writes a machine summary from original archives or %s failure without running gates',
   (mode) => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'allrice-nightly-')));
     roots.push(root);
     const data = fixture();
+    const failingJob = mode.endsWith('-log') || mode === 'logs-api';
+    if (failingJob)
+      failStep(
+        data,
+        mode === 'python-log'
+          ? pythonStep
+          : mode === 'build-log'
+            ? 'Build all workspace production packages'
+            : nodeStep,
+      );
+    writeFileSync(
+      join(root, 'job.log'),
+      mode === 'python-log'
+        ? pythonLog
+        : mode === 'build-log'
+          ? '2026-11-21T01:00:01.250Z error TS2307: Cannot find module'
+          : nodeLog,
+    );
     mkdirSync(join(root, 'bin'));
     const artifacts = data.originals.map((item) => {
       const content = join(root, `content-${item.id}`);
@@ -294,7 +430,10 @@ it.each(['success', 'digest', 'null-digest', 'api'])(
     const api = JSON.parse(fs.readFileSync('api.json', 'utf8'));
     const endpoint = process.argv[3];
     const match = endpoint.match(/artifacts\/(\d+)\/zip$/);
-    if (match) process.stdout.write(fs.readFileSync(path.resolve(match[1] + '.zip')));
+    if (endpoint.endsWith('/logs')) {
+      if (process.env.FAIL_LOGS === '1') process.exit(1);
+      process.stdout.write(fs.readFileSync('job.log'));
+    } else if (match) process.stdout.write(fs.readFileSync(path.resolve(match[1] + '.zip')));
     else process.stdout.write(JSON.stringify(endpoint.includes('/jobs?') ? {jobs:api.jobs} : endpoint.includes('/artifacts?') ? {artifacts:api.artifacts} : api.run));
   `,
       { mode: 0o755 },
@@ -311,6 +450,7 @@ it.each(['success', 'digest', 'null-digest', 'api'])(
           GITHUB_EVENT_PATH: join(root, 'event.json'),
           GITHUB_REPOSITORY: repository,
           FAIL_API: mode === 'api' ? '1' : '0',
+          FAIL_LOGS: mode === 'logs-api' ? '1' : '0',
         },
       },
     );
@@ -320,6 +460,19 @@ it.each(['success', 'digest', 'null-digest', 'api'])(
     );
     expect(result.status).toBe(mode === 'success' ? 'success' : 'failure');
     expect(result.evidenceComplete).toBe(mode === 'success');
+    if (failingJob) {
+      expect(result.failedTests.length).toBe(
+        mode === 'node-log' ? 1 : mode === 'python-log' ? 2 : 0,
+      );
+      if (mode !== 'logs-api')
+        expect(
+          readFileSync(join(root, '.local/nightly-ci/job-logs/0.log'), 'utf8'),
+        ).toBe(readFileSync(join(root, 'job.log'), 'utf8'));
+      else
+        expect(result.evidenceProblems.join(' ')).toContain(
+          'original job log unavailable',
+        );
+    }
     const calls = readFileSync(join(root, 'calls.jsonl'), 'utf8')
       .trim()
       .split('\n')
