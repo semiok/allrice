@@ -95,6 +95,7 @@ async function setup() {
   const startup = new AbortController(),
     lifetime = new AbortController();
   let kills = 0,
+    waitSignal: AbortSignal | undefined,
     job!: PersonVmManagedJob,
     exited!: Promise<{ exitCode: number; timedOut: boolean }>,
     child!: ReturnType<typeof spawn>;
@@ -125,6 +126,7 @@ async function setup() {
         },
       );
       async function wait(signal: AbortSignal) {
+        waitSignal ??= signal; // Observe the public managed wait's actual abort.
         signal.throwIfAborted();
         let abort!: () => void;
         try {
@@ -187,6 +189,7 @@ async function setup() {
     current,
     exited,
     job,
+    waitSignal: () => waitSignal!,
     kills: () => kills,
   };
 }
@@ -302,6 +305,139 @@ it.skipIf(!cli)(
     );
     await f.owner.close();
     expect(f.kills()).toBe(0); // Confirmed-stop path never queries an already-dead guest job.
+  },
+);
+
+it.skipIf(!cli)(
+  '真实retire先进入：wait abort重入lifetime/close不另发cancel，完整read与I/O实际join前不成功',
+  { tags: [tag], timeout: 30000 },
+  async () => {
+    const f = await setup(),
+      entered = latch(),
+      release = latch(),
+      reentered = latch();
+    cleanup.push(async () => {
+      release.resolve();
+    });
+    f.current.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const reading = f.owner
+      .readSessions(new AbortController().signal)
+      .catch((error: unknown) => error);
+    await entered.promise;
+    f.child.kill('SIGKILL');
+    await f.exited;
+    const cancel = vi.spyOn(f.job, 'cancelAndWait');
+    let closed = false,
+      retired = false,
+      reentrant: Promise<unknown> | undefined;
+    f.waitSignal().addEventListener(
+      'abort',
+      () => {
+        f.lifetime.abort();
+        reentrant = f.owner.close().finally(() => {
+          closed = true;
+        });
+        void reentrant.catch(() => {});
+        reentered.resolve();
+      },
+      { once: true },
+    );
+    const retiring = f.owner
+      .retireAfterNativeStop(f.owner.binding, new AbortController().signal)
+      .finally(() => {
+        retired = true;
+      });
+    void retiring.catch(() => {});
+    cleanup.push(async () => {
+      await Promise.allSettled([reading, retiring, reentrant]);
+    });
+    await reentered.promise; // Synchronous reentry from the actual host join.
+    expect(cancel).not.toHaveBeenCalled();
+    expect(closed).toBe(false);
+    expect(retired).toBe(false);
+    expect(f.owner.controlReady()).toBe(false);
+    release.resolve();
+    expect(await reading).toBeInstanceOf(Error);
+    await Promise.all([retiring, reentrant]);
+    expect(cancel).not.toHaveBeenCalled();
+    expect(f.kills()).toBe(0);
+  },
+);
+it.skipIf(!cli)(
+  '真实close先进入：retire必须join旧cancel的实际host子进程，guest已停不能提前覆盖',
+  { tags: [tag], timeout: 30000 },
+  async () => {
+    const f = await setup(),
+      entered = latch();
+    // A bounded, secret-free host I/O fixture, not an msb/guest executor.
+    const io = spawn(
+      process.execPath,
+      ['-e', "process.stdout.write('ready');process.stdin.resume()"],
+      {
+        env: { PATH: dirname(process.execPath) },
+        stdio: ['pipe', 'pipe', 'ignore'],
+      },
+    );
+    const ioClosed = once(io, 'close');
+    void ioClosed.catch(() => {});
+    cleanup.push(async () => {
+      io.stdin.end();
+      if (io.exitCode === null && io.signalCode === null) io.kill('SIGKILL');
+      await ioClosed;
+    });
+    await Promise.race([
+      once(io.stdout, 'data'),
+      ioClosed.then(() => {
+        throw Error('host I/O fixture exited before its handshake');
+      }),
+    ]);
+    const cancel = f.job.cancelAndWait;
+    vi.spyOn(f.job, 'cancelAndWait').mockImplementation(async (signal) => {
+      const exit = await cancel(signal); // Actual rc.2 Host child close.
+      entered.resolve();
+      await ioClosed; // Actual host operation still owns a live child/stdio.
+      return exit;
+    });
+    let closed = false,
+      retired = false;
+    const closing = f.owner.close().finally(() => {
+      closed = true;
+    });
+    expect(f.owner.controlReady()).toBe(false);
+    void closing.catch(() => {});
+    await Promise.race([
+      entered.promise,
+      closing.then(() => {
+        throw Error('close settled before the host cancellation I/O joined');
+      }),
+    ]);
+    const retiring = f.owner
+      .retireAfterNativeStop(f.owner.binding, new AbortController().signal)
+      .finally(() => {
+        retired = true;
+      });
+    void retiring.catch(() => {});
+    f.lifetime.abort();
+    const concurrent = f.owner.close();
+    void concurrent.catch(() => {});
+    cleanup.push(async () => {
+      await Promise.allSettled([closing, retiring, concurrent]);
+    });
+    await new Promise<void>((done) => setImmediate(done));
+    expect(closed).toBe(false);
+    expect(retired).toBe(false);
+    expect(io.exitCode).toBe(null);
+    expect(f.child.exitCode !== null || f.child.signalCode !== null).toBe(true);
+    expect(f.kills()).toBe(1);
+    io.stdin.end();
+    expect(await ioClosed).toEqual([0, null]);
+    await Promise.all([closing, retiring, concurrent]);
+    expect(f.kills()).toBe(1);
+    await f.owner.close();
+    expect(f.kills()).toBe(1);
   },
 );
 

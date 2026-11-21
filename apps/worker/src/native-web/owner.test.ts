@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, it, vi } from 'vitest';
+import ts from 'typescript';
 import { composeEntries } from '@deepseek-ai/dsh-app-boot';
 import type { PersonVmBootstrapScope } from '@allrice/person-vm';
 import { prepareNativeWebLaunch } from './launch.js';
@@ -12,6 +15,32 @@ const binding = {
   organizationId: randomUUID(),
   leaseEpoch: 1,
 };
+it('生产compiler收集全部native Web产品而不emit测试；typecheck仍收集完整测试', () => {
+  const worker = fileURLToPath(new URL('../../', import.meta.url));
+  function configuration(name: string) {
+    const loaded = ts.readConfigFile(join(worker, name), ts.sys.readFile);
+    expect(loaded.error).toBeUndefined();
+    const parsed = ts.parseJsonConfigFileContent(loaded.config, ts.sys, worker);
+    expect(parsed.errors).toEqual([]);
+    return parsed;
+  }
+  const build = configuration('tsconfig.build.json'),
+    typecheck = configuration('tsconfig.json');
+  for (const file of ['launch', 'owner', 'transport', 'composition'])
+    expect(build.fileNames).toContain(
+      join(worker, `src/native-web/${file}.ts`),
+    );
+  expect(build.fileNames.filter((file) => file.endsWith('.test.ts'))).toEqual(
+    [],
+  );
+  for (const file of [
+    'composition.test.ts',
+    'owner.native.integration.test.ts',
+  ])
+    expect(typecheck.fileNames).toContain(join(worker, 'src/native-web', file));
+  expect(build.options.rootDir).toBe(join(worker, 'src'));
+  expect(build.options.paths).toEqual({});
+});
 it('stage实际native Host插件/patch，独立员工HOME并保原生no-open CLI；不写token或端口池', async () => {
   const config = {
     origin: 'http://127.0.0.1:32179/',

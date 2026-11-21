@@ -764,8 +764,8 @@ export class PersonVmService
     }
     if (stopped) {
       row.stoppedAt ??= this.now().toISOString();
-      if (row.instanceId) {
-        try {
+      try {
+        if (row.instanceId) {
           if (
             this.options.nativeWeb &&
             !this.options.runtime?.retireAfterNativeStop
@@ -775,11 +775,8 @@ export class PersonVmService
             bindingOf(row),
             AbortSignal.timeout(this.options.cleanupTimeoutMs),
           );
-        } catch {
-          failed = true;
         }
-      }
-      try {
+        // A confirmed VM stop does not prove its host runtime I/O has joined.
         await this.options.disk.detach(
           { vmId: row.vmId, tier: row.diskTier },
           AbortSignal.timeout(this.options.cleanupTimeoutMs),

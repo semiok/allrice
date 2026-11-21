@@ -94,14 +94,15 @@ export async function openNativeWebOwner(input: {
   }
   async function close() {
     if (closing) return closing;
-    closing = (async () => {
+    ready = false;
+    closing = Promise.resolve().then(async () => {
       const results = await Promise.allSettled([
         joinHost(),
         job.cancelAndWait(AbortSignal.timeout(input.cleanupTimeoutMs)),
       ]);
       if (results.some((result) => result.status === 'rejected'))
         throw new PersonVmError('CLEANUP_INCOMPLETE');
-    })();
+    });
     return closing;
   }
   const aborted = () => {
@@ -190,11 +191,17 @@ export async function openNativeWebOwner(input: {
         if (!sameVmBinding(binding, current))
           throw new PersonVmError('LEASE_LOST');
         cleanup.throwIfAborted();
-        await Promise.allSettled([closing]); // Join any old exact cancellation attempt.
-        await joinHost();
-        input.lifetime.removeEventListener('abort', aborted);
-        cleanup.throwIfAborted();
-        closing = Promise.resolve(); // New native-stop + actual host join supersedes only the old failure memo.
+        ready = false;
+        const previous = closing;
+        // Publish before any abort/disposer can reenter close. It must join
+        // this pending retirement instead of dispatching another cancellation.
+        closing = Promise.resolve().then(async () => {
+          await Promise.allSettled([previous]);
+          await joinHost();
+          input.lifetime.removeEventListener('abort', aborted);
+          cleanup.throwIfAborted();
+        });
+        await closing;
       },
       async close() {
         try {

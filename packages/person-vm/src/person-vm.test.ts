@@ -64,6 +64,36 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
       }
     },
   );
+  it('confirmed-stop退役拒绝不detach，failed仍释放既有lease；显式start重核join后可恢复', async () => {
+    const h = harness(),
+      rc = context(),
+      retire = vi
+        .fn()
+        .mockRejectedValueOnce(new PersonVmError('CLEANUP_INCOMPLETE'))
+        .mockResolvedValue(undefined);
+    h.runtime.retireAfterNativeStop = retire;
+    h.setReadiness({ authenticated: true, editorReady: false, canSend: false });
+    await h.service.create(rc, signal());
+    await expect(h.service.start(rc, signal())).rejects.toMatchObject({
+      code: 'CLEANUP_INCOMPLETE',
+    });
+    const failed = (await h.store.read(rc.actor.id))!;
+    expect(failed.phase).toBe('failed');
+    expect(failed.leaseOwner).toBe(null); // Existing store release policy is unchanged.
+    expect(h.states.get(failed.vmId)).toBe('stopped');
+    expect(h.mounts.has(failed.vmId)).toBe(true);
+    expect(h.log).not.toContain('disk:detach');
+    expect(retire).toHaveBeenCalledTimes(1);
+    h.setReadiness({ authenticated: true, editorReady: true, canSend: true });
+    expect((await h.service.start(rc, signal())).ready).toBe(true);
+    expect(retire).toHaveBeenCalledTimes(2);
+    expect(retire.mock.calls[1]![0]).toEqual(retire.mock.calls[0]![0]);
+    expect(h.log.filter((entry) => entry === 'disk:detach')).toHaveLength(1);
+    expect((await h.store.read(rc.actor.id))!.leaseOwner).toBe(null);
+    expect((await h.service.resolve(rc, signal())).instanceId).not.toBe(
+      failed.instanceId,
+    );
+  });
   it('admission qualification fails closed without a formally composed shared host', async () => {
     const h = harness(),
       { rc, binding } = await running(h);
