@@ -860,3 +860,24 @@ MET-223 A2（2026-11-14 获批实施，门禁与发布状态另记）：本批�
 个人场景 Provider 将精确包的 `name`、`whenToUse`、`metadata`、`invocation` 直接交给 rc.2 公开 Skill Provider；无作者字段的旧包仍用 UUID，历史 Run 和读取账本不改写。SaaS 沿现本人写事务及组织锁拒绝场景/基础/启用个人 Skill 重名，已发布作者名更新不能更名。普通安装/绑定/启用同样检查场景；没有第二套命令解析、阶段凭据或加载状态。`allrice-progressive-scene-provider-v1` 对应 MET-225 E02/L03/L04，精确资源、来源、撤销与使用证据门卫保留。
 
 R4b extends the same `allrice-reference-read-v1` seam with `workspace_reference_archive_list` and `workspace_reference_archive_read` (v1.8). Directory metadata is bounded and never inflates members; the existing ZIP library opens only the selected member and validates its local header, actual size and CRC. Parent publication authority is unchanged. Opaque entry IDs bind the entire pin and central directory identity. Text reuses the existing complete reference/document parser; images use the same public DSH route, attachment store, result renderer and cancellation path as R4a. V2 directory/member receipts remain in `reference_reads`, with no member publication, new table, index or lifecycle. MET-225: extend the existing row with these two approved Broker tools; ordinary computer/Skill ZIP defaults remain unchanged.
+
+## MET-274 宿主关机历史（rc.2）
+
+`allrice-host-native-history-v1` 使用当前 `0.2.1-rc.2` 公开
+`SessionController.inspect` 和 `dsh-session.isAppendSurfaceEvent`，保留人类已见的
+append-origin 文本/工具记录；不使用会遮蔽压缩前消息的模型surface，也不保存系统、
+developer、reasoning、provider stream、原生路径或任意HTML资源。技术敏感字段/原始路径
+污染的文本槽明确隐藏，不声称模式检查能证明所有未知秘密格式安全。
+
+AllRice只补门卫（既有D-entry现权及root/child准入、精确附件对象授权）、单向展示账本
+和宿主不可变投影存储（`HostHistorySnapshotSchema` v1）。源前缀hash、原生游标、
+配置release、instance/profile/root绑定及snapshot digest一起恢复；同内容幂等，分叉、
+倒退和损坏拒绝。附件字节归原对象owner，关机读取每片段复核，下载不以内联HTML返回。
+原生 `interrupted`、无终态的未完成、`TOOL_OUTCOME_UNKNOWN` 和
+`TOOL_NOT_STARTED`分别展示；guest工具结果不作为外部批准、计费或送达凭证。
+
+`captureHostHistory`与`createDEntryHistoryHandlers`是已实现的宿主组合接缝；正式
+instance/profile、线程配置和导出时机须由MET-273/原生route owner绑定后注册。
+没有猜测环境变量或默认实例，也没有新增Agent恢复器/状态表、自动重放、VM启动或模型
+授权刷新。样机phase5的rc.5真杀结论不充当本代产品验收；真实关机/继续、附件及UI验收
+仍由合批门禁完成。MET-225应登记该ID的门卫/账本/存储差异，原生恢复语义不改。
