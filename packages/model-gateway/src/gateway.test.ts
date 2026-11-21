@@ -125,6 +125,10 @@ describe.sequential(
             )
           ).totalTokens,
         ).toBeNull();
+        // A business refusal with confirmed real HTTP shutdown is finished,
+        // rather than being mislabeled as unknown admission activity.
+        expect(f.admission.records.size).toBe(0);
+        expect(f.admission.finished).toHaveLength(1);
       },
     );
 
@@ -277,12 +281,43 @@ describe.sequential(
       });
     });
 
+    it('已dispatch但headers前真实socket关闭：保留失败事实，独立close确认后正常finish', async () => {
+      const f = await setup({ disconnectBeforeHeaders: true });
+      expect(finish(await f.collect())).toMatchObject({
+        reason: { kind: 'error' },
+      });
+      expect(f.upstream.requests).toHaveLength(1);
+      expect([...f.store.rows.values()]).toMatchObject([
+        {
+          dispatchObserved: true,
+          httpStatus: null,
+          outcome: 'failed',
+          usage: { totalTokens: null, usageComplete: false },
+        },
+      ]);
+      expect(f.store.slots.get(f.binding.vm.personId)?.size).toBe(0);
+      expect(f.admission.records.size).toBe(0);
+      expect(f.admission.finished).toHaveLength(1);
+    });
+
     it('第九路排队，另一人仍可执行；结束第1路才让第9路实际派发', async () => {
       const f = await setup({ hold: true });
       const requests = Array.from({ length: 9 }, () => f.collect());
       await f.store.queued.promise;
       await f.upstream.whenCount(8);
       expect(f.upstream.requests).toHaveLength(8);
+      const signal = new AbortController().signal;
+      const lease = {
+        binding: f.binding.vm,
+        freezeId: 'freeze-with-queued',
+        version: 'exact-1',
+      };
+      expect(f.gateway.admission).toBe(f.admission.participant);
+      const frozen = await f.gateway.admission.freeze(lease, signal);
+      expect(frozen).toMatchObject({ active: 8, queued: 1, deferred: 0 });
+      await f.gateway.admission.thaw(lease, signal);
+      f.admission.entryReleased = true;
+      f.admission.release();
       const other = await gatewayFixture({
         provider: f.native.provider,
         store: f.store,
@@ -309,6 +344,80 @@ describe.sequential(
         ),
       ).toHaveLength(9);
     });
+
+    it.each(['ready', 'client-cancel'] as const)(
+      '冻结后的真实请求%s：门外等待、双release之前无provider/claim/HTTP且不重放旧执行',
+      async (outcome) => {
+        const f = await setup();
+        let providerStarts = 0;
+        const second = await gatewayFixture({
+          provider: {
+            ...f.native.provider,
+            stream(...args) {
+              providerStarts++;
+              return f.native.provider.stream(...args);
+            },
+          },
+          store: f.store,
+          binding: f.binding,
+          admission: f.admission,
+        });
+        cleanup.push(() => second.close());
+        const signal = new AbortController().signal;
+        const lease = {
+          binding: f.binding.vm,
+          freezeId: 'exact-old-freeze',
+          version: 'exact-old-version',
+        };
+        await f.gateway.admission.freeze(lease, signal);
+        const caller = new AbortController();
+        const result = fetch(second.url + '/v1/stream', {
+          method: 'POST',
+          signal: caller.signal,
+          headers: { 'x-allrice-model-contract': '1' },
+          body: JSON.stringify({ messages: second.input().messages }),
+        })
+          .then(async (response) => ({
+            status: response.status,
+            body: await response.text(),
+          }))
+          .catch((error: unknown) => ({ error }));
+        await f.admission.waiting.promise;
+        expect(f.admission.observe(f.binding.vm)).toMatchObject({
+          active: 0,
+          queued: 0,
+          deferred: 1,
+        });
+        expect(f.store.calls.size).toBe(0);
+        expect(f.store.rows.size).toBe(0);
+        expect(providerStarts).toBe(0);
+        await f.gateway.admission.thaw(lease, signal);
+        expect(f.admission.wakeCount).toBe(0);
+        if (outcome === 'client-cancel') {
+          caller.abort(new Error('caller no longer wants this request'));
+          await result;
+          await second.gateway.revoke(f.binding.vm);
+        }
+        f.admission.entryReleased = true;
+        f.admission.release();
+        const response = await result;
+        if (outcome === 'ready') {
+          expect(response).toMatchObject({ status: 200 });
+          if ('body' in response)
+            expect(JSON.parse(response.body)).toMatchObject({
+              type: 'finish',
+              reason: {
+                kind: 'aborted',
+                failure: { code: 'EXECUTION_REBIND_REQUIRED' },
+              },
+            });
+        }
+        expect(f.admission.wakeCount).toBe(outcome === 'ready' ? 1 : 0);
+        expect(providerStarts).toBe(0);
+        expect(f.upstream.requests).toHaveLength(0);
+        expect(f.admission.records.size).toBe(0);
+      },
+    );
 
     it('不同gateway/企业中的同person仍共用8路；撤销取消活动和排队请求', async () => {
       const f = await setup({ hold: true });
@@ -486,6 +595,10 @@ describe.sequential(
         reason: { kind: 'error', failure: { code: 'LEDGER_UNAVAILABLE' } },
       });
       expect(store.slots.get(f.binding.vm.personId)?.size).toBe(1);
+      // The receipt remains unknown in its original ledger, while the
+      // independently confirmed transport/transaction join can finish admission.
+      expect(f.admission.records.size).toBe(0);
+      expect(f.admission.finished).toHaveLength(1);
       const row = [...store.rows.values()][0]!;
       expect(row).toMatchObject({
         outcome: 'unknown',

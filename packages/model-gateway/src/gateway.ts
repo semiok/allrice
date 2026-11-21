@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { LlmError } from '@deepseek-ai/dsh-llm';
 import type { StreamChunk } from '@deepseek-ai/dsh-llm';
 import {
@@ -8,6 +8,7 @@ import {
 import type {
   ModelCallBinding,
   ModelGatewayAuthority,
+  ModelGatewayAdmission,
   ModelGatewayPort,
   ModelGatewayStore,
   GatewayModelInput,
@@ -16,6 +17,7 @@ import type {
 import type { PersonVmBinding } from '@allrice/person-vm';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createMeteredTransport, installScopedFetch } from './transport.ts';
+import { runGatewayAdmission } from './admission.ts';
 
 const inputKeys = [
   'messages',
@@ -201,8 +203,13 @@ export function createModelGateway(options: {
   authority: ModelGatewayAuthority;
   store: ModelGatewayStore;
   provider: GatewayProvider;
+  admission: ModelGatewayAdmission;
 }): ModelGatewayPort {
-  if (!options.ownerId.trim()) throw new ModelGatewayError('BINDING_INVALID');
+  if (
+    !options.ownerId.trim() ||
+    options.admission.participant.participant !== 'gateway'
+  )
+    throw new ModelGatewayError('BINDING_INVALID');
   const uninstall = installScopedFetch();
   const active = new Set<{
     key: string;
@@ -212,6 +219,7 @@ export function createModelGateway(options: {
   let closed = false;
   const revoked = new Set<string>();
   return {
+    admission: options.admission.participant,
     async handle(request, response, bindingInput, hostSignal) {
       const controller = new AbortController();
       const signal = AbortSignal.any([hostSignal, controller.signal]);
@@ -247,9 +255,9 @@ export function createModelGateway(options: {
         await options.authority.assertCall(binding, currentSignal);
         currentSignal.throwIfAborted();
       };
-      let transport: ReturnType<typeof createMeteredTransport> | undefined;
-      let iterator: AsyncIterator<StreamChunk> | undefined;
-      let exhausted = false;
+      let terminalReply: StreamChunk | undefined;
+      let operationFailure: unknown;
+      let operationFailed = false;
       try {
         await assertCurrent(signal);
         if (
@@ -259,150 +267,207 @@ export function createModelGateway(options: {
             String(MODEL_GATEWAY_CONTRACT_VERSION)
         )
           throw new ModelGatewayError('INVALID_INPUT');
-        const input = await readInput(request, signal);
-        const digest =
-          'sha256:' +
-          createHash('sha256').update(JSON.stringify(input)).digest('hex');
-        const callId = await options.store.claimCall(binding, digest);
-        transport = createMeteredTransport({
-          ...options,
+        await runGatewayAdmission(
+          options.admission,
           binding,
-          callId,
+          `${options.ownerId}:${randomUUID()}`,
           signal,
-          assertCurrent,
-        });
-        iterator = transport.run(() => {
-          const source = options.provider.stream(binding, input, signal);
-          return source[Symbol.asyncIterator]();
-        });
-        response.writeHead(200, {
-          'content-type': 'application/x-ndjson',
-          'cache-control': 'no-store',
-          'x-allrice-model-contract': String(MODEL_GATEWAY_CONTRACT_VERSION),
-        });
-        let terminal: Extract<StreamChunk, { type: 'finish' }> | undefined;
-        for (;;) {
-          await assertCurrent(signal);
-          const result = await transport.run(() => iterator!.next());
-          if (result.done) {
-            exhausted = true;
-            break;
-          }
-          await assertCurrent(signal);
-          if (result.value.type === 'finish') terminal = result.value;
-          // Never forward provider-synthesized zeros, nor announce success
-          // before the actual upstream body and durable receipt have settled.
-          else if (result.value.type !== 'usage')
-            await send(response, result.value, signal);
-        }
-        await transport.drain();
-        await assertCurrent(signal);
-        const attempts = (await options.store.attempts(callId)).filter(
-          (a) => a.kind === 'model',
-        );
-        const last = attempts.at(-1);
-        if (
-          terminal &&
-          (terminal.reason.kind === 'error' ||
-            terminal.reason.kind === 'aborted')
-        ) {
-          const failure = terminal.reason.failure;
-          await send(
-            response,
-            {
-              ...terminal,
-              reason: {
-                kind: terminal.reason.kind,
-                failure: new LlmError(
-                  'Upstream model request failed',
-                  failure.code,
-                  {
-                    ...(failure.status === undefined
-                      ? {}
-                      : { status: failure.status }),
-                    ...(failure.providerRetryAfterMs === undefined
-                      ? {}
-                      : { providerRetryAfterMs: failure.providerRetryAfterMs }),
-                    ...(failure.requestId === undefined
-                      ? {}
-                      : { requestId: failure.requestId }),
-                    ...(failure.offloadImages === undefined
-                      ? {}
-                      : { offloadImages: failure.offloadImages }),
+          async (signal, activate) => {
+            let transport:
+              ReturnType<typeof createMeteredTransport> | undefined;
+            let iterator: AsyncIterator<StreamChunk> | undefined;
+            let exhausted = false;
+            let joinFailure: unknown;
+            let joined = true;
+            try {
+              const input = await readInput(request, signal);
+              const digest =
+                'sha256:' +
+                createHash('sha256')
+                  .update(JSON.stringify(input))
+                  .digest('hex');
+              const callId = await options.store.claimCall(binding, digest);
+              transport = createMeteredTransport({
+                ...options,
+                binding,
+                callId,
+                signal,
+                assertCurrent,
+                activate,
+              });
+              iterator = transport.run(() => {
+                const source = options.provider.stream(binding, input, signal);
+                return source[Symbol.asyncIterator]();
+              });
+              response.writeHead(200, {
+                'content-type': 'application/x-ndjson',
+                'cache-control': 'no-store',
+                'x-allrice-model-contract': String(
+                  MODEL_GATEWAY_CONTRACT_VERSION,
+                ),
+              });
+              let terminal:
+                Extract<StreamChunk, { type: 'finish' }> | undefined;
+              for (;;) {
+                await assertCurrent(signal);
+                const result = await transport.run(() => iterator!.next());
+                if (result.done) {
+                  exhausted = true;
+                  break;
+                }
+                await assertCurrent(signal);
+                if (result.value.type === 'finish') terminal = result.value;
+                // Never forward provider-synthesized zeros, nor announce success
+                // before the actual upstream body and durable receipt have settled.
+                else if (result.value.type !== 'usage')
+                  await send(response, result.value, signal);
+              }
+              await transport.drain();
+              await assertCurrent(signal);
+              const attempts = (await options.store.attempts(callId)).filter(
+                (a) => a.kind === 'model',
+              );
+              const last = attempts.at(-1);
+              if (
+                terminal &&
+                (terminal.reason.kind === 'error' ||
+                  terminal.reason.kind === 'aborted')
+              ) {
+                const failure = terminal.reason.failure;
+                terminalReply = {
+                  ...terminal,
+                  reason: {
+                    kind: terminal.reason.kind,
+                    failure: new LlmError(
+                      'Upstream model request failed',
+                      failure.code,
+                      {
+                        ...(failure.status === undefined
+                          ? {}
+                          : { status: failure.status }),
+                        ...(failure.providerRetryAfterMs === undefined
+                          ? {}
+                          : {
+                              providerRetryAfterMs:
+                                failure.providerRetryAfterMs,
+                            }),
+                        ...(failure.requestId === undefined
+                          ? {}
+                          : { requestId: failure.requestId }),
+                        ...(failure.offloadImages === undefined
+                          ? {}
+                          : { offloadImages: failure.offloadImages }),
+                      },
+                    ).failure,
                   },
-                ).failure,
-              },
-            },
-            signal,
-          );
-          response.end();
-          return;
-        }
-        if (
-          !terminal ||
-          !['stop', 'tool-calls', 'max-tokens'].includes(terminal.reason.kind)
-        )
-          throw new ModelGatewayError('PROVIDER_FAILED');
-        if (
-          !last ||
-          last.outcome !== 'closed' ||
-          last.httpStatus === null ||
-          last.httpStatus < 200 ||
-          last.httpStatus >= 300 ||
-          !(
-            last.terminal === 'completed' ||
-            (terminal.reason.kind === 'max-tokens' &&
-              last.terminal === 'incomplete' &&
-              last.terminalReason === 'max_output_tokens')
-          )
-        )
-          throw new ModelGatewayError('MISSING_UPSTREAM_TERMINAL');
-        if (last.usage.usageComplete && last.usage.cacheUsageKnown) {
-          const usage = last.usage;
-          await send(
-            response,
-            {
-              type: 'usage',
-              usage: {
-                inputTokens: usage.inputTokens! - usage.cachedInputTokens!,
-                outputTokens: usage.outputTokens!,
-                cacheReadTokens: usage.cachedInputTokens!,
-                totalTokens: usage.totalTokens!,
-              },
-            },
-            signal,
-          );
-        }
-        await send(response, terminal, signal);
+                };
+                return;
+              }
+              if (
+                !terminal ||
+                !['stop', 'tool-calls', 'max-tokens'].includes(
+                  terminal.reason.kind,
+                )
+              )
+                throw new ModelGatewayError('PROVIDER_FAILED');
+              if (
+                !last ||
+                last.outcome !== 'closed' ||
+                last.httpStatus === null ||
+                last.httpStatus < 200 ||
+                last.httpStatus >= 300 ||
+                !(
+                  last.terminal === 'completed' ||
+                  (terminal.reason.kind === 'max-tokens' &&
+                    last.terminal === 'incomplete' &&
+                    last.terminalReason === 'max_output_tokens')
+                )
+              )
+                throw new ModelGatewayError('MISSING_UPSTREAM_TERMINAL');
+              if (last.usage.usageComplete && last.usage.cacheUsageKnown) {
+                const usage = last.usage;
+                await send(
+                  response,
+                  {
+                    type: 'usage',
+                    usage: {
+                      inputTokens:
+                        usage.inputTokens! - usage.cachedInputTokens!,
+                      outputTokens: usage.outputTokens!,
+                      cacheReadTokens: usage.cachedInputTokens!,
+                      totalTokens: usage.totalTokens!,
+                    },
+                  },
+                  signal,
+                );
+              }
+              terminalReply = terminal;
+            } catch (error) {
+              // Business failure is a value until actual shutdown has joined. A
+              // normal upstream refusal must not leave an unknown admission item.
+              operationFailure = error;
+              operationFailed = true;
+              controller.abort(error);
+            } finally {
+              if (!exhausted && iterator) {
+                controller.abort(new Error('model_gateway_iterator_closed'));
+                try {
+                  await transport!.run(() => iterator!.return?.());
+                } catch (error) {
+                  joined = false;
+                  joinFailure ??= error;
+                }
+              }
+              try {
+                await transport?.drain();
+              } catch (error) {
+                // A receipt write can fail AFTER actual HTTP/transactions
+                // joined. Retain its exact DB slot and business error, without
+                // inventing still-running activity from an error code.
+                operationFailed = true;
+                operationFailure = error;
+                if (!transport!.joinKnown) {
+                  joined = false;
+                  joinFailure ??= error;
+                }
+              }
+              if (!joined)
+                throw new ModelGatewayError('LEDGER_UNAVAILABLE', {
+                  cause: joinFailure,
+                });
+            }
+          },
+        );
+        if (operationFailed) throw operationFailure;
+        await assertCurrent(signal);
+        if (terminalReply) await send(response, terminalReply, signal);
         response.end();
       } catch (error) {
         controller.abort(error);
         // Drain before any error response; a ledger failure supersedes an
         // apparently successful provider and keeps its unresolved DB lease.
-        let code =
+        const code =
           error instanceof ModelGatewayError ? error.code : 'PROVIDER_FAILED';
-        try {
-          await transport?.drain();
-        } catch {
-          code = 'LEDGER_UNAVAILABLE';
-        }
+        const rebind = code === 'EXECUTION_REBIND_REQUIRED';
         if (!response.destroyed) {
           if (!response.headersSent)
             response.writeHead(
-              code === 'DUPLICATE_CALL'
-                ? 409
-                : code === 'INVALID_INPUT'
-                  ? 400
-                  : code === 'AUTHORIZATION_DENIED'
-                    ? 403
-                    : 503,
+              rebind
+                ? 200
+                : code === 'DUPLICATE_CALL'
+                  ? 409
+                  : code === 'INVALID_INPUT'
+                    ? 400
+                    : code === 'AUTHORIZATION_DENIED'
+                      ? 403
+                      : 503,
               { 'content-type': 'application/x-ndjson' },
             );
           response.end(
             JSON.stringify({
               type: 'finish',
               reason: {
-                kind: 'error',
+                kind: rebind ? 'aborted' : 'error',
                 failure: new LlmError('Host model gateway request failed', code)
                   .failure,
               },
@@ -410,25 +475,9 @@ export function createModelGateway(options: {
           );
         }
       } finally {
-        // Return the actual native iterator, after signal cancellation, and
-        // await it. No detached producer may fetch again after admission closes.
-        if (!exhausted && iterator) {
-          controller.abort(new Error('model_gateway_iterator_closed'));
-          try {
-            await transport!.run(() => iterator!.return?.());
-          } catch {
-            /* original failure retained */
-          }
-        }
-        try {
-          await transport?.drain();
-        } catch {
-          /* already reported, unresolved lease retained */
-        } finally {
-          response.off('close', onClose);
-          active.delete(entry);
-          finish();
-        }
+        response.off('close', onClose);
+        active.delete(entry);
+        finish();
       }
     },
     async revoke(binding) {

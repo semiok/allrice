@@ -6,6 +6,7 @@ export {
 export type {
   ModelCallBinding,
   ModelGatewayAuthority,
+  ModelGatewayAdmission,
   GatewayModelInput,
   GatewayProvider,
   GatewayFetchClassification,

@@ -73,6 +73,49 @@ slot在reader EOF、成功awaited cancel，或原生实际请求关闭被确认�
 
 ## 验证和未接事项
 
+### 每人准入冻结接线（MET-268 增量）
+
+`createModelGateway` 现在必须由可信宿主注入 `ModelGatewayAdmission`；
+`boundary` 与 `participant` 必须来自同一 `PersonVmService.createAdmissionHost({openSql})`，
+后者为 `host.participant('gateway')`。公开方法 `ModelGatewayPort.admission`
+直接返回该 participant，沿原 `observe/subscribe/freeze/assertFrozen/thaw` 合同，
+不在 gateway 建立第二份 gate、ACK、连续计数、permit 表或迁移。
+实例装配仍由模型 host owner 完成，本分支只搬运公开合同，不复制其 PG 实现。
+
+新增依赖只从 `@allrice/person-vm` 根出口消费：
+`PersonVmAdmissionBoundary/Permit`、`PersonVmAdmissionPort` 及其 lease/observation/subscription。
+合同 sourceAtSha=`8115ae6124126eb66a4bdd9fd995ce6549bc7140`；
+`admission-contract.ts` blob=`9a2ae42938b7dcaa4f15c3a572c602340b190b5e`，
+`admission-boundary.ts` blob=`0333a7a76d9bd48e7c9fcbdf366783bf5af7d5c3`，均原字节搬运。
+根 barrel 仅追加这两条 export；0250 及 shared authority/recovery 属模型 owner。
+
+`handle` 在读取业务 body、claim、provider、8slot 或任何刷新工作前 `admit`；
+memory 层尚未叠入本树，未来等待也必须放在该同一 admitted callback 内。
+旧的 8slot 等待保持 queued，首个 model intent 获得 slot 后、实际 dispatch 前激活；
+若先进入凭据刷新，则在真实完整 `modify/modifyRecord` 事务开始前激活。
+single activate 与 queued 都拥有同一个真实整请求 Promise，包括 iterator return、
+实际响应关闭、所有 auth transport 与锁内保存；不是用永不完成 Promise 模拟运行。
+原生 refresh 已开始后保留其独立 signal，关闭仍等待完整保存，不能派发后续模型请求。
+
+freeze 后的新请求只在 `waitUntilReady` 中可取消等待，不启动 provider/claim/刷新/上游 HTTP。
+共享 host 负责 exact 旧 lease 双端释放 ACK/权威对账和真 ready；gateway 不把单端 thaw
+或 `superseded` 解释为放行。`waitUntilReady` 的 `PersonVmBinding` 不是完整执行身份。
+当前没有公开 `ModelCallBinding` 重解析出口，即便返回相同 VM 也取消旧执行，返回原生
+NDJSON `finish.reason.kind=aborted`、`EXECUTION_REBIND_REQUIRED`（HTTP 200），不重标旧
+employee/release/Run/thread/native root-parent-call/generation/route，不自动重放。
+正常 frozen 等待本身不返回 503，不新增 retry/轮询/TTL/排队上限。
+
+正常 provider 业务失败在确认实际 join 后作为本地 outcome 返回，再在 finish 后传给调用者。
+receipt 写失败与实际关闭事实分别记录：已经真实关闭仍保留原账本错误/slot，不能据错误码
+伪造活动；reader cancel/fetch 拒绝且没有独立真实关闭确认则保留 unknown wire facts/slot。
+当前 8115 producer 的 finish 不保留 callback 拒绝，因此真实 drain/iterator 收尾未知时
+本片暂不调用它来清空 permit；本地 callbacks 仍实际 settle，返回既有错误。
+模型 owner 的 sticky-unsafe 修订、精确源码及 unknown 恢复公开合同尚待交付，不能报全链 ready。
+
+五面沿本模块记录：本增量仅 host 后端/当前身份门卫及租约接线；MCP、员工 UI、后台
+均无新增需求，资料级别不适用（运维事实不授数据权）。不改变 DSH Agent/工具/子智能体
+生命周期、instructions/Skill/MCP 目录或收费；MET-225 的 host 门卫/租约差异由主会话登记。
+
 本地单包loopback检查走真实HTTP fake upstream→固定代际原生DSH provider→host gateway HTTP→公开guest adapter：文本/工具增量/工具结果往返、401/429/5xx、无terminal/usage、取消、9路队列/两人隔离、跨gateway同person、guest伪造/child/跨await归属、重连去重、模型重试/刷新独立回执、redirect拒绝、撤权/epoch及ledger失败。原有20项断言保留。R1新增纯合成OAuth原生锁/刷新/落盘HTTP夹具，覆盖client/revoke/close；Responses/Codex合法与失败终止、图片卸载原生插件恢复，以及本地LISTEN fan-out重连所有权。R2恢复严格失败回执/slot断言，真实失败SSE带usage且body保持打开，连续8次确认关闭后第9路正常成功；另有真正关闭未知/DB提交失败反例与初次LISTEN失败残留callback回归。R3保留全部36项并新增原生SDK maxRetries=0的421→下一显式调用200、空刷新POST 421及GET/HEAD拒绝四项；首败原件与40项结果见主会话证据目录FIX-R3-CHECKS.json，本文不替代独立复核。
 
 `postgres-store.integration.test.ts`声明db资源，默认环境不运行；由主会话m5-test执行跨store真实PG8路、NOTIFY/恢复、无TTL、claim幂等、receipt/slot事务回滚与不可变事实，另含真实LISTEN backend断线重连后100次waiter释放和pool终止清理、初次连接失败→恢复/取消、unknown回执保留事实/租约及一次性可信恢复旁证。新增收敛登记须跑直接受影响的既有`dsh-convergence-gate.test.ts`/`.integration.test.ts`，以及既有`route-usage-unknown.integration.test.ts`，保护unknown语义。本片不声称这些检查已通过。

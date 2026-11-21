@@ -8,6 +8,14 @@ import type { Server, ServerResponse } from 'node:http';
 import { Context } from '@deepseek-ai/cordis';
 import Llm, { LlmError } from '@deepseek-ai/dsh-llm';
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
+import type {
+  PersonVmAdmissionBoundary,
+  PersonVmAdmissionLease,
+  PersonVmAdmissionObservation,
+  PersonVmAdmissionPermit,
+  PersonVmAdmissionPort,
+  PersonVmBinding,
+} from '@allrice/person-vm';
 import * as PiAi from '@deepseek-ai/dsh-llm-pi-ai';
 import Credentials from '@deepseek-ai/dsh-credentials-local';
 import { ModelGatewayError } from './contract.ts';
@@ -16,6 +24,7 @@ import type {
   ModelAttemptStart,
   ModelCallBinding,
   ModelGatewayAuthority,
+  ModelGatewayAdmission,
   ModelGatewayStore,
   GatewayProvider,
 } from './contract.ts';
@@ -32,6 +41,175 @@ export function deferred<T = void>() {
     reject = no;
   });
   return { promise, resolve, reject };
+}
+
+/** Protocol fixture only: no PG/distributed fencing or continuous-idle proof. */
+export class FixtureAdmission implements PersonVmAdmissionBoundary {
+  records = new Map<
+    PersonVmAdmissionPermit,
+    {
+      state: 'queued' | 'active' | 'deferred';
+      controller: AbortController;
+      pending: Set<Promise<unknown>>;
+    }
+  >();
+  finished: PersonVmAdmissionPermit[] = [];
+  deferred = deferred();
+  activated = deferred();
+  waiting = deferred();
+  lease: PersonVmAdmissionLease | null = null;
+  wakeCount = 0;
+  gatewayReleased = false;
+  entryReleased = false;
+  ready = deferred<PersonVmBinding>();
+  failFinish = false;
+  readonly participant: PersonVmAdmissionPort = {
+    participant: 'gateway',
+    observe: async (binding) => this.observe(binding),
+    subscribe: async () => {
+      throw new Error('fixture has no continuous source');
+    },
+    freeze: async (lease) => {
+      this.lease = lease;
+      return this.observe(lease.binding);
+    },
+    assertFrozen: async (lease) => {
+      if (JSON.stringify(this.lease) !== JSON.stringify(lease))
+        throw new Error('fixture stale lease');
+    },
+    thaw: async (lease) => {
+      if (JSON.stringify(this.lease) !== JSON.stringify(lease))
+        return 'superseded';
+      const previous = this.gatewayReleased;
+      this.gatewayReleased = true;
+      this.release();
+      return previous ? 'already-released' : 'released';
+    },
+  };
+  get injection(): ModelGatewayAdmission {
+    return { boundary: this, participant: this.participant };
+  }
+  observe(binding: PersonVmBinding): PersonVmAdmissionObservation {
+    const records = [...this.records].filter(
+      ([permit]) => JSON.stringify(permit.binding) === JSON.stringify(binding),
+    );
+    return {
+      binding,
+      participant: 'gateway',
+      observedAt: new Date().toISOString(),
+      state: 'known',
+      frozen: this.gatewayReleased ? null : this.lease,
+      active: records.filter(([, value]) => value.state === 'active').length,
+      queued: records.filter(([, value]) => value.state === 'queued').length,
+      deferred: records.filter(([, value]) => value.state === 'deferred')
+        .length,
+      coverage: {
+        state: 'unknown',
+        cursor: null,
+        reason: 'synthetic protocol fixture',
+      },
+    };
+  }
+  release() {
+    if (this.gatewayReleased && this.entryReleased)
+      this.ready.resolve(this.lease!.binding);
+  }
+  async admit(
+    _context: ModelCallBinding['context'],
+    binding: PersonVmBinding,
+    input: { participant: 'gateway' | 'entry'; operationId: string },
+    signal: AbortSignal,
+  ) {
+    signal.throwIfAborted();
+    const controller = new AbortController();
+    const disposition =
+      this.lease && !(this.gatewayReleased && this.entryReleased)
+        ? 'deferred'
+        : 'queued';
+    const permit: PersonVmAdmissionPermit = {
+      permitId: input.operationId,
+      binding,
+      participant: input.participant,
+      disposition,
+      signal: AbortSignal.any([signal, controller.signal]),
+    };
+    this.records.set(permit, {
+      state: disposition,
+      controller,
+      pending: new Set(),
+    });
+    if (disposition === 'deferred') this.deferred.resolve();
+    return permit;
+  }
+  queued<T>(
+    permit: PersonVmAdmissionPermit,
+    operation: (signal: AbortSignal) => Promise<T>,
+    signal: AbortSignal,
+  ) {
+    return this.track(permit, operation, signal);
+  }
+  activate<T>(
+    permit: PersonVmAdmissionPermit,
+    operation: (signal: AbortSignal) => Promise<T>,
+    signal: AbortSignal,
+  ) {
+    const record = this.records.get(permit)!;
+    if (record.state !== 'queued')
+      return Promise.reject(new Error('fixture duplicate activation'));
+    record.state = 'active';
+    this.activated.resolve();
+    return this.track(permit, operation, signal);
+  }
+  async waitUntilReady(
+    _context: ModelCallBinding['context'],
+    permit: PersonVmAdmissionPermit,
+    signal: AbortSignal,
+  ) {
+    this.waiting.resolve();
+    return this.track(
+      permit,
+      async (current) => {
+        await new Promise<void>((resolve, reject) => {
+          const abort = () => {
+            current.removeEventListener('abort', abort);
+            reject(current.reason);
+          };
+          current.addEventListener('abort', abort, { once: true });
+          void this.ready.promise.then(() => {
+            current.removeEventListener('abort', abort);
+            resolve();
+          });
+          if (current.aborted) abort();
+        });
+        current.throwIfAborted();
+        this.wakeCount++;
+        return this.ready.promise;
+      },
+      signal,
+    );
+  }
+  private track<T>(
+    permit: PersonVmAdmissionPermit,
+    operation: (signal: AbortSignal) => Promise<T>,
+    signal: AbortSignal,
+  ) {
+    const record = this.records.get(permit)!;
+    const pending = Promise.resolve().then(() =>
+      operation(AbortSignal.any([signal, permit.signal])),
+    );
+    record.pending.add(pending);
+    void pending.finally(() => record.pending.delete(pending)).catch(() => {});
+    return pending;
+  }
+  async finish(permit: PersonVmAdmissionPermit) {
+    const record = this.records.get(permit);
+    if (!record) return;
+    record.controller.abort(new Error('fixture finish'));
+    await Promise.allSettled([...record.pending]);
+    if (this.failFinish) throw new ModelGatewayError('LEDGER_UNAVAILABLE');
+    this.records.delete(permit);
+    this.finished.push(permit);
+  }
 }
 export function modelBinding(
   personId: string = randomUUID(),
@@ -224,6 +402,7 @@ export async function upstreamFixture(
     missingTerminal?: boolean;
     missingUsage?: boolean;
     tools?: boolean;
+    disconnectBeforeHeaders?: boolean;
   } = {},
 ) {
   const requests: {
@@ -272,6 +451,10 @@ export async function upstreamFixture(
         : {};
       requests.push({ url: request.url!, body, response });
       waits.get(requests.length)?.resolve();
+      if (options.disconnectBeforeHeaders) {
+        response.destroy();
+        return;
+      }
       if (options.firstRequestStatus && requests.length === 1) {
         response.writeHead(options.firstRequestStatus, {
           'content-length': '0',
@@ -469,10 +652,12 @@ export async function gatewayFixture(options: {
   store?: FixtureStore;
   binding?: ModelCallBinding;
   authority?: ModelGatewayAuthority;
+  admission?: FixtureAdmission;
   nextBinding?: (index: number) => ModelCallBinding;
 }) {
   const store = options.store ?? new FixtureStore();
   const binding = options.binding ?? modelBinding();
+  const admission = options.admission ?? new FixtureAdmission();
   let allowed = true;
   const checked: ModelCallBinding[] = [];
   const authority: ModelGatewayAuthority = options.authority ?? {
@@ -497,6 +682,7 @@ export async function gatewayFixture(options: {
     authority,
     store,
     provider: options.provider,
+    admission: admission.injection,
   });
   let index = 0;
   const errors: unknown[] = [];
@@ -533,6 +719,7 @@ export async function gatewayFixture(options: {
   });
   return {
     gateway,
+    admission,
     server,
     store,
     binding,

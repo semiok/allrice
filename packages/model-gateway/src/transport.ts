@@ -77,6 +77,7 @@ export function createMeteredTransport(options: {
   provider: GatewayProvider;
   signal: AbortSignal;
   assertCurrent(signal: AbortSignal): Promise<void>;
+  activate(): Promise<void>;
 }) {
   const controller = new AbortController();
   const signal = AbortSignal.any([options.signal, controller.signal]);
@@ -84,6 +85,7 @@ export function createMeteredTransport(options: {
   const cancellations = new Set<() => Promise<void>>();
   const activeAuth = new Set<symbol>();
   let ledgerFailure: unknown;
+  let closureKnown = true;
   let stopped = false;
   const scope: FetchScope = {
     async authTransaction(operation) {
@@ -97,6 +99,10 @@ export function createMeteredTransport(options: {
       });
       pending.add(done);
       try {
+        // Own the complete credential mutation before acquiring its native
+        // writer lock or starting refresh. Keep its independent signal intact.
+        await options.activate();
+        signal.throwIfAborted();
         return await authTransactions.run(token, operation);
       } finally {
         activeAuth.delete(token);
@@ -147,6 +153,7 @@ export function createMeteredTransport(options: {
       const nativeClose = observeNativeClose();
       let started = false;
       let dispatched = false;
+      let transportJoined = false;
       let status: number | null = null;
       let completed: Promise<void> | undefined;
       const finish = (outcome: ModelAttemptReceipt['outcome']) =>
@@ -198,6 +205,11 @@ export function createMeteredTransport(options: {
         // Current epoch/membership may have changed while the intent committed.
         if (!refreshing) await options.assertCurrent(requestSignal);
         requestSignal.throwIfAborted();
+        // A pre-freeze 8-slot waiter remains queued until its first actual
+        // transport. The activation owns the entire request and final drain.
+        await options.activate();
+        if (!refreshing) await options.assertCurrent(requestSignal);
+        requestSignal.throwIfAborted();
         // Construct only after admission and durable intent. A replayable body
         // (including null) lets native Fetch resend 421 inside one call. Use the
         // public Request's exact bytes/headers as a one-shot stream, without tee.
@@ -226,6 +238,7 @@ export function createMeteredTransport(options: {
         );
         status = response.status;
         if (!response.body) {
+          transportJoined = true;
           await finish('closed');
           return response;
         }
@@ -241,8 +254,10 @@ export function createMeteredTransport(options: {
             // reader.cancel is awaited; an abort request alone never releases a slot.
             try {
               await reader.cancel(requestSignal.reason);
+              transportJoined = true;
             } catch (error) {
               if (await nativeClose.confirmed()) {
+                transportJoined = true;
                 cleanup();
                 await finish(
                   !refreshing && options.signal.aborted ? 'canceled' : 'closed',
@@ -251,6 +266,7 @@ export function createMeteredTransport(options: {
               }
               // Neither cancel rejection nor an errored reader proves closure.
               // Preserve observed wire facts, retaining the exact durable slot.
+              closureKnown = false;
               ledgerFailure ??= error;
               cleanup();
               await finish('unknown');
@@ -304,6 +320,7 @@ export function createMeteredTransport(options: {
                   await cancel();
                   value.error(requestSignal.reason);
                 } else if (result.done) {
+                  transportJoined = true;
                   cleanup();
                   await finish('closed');
                   value.close();
@@ -333,12 +350,33 @@ export function createMeteredTransport(options: {
           headers: response.headers,
         });
       } catch (error) {
-        await finish(requestSignal.aborted ? 'canceled' : 'failed');
+        // A rejected fetch before response headers is not itself proof that
+        // the dispatched request stopped. Use the same real native close facts
+        // as the reader path; keep unknown wire facts and its exact slot.
+        if (dispatched && !transportJoined) {
+          transportJoined = await nativeClose.confirmed();
+          if (!transportJoined) {
+            closureKnown = false;
+            ledgerFailure ??= error;
+          }
+        }
+        await finish(
+          dispatched && !transportJoined
+            ? 'unknown'
+            : requestSignal.aborted
+              ? 'canceled'
+              : 'failed',
+        );
         throw error;
       }
     },
   };
   return {
+    /** Actual transport/transaction settlement, independent of a failed
+     * receipt write. Read only after drain has joined its owned callbacks. */
+    get joinKnown() {
+      return stopped && pending.size === 0 && closureKnown;
+    },
     run<T>(callback: () => T): T {
       return scopes.run(scope, callback);
     },

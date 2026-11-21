@@ -3,7 +3,11 @@ import type {
   RequestContext,
   RuntimeRunUsage,
 } from '@allrice/contracts';
-import type { PersonVmBinding } from '@allrice/person-vm';
+import type {
+  PersonVmAdmissionBoundary,
+  PersonVmAdmissionPort,
+  PersonVmBinding,
+} from '@allrice/person-vm';
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
@@ -54,6 +58,13 @@ export interface ModelGatewayAuthority {
     evidenceRef: string;
   }>;
 }
+
+/** The trusted host injects BOTH from the same shared admission host. The
+ * gateway never creates an authority or reads the VM owner's private store. */
+export type ModelGatewayAdmission = Readonly<{
+  boundary: PersonVmAdmissionBoundary;
+  participant: PersonVmAdmissionPort;
+}>;
 
 /** The public DSH vocabulary, without guest-selectable identity or routing. */
 export type GatewayModelInput = Pick<
@@ -153,6 +164,9 @@ export interface UsageLedgerPort {
   ): Promise<RuntimeRunUsage>;
 }
 export interface ModelGatewayPort {
+  /** Exact freeze/observe/subscribe/thaw protocol owned by the shared host.
+   * A gateway-only thaw is not permission to wake, advance epoch or dispatch. */
+  readonly admission: PersonVmAdmissionPort;
   /** Called only by the trusted host route. Headers/body never supply binding. */
   handle(
     request: IncomingMessage,
@@ -176,6 +190,7 @@ export type ModelGatewayErrorCode =
   | 'INVALID_INPUT'
   | 'DUPLICATE_CALL'
   | 'ADMISSION_CLOSED'
+  | 'EXECUTION_REBIND_REQUIRED'
   | 'UNCLASSIFIED_UPSTREAM'
   | 'UNSUPPORTED_UPSTREAM'
   | 'AUTH_TRANSACTION_REQUIRED'

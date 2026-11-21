@@ -69,6 +69,10 @@ describe.sequential(
           .catch((error) => error);
         await auth.arrived;
         expect(auth.rotated).toBe(true);
+        expect(f.admission.observe(f.binding.vm)).toMatchObject({
+          active: 1,
+          queued: 0,
+        });
         let revoked: Promise<void> | undefined;
         if (action === 'client') {
           controller.abort(new Error('synthetic browser cancellation'));
@@ -89,11 +93,15 @@ describe.sequential(
         // holding its writer lock. Waiting only for the HTTP receipt is too early.
         expect(closed).toBe(false);
         expect(globalThis.fetch).toBe(installedFetch);
+        expect(f.admission.finished).toHaveLength(0);
+        expect(f.admission.records.size).toBe(1);
         expect(await auth.persisted()).toMatchObject({
           payload: { refresh: 'synthetic-expired-refresh' },
         });
         auth.allowSave();
         await Promise.all([closing, collecting, revoked]);
+        expect(f.admission.records.size).toBe(0);
+        expect(f.admission.finished).toHaveLength(1);
         expect(await auth.persisted()).toMatchObject({
           payload: {
             access: 'synthetic-rotated-access',
@@ -307,6 +315,9 @@ describe.sequential(
       });
       expect(transportActive).toBe(true);
       expect(f.store.slots.get(f.binding.vm.personId)?.size).toBe(1);
+      expect(f.admission.records.size).toBe(1);
+      expect(f.admission.finished).toHaveLength(0);
+      expect([...f.admission.records.values()][0]!.pending.size).toBe(0);
       expect([...f.store.rows.values()]).toMatchObject([
         {
           dispatchObserved: true,
@@ -321,6 +332,52 @@ describe.sequential(
           },
         },
       ]);
+    });
+
+    it('已dispatch的fetch拒绝但无独立close事实：不把Promise拒绝当真实join', async () => {
+      const endpoint = 'http://synthetic-fetch-unclosed.invalid/v1/stream';
+      const original = globalThis.fetch;
+      // A synthetic counterexample, not a real socket or a claim of native
+      // behavior: the transport rejects while its underlying resource is unknown.
+      globalThis.fetch = (input, init) => {
+        const url = input instanceof Request ? input.url : String(input);
+        return url === endpoint
+          ? Promise.reject(
+              new Error('synthetic fetch rejected without close proof'),
+            )
+          : original(input, init);
+      };
+      cleanup.push(async () => {
+        globalThis.fetch = original;
+      });
+      const provider: GatewayProvider = {
+        classify(input) {
+          return String(input) === endpoint
+            ? { kind: 'model', protocol: 'opaque' }
+            : null;
+        },
+        async *stream(_binding, _input, signal) {
+          await fetch(endpoint, { method: 'POST', signal });
+          yield nativeFailure('UNREACHABLE');
+        },
+      };
+      const f = await gatewayFixture({ provider });
+      cleanup.push(() => f.close());
+      expect(finish(await f.collect())).toMatchObject({
+        reason: { kind: 'error' },
+      });
+      expect([...f.store.rows.values()]).toMatchObject([
+        {
+          dispatchObserved: true,
+          httpStatus: null,
+          outcome: 'unknown',
+          usage: { totalTokens: null },
+        },
+      ]);
+      expect(f.store.slots.get(f.binding.vm.personId)?.size).toBe(1);
+      expect(f.admission.records.size).toBe(1);
+      expect(f.admission.finished).toHaveLength(0);
+      expect([...f.admission.records.values()][0]!.pending.size).toBe(0);
     });
 
     it('HTTP错误保留offloadImages，原生compaction-image-offload仍记录卸载并返回retry', async () => {
