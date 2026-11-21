@@ -121,6 +121,7 @@ export function WorkbenchEntries(props: {
   onOpen: (kind: WorkbenchModule) => void;
   onToggle: () => void;
   entryRef?: Ref<HTMLButtonElement>;
+  showToggle?: boolean;
 }) {
   return (
     <div className={css.entries} aria-label="工作台入口">
@@ -164,7 +165,7 @@ export function WorkbenchEntries(props: {
           <WorkbenchIcon kind="schedule" />
         </button>
       )}
-      {!props.open && (
+      {!props.open && props.showToggle !== false && (
         <button
           type="button"
           className={css.toggle}
