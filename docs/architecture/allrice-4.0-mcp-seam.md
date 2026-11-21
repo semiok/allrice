@@ -2,6 +2,31 @@
 
 当前交付是原生 SDK server、host 现权/代际/调用绑定和三模块 M1 公开子集。4.0 的 execution/receipt、issued memory pin/预算及 publisher carrier 尚待所属 owner 公开绑定；这不表示模块已迁入或 4.0 生产业务全通。没有启动入口、默认配置或企业/员工开关变更。
 
+n3 接收基点为 `6eab934e51721a13f9b2537eca670ccffe0cb31d`，只重放本卡两个提交，未携带旧 #899 入口权威。下面具名 host API 的产品 sourceAtSha=`197399232bde39bde40180728854808f38ffa7b7`；公开源级入口为 `apps/worker/src/mcp/allrice-server.ts`。Worker 是 private 工作区，本片没有新增 package exports，不能把该文件虚构成 `@allrice/worker` 的子路径导出。业务 owner 的宿主适配器消费这些签名，数据库模块不反向导入 Worker 或跨 owner SQL。
+
+## 具名 host API v1
+
+`ALLRICE_MCP_CONTRACT_VERSION=1` 由宿主构造，`createAllriceMcpServer(AllriceMcpServerOptions)` 明确返回 `AllriceMcpServerPort`。端口的 `contractVersion` 和 SDK serverInfo.version 来自同一常量；它不是 guest header、权限凭据或业务 schema 版本。现有 CallToolResult/JSON Schema 不套新 envelope。
+
+| 具名签名/方法                                                    | v1 保证和 owner                                                                                                                                                                                                        |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AllriceMcpBinding`、`AllriceMcpScope`、`AllriceMcpHost.current` | 宿主固定 person/org/workspace/employee/thread/native session/代际，每次重新取现权、config revision 和 native call。requestId/toolName 只是未受信选择器；271/273 仍须提供真实映射，类型和 schema parse 不认证。         |
+| `AllriceMcpServerOptions`                                        | 可注入 host 和 `AllriceMcpServices`；没有 host 不发布工具，service/模块资格/代际不匹配不发布且执行时拒绝。未接的 4.0 carrier 不以 legacy adapter 补齐。                                                                |
+| `AllriceMcpReferenceRead`                                        | `(scope, ReferenceReadInput, signal) → Promise<CallToolResult>`，精确等于现 `services.referenceRead` 签名。MET-281 owner 核资源、pin 和实际 receipt；不是完整 EnterpriseMaterialsPort。                                |
+| `AllriceMcpMemoryRead`                                           | `(scope, {number}, signal) → Promise<CallToolResult>`，精确等于 `services.memoryRead`。MET-283 owner 核已 issued ordinal/pin、当前状态和真实预算；不提供任意正文查找或新预算。                                         |
+| `AllriceMcpDeliverableCreate`                                    | `(scope, AllriceMcpDeliverableInput, signal) → Promise<CallToolResult>`，精确等于 `services.deliverableCreate`。MET-281 owner 负责真实字节、质量、版本、lease/CAS 和幂等 receipt；prepared 字节/授权不进 guest input。 |
+| `AllriceMcpBusinessError`                                        | 仅已有 ApiErrorSchema / ReferenceSelectionErrorSchema 的 payload union，保留 code/message/retryable 和当前输入内的 revision IDs。正常业务失败仍用原生 CallToolResult.isError；不是所有 owner 错误的新统一 envelope。   |
+| `port.server`                                                    | 原生 SDK Server，连接仍用 SDK `connect(transport)`；本片不包装握手、重连、重试或 MCP 执行器。真实 managed route/transport 的绑定和关闭证明仍归入口 owner。                                                             |
+| `notifyCatalogChanged()`                                         | 原生 list_changed；客户端可能保留旧目录，所以不能替代每次工具执行的现权检查。                                                                                                                                          |
+| `whenIdle()`                                                     | 仅等本连接已跟踪的 host/业务 Promise，不取消、不封新准入，不等同 revoke。                                                                                                                                              |
+| `revoke()` / `close()`                                           | 同一幂等的 MCP 自有收尾 Promise：先封本连接新准入、abort 请求，再等待实际 host/业务工作完成，最后 SDK close。另一连接不受影响。可信撤权 owner 必须实际调用 revoke；仅提供方法不等于已接撤权通知。                      |
+
+每个业务 callback 返回的 Promise 必须覆盖其真正 I/O/事务完成；不得用取消先返回而把工作遗留后台。原生 request.signal 与本连接 shutdown 合并，取消后不披露新结果，但已提交预算/版本/外部效果仍成立。协议错误沿 SDK McpError：无可信绑定为 InvalidRequest，参数不合法为 InvalidParams，未识别内部异常为脱敏 InternalError。未启用/未绑定工具用现有 DEPENDENCY_UNAVAILABLE/isError；执行后现权变化保持 AUTHORIZATION_DENIED，不暗示已提交成果回滚。
+
+恢复只交原业务 owner 对原 call/digest/receipt 核实已发生事实；MCP 不自动重发、换 key 或恢复授权。无需新表、限额、TTL、模型 permit 或 Agent 状态。approval/bridge 继续只保留 namespace，不新增工具或外发权限。
+
+n3 基线的 `@allrice/contracts` 尚没有旧 #899 曾导出的 `ExecutionGenerationSchema`/`ExecutionGeneration`，本卡原 server 仍依赖它；单文件首轮因此在 binding schema 构造处统一失败。该前置须由最新 271 公共合同封版/映射解决，不能复制旧 #899 或把 proposed producer 说成已接入。具名 API 已落源码不等于当前基线已可运行或通过验收。
+
 ## 原生对照与 SaaS 边界
 
 锁定 `@deepseek-ai/dsh-mcp-client@0.2.1-rc.2` 的 README、`lib/index.js` 的 `syncTools`/`createMcpToolDefinition`：DSH 负责发现、`mcp__<serverName>__<rawName>` 命名、工具生命周期、原生取消及 CallToolResult 投影。原名 `reference_read` 等只用于 MCP wire；配置名 `allrice` 由可信 DSH 装配决定，不从 remote serverInfo 或工具名反解身份。发现失败可留下旧工具，因此执行仍查现权。
@@ -55,6 +80,6 @@ owner 配置/撤权变更调用原生 notifyCatalogChanged；即使客户端刷�
 
 DB suite 由 ALLRICE_RUN_DB_INTEGRATION 开启，CI 文件责任登记为 db；现有 fixture 初始化/每项 timeout 保持 120000ms，清理 30000ms。直接影响既有回归：native-client.test.ts、employees/reference-tools.integration.test.ts、run-memory-index.integration.test.ts、artifact-publication-concurrency.integration.test.ts；未改下载/版本读取链。重门禁和独审由 root 绑定最终 SHA 执行，不能把 skip/fixture 当生产通过。
 
-仍待 MET-268 gateway executionBinding/nativeCallContext、MET-273 currentScope/currentModuleQualification/currentContentAuthority 与 builtin release/binding、MET-274/业务 owner 的 4.0 receipt/memory issued pins+budget/publisher carrier 精确公开出口；不在本卡扩 MET-274 账本。四段 instructions、逐实际父/子 request token/schema/Skill 证据属于 MET-273/285 装配，本卡没有实际模型请求，不能声称已验 ≤2048 token。
+仍待 271 受管 MCP 连接到可信当前身份、native call/root/撤权的公开映射，以及当前代际合同；273 currentScope/currentModuleQualification/currentContentAuthority 与 builtin release/binding；281/283 所属业务的 4.0 receipt/memory issued pins+budget/publisher carrier。274 历史快照不是这些业务账本 owner，本卡不扩其表。旧文档的 gateway executionBinding/nativeCallContext 是 proposed 名称，不是本片已实现的 model gateway 导出。四段 instructions、逐实际父/子 request token/schema/Skill 证据属于 MET-273/285 装配，本卡没有实际模型请求，不能声称已验 ≤2048 token。
 
 MET-225 拟登记：VM 外 AllRice 业务 MCP server，DSH 保持原生发现/命名/调用/取消/result；AllRice 仅 host 现权与 owner 业务事实，4.0 carrier 未绑拒绝。由发布主会话同步。新功能错误可由 native MCP isError/协议失败与现有 owner receipt 对账发现；没有安装新巡检，根线同步 MET-222 待联合验收项。
