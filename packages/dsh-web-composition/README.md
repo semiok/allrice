@@ -21,6 +21,8 @@ bundle imports only the shared presentation. Automation opens the native
 The root owner must abort actual HTTP/WS/resources, release native session
 references and await Client/Cordis disposal before creating another key. The
 port deliberately supplies no URL, namespace shortcut, token or default route.
+`dispose()` preserves and rejects a recorded cleanup failure, including a late
+root returned after cancellation; repeated disposal does not retry destruction.
 Full module/ownership and recovery contracts are in
 [`allrice-employee-sidebar.md`](../../docs/development/allrice-employee-sidebar.md).
 
@@ -93,8 +95,33 @@ The default Host comes from this package's locked DSH development dependency.
 same-generation Host's package.json; no local QA path is built in.
 `ALLRICE_BROWSER_EXECUTABLE` can select an existing Chromium executable, as in
 the repository's M5 runner. No browser is downloaded by this suite.
-`ALLRICE_COMPOSITION_TEST_ARTIFACT_DIR` optionally retains rendered failure
-screenshots/text in a fresh attempt directory.
+`ALLRICE_COMPOSITION_TEST_ARTIFACT_DIR` optionally selects the evidence parent.
+The sidebar suite otherwise uses a fresh directory under
+`os.tmpdir()/allrice-composition-evidence`, prints its absolute location, and
+retains it after browser/credential-root cleanup. It includes original failure
+screenshots/JSON, source identities and replay pages; it contains no Host tokens.
+
+`employee-sidebar.browser.test.ts` also compiles the actual 3.x `ChatSidebar`
+and imported AllRice app/UI/contracts sources from fixed base
+`d8f6ed3fa01bdd6e5d72e55702eb703e5e670d00` using `git show`. The baseline and
+native side share `tests/fixtures/sidebar-data.mjs`, time, dimensions and themes.
+It writes `legacy-base-entry.html`, hashed `legacy-base-sources.json`, and
+1440/390 light/dark preview/expanded images. Current shared-Frame images are
+supplementary container comparisons, never labeled pre-extraction baselines.
+CI fetches only the exact base object if its shallow checkout lacks it and
+uploads the suite's evidence through the existing integration collector.
+Source-archive runners may instead set the test-only
+`ALLRICE_SIDEBAR_BASELINE_ARTIFACT_DIR` to this generator's prepared HTML/source
+manifest directory. The helper checks HTML/data hashes and all three pinned old
+entry hashes before copying the artifact; source preparation still supplies its
+recorded provenance. It fails on mismatch and never substitutes current UI.
+
+A controlled owner mode wires real sidebar clicks through the exported
+navigation class to actual isolated Cordis roots, native SessionReference
+retain/release, and a cancellable ReadableStream. It checks same-key reuse,
+employee/revision changes, late creation/UI and denied admission. This mode
+does not call native openSession: a real Web Client/HTTP/WS/multi-Host mount is
+still missing, and the evidence explicitly distinguishes those unbound parts.
 
 ## Known gap
 
@@ -108,16 +135,26 @@ Different-origin synthetic Host tests are not approval of production routing.
 
 Native draft attachments are runtime-owned and reading anchors live in a
 ui-chat root-local Map. Same-root restoration has browser coverage written;
-cross-root attachment/scroll restoration has no bound public seam. Old upload
+cross-root attachment restoration has no public re-admission port. A legitimate
+owner holding full `ChatViewSlotProps` can wrap its public `chatScroll` read/save
+with trusted person/employee/profile/session/remount scope and canonical native
+`ChatScrollPosition`; that thin UI adapter is publicly expressible but not yet
+bound or tested here. No DOM sampling, copied ChatView or ledger mutation is
+used. Absence of a standalone decorator does not prove this adaptation impossible.
+Old upload
 receipts are never copied across employee revision/binding changes. The new
 browser suite records these boundaries but has not yet been run for this
 candidate; it is not evidence of formal SSO or complete employee migration.
 
-The public primitives entrypoint currently retains Shiki/Katex and font assets
-when bundled: the new client artifact is about 6.24 MB before transfer compression
-(4.67 MB JS + 1.57 MB CSS). Startup impact remains unmeasured. Removing this
-overhead needs finer public atom exports or a separately approved loading seam;
-this package does not deep-import upstream internals to hide the cost.
+The build uses the fixed rc.2 Web shell's public module-table baseline for
+`@deepseek-ai/dsh-client-ui-primitives` and `zod`, as native chat/conversation do.
+It does not inline another Shiki/KaTeX/font copy. The client artifact is about
+513 KB uncompressed (450 KB sidebar JS + 60 KB CSS, plus wrapper); build guards
+reject accidental markdown/font inputs. The earlier 6.24 MB candidate duplicated
+these shared modules. Startup/transfer impact remains unmeasured, and native
+chatting/menus/theme regression still awaits the resource-approved browser run.
+No private atom import, hash-named shell asset import, upstream patch or extra
+asset route is used. A future shell must retain these baseline public modules.
 
 The native ContextMeter has no independent slot or visibility configuration.
 `conversation.input.activity` hides it only by entering an expanded activity,

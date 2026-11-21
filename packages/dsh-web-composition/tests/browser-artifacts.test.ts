@@ -1,0 +1,78 @@
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
+import { createHash } from 'node:crypto';
+import { expect, it } from 'vitest';
+import { createBrowserArtifacts } from './browser-artifacts';
+import { createSidebarFixtureData } from './fixtures/sidebar-data.mjs';
+import {
+  sidebarBaselineHead,
+  sidebarBaselineSources,
+  writeLegacySidebarBaseline,
+} from './legacy-sidebar-baseline';
+
+it('keeps default first-failure evidence after credential-root cleanup', async () => {
+  const hostRoot = await mkdtemp(join(tmpdir(), 'allrice-credential-test-'));
+  const evidence = await createBrowserArtifacts(undefined);
+  try {
+    expect(relative(hostRoot, evidence).startsWith('..')).toBe(true);
+    await writeFile(join(hostRoot, 'synthetic-token'), 'delete me');
+    await writeFile(join(evidence, 'first-failure.json'), '{"original":true}');
+    await rm(hostRoot, { recursive: true, force: true });
+    expect(await readFile(join(evidence, 'first-failure.json'), 'utf8')).toBe(
+      '{"original":true}',
+    );
+  } finally {
+    await rm(hostRoot, { recursive: true, force: true });
+    await rm(evidence, { recursive: true, force: true });
+  }
+});
+
+it('rejects changed prepared baseline bytes or a current-entry identity before any browser opens', async () => {
+  const prepared = await createBrowserArtifacts(),
+    output = await createBrowserArtifacts();
+  const hash = (value: string) =>
+    createHash('sha256').update(value).digest('hex');
+  // Synthetic HTML exercises artifact validation only; it is never passed to a
+  // visual test or represented as the real baseline generated from git show.
+  const html = '<!doctype html><p>artifact codec fixture</p>';
+  const metadata = {
+    head: sidebarBaselineHead,
+    htmlSha256: hash(html),
+    fixtureDataSha256: hash(JSON.stringify(createSidebarFixtureData())),
+    sources: Object.entries(sidebarBaselineSources).map(([path, sha256]) => ({
+      path,
+      sha256,
+    })),
+  };
+  try {
+    await writeFile(join(prepared, 'legacy-base-entry.html'), html);
+    await writeFile(
+      join(prepared, 'legacy-base-sources.json'),
+      JSON.stringify(metadata),
+    );
+    await writeLegacySidebarBaseline(output, prepared);
+    expect(await readFile(join(output, 'legacy-base-entry.html'), 'utf8')).toBe(
+      html,
+    );
+    await writeFile(
+      join(prepared, 'legacy-base-entry.html'),
+      html + '<!-- altered -->',
+    );
+    await expect(writeLegacySidebarBaseline(output, prepared)).rejects.toThrow(
+      'identity/hash mismatch',
+    );
+    await writeFile(join(prepared, 'legacy-base-entry.html'), html);
+    metadata.sources[0]!.path = 'apps/web/app/chatflow/chat-sidebar-frame.tsx';
+    await writeFile(
+      join(prepared, 'legacy-base-sources.json'),
+      JSON.stringify(metadata),
+    );
+    await expect(writeLegacySidebarBaseline(output, prepared)).rejects.toThrow(
+      'identity/hash mismatch',
+    );
+  } finally {
+    await rm(prepared, { recursive: true, force: true });
+    await rm(output, { recursive: true, force: true });
+  }
+});

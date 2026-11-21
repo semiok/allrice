@@ -47,7 +47,7 @@
     "prepack": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint build.mjs index.mjs src",
-    "test": "pnpm --dir ../.. exec vitest run packages/dsh-web-composition/tests/composition.test.ts packages/dsh-web-composition/tests/employee-client.test.ts"
+    "test": "pnpm --dir ../.. exec vitest run packages/dsh-web-composition/tests/composition.test.ts packages/dsh-web-composition/tests/employee-client.test.ts packages/dsh-web-composition/tests/browser-artifacts.test.ts"
   },
   "devDependencies": {
     "@allrice/ui": "workspace:*",

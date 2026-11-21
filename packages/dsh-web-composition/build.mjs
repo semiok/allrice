@@ -3,8 +3,15 @@ import { URL } from 'node:url';
 import { Buffer } from 'node:buffer';
 import { build } from 'esbuild';
 
-// Consume public React atoms and existing AllRice presentation sources through
-// the normal bundler. Native services/components remain module-loader owned.
+// The fixed rc.2 Web shell supplies these public baseline module-table faces.
+// Requiring them shares the native atoms/CSS and avoids another Shiki/KaTeX copy.
+const baselineExternals = [
+  'react',
+  'react-dom',
+  'react/jsx-runtime',
+  '@deepseek-ai/dsh-client-ui-primitives',
+  'zod',
+];
 const sidebar = await build({
   entryPoints: [
     new URL('./src/employee-sidebar.tsx', import.meta.url).pathname,
@@ -16,7 +23,8 @@ const sidebar = await build({
   platform: 'browser',
   jsx: 'automatic',
   outdir: new URL('./dist/', import.meta.url).pathname,
-  external: ['react', 'react-dom', 'react/jsx-runtime'],
+  external: baselineExternals,
+  metafile: true,
   define: { 'process.env.NODE_ENV': '"production"' },
   loader: {
     '.woff': 'dataurl',
@@ -33,6 +41,12 @@ const sidebarCss = sidebar.outputFiles.find((file) =>
 )?.text;
 if (!sidebarJs || !sidebarCss)
   throw new Error('Employee sidebar bundle missing');
+if (
+  Object.keys(sidebar.metafile.inputs).some((path) =>
+    /\/(?:@shikijs\/|shiki\/|katex\/)|\.(?:woff2?|ttf)$/.test(path),
+  )
+)
+  throw new Error('Native shared markdown/font code was bundled into sidebar');
 const source = await readFile(
   new URL('./src/client.cjs', import.meta.url),
   'utf8',

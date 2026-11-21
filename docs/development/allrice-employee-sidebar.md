@@ -41,17 +41,19 @@ SaaS 自补仅为已批门卫的 UI 接线与业务呈现：不新增认证、�
 
 员工变化在新准入前关闭旧根；同员工 revision/binding 等 key 变化在确认后先关旧根再创建。每次选择仍须重新准入，同 key 只复用客户端，不缓存旧权限。快速切换中止旧准入/创建，晚到结果关闭，不重放旧选择；admission 失败关闭旧根并保留错误。没有自动重试、Run 重放、VM 开机或降代。
 
+`dispose()` 必须保留已发生的 teardownFailure 并 reject，包括取消后迟到根的销毁失败；重复 dispose 不重试关闭，不把“active 已清空”视为销毁成功。对应单测保留同一失败对象与全部 cleanup 的实际调用次数。
+
 **存储上下文是 create owner 尚未满足的前提。** remountKey 只是根生命周期标识，不是 localStorage 安全命名空间；传一个客户端 namespace 字符串不构成隔离。正式 owner 须发布可核对的浏览器存储隔离/原生公开 namespace 方案，且与认证、person/employee/profile/binding 对应。本票不自行选新域名、改认证或覆盖 `window.localStorage`。未绑定的 create 不能用于正式员工入口。
 
 ## 草稿、附件、阅读位置：真实边界
 
 下表当前均为读源或已写测试，**尚无本候选浏览器执行结果**。
 
-| 能力     | 同原生根内切线程                                                                                                      | 销毁/重建根或跨 Host                                                                                                                                                              |
-| -------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 草稿     | 公开声明 persisted；新用例经真实 editor + `conversation.input.for(binding.ctx).state` 验证，待运行                    | 原生 key 是 `dsh.conversation.${sessionId}`，同 origin 同 ID 会共享；新用例明确断言此负向事实并保存 JSON，待运行。不同测试 origin 的隔离不等于正式 AllRice 路由已批准             |
-| 附件     | 原生 runtime owner 跨 session navigation 保留；新用例真实文件 picker + public InputState，待运行                      | 原生描述为 runtime-only；新根没有旧 File/receipt ownership。没有公开跨根恢复/重新准入接口，本票不拷旧 upload receipt 或伪装成功；同员工 revision/binding 变化也不能复用旧 receipt |
-| 阅读位置 | `ChatViewSlotProps.chatScroll` 公开 read/save；原生根内使用原生 anchor；新用例真实 wheel + 实际 viewport 恢复，待运行 | 原生实现是 ui-chat apply 内 Map，根销毁后丢失。现有公开 registry 没有只替换该注入 capability 的 decorator；本票不复制 ChatView、不 DOM 采样保存。跨根恢复仍缺接缝                 |
+| 能力     | 同原生根内切线程                                                                                                      | 销毁/重建根或跨 Host                                                                                                                                                                                                                                              |
+| -------- | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 草稿     | 公开声明 persisted；新用例经真实 editor + `conversation.input.for(binding.ctx).state` 验证，待运行                    | 原生 key 是 `dsh.conversation.${sessionId}`，同 origin 同 ID 会共享；新用例明确断言此负向事实并保存 JSON，待运行。不同测试 origin 的隔离不等于正式 AllRice 路由已批准                                                                                             |
+| 附件     | 原生 runtime owner 跨 session navigation 保留；新用例真实文件 picker + public InputState，待运行                      | 原生描述为 runtime-only；新根没有旧 File/receipt ownership。没有公开跨根恢复/重新准入接口，本票不拷旧 upload receipt 或伪装成功；同员工 revision/binding 变化也不能复用旧 receipt                                                                                 |
+| 阅读位置 | `ChatViewSlotProps.chatScroll` 公开 read/save；原生根内使用原生 anchor；新用例真实 wheel + 实际 viewport 恢复，待运行 | 原生默认 Map 随根销毁。持有完整 ChatViewSlotProps 的合法 owner 可包装公开 read/save，以可信 person/employee/profile/session/remount scope 保存 canonical ChatScrollPosition；公开合同支持，但本票 owner 未绑定、跨根未实测。不能因缺独立 decorator 判定绝对不可能 |
 
 直接源码依据均为锁定 `0.2.1-rc.2` 的发布产物，只读，不作为私有 import：
 
@@ -60,15 +62,23 @@ SaaS 自补仅为已批门卫的 UI 接线与业务呈现：不新增认证、�
 - ui-conversation `lib/types/client/service.d.ts:114-124` 声明 runtime-only 附件及跨 session navigation owner；公开 `InputState.attachmentIds` 同样注明 runtime-only。
 - ui-chat `lib/types/client/contract/slots.d.ts:232-269` 导出 `ChatScrollPosition` 与 read/save；`lib/client.js:13116,13259-13265` 为根内 Map。
 
+scroll owner 只能传递/保存原生 `ChatScrollPosition` 纯 UI 值并保留完整原生 props，不能取代原生滚动算法、DOM 采样、复制 ChatView、保留旧根 callbacks 或引入 Agent 状态机。不同员工同 ID、同员工 revision/binding 更换都须隔离。当前 sidebar owner 仅拿 SidebarOwnerProps，不持有完整 ChatViewSlotProps；ChatView 也未直接 runtime export。公开 slots ledger 检查不等于可修改 component/inject，shadow 时直接复制 native child 声明会撞单 declarer，因此不能凭 registry 类型宣布已接通。
+
 ## 验证、证据和交付状态
 
 本候选只完成串行轻量 build/typecheck/lint。所有单元、原生 profile、旧入口浏览器、视觉/Astra/联合门禁和 Dev 验收由主线绑定提交后执行。新 browser 文件已加入 `scripts/ci-manual-environments.yml` 的 browser 资源；没有放宽原测试时限、断言或重试。原 installed-profile suite 使用同一安装 helper，保留原 90s setup/60s 行为时限。
 
 `employee-sidebar.browser.test.ts` 使用真实 tarball、两个独立同代 Host、同一 browser context、合成业务端口和同 native ID，零模型。保留 same-origin 双根负向；不同 origin 只验证原生存储行为。创建/详情/归档/设置仅验证公开命令派发，不冒充业务 owner 的实际写入或 SSO。
 
-截图基准使用共享真实 Frame/View、同一合成 port 数据、固定时间 `2026-11-21T12:00:00Z`、DPR1、reduced-motion、1440/390×亮暗，记录实际浏览器版本/平台；这是原样提取组件的对照，不是旧截图的像素替换。原生默认左栏宽 280，基准按当前测量宽度渲染；不改原生宽度策略。资源许可后由主线逐图检查，当前没有“已逐屏比对”结论。
+侧栏点击还接入可控的零模型 `EmployeeClientNavigation` owner：实际创建/销毁独立 Cordis Context、真实 retain/release SessionReference、取消 ReadableStream，检查同 key、跨员工、revision、拒绝、迟到创建/UI。该模式不调用 uiWorkspace.openSession；没有公开 native Web Client/HTTP/WS mount 就明确不宣称真实跨 Host 根/传输关闭或存储恢复。两 Host 存储实验和受控根生命周期是不同证据，不能拼成 production 通过。
 
-**已测体积风险：** 公开 primitives 根出口正常打包会保留 Shiki/Katex/字体。本候选 client 约 6.24 MB（JS 4.67 MB、CSS 1.57 MB，未压缩传输口径）；相对原隐藏控件插件明显增大，未测加载时间，无性能改善结论。未深导入私有原子模块或改上游包；需要上游细粒度公开出口/正式懒加载接缝才能消除该风险。
+截图真基准由 `legacy-sidebar-baseline.ts` 对固定 base `d8f6ed3fa01bdd6e5d72e55702eb703e5e670d00` 执行 git show，编译原版真实 ChatSidebar/EmployeeSidebar/SidebarSettings 及其依赖的 AllRice app/UI/contracts 源码；不 alias 到当前 Frame/View。两侧同用 `sidebar-data.mjs`、固定时间 `2026-11-21T12:00:00Z`、DPR1、reduced-motion、1440/390×亮暗和测量宽度，包含预览与展开其余。保留 source hashes、可重放 HTML、浏览器版本/平台和逐图 comparison.html；旧读请求只在独立 baseline 夹具合成回答，不进 4.0。共享 Frame 的同 head 对照仅作为容器影响辅助图，不能证明提取无回归。资源许可后主线逐图检查，当前未截图/未视觉通过。
+
+浏览器证据默认放在独立 `os.tmpdir()/allrice-composition-evidence/employee-sidebar-*`，输出绝对位置；可由 ALLRICE_COMPOSITION_TEST_ARTIFACT_DIR 指定父目录。afterAll 仅删除凭证 Host 根，保留首败 JSON/PNG/基准原件；不靠人工设置 env 才避免证据丢失。
+
+CI 浅 checkout 只补取精确 base 对象，并将 evidence 父目录落到现有 integration-collection 上传目录。M5 若用无 Git 历史的源归档，source-preparation 可先调用同一个 `writeLegacySidebarBaseline()` 生成 HTML/source manifest，记录 provenance 后带入隔离环境，通过测试专用 `ALLRICE_SIDEBAR_BASELINE_ARTIFACT_DIR` 提供；消费时强校验 HTML/data hash 与三份旧入口固定 hash。错件直接失败，不降为当前 Frame、不跳过视觉场景。这是夹具输入，不是生产 route/认证/入口。
+
+**体积收缩与公开证据：** rc.2 `dsh-web-frontend/dist/assets/index-CN7NIWNw.js:190` 的 staticModules 明确含 primitives 与 zod，原生 ui-chat:10 / ui-conversation:29 同样同步 require primitives。build 将这两个公开裸包 external，沿现有 factory(require) 复用；不新增 route/inject/上游补丁/私有深导入。当前 client 约 513 KB（JS 450 KB、CSS 60 KB，未压缩），不再复制原 6.24 MB 候选的 Shiki/KaTeX/60 个字体输入。build 的 metafile guard 禁止这些重复输入。原生 shell 仍正常拥有其 Markdown 资源；加载时间、菜单/主题/聊天是否无回归尚未实测，不能把静态缩包当性能通过。完整链和字节数在任务证据 BUNDLE-ANALYSIS.md/BUNDLE-COMPARISON.json。
 
 MET-225 待主线登记：新增“4.0 左栏复用现有 AllRice 员工/线程呈现，经原生 sidebar 槽与可信 mount 端口；旧外观样式沿既有来源；自动化直原生 schedules，设置仅员工 owner”。正式 transport/存储恢复仍未接通，不标已发布/已回归。该条是接法/入口差异，不另建 Agent 语义。
 

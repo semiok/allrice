@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import {
   chromium,
   type Browser,
@@ -10,6 +10,18 @@ import {
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { startInstalledProfile } from './installed-profile';
 import { documentSession, processSession } from './native-history.mjs';
+import { createBrowserArtifacts } from './browser-artifacts';
+import { createSidebarFixtureData } from './fixtures/sidebar-data.mjs';
+import {
+  sidebarBaselineHead,
+  writeLegacySidebarBaseline,
+} from './legacy-sidebar-baseline';
+
+interface OwnerEvent {
+  event: string;
+  root?: string;
+  employee?: string;
+}
 
 interface SidebarTest {
   fixtureEmployee: string;
@@ -18,6 +30,17 @@ interface SidebarTest {
   setTheme: (theme: 'light' | 'dark') => void;
   setState: (state: string) => void;
   baseline: (shown: boolean, width?: number) => void;
+  controlledOwner: {
+    events: OwnerEvent[];
+    start: () => void;
+    holdNextCreation: () => void;
+    pendingCreation: () => string | null;
+    releaseCreation: () => void;
+    changeRevision: () => void;
+    denyNext: () => void;
+    deliverLate: (root: string) => void;
+    stop: () => Promise<void>;
+  };
   nativeInput: (
     id?: string,
   ) => Promise<{ draft: string; attachmentCount: number }>;
@@ -54,7 +77,9 @@ suite('real AllRice sidebar in installed native profiles', () => {
     context: BrowserContext,
     page: Page,
     other: Page,
-    artifacts: string;
+    legacy: Page,
+    artifacts: string,
+    legacyUrl: string;
 
   const open = async (view: Page, host: (typeof hosts)[number]) => {
     view.setDefaultTimeout(15_000);
@@ -79,22 +104,24 @@ suite('real AllRice sidebar in installed native profiles', () => {
   };
 
   beforeAll(async () => {
+    artifacts = await createBrowserArtifacts();
+    console.info(`Employee sidebar browser evidence: ${artifacts}`);
+    legacyUrl = await writeLegacySidebarBaseline(artifacts);
+    const options = {
+      fixtureGlobals: {
+        __allriceSidebarFixtureData: createSidebarFixtureData(),
+      },
+    };
     hosts.push(
       await startInstalledProfile(
         new URL('./fixtures/sidebar-client.js', import.meta.url),
+        options,
       ),
     );
     hosts.push(
       await startInstalledProfile(
         new URL('./fixtures/sidebar-client.js', import.meta.url),
-      ),
-    );
-    artifacts = await mkdtemp(
-      join(
-        resolve(
-          process.env.ALLRICE_COMPOSITION_TEST_ARTIFACT_DIR ?? hosts[0]!.root,
-        ),
-        'employee-sidebar-',
+        options,
       ),
     );
     browser = await chromium.launch({
@@ -109,12 +136,17 @@ suite('real AllRice sidebar in installed native profiles', () => {
       viewport: { width: 1440, height: 1000 },
       deviceScaleFactor: 1,
       reducedMotion: 'reduce',
+      timezoneId: 'UTC',
     });
     await context.addInitScript(() => {
       Date.now = () => Date.parse('2026-11-21T12:00:00.000Z');
     });
     page = await context.newPage();
     other = await context.newPage();
+    legacy = await context.newPage();
+    legacy.on('pageerror', (error) =>
+      errors.push(`pinned base: ${error.message}`),
+    );
     await other.addInitScript(() => {
       window.__allriceFixtureEmployee = 'writer';
     });
@@ -134,6 +166,7 @@ suite('real AllRice sidebar in installed native profiles', () => {
     if (task.result?.state !== 'fail' || !artifacts || !page || page.isClosed())
       return;
     await page.screenshot({
+      animations: 'disabled',
       path: join(artifacts, `first-failure-${task.id}.png`),
       fullPage: true,
     });
@@ -231,6 +264,172 @@ suite('real AllRice sidebar in installed native profiles', () => {
         ).toBe(0);
     }
     expect(legacyRequests).toEqual([]);
+  }, 60_000);
+
+  it('drives controlled Cordis/reference lifetimes from real sidebar clicks and ignores superseded UI results', async () => {
+    const click = (id: string) =>
+      page.locator(`[data-row-key="session:${id}"]`).click();
+    const owner = () =>
+      page.evaluate(() => window.__allriceSidebarTest!.controlledOwner.events);
+    await page.evaluate(() =>
+      window.__allriceSidebarTest!.controlledOwner.start(),
+    );
+    try {
+      await click('thread-0');
+      await page.waitForFunction(
+        () =>
+          window.__allriceSidebarTest!.controlledOwner.events.filter(
+            (row) => row.event === 'ui:opened',
+          ).length === 1,
+      );
+      const firstRoot = (await owner()).find(
+        (row) => row.event === 'create:start',
+      )!.root!;
+      await click('thread-1');
+      await page.waitForFunction(
+        () =>
+          window.__allriceSidebarTest!.controlledOwner.events.filter(
+            (row) => row.event === 'ui:opened',
+          ).length === 2,
+      );
+      expect(
+        (await owner()).filter((row) => row.event === 'create:start'),
+      ).toHaveLength(1);
+      await click('thread-32');
+      await page.waitForFunction(
+        () =>
+          window.__allriceSidebarTest!.controlledOwner.events.filter(
+            (row) => row.event === 'ui:opened',
+          ).length === 3,
+      );
+      const events = await owner();
+      const closed = events.findIndex(
+        (row) => row.root === firstRoot && row.event === 'destroy:done',
+      );
+      const secondCreate = events.findIndex(
+        (row) => row.root !== firstRoot && row.event === 'create:start',
+      );
+      expect(closed).toBeGreaterThan(-1);
+      expect(secondCreate).toBeGreaterThan(closed);
+      expect(
+        events.filter(
+          (row) =>
+            row.root === firstRoot && row.event === 'native-reference:release',
+        ),
+      ).toHaveLength(2);
+      expect(
+        events.filter((row) => row.root === firstRoot).map((row) => row.event),
+      ).toEqual(
+        expect.arrayContaining([
+          'lifetime:abort',
+          'resource:cancel',
+          'resource:settled',
+          'references:released',
+          'cordis:disposed',
+        ]),
+      );
+
+      await page.evaluate(() =>
+        window.__allriceSidebarTest!.controlledOwner.holdNextCreation(),
+      );
+      await click('thread-0');
+      await page.waitForFunction(
+        () =>
+          window.__allriceSidebarTest!.controlledOwner.pendingCreation() !==
+          null,
+      );
+      const lateRoot = await page.evaluate(() =>
+        window.__allriceSidebarTest!.controlledOwner.pendingCreation(),
+      );
+      await click('thread-32');
+      await page.evaluate(() =>
+        window.__allriceSidebarTest!.controlledOwner.releaseCreation(),
+      );
+      await page.waitForFunction(
+        () =>
+          window.__allriceSidebarTest!.controlledOwner.events.filter(
+            (row) => row.event === 'ui:opened',
+          ).length === 4,
+      );
+      await page.evaluate(
+        ([first, late]) => {
+          window.__allriceSidebarTest!.controlledOwner.deliverLate(first!);
+          window.__allriceSidebarTest!.controlledOwner.deliverLate(late!);
+        },
+        [firstRoot, lateRoot],
+      );
+      expect(
+        await page
+          .getByLabel('受控员工导航')
+          .getAttribute('data-owner-current'),
+      ).toBe('writer');
+      const superseded = await owner();
+      expect(
+        superseded.filter(
+          (row) => row.event === 'ui:opened' && row.employee === 'rice',
+        ),
+      ).toHaveLength(2);
+      expect(
+        superseded.filter((row) => row.event === 'late-ui:ignored'),
+      ).toHaveLength(2);
+      expect(
+        superseded.some(
+          (row) =>
+            row.root === lateRoot && row.event === 'native-reference:ready',
+        ),
+      ).toBe(false);
+      expect(
+        superseded.some(
+          (row) => row.root === lateRoot && row.event === 'cordis:disposed',
+        ),
+      ).toBe(true);
+
+      await page.evaluate(() =>
+        window.__allriceSidebarTest!.controlledOwner.changeRevision(),
+      );
+      await click('thread-33');
+      await page.waitForFunction(
+        () =>
+          window.__allriceSidebarTest!.controlledOwner.events.filter(
+            (row) => row.event === 'ui:opened',
+          ).length === 5,
+      );
+      expect(
+        (await owner()).filter((row) => row.event === 'create:start').at(-1)!
+          .root,
+      ).toContain('writer/2');
+      await page.evaluate(() =>
+        window.__allriceSidebarTest!.controlledOwner.denyNext(),
+      );
+      await click('thread-0');
+      await page
+        .getByRole('alert')
+        .filter({ hasText: 'controlled admission denied' })
+        .waitFor();
+      expect(
+        await page
+          .getByLabel('受控员工导航')
+          .getAttribute('data-owner-current'),
+      ).toBe('');
+      await writeFile(
+        join(artifacts, 'sidebar-navigation-owner.json'),
+        JSON.stringify(
+          {
+            events: await owner(),
+            exercised:
+              'real sidebar click -> exported EmployeeClientNavigation -> real isolated Cordis Context + native SessionReference retain/release + ReadableStream cancellation; late creation/UI and revision/denial',
+            unavailable:
+              'Native Web Client/HTTP/WS/Host mount adapter and authenticated DEntry remain unbound; controlled mode does not call uiWorkspace.openSession and does not claim cross-Host native recovery.',
+          },
+          null,
+          2,
+        ),
+      );
+    } finally {
+      await page.evaluate(() =>
+        window.__allriceSidebarTest!.controlledOwner.stop(),
+      );
+    }
   }, 60_000);
 
   it('keeps native draft and runtime attachment ownership within one Host and records the real cross-root storage boundary', async () => {
@@ -397,7 +596,7 @@ suite('real AllRice sidebar in installed native profiles', () => {
             window.__allriceSidebarTest!.nativeScroll(),
           ),
           scope:
-            'same native root only; cross-root public restore seam unavailable',
+            'same native root only; public ChatViewSlotProps owner may wrap chatScroll, but no cross-root owner adapter is bound/tested here',
         },
         null,
         2,
@@ -431,10 +630,32 @@ suite('real AllRice sidebar in installed native profiles', () => {
         const native = page.locator('#chat-sidebar > div').last();
         const box = await native.boundingBox();
         await native.screenshot({
+          animations: 'disabled',
           path: join(artifacts, `native-${width}-${theme}.png`),
         });
         await page.screenshot({
+          animations: 'disabled',
           path: join(artifacts, `native-page-${width}-${theme}.png`),
+          fullPage: true,
+        });
+        const baseUrl = new URL(legacyUrl);
+        baseUrl.searchParams.set('theme', theme);
+        baseUrl.searchParams.set('sidebarWidth', String(box!.width));
+        await legacy.setViewportSize({ width, height: 1000 });
+        await legacy.goto(baseUrl.href);
+        await legacy.locator('#chat-sidebar').waitFor();
+        await settle(legacy);
+        const old = legacy.locator('#chat-sidebar > div').last();
+        expect(
+          Math.abs((await old.boundingBox())!.width - box!.width),
+        ).toBeLessThanOrEqual(0.5);
+        await old.screenshot({
+          animations: 'disabled',
+          path: join(artifacts, `base3x-${width}-${theme}.png`),
+        });
+        await legacy.screenshot({
+          animations: 'disabled',
+          path: join(artifacts, `base3x-page-${width}-${theme}.png`),
           fullPage: true,
         });
         await page.evaluate(
@@ -447,9 +668,40 @@ suite('real AllRice sidebar in installed native profiles', () => {
           Math.abs((await baseline.boundingBox())!.width - box!.width),
         ).toBeLessThanOrEqual(0.5);
         await baseline.screenshot({
+          animations: 'disabled',
           path: join(artifacts, `shared-frame-baseline-${width}-${theme}.png`),
         });
         await page.evaluate(() => window.__allriceSidebarTest!.baseline(false));
+        await page
+          .locator('#chat-sidebar')
+          .getByRole('button', { name: /^展开其余/ })
+          .first()
+          .click();
+        await legacy
+          .locator('#chat-sidebar')
+          .getByRole('button', { name: /^展开其余/ })
+          .first()
+          .click();
+        await settle(page);
+        await settle(legacy);
+        expect(
+          await page.locator('[data-row-key^="session:"]').count(),
+        ).toBeGreaterThan(30);
+        expect(
+          await legacy.locator('[data-row-key^="session:"]').count(),
+        ).toBeGreaterThan(30);
+        await native.screenshot({
+          animations: 'disabled',
+          path: join(artifacts, `native-expanded-${width}-${theme}.png`),
+        });
+        await old.screenshot({
+          animations: 'disabled',
+          path: join(artifacts, `base3x-expanded-${width}-${theme}.png`),
+        });
+        await page
+          .getByRole('button', { name: '收起更多会话', exact: true })
+          .first()
+          .click();
         if (width === 390) {
           const dialog = page.getByRole('dialog', {
             name: '任务与历史',
@@ -484,10 +736,12 @@ suite('real AllRice sidebar in installed native profiles', () => {
           dpr: 1,
           fixedTime: '2026-11-21T12:00:00.000Z',
           reducedMotion: 'reduce',
+          timezone: 'UTC',
+          animationSampling:
+            'Two animation frames settle; screenshot animations disabled',
           widths: [1440, 390],
           themes: ['light', 'dark'],
-          baseline:
-            'Shared real AllRice Frame/View, same synthetic port data and measured width; no legacy request wrapper',
+          baseline: `Actual pre-extraction ChatSidebar/EmployeeSidebar/SidebarSettings sources and layout CSS from ${sidebarBaselineHead}; same deterministic sidebar-data.mjs and measured width. Shared-frame image is supplementary current-head container comparison only.`,
           errors,
           legacyRequests,
         },
@@ -500,11 +754,12 @@ suite('real AllRice sidebar in installed native profiles', () => {
       `<!doctype html><meta charset="utf-8"><title>MET-276 真实侧栏对照</title>
 <style>body{font:16px system-ui;margin:24px;background:#f3f4f6;color:#111}main{display:flex;gap:24px;align-items:flex-start}img{max-width:100%;border:1px solid #bbb}section{min-width:0}p{max-width:900px}select{font:inherit;margin:12px}</style>
 <h1>MET-276 真实 AllRice Frame/View → 原生 sidebar</h1>
-<p>待主线逐屏复核。两侧使用同一合成数据、固定时间、DPR1、减少动态效果和实测相同宽度。左侧为现有 AllRice 呈现的共享组件基准；不把旧截图里的不同员工当像素基准。正式 SSO、同 origin 员工草稿隔离、跨根附件/scroll 仍未接通。</p>
+<p>待主线逐屏复核。两侧使用同一 sidebar-data.mjs 合成数据、固定时间、DPR1、减少动态效果和实测相同宽度。左侧真实旧 ChatSidebar 从固定 base ${sidebarBaselineHead} 编译，源码哈希保存在 legacy-base-sources.json。正式 SSO、同 origin 员工草稿隔离、跨根附件/scroll 仍未接通。</p>
 <label>画布<select id="width"><option>1440</option><option>390</option></select></label><label>主题<select id="theme"><option>light</option><option>dark</option></select></label>
-<main><section><h2>共享真实 Frame/View 基准</h2><img id="before"></section><section><h2>原生 sidebar 内实现</h2><img id="after"></section></main>
+<label>列表<select id="expanded"><option value="">预览</option><option value="expanded-">展开其余</option></select></label>
+<main><section><h2>固定 base 的真实 3.x 入口</h2><img id="before"></section><section><h2>原生 sidebar 内实现</h2><img id="after"></section></main>
 <p><a href="capture-context.json">浏览器与源码记录</a> · <a href="native-storage-boundary.json">同 origin 同 ID 负向原件</a> · <a href="native-reading-anchor.json">同根阅读位置记录</a></p>
-<script>const w=document.getElementById('width'),t=document.getElementById('theme');function show(){document.getElementById('before').src='shared-frame-baseline-'+w.value+'-'+t.value+'.png';document.getElementById('after').src='native-'+w.value+'-'+t.value+'.png'}w.onchange=t.onchange=show;show();</script>`,
+<script>const w=document.getElementById('width'),t=document.getElementById('theme'),e=document.getElementById('expanded');function show(){document.getElementById('before').src='base3x-'+e.value+w.value+'-'+t.value+'.png';document.getElementById('after').src='native-'+e.value+w.value+'-'+t.value+'.png'}w.onchange=t.onchange=e.onchange=show;show();</script>`,
     );
     expect(errors).toEqual([]);
     expect(legacyRequests).toEqual([]);

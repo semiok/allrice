@@ -21,5 +21,6 @@ export interface EmployeeClientPort<Mount extends { remountKey: string }> {
 export class EmployeeClientNavigation<Mount extends { remountKey: string }> {
   constructor(port: EmployeeClientPort<Mount>);
   select(selection: EmployeeThreadSelection): Promise<'opened' | 'superseded'>;
+  /** Rejects with any recorded teardown failure; repeated disposal never retries it. */
   dispose(): Promise<void>;
 }

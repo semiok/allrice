@@ -26,6 +26,7 @@ const repoRoot = resolve(packageRoot, '../..');
 /** Installs a real product tarball into an isolated credential-free native Host. */
 export async function startInstalledProfile(
   fixtureClient = new URL('./fixtures/client.js', import.meta.url),
+  options: { fixtureGlobals?: Record<string, unknown> } = {},
 ) {
   const root = await realpath(
     await mkdtemp(join(tmpdir(), 'allrice-composition-browser-')),
@@ -132,7 +133,16 @@ export async function startInstalledProfile(
       }),
     );
     await writeFile(join(fixture, 'index.js'), 'export function apply() {}\n');
-    await writeFile(join(fixture, 'client.js'), await readFile(fixtureClient));
+    const globals = Object.entries(options.fixtureGlobals ?? {})
+      .map(
+        ([key, value]) =>
+          `window[${JSON.stringify(key)}]=${JSON.stringify(value)};`,
+      )
+      .join('\n');
+    await writeFile(
+      join(fixture, 'client.js'),
+      `${globals}\n${await readFile(fixtureClient, 'utf8')}`,
+    );
     await symlink(
       fixture,
       join(profile, 'node_modules/@allrice/composition-test-fixture'),

@@ -1,4 +1,4 @@
-/* global window, localStorage */
+/* global window, localStorage, ReadableStream */
 // Synthetic business port only. Product code has no fallback/fixture port.
 window.__ModuleLoader__.load({
   id: '@allrice/composition-test-fixture',
@@ -9,42 +9,13 @@ window.__ModuleLoader__.load({
       EmployeeSidebarView,
       SidebarSettingsTrigger,
       bindEmployeeSidebar,
+      EmployeeClientNavigation,
     } = require('@allrice/dsh-web-composition');
+    const { Context } = require('@deepseek-ai/cordis');
     const first = 'session-00000000-0000-4000-8000-000000000036';
     const second = 'session-00000000-0000-4000-8000-000000000031';
     const fixtureEmployee = window.__allriceFixtureEmployee ?? 'rice';
-    const fixedNow = Date.parse('2026-11-21T12:00:00.000Z');
-    const employee = (id, name) => ({
-      id,
-      employeeId: id,
-      isDefault: id === 'rice',
-      versions: [],
-      currentVersion: {
-        id: `${id}-v1`,
-        manifest: { name, description: '合成员工：验证现有左栏组件。' },
-      },
-    });
-    const employees = [
-      employee('rice', 'Rice'),
-      employee('writer', '文案助理与季度报告编辑员'),
-      employee('empty', '空员工'),
-    ];
-    const sessions = Array.from({ length: 39 }, (_, index) => ({
-      id: `thread-${index}`,
-      title:
-        index === 0
-          ? '核对季度销售预算与重点客户跟进计划：覆盖全部区域、长标题和待办事项'
-          : index === 1
-            ? 'QuarterlyRevenueCustomerFollowUpReport_2026_AllRegions_FinalReview_NoSpaces'
-            : `工作 ${index + 1} · 合成历史记录`,
-      ownerId: 'person',
-      employeeAssignmentId: index < 32 ? 'rice' : 'writer',
-      employeeVersionId: index < 32 ? 'rice-v1' : 'writer-v1',
-      visibility: 'private',
-      updatedAt: new Date(fixedNow - index * 60000).toISOString(),
-      archivedAt:
-        index === 31 ? new Date(fixedNow - 86400000).toISOString() : null,
-    }));
+    const { employees, sessions } = window.__allriceSidebarFixtureData;
     return {
       inject: [
         'sessions',
@@ -107,6 +78,7 @@ window.__ModuleLoader__.load({
           loadPreview: (id) => record('preview', id),
           loadMore: (id) => record('more', id),
         };
+        let controlled;
         current = {
           archive,
           settingsOpen: false,
@@ -120,6 +92,10 @@ window.__ModuleLoader__.load({
             onSelectSession: (id) => {
               record('select-thread', id);
               const row = sessions.find((session) => session.id === id);
+              if (controlled.enabled) {
+                controlled.select(row);
+                return;
+              }
               if (row.employeeAssignmentId !== fixtureEmployee) {
                 publish({
                   error: '合成夹具未绑定该员工客户端',
@@ -135,6 +111,220 @@ window.__ModuleLoader__.load({
             onDetails: (id) => record('details', id),
           },
         };
+        // A real Cordis root + native retained references exercise the opaque
+        // ownership port. No Web Client/HTTP/WS mount is available here; this
+        // controlled mode deliberately never calls uiWorkspace.openSession.
+        const ownerEvents = [];
+        const lateCallbacks = new Map();
+        let navigation,
+          viewRequest = 0,
+          revision = 1,
+          rootNumber = 0,
+          holdCreation = false,
+          releaseCreation,
+          creating = null,
+          denyNext = false;
+        controlled = {
+          enabled: false,
+          events: ownerEvents,
+          start() {
+            if (controlled.enabled)
+              throw new Error('Controlled owner already active');
+            controlled.enabled = true;
+            navigation = new EmployeeClientNavigation({
+              async admit(input, signal) {
+                ownerEvents.push({
+                  event: 'admit',
+                  employee: input.employeeInstanceId,
+                });
+                if (signal.aborted) throw new Error('superseded');
+                if (denyNext) {
+                  denyNext = false;
+                  throw new Error(
+                    'DEPENDENCY_UNAVAILABLE: controlled admission denied',
+                  );
+                }
+                return {
+                  mount: {
+                    employee: input.employeeInstanceId,
+                    remountKey: `controlled:${input.employeeInstanceId}/${revision}`,
+                  },
+                  nativeSessionId:
+                    input.threadId === 'thread-0' ? first : second,
+                };
+              },
+              async create(mount, lifetime) {
+                const id = `${mount.remountKey}#${++rootNumber}`;
+                const root = new Context();
+                const references = [];
+                let live = true;
+                const push = (event) => ownerEvents.push({ event, root: id });
+                const reader = new ReadableStream({
+                  cancel() {
+                    push('resource:cancel');
+                  },
+                }).getReader();
+                const pendingRead = reader
+                  .read()
+                  .then(() => push('resource:settled'));
+                const onAbort = () => push('lifetime:abort');
+                lifetime.addEventListener('abort', onAbort, { once: true });
+                root.effect(() => () => {
+                  live = false;
+                  lifetime.removeEventListener('abort', onAbort);
+                  push('cordis:disposed');
+                });
+                lateCallbacks.set(id, () => {
+                  if (!live || lifetime.aborted) push('late-ui:ignored');
+                  else publish({ ownerCurrent: mount.employee });
+                });
+                push('create:start');
+                if (holdCreation) {
+                  holdCreation = false;
+                  creating = id;
+                  await new Promise((done) => {
+                    releaseCreation = done;
+                  });
+                  releaseCreation = undefined;
+                  creating = null;
+                }
+                push('create:return');
+                return {
+                  async openSession(nativeSessionId, signal) {
+                    if (signal.aborted) return;
+                    const reference = ctx.sessions.retain(nativeSessionId, {
+                      source: 'workspaceOperation',
+                    });
+                    references.push(reference);
+                    await reference.ready;
+                    push('native-reference:ready');
+                  },
+                  async abort() {
+                    if (!lifetime.aborted)
+                      throw new Error('lifetime must abort first');
+                    push('abort:start');
+                    await reader.cancel();
+                    await pendingRead;
+                    push('abort:done');
+                  },
+                  releaseSessionReferences() {
+                    for (const reference of references.splice(0)) {
+                      reference.release();
+                      push('native-reference:release');
+                    }
+                    push('references:released');
+                  },
+                  async destroy() {
+                    push('destroy:start');
+                    await root.fiber.dispose();
+                    push('destroy:done');
+                  },
+                };
+              },
+            });
+            publish({
+              ownerCurrent: '',
+              error: undefined,
+              tree: { activeId: null },
+            });
+          },
+          select(row) {
+            const request = ++viewRequest;
+            publish({
+              error: undefined,
+              tree: { pendingEmployeeAssignmentId: row.employeeAssignmentId },
+            });
+            navigation
+              .select({
+                employeeInstanceId: row.employeeAssignmentId,
+                threadId: row.id,
+              })
+              .then(
+                (result) => {
+                  if (request !== viewRequest || result !== 'opened') return;
+                  ownerEvents.push({
+                    event: 'ui:opened',
+                    employee: row.employeeAssignmentId,
+                  });
+                  publish({
+                    ownerCurrent: row.employeeAssignmentId,
+                    tree: {
+                      activeId: row.id,
+                      pendingEmployeeAssignmentId: null,
+                    },
+                  });
+                },
+                (error) => {
+                  if (request !== viewRequest) return;
+                  publish({
+                    ownerCurrent: '',
+                    error: error.message,
+                    tree: { activeId: null, pendingEmployeeAssignmentId: null },
+                  });
+                },
+              );
+          },
+          holdNextCreation() {
+            holdCreation = true;
+          },
+          pendingCreation: () => creating,
+          releaseCreation: () => releaseCreation?.(),
+          changeRevision() {
+            revision++;
+          },
+          denyNext() {
+            denyNext = true;
+          },
+          deliverLate(id) {
+            lateCallbacks.get(id)?.();
+          },
+          async stop() {
+            if (!controlled.enabled) return;
+            controlled.enabled = false;
+            viewRequest++;
+            releaseCreation?.();
+            await navigation.dispose();
+            lateCallbacks.clear();
+            publish({
+              ownerCurrent: undefined,
+              error: undefined,
+              tree: {
+                activeId: fixtureEmployee === 'rice' ? 'thread-0' : 'thread-32',
+                pendingEmployeeAssignmentId: null,
+              },
+            });
+          },
+        };
+        ctx.effect(() => () => controlled.stop());
+        const OwnerStatus = () => {
+          const value = React.useSyncExternalStore(
+            (listener) => {
+              listeners.add(listener);
+              return () => listeners.delete(listener);
+            },
+            () => current,
+          );
+          return value.ownerCurrent === undefined
+            ? null
+            : React.createElement(
+                'output',
+                {
+                  'aria-label': '受控员工导航',
+                  'data-owner-current': value.ownerCurrent,
+                  style: {
+                    position: 'fixed',
+                    right: 8,
+                    bottom: 8,
+                    pointerEvents: 'none',
+                  },
+                },
+                `受控 owner（非原生 Client 重挂）: ${value.ownerCurrent || '等待选择'}`,
+              );
+        };
+        ctx.slots.register(
+          { name: 'shell.overlay', id: 'controlled-owner-status' },
+          OwnerStatus,
+        );
         bindEmployeeSidebar(ctx, {
           getSnapshot: () => current,
           subscribe: (listener) => {
@@ -192,6 +382,7 @@ window.__ModuleLoader__.load({
         const test = {
           fixtureEmployee,
           commands,
+          controlledOwner: controlled,
           openSession: (id) => ctx.uiWorkspace.openSession(id),
           setTheme: (mode) => ctx.theme.setTheme(mode),
           setState: (kind) => {

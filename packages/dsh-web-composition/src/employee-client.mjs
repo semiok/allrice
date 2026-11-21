@@ -142,13 +142,18 @@ export class EmployeeClientNavigation {
     }
   }
 
-  /** Abort immediately and resolve only after the last root has been destroyed. */
+  /** Abort immediately; retain any unconfirmed teardown failure without retry. */
   dispose() {
     if (!this.disposed) {
       this.disposed = true;
       this.pending?.abort();
       this.active?.lifetime.abort();
-      this.tail = this.tail.catch(() => {}).then(() => this.closeActive());
+      this.tail = this.tail
+        .catch(() => {})
+        .then(async () => {
+          await this.closeActive();
+          if (this.teardownFailure) throw this.teardownFailure;
+        });
     }
     return this.tail.then(() => {});
   }

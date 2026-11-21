@@ -133,13 +133,16 @@ it('waits for actual old-root disposal and stops mounting if teardown fails', as
   expect(events).toEqual(['create:rice', 'abort', 'release', 'destroy:start']);
   finish.resolve();
   await failed;
+  const failure = await next.catch((error: unknown) => error);
   await expect(navigation.select(selection('other'))).rejects.toThrow(
     'Previous client did not close',
   );
   expect(events.filter((entry) => entry.startsWith('create:'))).toEqual([
     'create:rice',
   ]);
-  await navigation.dispose();
+  await expect(navigation.dispose()).rejects.toBe(failure);
+  await expect(navigation.dispose()).rejects.toBe(failure);
+  expect(events).toEqual(['create:rice', 'abort', 'release', 'destroy:start']);
 });
 
 it('leaves no old client after admission is denied, preserving the original owner error', async () => {
@@ -250,4 +253,47 @@ it('aborts a root being created and disposes its late result before resolving su
   await expect(navigation.select(selection('rice'))).rejects.toThrow(
     'disposed',
   );
+});
+
+it('rejects dispose with the saved failure when a cancelled late root cannot be destroyed', async () => {
+  const entered = deferred(),
+    finish = deferred();
+  const cause = new Error('late root still live');
+  const events: string[] = [];
+  const navigation = new EmployeeClientNavigation({
+    admit: async () => ({
+      mount: { remountKey: 'rice' },
+      nativeSessionId: 'same-native-id',
+    }),
+    create: async () => {
+      entered.resolve();
+      await finish.promise;
+      return {
+        openSession() {
+          events.push('unexpected-open');
+        },
+        abort() {
+          events.push('abort');
+        },
+        releaseSessionReferences() {
+          events.push('release');
+        },
+        destroy() {
+          events.push('destroy');
+          throw cause;
+        },
+      };
+    },
+  });
+  const opening = navigation.select(selection('rice'));
+  await entered.promise;
+  const closing = navigation.dispose();
+  const rejection = closing.catch((error: AggregateError) => error);
+  finish.resolve();
+  expect(await opening).toBe('superseded');
+  const failure = await rejection;
+  expect(failure).toBeInstanceOf(AggregateError);
+  expect((failure as AggregateError).errors).toEqual([cause]);
+  await expect(navigation.dispose()).rejects.toBe(failure);
+  expect(events).toEqual(['abort', 'release', 'destroy']);
 });

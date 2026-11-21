@@ -96,12 +96,17 @@ jobs:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
           ALLRICE_RUN_BRAND_CONTENT_BROWSER: 1
         run: node scripts/ci-integration-tests.mjs run -- --maxWorkers=1 --testTimeout=30000 apps/web/components/admin/admin-shell.browser.test.ts apps/web/components/theme/theme.browser.test.ts packages/ui/src/design-tokens.browser.test.ts apps/web/app/login/auth-submit.browser.test.ts apps/web/app/chatflow/workbench-layout.browser.test.ts apps/web/app/chatflow/native-document-preview.browser.test.ts apps/web/app/chatflow/terminal-workbench.browser.test.ts apps/web/app/chatflow/once-tasks.browser.test.ts apps/web/app/chatflow/recurring-tasks.browser.test.ts apps/web/app/chatflow/automation-tasks.browser.test.ts apps/web/app/chatflow/composer-isolation.browser.test.ts apps/web/app/chatflow/composer-status.browser.test.ts apps/web/app/chatflow/chat-contrast.browser.test.ts apps/web/app/chatflow/plain-copy.browser.test.ts apps/web/app/chatflow/technical-details.browser.test.ts apps/web/app/chatflow/work-process-reading.browser.test.ts apps/web/app/chatflow/local-command-theme.browser.test.ts apps/web/app/chatflow/sidebar-labels.browser.test.ts apps/web/app/chatflow/catalog-contrast.browser.test.ts apps/web/app/chatflow/browser-workspace-panel.browser.test.ts apps/web/app/chatflow/brand-content-panel.test.tsx apps/web/app/workspace/mcp/connected-apps.browser.test.ts apps/web/app/runtime-console/platform-model-settings.browser.test.ts apps/web/app/runtime-console/codex-subscriptions.browser.test.ts apps/web/app/runtime-console/codex-authorization.browser.test.ts apps/web/app/runtime-console/platform-mcp-settings.browser.test.ts apps/web/app/runtime-console/technical-tasks.browser.test.ts apps/web/app/runtime-console/platform-quality.browser.test.ts apps/web/app/runtime-console/platform-quality-evidence.browser.test.ts apps/web/app/runtime-console/platform-repository-repair.browser.test.ts apps/web/app/runtime-console/platform-repository-publications.browser.test.ts apps/web/app/runtime-console/platform-repository-reviews.browser.test.ts apps/web/app/runtime-console/platform-repository-merges.browser.test.ts apps/web/server/project-preview.test.mjs
+      - name: Make the pinned pre-extraction sidebar source available
+        run: |
+          git cat-file -e d8f6ed3fa01bdd6e5d72e55702eb703e5e670d00^{commit} 2>/dev/null ||
+            git fetch --no-tags --depth=1 origin d8f6ed3fa01bdd6e5d72e55702eb703e5e670d00
       - name: Collect remaining standalone browser integration tests
         env:
           ALLRICE_RUN_BROWSER_INTEGRATION: 1
           ALLRICE_RUN_BRAND_CONTENT_BROWSER: 1
           ALLRICE_TEST_STATIC_BROWSER: 1
           ALLRICE_MANAGED_BROWSER_EXECUTABLE: /opt/google/chrome/chrome
+          ALLRICE_COMPOSITION_TEST_ARTIFACT_DIR: ${{ github.workspace }}/.local/integration-collection/employee-sidebar
         run: |
           test -x "$ALLRICE_MANAGED_BROWSER_EXECUTABLE"
           "$ALLRICE_MANAGED_BROWSER_EXECUTABLE" --version
