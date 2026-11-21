@@ -367,6 +367,7 @@ window.__ModuleLoader__.load({
             React.createElement(ChatSidebarFrame, {
               archive: value.archive,
               collapsed: false,
+              overlay: window.matchMedia('(max-width: 760px)').matches,
               style: { height: '100%' },
               onCollapsedChange: () => record('baseline-collapse'),
               onCreateEmployee: () => record('create-employee'),
