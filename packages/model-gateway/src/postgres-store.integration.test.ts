@@ -417,6 +417,15 @@ integration(
       const [held] =
         await firstDb`select attempt_id from allrice_model_gateway_slots where attempt_id=${start.id}`;
       expect(held?.attempt_id).toBe(start.id);
+      await expect(
+        second.reconcileOwner(start.ownerId, ''),
+      ).rejects.toMatchObject({ code: 'AUTHORIZATION_DENIED' });
+      expect(
+        await second.reconcileOwner(randomUUID(), 'host-proof:other-owner'),
+      ).toBe(0);
+      expect(
+        await firstDb`select attempt_id from allrice_model_gateway_slots where attempt_id=${start.id}`,
+      ).toHaveLength(1);
       expect(
         await first.usage(binding.vm.personId, binding.vm.organizationId),
       ).toMatchObject({
@@ -433,6 +442,31 @@ integration(
       await expect(
         firstDb`update allrice_model_gateway_attempts set recovery_evidence_ref='' where id=${start.id}`,
       ).rejects.toThrow('immutable');
+      await expect(
+        firstDb`update allrice_model_gateway_attempts set receipt=jsonb_set(receipt,'{httpStatus}','201'::jsonb) where id=${start.id}`,
+      ).rejects.toThrow('immutable');
+      await firstDb.unsafe(`create function fail_recovery_evidence() returns trigger language plpgsql as $$ begin
+        if new.id='${start.id}' and new.recovery_evidence_ref is not null then raise exception 'synthetic recovery evidence write failure'; end if; return new; end $$;
+        create trigger fail_recovery_evidence before update on allrice_model_gateway_attempts for each row execute function fail_recovery_evidence()`);
+      try {
+        await expect(
+          second.reconcileOwner(
+            start.ownerId,
+            'host-proof:exact-stopped-transport',
+          ),
+        ).rejects.toThrow('synthetic recovery evidence write failure');
+        expect(
+          await firstDb`select attempt_id from allrice_model_gateway_slots where attempt_id=${start.id}`,
+        ).toHaveLength(1);
+        expect(await second.attempts(start.callId)).toEqual([receipt]);
+        const [unmodified] =
+          await firstDb`select recovery_evidence_ref from allrice_model_gateway_attempts where id=${start.id}`;
+        expect(unmodified?.recovery_evidence_ref).toBeNull();
+      } finally {
+        await firstDb.unsafe(
+          'drop trigger fail_recovery_evidence on allrice_model_gateway_attempts; drop function fail_recovery_evidence()',
+        );
+      }
       expect(
         await second.reconcileOwner(
           start.ownerId,
@@ -461,6 +495,9 @@ integration(
       const finished = await attempt(binding);
       await first.tryStartAttempt(finished);
       await first.finishAttempt(closed(finished));
+      await expect(
+        firstDb`update allrice_model_gateway_attempts set receipt=jsonb_set(receipt,'{httpStatus}','201'::jsonb) where id=${finished.id}`,
+      ).rejects.toThrow('immutable');
       await expect(
         firstDb`update allrice_model_gateway_attempts set recovery_evidence_ref='unrelated-proof' where id=${finished.id}`,
       ).rejects.toThrow('immutable');
