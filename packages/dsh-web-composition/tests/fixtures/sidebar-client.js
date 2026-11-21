@@ -9,6 +9,7 @@ window.__ModuleLoader__.load({
       EmployeeSidebarView,
       SidebarSettingsTrigger,
       bindEmployeeSidebar,
+      bindEmployeeSettings,
       EmployeeClientNavigation,
     } = require('@allrice/dsh-web-composition');
     const { Context } = require('@deepseek-ai/cordis');
@@ -27,7 +28,8 @@ window.__ModuleLoader__.load({
         'conversation',
       ],
       apply(ctx) {
-        const listeners = new Set();
+        const listeners = new Set(),
+          settingsListeners = new Set();
         const commands = [];
         const workspace = {
           viewerId: 'person',
@@ -45,6 +47,7 @@ window.__ModuleLoader__.load({
           JSON.stringify({ rice: true, writer: true, empty: true }),
         );
         let current,
+          nativeLauncher,
           baseline = false,
           baselineWidth = 280;
         const publish = (change = {}) => {
@@ -336,7 +339,52 @@ window.__ModuleLoader__.load({
             record('open-archive');
             setFilter('only');
           },
-          openEmployeeSettings: () => record('employee-settings'),
+          openEmployeeSettings: () => nativeLauncher?.openSettings(),
+        });
+        // This test owner binds the actual settings contribution. Native
+        // General remains authoritative for the modal and its open state.
+        let settings = {
+          scopeKey: `synthetic-sidebar/${fixtureEmployee}`,
+          preferences: {
+            values: { streamingOutput: true },
+            pending: false,
+            error: null,
+          },
+        };
+        bindEmployeeSettings(ctx, {
+          getSnapshot: () => settings,
+          subscribe: (listener) => {
+            settingsListeners.add(listener);
+            return () => settingsListeners.delete(listener);
+          },
+          renderSection: (section) =>
+            React.createElement(
+              'p',
+              null,
+              `侧栏测试的合成 ${section} owner，不代表真实业务迁移。`,
+            ),
+          openAccountSettings: () => record('account-settings'),
+          reloadPreferences: () => {},
+          setStreamingOutput(scope, enabled) {
+            if (scope.signal.aborted || scope.key !== settings.scopeKey) return;
+            settings = {
+              ...settings,
+              preferences: {
+                values: { streamingOutput: enabled },
+                pending: false,
+                error: null,
+              },
+            };
+            for (const listener of settingsListeners) listener();
+          },
+          bindNativeLauncher(value) {
+            nativeLauncher = value;
+            if (current.settingsOpen !== value.settingsOpen)
+              publish({ settingsOpen: value.settingsOpen });
+            return () => {
+              if (nativeLauncher === value) nativeLauncher = undefined;
+            };
+          },
         });
         const Baseline = () => {
           const value = React.useSyncExternalStore(
@@ -382,6 +430,10 @@ window.__ModuleLoader__.load({
         const test = {
           fixtureEmployee,
           commands,
+          settingsLauncher: () => ({
+            ready: !!nativeLauncher,
+            open: current.settingsOpen,
+          }),
           controlledOwner: controlled,
           openSession: (id) => ctx.uiWorkspace.openSession(id),
           setTheme: (mode) => ctx.theme.setTheme(mode),

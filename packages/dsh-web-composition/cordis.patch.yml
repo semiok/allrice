@@ -1,14 +1,26 @@
 - insert:
     - id: allrice-web-composition
       name: '@allrice/dsh-web-composition'
+    - id: allrice-settings-models-host
+      name: '@allrice/dsh-web-composition/host/settings-models'
+    - id: allrice-settings-account-host
+      name: '@allrice/dsh-web-composition/host/settings-account'
+    - id: allrice-plugin-manager-host
+      name: '@allrice/dsh-web-composition/host/plugin-manager'
 # Its Host entry is a no-op. The AllRice column is the cold-profile child owner;
 # native settings-general continues to own the actual settings shell.
 - id: ui-sidebar
   disabled: true
 # Employee settings retain native General and all execution/Host services.
-# These UI packages contribute manager-only sections or plugin management.
+# The inserted Host-only entries reuse native Config defaults and behavior;
+# native client-modules skips package subpaths. Retain the probe's Typert face.
+- id: typert-loader
+  config:
+    packages:
+      - '@deepseek-ai/dsh-client-ui-plugin-manager'
 - id: ui-settings-models
   disabled: true
+# These six disabled settings UI entries have native no-op Host halves.
 - id: ui-settings-agent-loop
   disabled: true
 - id: ui-settings-plugins

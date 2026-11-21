@@ -714,6 +714,16 @@ importers:
         version: 4.4.3
 
   packages/dsh-web-composition:
+    dependencies:
+      '@deepseek-ai/dsh-client-ui-plugin-manager':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@deepseek-ai/dsh-client-ui-settings-account':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@deepseek-ai/dsh-client-ui-settings-models':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
     devDependencies:
       '@allrice/ui':
         specifier: workspace:*

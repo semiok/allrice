@@ -26,6 +26,7 @@ interface OwnerEvent {
 interface SidebarTest {
   fixtureEmployee: string;
   commands: { name: string; id?: string }[];
+  settingsLauncher: () => { ready: boolean; open: boolean };
   openSession: (id: string) => void;
   setTheme: (theme: 'light' | 'dark') => void;
   setState: (state: string) => void;
@@ -212,7 +213,30 @@ suite('real AllRice sidebar in installed native profiles', () => {
     await sidebar
       .getByRole('button', { name: '和 Rice 开新会话', exact: true })
       .click();
-    await sidebar.getByRole('button', { name: '设置', exact: true }).click();
+    await page.waitForFunction(
+      () => window.__allriceSidebarTest!.settingsLauncher().ready,
+    );
+    const settingsTrigger = sidebar.getByRole('button', {
+      name: '设置',
+      exact: true,
+    });
+    await settingsTrigger.click();
+    const settings = page.locator('[data-shortcut-modal="settings"]');
+    await settings.waitFor({ state: 'visible' });
+    expect(await settings.count()).toBe(1);
+    await settings
+      .getByRole('button', { name: 'AllRice 账号', exact: true })
+      .waitFor();
+    await page.waitForFunction(
+      () => window.__allriceSidebarTest!.settingsLauncher().open,
+    );
+    expect(await settingsTrigger.getAttribute('aria-expanded')).toBe('true');
+    await settings.getByRole('button', { name: '关闭', exact: true }).click();
+    await settings.waitFor({ state: 'detached' });
+    await page.waitForFunction(
+      () => !window.__allriceSidebarTest!.settingsLauncher().open,
+    );
+    expect(await settingsTrigger.getAttribute('aria-expanded')).toBe('false');
     await sidebar
       .getByRole('button', { name: '查看归档', exact: true })
       .click();
@@ -228,7 +252,6 @@ suite('real AllRice sidebar in installed native profiles', () => {
         'create-employee',
         'details',
         'new-thread',
-        'employee-settings',
         'open-archive',
       ]),
     );

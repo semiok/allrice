@@ -245,8 +245,20 @@ it('composes the cold public profile and resolves actual General/layout/schedule
     'ui-settings-web-search',
     'ui-settings-account',
     'ui-plugin-manager',
-  ])
+  ]) {
     expect(entries.find((row) => row.id === id)?.disabled, id).toBe(true);
+    expect(ids, id).not.toContain('@deepseek-ai/dsh-client-' + id);
+  }
+  for (const [id, host] of [
+    ['allrice-settings-models-host', 'settings-models'],
+    ['allrice-settings-account-host', 'settings-account'],
+    ['allrice-plugin-manager-host', 'plugin-manager'],
+  ]) {
+    const entry = entries.find((row) => row.id === id);
+    expect(entry?.disabled, id).not.toBe(true);
+    expect(entry?.name, id).toBe('@allrice/dsh-web-composition/host/' + host);
+    expect(ids, id).not.toContain('@allrice/dsh-web-composition/host/' + host);
+  }
   for (const id of [
     'settings',
     'settings-controller',

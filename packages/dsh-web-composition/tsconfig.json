@@ -12,6 +12,7 @@
   "include": [
     "build.mjs",
     "index.mjs",
+    "host/**/*.mjs",
     "src/**/*.cjs",
     "src/**/*.mjs",
     "src/**/*.tsx",

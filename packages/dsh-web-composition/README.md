@@ -40,8 +40,17 @@ surfaces or production preferences. Browser execution remains pending.
 
 The employee profile excludes the native manager UI packages for model,
 agent-loop, plugin inventory/management, shell, subagent, web search and supplier
-account settings. Native General/settings and execution/Host services remain.
-This changes presentation only and does not revoke API permissions.
+account settings. Three inserted `allrice-*-host` Loader entries use the package's
+public `./host/*` re-exports of the original models, account and plugin-manager
+Host plugins, with their native Config schemas and defaults. Native
+client-modules does not discover browser faces from package subpaths. The public
+`typert-loader.packages` option retains the probe's native Remote artifact. The
+other six settings UI packages have no-op Host entries. Native General/settings
+and execution/Host services remain. This does not revoke API permissions.
+
+The independent cold profile uses native defaults for these three Host entries.
+An owner using non-default values must configure the new Host entry ids; this
+package supplies no migration of disabled UI-entry configuration.
 
 The root owner must abort actual HTTP/WS/resources, release native session
 references and await Client/Cordis disposal before creating another key. The
@@ -90,6 +99,9 @@ a session, or sends a model request.
 ## Public contract and ownership
 
 Host exports `apply`; the browser artifact exposes Cordis `inject`/`apply`.
+The public `./host/plugin-manager`, `./host/settings-account` and
+`./host/settings-models` exports only re-export the corresponding native Host
+plugins. Their new Host-only entry ids are declared in `cordis.patch.yml`.
 Public assets are `./cordis.patch.yml`, `./profile`, and `./package.json`.
 There is no business service, MCP tool, database, event projection, admin route,
 or new permission configuration. Profile removal follows native composition;
@@ -163,6 +175,10 @@ native side share `tests/fixtures/sidebar-data.mjs`, time, dimensions and themes
 It writes `legacy-base-entry.html`, hashed `legacy-base-sources.json`, and
 1440/390 light/dark preview/expanded images. Current shared-Frame images are
 supplementary container comparisons, never labeled pre-extraction baselines.
+Its synthetic sidebar owner binds `bindEmployeeSettings`, waits for the committed
+native launcher, clicks the real AllRice settings button, verifies and closes the
+native settings modal, then continues the existing sidebar command assertions.
+This is launcher integration coverage, not authenticated business migration.
 CI fetches only the exact base object if its shallow checkout lacks it and
 uploads the suite's evidence through the existing integration collector.
 Source-archive runners may instead set the test-only
