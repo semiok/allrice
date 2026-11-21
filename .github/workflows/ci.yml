@@ -7,6 +7,9 @@ on:
     types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
+  schedule:
+    # UTC 18:23 = Beijing 02:23 the following day; use the existing four gates.
+    - cron: '23 18 * * *'
 
 permissions:
   contents: read
@@ -16,9 +19,10 @@ permissions:
 # old commit's run therefore replaces the newer one too. A push to main gets a group of its
 # own (the run id), so no merge is cancelled or left pending behind another. The event
 # name keeps a pull request number and a run id from ever naming the same group.
+# Each nightly run has its own group and never cancels push/PR or another night.
 concurrency:
   group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   tenant-workbench-browser:
@@ -183,6 +187,9 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Scheduled events have no before/base SHA; audit the current merge.
+          fetch-depth: 2
       - name: Capture actual checked-out repository identity
         run: node scripts/acceptance/platform/repository-ci.mjs capture --output=.local/repository-ci/source.json
       - uses: pnpm/action-setup@v4
@@ -208,14 +215,19 @@ jobs:
       # MET-220 R1: no new regex or keyword match on the user's Chinese wording outside
       # the baseline, and the baseline holds nothing its base commit's did not.
       - name: Block new regex matching of user wording (MET-210 #2)
+        id: audit-base
         env:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            BASE="$(git rev-parse HEAD^)"
+          fi
           git fetch --no-tags --depth=1 origin "$BASE"
+          printf 'base=%s\n' "$BASE" >> "$GITHUB_OUTPUT"
           pnpm user-text-regex:verify --base "$BASE"
       - name: Block unapproved DSH adaptations and private interfaces (MET-210 #4)
         env:
-          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          BASE: ${{ steps.audit-base.outputs.base }}
         run: node --import tsx scripts/dsh-convergence-gate.ts --base "$BASE"
       - name: Unit-test the M1 monitor (standard-library Python, no services)
         run: python3 -m unittest discover -s scripts/m1 -p 'test_*.py'
@@ -294,6 +306,9 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
           DATABASE_URL: postgres://allrice:allrice@127.0.0.1:54329/allrice
         run: |
+          if [ "$GITHUB_EVENT_NAME" = schedule ]; then
+            BASE="$(git rev-parse HEAD^)"
+          fi
           git fetch --no-tags --depth=1 origin "$BASE"
           node --import tsx scripts/dsh-convergence-gate.ts --tables --base "$BASE"
       - name: Reserve PostgreSQL lock capacity for disposable migration schemas
