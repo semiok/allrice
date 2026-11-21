@@ -22,6 +22,10 @@ export function createPanelsCausalDom() {
     'visibility',
     'content',
     'border-radius',
+    'border-top-left-radius',
+    'border-top-right-radius',
+    'border-bottom-right-radius',
+    'border-bottom-left-radius',
     'border-width',
     'border-color',
     'border-style',
@@ -89,6 +93,10 @@ export function createPanelsCausalDom() {
     const matrix = svg ? element.getScreenCTM() : null;
     return {
       identity: identity(element),
+      parentIdentity: element.parentElement
+        ? identity(element.parentElement)
+        : null,
+      svgGeometry: element instanceof SVGGeometryElement,
       tag: element.tagName,
       className: element.getAttribute('class'),
       text: element.textContent?.slice(0, 180),
@@ -241,7 +249,7 @@ export function createPanelsCausalDom() {
           },
         };
       };
-      const sample = (r: typeof box) =>
+      const points = (r: typeof box) =>
         [
           [Math.min(1, r.width / 2), Math.min(1, r.height / 2)],
           [r.width - Math.min(1, r.width / 2), Math.min(1, r.height / 2)],
@@ -251,7 +259,108 @@ export function createPanelsCausalDom() {
             r.height - Math.min(1, r.height / 2),
           ],
           [r.width / 2, r.height / 2],
-        ].map(([x, y]) => hit(r.x + x!, r.y + y!));
+        ].map(([x, y]) => ({ x: r.x + x!, y: r.y + y! }));
+      const sample = (r: typeof box) => points(r).map(({ x, y }) => hit(x, y));
+      const subjectSample = (element: Element) => {
+        const r = rect(element);
+        const svg = element instanceof SVGGraphicsElement;
+        const bounds = svg
+          ? element.getBBox()
+          : { x: 0, y: 0, width: r.width, height: r.height };
+        const matrix = svg ? element.getScreenCTM() : null;
+        if (svg && !matrix) throw Error('SVG subject has no screen matrix');
+        const coordinateSpace = svg
+          ? ('svg' as const)
+          : ('border-box' as const);
+        return {
+          identity: identity(element),
+          rect: r,
+          coordinateSpace,
+          hits: points(bounds).map((local) => {
+            const point = matrix
+              ? {
+                  x: matrix.a * local.x + matrix.c * local.y + matrix.e,
+                  y: matrix.b * local.x + matrix.d * local.y + matrix.f,
+                }
+              : { x: r.x + local.x, y: r.y + local.y };
+            const value = hit(point.x, point.y);
+            const target = document.elementFromPoint(point.x, point.y);
+            const relation = !target
+              ? ('none' as const)
+              : target === element
+                ? ('self' as const)
+                : element.contains(target)
+                  ? ('descendant' as const)
+                  : target.contains(element)
+                    ? ('ancestor' as const)
+                    : ('unrelated' as const);
+            const geometryTests = () =>
+              [element, ...element.querySelectorAll('*')]
+                .filter((shape) => shape instanceof SVGGeometryElement)
+                .map((shape) => {
+                  const ctm = shape.getScreenCTM();
+                  if (!ctm) throw Error('SVG geometry has no screen matrix');
+                  const p = new DOMPoint(point.x, point.y).matrixTransform(
+                    ctm.inverse(),
+                  );
+                  return {
+                    identity: identity(shape),
+                    local: { x: p.x, y: p.y },
+                    fill: shape.isPointInFill(p),
+                    stroke: shape.isPointInStroke(p),
+                  };
+                });
+            let blank:
+              | {
+                  kind: 'svg-blank';
+                  geometries: {
+                    identity: number;
+                    local: { x: number; y: number };
+                    fill: boolean;
+                    stroke: boolean;
+                  }[];
+                }
+              | {
+                  kind: 'round-cutout';
+                  textRects: ReturnType<typeof rect>[];
+                  geometries: ReturnType<typeof geometryTests>;
+                }
+              | null = null;
+            if (relation === 'ancestor' && svg) {
+              blank = {
+                kind: 'svg-blank',
+                geometries: geometryTests(),
+              };
+            } else if (relation === 'ancestor') {
+              const textRects = [];
+              const walker = document.createTreeWalker(
+                element,
+                NodeFilter.SHOW_TEXT,
+              );
+              for (
+                let text = walker.nextNode();
+                text;
+                text = walker.nextNode()
+              ) {
+                if (!text.textContent?.trim()) continue;
+                const range = document.createRange();
+                range.selectNodeContents(text);
+                textRects.push(
+                  ...[...range.getClientRects()].map(
+                    ({ x, y, width, height }) => ({ x, y, width, height }),
+                  ),
+                );
+              }
+              blank = {
+                kind: 'round-cutout',
+                textRects,
+                geometries: geometryTests(),
+              };
+            }
+            return { ...value, local, relation, blank };
+          }),
+        };
+      };
       const raw = sample(box),
         hits = raw.map((value) => value.rootContains);
       const rightbar = root.closest('[data-rightbar-col]');
@@ -307,11 +416,7 @@ export function createPanelsCausalDom() {
                   .borderRadius.split(/[ /]+/)
                   .some((part) => parseFloat(part) > 0),
             )
-            .map((el) => ({
-              identity: identity(el),
-              rect: rect(el),
-              hits: sample(rect(el)),
-            })),
+            .map(subjectSample),
         },
         active: document.activeElement?.tagName,
         pointerOutside: !root.contains(document.elementFromPoint(720, 0)),

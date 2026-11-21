@@ -10,6 +10,33 @@ export function assertCausalSampling(value: PanelsCausalSnapshot) {
   const { resize, interior, raw } = sampling;
   if (!sampling.subjects.length) fail('no recorded rounded/SVG subjects');
   const contentIds = new Set(value.nodes.map((node) => node.identity));
+  const nodes = new Map(
+    [...value.ancestors, ...value.nodes].map((node) => [node.identity, node]),
+  );
+  const under = (child: number, parent: number): boolean => {
+    const visited = new Set<number>();
+    for (let id: number | null = child; id !== null;) {
+      if (id === parent) return true;
+      if (visited.has(id)) fail('cyclic subject ancestry');
+      visited.add(id);
+      id = nodes.get(id)?.parentIdentity ?? null;
+    }
+    return false;
+  };
+  const inRect = (x: number, y: number, r: typeof root) =>
+    x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height;
+  const noExtraPaint = (node: PanelsCausalSnapshot['nodes'][number]) =>
+    [
+      'filter',
+      'backdrop-filter',
+      'box-shadow',
+      'mask-image',
+      'clip-path',
+      'border-image-source',
+    ].every((key) => node.styles[key] === 'none') &&
+    node.styles['outline-style'] === 'none' &&
+    ['none', 'normal'].includes(node.before.content!) &&
+    ['none', 'normal'].includes(node.after.content!);
   for (const hit of [
     ...raw,
     ...sampling.interiorHits,
@@ -107,6 +134,178 @@ export function assertCausalSampling(value: PanelsCausalSnapshot) {
       subject.hits.some((hit) => !hit.rootContains)
     )
       fail('rounded/SVG subject crosses the unproved strip or is occluded');
+    const subjectNode = nodes.get(subject.identity);
+    if (!subjectNode || !contentIds.has(subject.identity))
+      fail('unknown subject identity');
+    if (
+      subject.coordinateSpace !== (subjectNode!.matrix ? 'svg' : 'border-box')
+    )
+      fail('subject sample point coordinate space mismatch');
+    const frame =
+      subject.coordinateSpace === 'svg'
+        ? subjectNode!.bbox
+        : { x: 0, y: 0, width: r.width, height: r.height };
+    const matrix =
+      subject.coordinateSpace === 'svg' ? subjectNode!.matrix : null;
+    if (!frame || (subject.coordinateSpace === 'svg' && !matrix))
+      fail('subject sample point frame missing');
+    const sx = Math.min(1, frame!.width / 2),
+      sy = Math.min(1, frame!.height / 2);
+    const points = [
+      [sx, sy],
+      [frame!.width - sx, sy],
+      [sx, frame!.height - sy],
+      [frame!.width - sx, frame!.height - sy],
+      [frame!.width / 2, frame!.height / 2],
+    ];
+    for (const [index, hit] of subject.hits.entries()) {
+      const x = frame!.x + points[index]![0]!,
+        y = frame!.y + points[index]![1]!;
+      if (
+        hit.local.x !== x ||
+        hit.local.y !== y ||
+        hit.x !== (matrix ? matrix.a * x + matrix.c * y + matrix.e : r.x + x) ||
+        hit.y !== (matrix ? matrix.b * x + matrix.d * y + matrix.f : r.y + y)
+      )
+        fail('subject sample point changed');
+      const target = hit.element!;
+      const relation =
+        target.identity === subject.identity
+          ? 'self'
+          : under(target.identity, subject.identity)
+            ? 'descendant'
+            : under(subject.identity, target.identity)
+              ? 'ancestor'
+              : 'unrelated';
+      if (relation !== hit.relation || relation === 'unrelated')
+        fail('subject hit ownership is unrelated or mislabeled');
+      if (relation !== 'ancestor') {
+        if (hit.blank !== null)
+          fail('subject hit carries unexpected blank evidence');
+        continue;
+      }
+      if (!hit.blank) fail('ancestor subject hit lacks blank evidence');
+      const subtree = value.nodes.filter((node) =>
+        under(node.identity, subject.identity),
+      );
+      const svgNodes = subtree.filter((node) => node.matrix !== null);
+      const expectedGeometry = svgNodes.filter((node) => node.svgGeometry);
+      const tests = hit.blank!.geometries;
+      if (
+        new Set(tests.map((test) => test.identity)).size !== tests.length ||
+        JSON.stringify(tests.map((test) => test.identity)) !==
+          JSON.stringify(expectedGeometry.map((node) => node.identity)) ||
+        svgNodes.some(
+          (node) =>
+            (!node.svgGeometry && !['svg', 'g'].includes(node.tag)) ||
+            !noExtraPaint(node) ||
+            node.styles['background-color'] !== 'rgba(0, 0, 0, 0)' ||
+            node.styles['background-image'] !== 'none' ||
+            node.styles['border-width'] !== '0px' ||
+            node.styles.opacity !== '1',
+        ) ||
+        tests.some((test) => {
+          const shape = nodes.get(test.identity)!;
+          return (
+            !Number.isFinite(test.local.x) ||
+            !Number.isFinite(test.local.y) ||
+            typeof test.fill !== 'boolean' ||
+            typeof test.stroke !== 'boolean' ||
+            (shape.styles.fill !== 'none' && test.fill) ||
+            (shape.styles.stroke !== 'none' && test.stroke)
+          );
+        })
+      )
+        fail('ancestor subject hit is not proved SVG blank');
+      if (hit.blank!.kind === 'svg-blank') {
+        if (
+          subject.coordinateSpace !== 'svg' ||
+          !expectedGeometry.length ||
+          svgNodes.length !== subtree.length
+        )
+          fail('ancestor subject hit has incomplete SVG geometry');
+        continue;
+      }
+      if (
+        subject.coordinateSpace !== 'border-box' ||
+        subjectNode!.styles['corner-shape'] !== 'round' ||
+        !noExtraPaint(subjectNode!)
+      )
+        fail('ancestor subject hit is not a standard round cutout');
+      // Only unscaled, axis-aligned CSS boxes support this border-radius test.
+      for (
+        let node = subjectNode;
+        node;
+        node =
+          node.parentIdentity === null
+            ? undefined
+            : nodes.get(node.parentIdentity)
+      ) {
+        const s = node.styles;
+        const transform =
+          s.transform === 'none' ||
+          /^matrix\(1, 0, 0, 1, [-\d.e+]+, [-\d.e+]+\)$/.test(s.transform!);
+        if (
+          !transform ||
+          !['none', '0deg'].includes(s.rotate!) ||
+          !['none', '1', '1 1', '1 1 1'].includes(s.scale!) ||
+          s.zoom !== '1'
+        )
+          fail(
+            'ancestor subject hit round frame is not an unscaled translation',
+          );
+      }
+      const radius = (text: string | undefined, size: number) => {
+        if (!text || !/^(?:\d+(?:\.\d+)?|\.\d+)(?:px|%)$/.test(text))
+          fail('unknown subject hit radius');
+        return parseFloat(text!) * (text!.endsWith('%') ? size / 100 : 1);
+      };
+      const radii = [
+        'top-left',
+        'top-right',
+        'bottom-right',
+        'bottom-left',
+      ].map((corner) => {
+        const pair =
+          subjectNode!.styles['border-' + corner + '-radius']?.split(' ');
+        return [
+          radius(pair?.[0], r.width),
+          radius(pair?.[1] ?? pair?.[0], r.height),
+        ];
+      });
+      const factor = Math.min(
+        1,
+        r.width / (radii[0]![0]! + radii[1]![0]!),
+        r.width / (radii[3]![0]! + radii[2]![0]!),
+        r.height / (radii[0]![1]! + radii[3]![1]!),
+        r.height / (radii[1]![1]! + radii[2]![1]!),
+      );
+      const outside = radii.some(([rx, ry], corner) => {
+        const a = rx! * factor,
+          b = ry! * factor;
+        const px =
+          corner === 0 || corner === 3 ? hit.local.x : r.width - hit.local.x;
+        const py = corner < 2 ? hit.local.y : r.height - hit.local.y;
+        return (
+          a > 0 &&
+          b > 0 &&
+          px < a &&
+          py < b &&
+          ((px - a) / a) ** 2 + ((py - b) / b) ** 2 > 1
+        );
+      });
+      if (
+        !outside ||
+        hit.blank!.textRects.some((text) => inRect(hit.x, hit.y, text)) ||
+        subtree.some(
+          (node) =>
+            node.identity !== subject.identity &&
+            !node.matrix &&
+            (!noExtraPaint(node) || inRect(hit.x, hit.y, node.rect)),
+        )
+      )
+        fail('ancestor subject hit lacks a clear round cutout');
+    }
   }
 }
 
@@ -168,11 +367,67 @@ export function assertCausalInvariant(
     )
       fail('resize control identity/paint/geometry changed');
   }
+  for (let i = 0; i < before.sampling.subjects.length; i++) {
+    const a = before.sampling.subjects[i]!,
+      b = after.sampling.subjects[i]!;
+    if (a.coordinateSpace !== b.coordinateSpace)
+      fail('subject sample point frame changed');
+    if (a.coordinateSpace === 'svg') {
+      const aNode = before.nodes.find((node) => node.identity === a.identity)!,
+        bNode = after.nodes.find((node) => node.identity === b.identity)!;
+      if (
+        JSON.stringify(aNode.bbox) !== JSON.stringify(bNode.bbox) ||
+        (['a', 'b', 'c', 'd'] as const).some(
+          (key) => aNode.matrix![key] !== bNode.matrix![key],
+        ) ||
+        bNode.matrix!.e - aNode.matrix!.e !== dx ||
+        bNode.matrix!.f - aNode.matrix!.f !== dy
+      )
+        fail('subject sample point SVG frame changed');
+    } else if (
+      b.rect.x - a.rect.x !== dx ||
+      b.rect.y - a.rect.y !== dy ||
+      b.rect.width !== a.rect.width ||
+      b.rect.height !== a.rect.height
+    )
+      fail('subject sample point box frame changed');
+    for (let p = 0; p < a.hits.length; p++) {
+      const x = a.hits[p]!,
+        y = b.hits[p]!;
+      // Both snapshots checked the actual world point against this local frame.
+      // Compare local points plus the exact frame translation, not float32 SVG bounds.
+      if (
+        JSON.stringify(x.local) !== JSON.stringify(y.local) ||
+        x.relation !== y.relation ||
+        x.element?.identity !== y.element?.identity ||
+        x.blank?.kind !== y.blank?.kind ||
+        JSON.stringify(
+          x.blank?.geometries.map(({ identity, fill, stroke }) => ({
+            identity,
+            fill,
+            stroke,
+          })),
+        ) !==
+          JSON.stringify(
+            y.blank?.geometries.map(({ identity, fill, stroke }) => ({
+              identity,
+              fill,
+              stroke,
+            })),
+          )
+      )
+        fail(
+          'subject hit identity/relation or normalized sample point changed',
+        );
+    }
+  }
   for (let i = 0; i < before.nodes.length; i++) {
     const a = before.nodes[i]!,
       b = after.nodes[i]!;
     if (
       a.identity !== b.identity ||
+      a.parentIdentity !== b.parentIdentity ||
+      a.svgGeometry !== b.svgGeometry ||
       a.tag !== b.tag ||
       a.className !== b.className ||
       a.text !== b.text ||

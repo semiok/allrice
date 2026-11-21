@@ -220,10 +220,14 @@ async function checkSamplingDom(page: Page, script: string) {
     'subject-in-strip',
     'duplicate-control',
     'short-control',
+    'subject-sibling-center',
+    'subject-sibling-corner',
+    'svg-blank-ancestor',
+    'svg-painted-ancestor',
   ]) {
     const value = await page.evaluate((kind) => {
       document.body.innerHTML =
-        '<div id="frame" style="position:relative;width:200px;height:160px"><div data-rightbar-col style="position:absolute;left:80px;top:0;width:120px;height:160px;box-sizing:border-box;border-left:1px solid transparent;padding-top:12px"><div><section aria-label="Rice · 记忆" style="height:148px;position:relative"><i id="subject" style="position:absolute;left:12px;top:12px;width:16px;height:16px;border-radius:8px"></i></section></div></div><div data-side="rightbar" style="position:absolute;left:80px;top:0;bottom:0;width:8px;margin-left:-4px;cursor:col-resize;z-index:11"></div></div>';
+        '<div id="frame" style="position:relative;width:200px;height:160px"><div data-rightbar-col style="position:absolute;left:80px;top:0;width:120px;height:160px;box-sizing:border-box;border-left:1px solid transparent;padding-top:12px"><div><section aria-label="Rice · 记忆" style="height:148px;position:relative"><i id="subject" class="diagnostic-subject" style="position:absolute;left:12px;top:12px;width:16px;height:16px;border-radius:8px;background:red"></i></section></div></div><div data-side="rightbar" style="position:absolute;left:80px;top:0;bottom:0;width:8px;margin-left:-4px;cursor:col-resize;z-index:11"></div></div>';
       const control = document.querySelector<HTMLElement>(
         '[data-side="rightbar"]',
       )!;
@@ -251,6 +255,29 @@ async function checkSamplingDom(page: Page, script: string) {
       if (kind === 'duplicate-control')
         control.parentElement!.append(control.cloneNode());
       if (kind === 'short-control') control.style.bottom = '50px';
+      if (
+        kind === 'subject-sibling-center' ||
+        kind === 'subject-sibling-corner'
+      ) {
+        const subject = document.getElementById('subject')!;
+        const overlay = document.createElement('div');
+        overlay.id = 'same-section-overlay';
+        overlay.style.cssText =
+          'position:absolute;width:2px;height:2px;z-index:12;background:red;' +
+          (kind === 'subject-sibling-center'
+            ? 'left:19px;top:19px'
+            : 'left:12px;top:12px');
+        subject.parentElement!.append(overlay);
+      }
+      if (kind === 'svg-blank-ancestor' || kind === 'svg-painted-ancestor') {
+        const subject = document.getElementById('subject')!;
+        subject.parentElement!.innerHTML =
+          '<svg style="position:absolute;left:12px;top:12px;width:16px;height:16px" viewBox="0 0 16 16"><path id="subject" class="diagnostic-subject" d="M1 1L15 15" fill="none" stroke="black"' +
+          (kind === 'svg-painted-ancestor'
+            ? ' style="pointer-events:none"'
+            : '') +
+          ' /></svg>';
+      }
       return window.__allricePanelsCausalDomFactory!().snapshot();
     }, kind);
     let rejection: string | undefined;
@@ -259,11 +286,33 @@ async function checkSamplingDom(page: Page, script: string) {
     } catch (error) {
       rejection = String(error);
     }
+    const subjectId = value.nodes.find(
+      (node) => node.className === 'diagnostic-subject',
+    )?.identity;
+    const subject = value.sampling.subjects.find(
+      (entry) => entry.identity === subjectId,
+    );
+    const sibling =
+      kind === 'subject-sibling-center' || kind === 'subject-sibling-corner';
+    const covered = subject?.hits[kind === 'subject-sibling-center' ? 4 : 0];
+    const validSvgBlank = subject?.hits.some(
+      (hit) =>
+        hit.relation === 'ancestor' &&
+        hit.blank?.kind === 'svg-blank' &&
+        hit.element?.tag === 'svg',
+    );
     checks.push({
       kind,
-      passed: ['clear', 'native-control'].includes(kind)
-        ? !rejection && (kind !== 'native-control' || !value.unclipped)
-        : !!rejection,
+      passed: sibling
+        ? !!rejection?.includes('subject hit') &&
+          covered?.rootContains === true &&
+          covered.relation === 'unrelated' &&
+          covered.element?.attributes.id === 'same-section-overlay'
+        : kind === 'svg-blank-ancestor'
+          ? !rejection && validSvgBlank === true
+          : ['clear', 'native-control'].includes(kind)
+            ? !rejection && (kind !== 'native-control' || !value.unclipped)
+            : !!rejection,
       rejection,
       snapshot: value,
     });
@@ -272,9 +321,9 @@ async function checkSamplingDom(page: Page, script: string) {
     actualBrowserDom: true,
     syntheticDomFixture: true,
     productAcceptance: false,
-    expectedChecks: 8,
+    expectedChecks: 12,
     checks,
-    valid: checks.length === 8 && checks.every((check) => check.passed),
+    valid: checks.length === 12 && checks.every((check) => check.passed),
   };
 }
 
@@ -303,7 +352,7 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
           expectedPaintPhases: phases,
           expectedACompletePngs: expectedPngs,
           expectedActualDomChecks: 9,
-          expectedSamplingDomChecks: 8,
+          expectedSamplingDomChecks: 12,
           expectedBCompletePhases: ['OFF', 'ON'],
           browser: browser.version(),
           node: process.version,
@@ -756,7 +805,7 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
             diagnosticOnly: true,
             acceptanceSatisfied: false,
             paintClaimScope:
-              'Only recorded rounded/SVG subjects inside the sampled content interior; the native resize interaction strip and full-root visibility are not proved. Full PNG and original acceptance gates remain unchanged.',
+              'Only the five recorded discrete hit samples per rounded/SVG subject inside the content interior are checked. Whole-subject, full-content and native resize-strip visibility are not proved. Full PNG and original acceptance gates remain unchanged.',
             valid,
             failures: failures.map((error) => ({
               message: String(error),

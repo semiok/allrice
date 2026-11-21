@@ -23,6 +23,8 @@ function snapshot(): PanelsCausalSnapshot {
   };
   const content = {
     identity: 1,
+    parentIdentity: null,
+    svgGeometry: false,
     tag: 'SECTION',
     className: 'synthetic',
     text: 'synthetic',
@@ -61,7 +63,17 @@ function snapshot(): PanelsCausalSnapshot {
       interior: { ...rect },
       interiorHits: structuredClone(hits),
       subjects: [
-        { identity: 1, rect: { ...rect }, hits: structuredClone(hits) },
+        {
+          identity: 1,
+          rect: { ...rect },
+          coordinateSpace: 'border-box',
+          hits: hits.map((hit) => ({
+            ...structuredClone(hit),
+            local: { x: hit.x - rect.x, y: hit.y - rect.y },
+            relation: 'self',
+            blank: null,
+          })),
+        },
       ],
     },
     active: 'BODY',
@@ -80,7 +92,11 @@ describe('causal experiment validity (pure data, no browser/Host)', () => {
     after.sampling.interior.y -= 9;
     after.sampling.subjects[0]!.rect.x += 17;
     after.sampling.subjects[0]!.rect.y -= 9;
-    for (const hit of [...after.sampling.raw, ...after.sampling.interiorHits]) {
+    for (const hit of [
+      ...after.sampling.raw,
+      ...after.sampling.interiorHits,
+      ...after.sampling.subjects.flatMap((subject) => subject.hits),
+    ]) {
       hit.x += 17;
       hit.y -= 9;
     }
@@ -138,14 +154,18 @@ describe('causal experiment validity (pure data, no browser/Host)', () => {
     const a = snapshot(),
       b = snapshot();
     for (const value of [a, b])
-      Object.assign(value.nodes[0]!, {
+      value.nodes.push({
+        ...structuredClone(value.nodes[0]!),
+        identity: 2,
+        parentIdentity: 1,
         tag: 'path',
+        svgGeometry: true,
         bbox: { x: 1, y: 2, width: 6, height: 6 },
         matrix: { a: 1, b: 0, c: 0, d: 1, e: 20, f: 30 },
       });
-    b.nodes[0]!.rect.width += 0.0001220703125;
+    b.nodes[1]!.rect.width += 0.0001220703125;
     expect(() => assertCausalInvariant(a, b)).not.toThrow();
-    b.nodes[0]!.bbox!.width += 0.01;
+    b.nodes[1]!.bbox!.width += 0.01;
     expect(() => assertCausalInvariant(a, b)).toThrow('SVG shape');
   });
 });
@@ -198,13 +218,271 @@ function resizeSnapshot(): PanelsCausalSnapshot {
   value.sampling.interiorHits[0]!.x = value.sampling.interiorHits[2]!.x = 24;
   value.sampling.subjects = [
     {
-      identity: 1,
+      identity: 2,
       rect: { x: 40, y: 50, width: 16, height: 16 },
-      hits: structuredClone(value.sampling.interiorHits),
+      coordinateSpace: 'border-box',
+      hits: [
+        [1, 1],
+        [15, 1],
+        [1, 15],
+        [15, 15],
+        [8, 8],
+      ].map(([x, y]) => ({
+        ...structuredClone(value.sampling.interiorHits[0]!),
+        x: 40 + x!,
+        y: 50 + y!,
+        local: { x: x!, y: y! },
+        relation: 'self',
+        blank: null,
+        element: {
+          ...structuredClone(value.nodes[0]!),
+          identity: 2,
+          parentIdentity: 1,
+          rect: { x: 40, y: 50, width: 16, height: 16 },
+          attributes: {},
+        },
+      })),
     },
   ];
+  value.nodes.push({
+    ...structuredClone(value.nodes[0]!),
+    identity: 2,
+    parentIdentity: 1,
+    rect: { ...value.sampling.subjects[0]!.rect },
+  });
   return value;
 }
+
+describe('specific subject hit ownership, not whole-section membership', () => {
+  function withSibling() {
+    const value = resizeSnapshot();
+    value.nodes.push({
+      ...structuredClone(value.nodes[1]!),
+      identity: 3,
+      parentIdentity: 1,
+      styles: {
+        ...value.nodes[1]!.styles,
+        'background-color': 'rgb(255, 0, 0)',
+      },
+    });
+    return value;
+  }
+  it.each([
+    ['corner', 0],
+    ['center', 4],
+  ] as const)(
+    'rejects an opaque same-section sibling at the %s sample',
+    (_name, index) => {
+      const value = withSibling();
+      const hit = value.sampling.subjects[0]!.hits[index]!;
+      hit.element = { ...structuredClone(value.nodes[2]!), attributes: {} };
+      hit.relation = 'unrelated';
+      expect(hit.rootContains).toBe(true);
+      expect(() => assertCausalSampling(value)).toThrow('subject hit');
+    },
+  );
+  it('rejects a forged self label for an unrelated recorded sibling', () => {
+    const value = withSibling();
+    value.sampling.subjects[0]!.hits[4]!.element = {
+      ...structuredClone(value.nodes[2]!),
+      attributes: {},
+    };
+    expect(() => assertCausalSampling(value)).toThrow('subject hit');
+  });
+  it('rejects an ancestor without explicit blank evidence', () => {
+    const value = resizeSnapshot(),
+      hit = value.sampling.subjects[0]!.hits[0]!;
+    hit.element = { ...structuredClone(value.nodes[0]!), attributes: {} };
+    hit.relation = 'ancestor';
+    expect(() => assertCausalSampling(value)).toThrow('subject hit');
+  });
+  it('rejects a changed sample location even while both hits remain in the section', () => {
+    const before = resizeSnapshot(),
+      after = resizeSnapshot();
+    after.sampling.subjects[0]!.hits[0]!.x += 0.25;
+    after.sampling.subjects[0]!.hits[0]!.local.x += 0.25;
+    expect(() => assertCausalInvariant(before, after)).toThrow('sample point');
+  });
+  it('rejects switching from self to a descendant between phases', () => {
+    const before = resizeSnapshot(),
+      after = resizeSnapshot();
+    for (const value of [before, after])
+      value.nodes.push({
+        ...structuredClone(value.nodes[1]!),
+        identity: 3,
+        parentIdentity: 2,
+      });
+    const hit = after.sampling.subjects[0]!.hits[4]!;
+    hit.element = { ...structuredClone(after.nodes[2]!), attributes: {} };
+    hit.relation = 'descendant';
+    expect(() => assertCausalInvariant(before, after)).toThrow('subject hit');
+  });
+  const paint = {
+    transform: 'none',
+    rotate: 'none',
+    scale: 'none',
+    zoom: '1',
+    filter: 'none',
+    'backdrop-filter': 'none',
+    'box-shadow': 'none',
+    'mask-image': 'none',
+    'clip-path': 'none',
+    'border-image-source': 'none',
+    'outline-style': 'none',
+    'background-color': 'rgba(0, 0, 0, 0)',
+    'background-image': 'none',
+    'border-width': '0px',
+    opacity: '1',
+    fill: 'none',
+    stroke: 'black',
+    'border-top-left-radius': '8px',
+    'border-top-right-radius': '8px',
+    'border-bottom-right-radius': '8px',
+    'border-bottom-left-radius': '8px',
+  };
+  function blankSnapshot(kind: 'svg' | 'round') {
+    const value = resizeSnapshot();
+    for (const node of value.nodes) {
+      Object.assign(node.styles, paint);
+      node.before.content = node.after.content = 'none';
+    }
+    const subject = value.sampling.subjects[0]!,
+      node = value.nodes[1]!;
+    const hit = subject.hits[0]!;
+    hit.relation = 'ancestor';
+    if (kind === 'svg') {
+      Object.assign(node, {
+        tag: 'path',
+        svgGeometry: true,
+        parentIdentity: 3,
+        bbox: { x: 0, y: 0, width: 16, height: 16 },
+        matrix: { a: 1, b: 0, c: 0, d: 1, e: 40, f: 50 },
+      });
+      value.nodes.push({
+        ...structuredClone(node),
+        identity: 3,
+        parentIdentity: 1,
+        tag: 'svg',
+        svgGeometry: false,
+      });
+      subject.coordinateSpace = 'svg';
+      hit.element = { ...structuredClone(value.nodes[2]!), attributes: {} };
+      hit.blank = {
+        kind: 'svg-blank',
+        geometries: [
+          { identity: 2, local: { x: 1, y: 1 }, fill: false, stroke: false },
+        ],
+      };
+    } else {
+      hit.element = { ...structuredClone(value.nodes[0]!), attributes: {} };
+      hit.blank = { kind: 'round-cutout', textRects: [], geometries: [] };
+    }
+    return value;
+  }
+  it('allows only explicit SVG blank geometry for an actual ancestor hit', () => {
+    const value = blankSnapshot('svg');
+    expect(() => assertCausalSampling(value)).not.toThrow();
+    value.sampling.subjects[0]!.hits[0]!.blank!.geometries[0]!.stroke = true;
+    expect(() => assertCausalSampling(value)).toThrow('not proved SVG blank');
+  });
+  it('allows fill-none geometry only while the sampled point has no stroke paint', () => {
+    const value = blankSnapshot('svg');
+    value.sampling.subjects[0]!.hits[0]!.blank!.geometries[0]!.fill = true;
+    expect(() => assertCausalSampling(value)).not.toThrow();
+    value.nodes[1]!.styles.fill = 'black';
+    expect(() => assertCausalSampling(value)).toThrow('not proved SVG blank');
+  });
+  it('rejects SVG background paint even when fill and stroke tests are blank', () => {
+    const value = blankSnapshot('svg');
+    value.nodes[1]!.styles['background-color'] = 'rgb(255, 0, 0)';
+    expect(() => assertCausalSampling(value)).toThrow('not proved SVG blank');
+  });
+  it.each(['missing', 'duplicate', 'foreign'] as const)(
+    'rejects %s SVG geometry evidence',
+    (kind) => {
+      const value = blankSnapshot('svg'),
+        tests = value.sampling.subjects[0]!.hits[0]!.blank!.geometries;
+      if (kind === 'missing') tests.length = 0;
+      if (kind === 'duplicate') tests.push(structuredClone(tests[0]!));
+      if (kind === 'foreign') tests[0]!.identity = 1;
+      expect(() => assertCausalSampling(value)).toThrow('SVG blank');
+    },
+  );
+  it('allows an empty standard round cutout but rejects its painted center', () => {
+    const value = blankSnapshot('round');
+    expect(() => assertCausalSampling(value)).not.toThrow();
+    const center = value.sampling.subjects[0]!.hits[4]!;
+    center.element = structuredClone(
+      value.sampling.subjects[0]!.hits[0]!.element,
+    );
+    center.relation = 'ancestor';
+    center.blank = structuredClone(value.sampling.subjects[0]!.hits[0]!.blank);
+    expect(() => assertCausalSampling(value)).toThrow('clear round cutout');
+  });
+  it('rejects text paint inside a purported round cutout', () => {
+    const value = blankSnapshot('round'),
+      blank = value.sampling.subjects[0]!.hits[0]!.blank!;
+    if (blank.kind !== 'round-cutout')
+      throw Error('synthetic fixture mismatch');
+    blank.textRects.push({ x: 40, y: 50, width: 2, height: 2 });
+    expect(() => assertCausalSampling(value)).toThrow('clear round cutout');
+  });
+  it('rejects unproved round geometry after scale or corner-shape changes', () => {
+    const value = blankSnapshot('round');
+    value.nodes[1]!.styles.transform = 'matrix(2, 0, 0, 2, 0, 0)';
+    expect(() => assertCausalSampling(value)).toThrow('unscaled translation');
+    value.nodes[1]!.styles.transform = 'none';
+    value.nodes[1]!.styles['corner-shape'] = 'superellipse(1.5)';
+    expect(() => assertCausalSampling(value)).toThrow('standard round cutout');
+  });
+  it('normalizes SVG samples by exact intrinsic frame and CTM, without a bounds epsilon', () => {
+    const before = blankSnapshot('svg'),
+      after = blankSnapshot('svg');
+    after.nodes[1]!.rect.width += 0.0001220703125;
+    after.sampling.subjects[0]!.rect.width += 0.0001220703125;
+    expect(() => assertCausalInvariant(before, after)).not.toThrow();
+    const hit = after.sampling.subjects[0]!.hits[0]!;
+    hit.element = { ...structuredClone(after.nodes[1]!), attributes: {} };
+    hit.relation = 'self';
+    hit.blank = null;
+    expect(() => assertCausalInvariant(before, after)).toThrow('subject hit');
+  });
+  it('checks SVG local sample points under the planned rigid translation', () => {
+    const before = blankSnapshot('svg'),
+      after = blankSnapshot('svg');
+    for (const rect of [
+      after.root,
+      after.sampling.interior,
+      ...after.nodes.map((node) => node.rect),
+      ...after.sampling.subjects.map((subject) => subject.rect),
+      after.sampling.resize!.rightbar,
+      after.sampling.resize!.control.rect,
+    ]) {
+      rect.x += 17;
+      rect.y -= 9;
+    }
+    for (const node of after.nodes)
+      if (node.matrix) {
+        node.matrix.e += 17;
+        node.matrix.f -= 9;
+      }
+    for (const hit of [
+      ...after.sampling.raw,
+      ...after.sampling.interiorHits,
+      ...after.sampling.subjects.flatMap((subject) => subject.hits),
+    ]) {
+      hit.x += 17;
+      hit.y -= 9;
+    }
+    expect(() =>
+      assertCausalInvariant(before, after, { x: 17, y: -9 }),
+    ).not.toThrow();
+    after.sampling.subjects[0]!.hits[0]!.local.x += 0.25;
+    expect(() =>
+      assertCausalInvariant(before, after, { x: 17, y: -9 }),
+    ).toThrow('sample point');
+  });
+});
 describe('scoped paint sampling preserves the failed full-root verdict', () => {
   it('requires direct native-control identity and leaves both raw misses false', () => {
     const value = resizeSnapshot();
