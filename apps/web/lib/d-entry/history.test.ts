@@ -6,6 +6,7 @@ import type * as Database from '@allrice/database';
 import { DataAccessError } from '@allrice/database';
 import {
   HostHistorySnapshotSchema,
+  makeObjectKey,
   type DEntryIdentity,
   type HostHistoryBinding,
   type RequestContext,
@@ -13,6 +14,7 @@ import {
 } from '@allrice/contracts';
 import {
   HostHistoryStore,
+  LocalStorageAdapter,
   HostHistoryIntegrityError,
   hostHistoryDigest,
 } from '@allrice/storage';
@@ -243,6 +245,15 @@ async function fixture() {
   };
   const { createHash } = await import('node:crypto');
   object.checksum = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+  object.key = makeObjectKey({
+    organizationId: object.organizationId,
+    workspaceId: object.workspaceId,
+    ownerId: object.ownerId,
+    category: 'exports',
+    objectId: object.id,
+  });
+  const objectStorage = new LocalStorageAdapter(join(root, 'objects'));
+  await objectStorage.put(object, new Blob([bytes]).stream());
   const attachment = {
     sourceSeq: 6,
     objectId: object.id,
@@ -266,15 +277,7 @@ async function fixture() {
   const bindingPort = vi.fn(async () => binding);
   const files = {
     authorize: vi.fn(async () => object),
-    open: vi.fn(
-      async () =>
-        new ReadableStream<Uint8Array>({
-          start(controller) {
-            controller.enqueue(bytes);
-            controller.close();
-          },
-        }),
-    ),
+    open: vi.fn(async (current: StorageObject) => objectStorage.get(current)),
   };
   const handlers = createDEntryHistoryHandlers({
     resources,
@@ -461,7 +464,9 @@ describe('host-only native recovery history BFF', () => {
       f.capture(),
     ]);
     expect(new Set(publications.map((item) => item.digest)).size).toBe(1);
-    const directories = await readdir(f.root);
+    const directories = (await readdir(f.root)).filter((name) =>
+      /^[a-f0-9]{64}$/.test(name),
+    );
     expect(directories).toHaveLength(1);
     expect(await readdir(join(f.root, directories[0]!))).toEqual([
       `${publications[0]!.digest.slice(7)}.json`,
@@ -545,7 +550,9 @@ describe('host-only native recovery history BFF', () => {
     changed.events[0]!.data.turn = 42;
     f.native.inspect.mockResolvedValue(changed as unknown as SessionInspection);
     await expect(f.capture()).rejects.toBeInstanceOf(HostHistoryIntegrityError);
-    const directory = (await readdir(f.root))[0]!;
+    const directory = (await readdir(f.root)).find((name) =>
+      /^[a-f0-9]{64}$/.test(name),
+    )!;
     const file = join(f.root, directory, `${saved.digest.slice(7)}.json`);
     const corrupted = JSON.parse(await readFile(file, 'utf8'));
     corrupted.entries[0].text = 'tampered';
