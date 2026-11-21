@@ -44,6 +44,11 @@ import {
   observePanelsNetwork,
   PanelsNetworkErrors,
 } from './employee-panels-network-errors';
+import {
+  panelsReplayOrigin,
+  servePanelsReplay,
+  type PanelsReplayAssetReceipt,
+} from './employee-panels-replay-route';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -139,8 +144,8 @@ const contentReady = async (page: Page, kind: Kind, state: PanelsState) => {
       .waitFor({ state: 'visible' });
   }
 };
-const inspectContent = (page: Page, kind: Kind) =>
-  body(page, kind).evaluate((node) => {
+const inspectContent = (page: Page, kind: Kind, includePaint = false) =>
+  body(page, kind).evaluate((node, includePaint) => {
     const box = (element: Element) => {
       const { x, y, width, height } = element.getBoundingClientRect();
       const s = getComputedStyle(element);
@@ -167,6 +172,61 @@ const inspectContent = (page: Page, kind: Kind) =>
         clientHeight: element.clientHeight,
       };
     };
+    const paintStyle = (s: CSSStyleDeclaration) => ({
+      backgroundColor: s.backgroundColor,
+      backgroundImage: s.backgroundImage,
+      backgroundClip: s.backgroundClip,
+      backgroundOrigin: s.backgroundOrigin,
+      color: s.color,
+      borderRadius: s.borderRadius,
+      borderWidth: s.borderWidth,
+      borderColor: s.borderColor,
+      borderStyle: s.borderStyle,
+      cornerShape: s.getPropertyValue('corner-shape'),
+      cornerToken: s.getPropertyValue('--dsw-corner-shape'),
+      opacity: s.opacity,
+      transform: s.transform,
+      translate: s.translate,
+      scale: s.scale,
+      rotate: s.rotate,
+      filter: s.filter,
+      backdropFilter: s.backdropFilter,
+      willChange: s.willChange,
+      contain: s.contain,
+      isolation: s.isolation,
+      mixBlendMode: s.mixBlendMode,
+      maskImage: s.maskImage,
+      clipPath: s.clipPath,
+      boxShadow: s.boxShadow,
+      colorScheme: s.colorScheme,
+      zoom: s.zoom,
+      fontSmoothing: s.getPropertyValue('-webkit-font-smoothing'),
+      textAutospace: s.getPropertyValue('text-autospace'),
+    });
+    const paintNode = (element: Element) => ({
+      ...box(element),
+      className: element.getAttribute('class'),
+      role: element.getAttribute('role'),
+      label: element.getAttribute('aria-label'),
+      hovered: element.matches(':hover'),
+      focused: element === document.activeElement,
+      paint: paintStyle(getComputedStyle(element)),
+      before: paintStyle(getComputedStyle(element, '::before')),
+      after: paintStyle(getComputedStyle(element, '::after')),
+      animations: element.getAnimations().map((animation) => ({
+        playState: animation.playState,
+        currentTime: animation.currentTime,
+        timing: animation.effect?.getComputedTiming(),
+      })),
+    });
+    const ancestors: ReturnType<typeof paintNode>[] = [];
+    if (includePaint)
+      for (
+        let parent = node.parentElement;
+        parent;
+        parent = parent.parentElement
+      )
+        ancestors.push(paintNode(parent));
     return {
       root: box(node),
       parent: box(node.parentElement!),
@@ -179,8 +239,23 @@ const inspectContent = (page: Page, kind: Kind) =>
         height: innerHeight,
         dpr: devicePixelRatio,
       },
+      // Full visible leaves include dots/avatars/skeletons omitted by the
+      // typography sample above. Evidence only; no style/capture mutation.
+      paintEvidence: includePaint
+        ? {
+            ancestors,
+            nodes: [node, ...node.querySelectorAll('*')]
+              .filter((element) => {
+                const rect = element.getBoundingClientRect();
+                return rect.width > 0 && rect.height > 0;
+              })
+              .map(paintNode),
+            activeElement: document.activeElement?.tagName,
+            elementAtViewportOrigin: document.elementFromPoint(0, 0)?.tagName,
+          }
+        : undefined,
     };
-  });
+  }, includePaint);
 
 // Real installed product/native renderer, with explicitly synthetic BFF data.
 // No authentication, model submission, or 4.0 carrier delivery is asserted.
@@ -188,9 +263,11 @@ suite('installed native employee panels with synthetic business owner', () => {
   let browser: Browser, context: BrowserContext, page: Page, artifacts: string;
   let host: Awaited<ReturnType<typeof startInstalledProfile>>;
   let baselineHtml: string;
+  let baselineFavicon: Buffer;
   let state: PanelsState = 'list';
   type Observation = Awaited<ReturnType<typeof observePanelsNetwork>>;
   const network = new PanelsNetworkErrors();
+  const replayAssets: PanelsReplayAssetReceipt[] = [];
   const observations = new Map<Page, Observation>();
   const pending: {
       route: Route;
@@ -334,6 +411,9 @@ suite('installed native employee panels with synthetic business owner', () => {
     const fixture = await writeEmployeePanelsFixture(artifacts);
     const baseline = await writeEmployeePanelsBaseline(artifacts);
     baselineHtml = await readFile(baseline, 'utf8');
+    baselineFavicon = await readFile(
+      new URL('../../../apps/web/public/favicon.ico', import.meta.url),
+    );
     host = await startInstalledProfile(fixture);
     browser = await chromium.launch({
       headless: true,
@@ -341,6 +421,21 @@ suite('installed native employee panels with synthetic business owner', () => {
         ? { executablePath: process.env.ALLRICE_BROWSER_EXECUTABLE }
         : {}),
     });
+    // Read-only browser diagnostics for exact edge rasterization failures.
+    // Launch flags, capture modes and every visual assertion remain unchanged.
+    const rendering = await browser.newBrowserCDPSession();
+    try {
+      const [system, commandLine] = await Promise.all([
+        rendering.send('SystemInfo.getInfo'),
+        rendering.send('Browser.getBrowserCommandLine'),
+      ]);
+      await writeFile(
+        join(artifacts, 'browser-rendering.json'),
+        JSON.stringify({ system, commandLine }, null, 2),
+      );
+    } finally {
+      await rendering.detach();
+    }
     await writeFile(
       join(artifacts, 'browser-identity.json'),
       JSON.stringify(
@@ -442,6 +537,7 @@ suite('installed native employee panels with synthetic business owner', () => {
           requests: network.requests,
           logs: network.logs,
           audit: network.audit(),
+          replayAssets,
         },
         null,
         2,
@@ -648,22 +744,14 @@ suite('installed native employee panels with synthetic business owner', () => {
             network,
           ),
         );
-        await baseline.route(
-          'http://allrice-panels-rev2.invalid/**',
-          async (route) => {
-            const path = new URL(route.request().url()).pathname;
-            if (path.startsWith('/api/v1/')) await businessRoute(route);
-            else if (path === '/favicon.ico')
-              // This replay has no icon resource. Returning the entire HTML
-              // document as an image made Chromium cancel every icon fetch.
-              await route.fulfill({ status: 204 });
-            else if (path === '/')
-              await route.fulfill({
-                contentType: 'text/html',
-                body: baselineHtml,
-              });
-            else await route.abort('failed');
-          },
+        await baseline.route(panelsReplayOrigin + '/**', (route) =>
+          servePanelsReplay(
+            route,
+            baselineHtml,
+            baselineFavicon,
+            replayAssets,
+            businessRoute,
+          ),
         );
         await baseline.setViewportSize({ width, height: 1000 });
         const comparisons: unknown[] = [];
@@ -683,7 +771,7 @@ suite('installed native employee panels with synthetic business owner', () => {
               });
               await Promise.all([
                 catalogResponse(baseline, kind, value),
-                baseline.goto('http://allrice-panels-rev2.invalid/?' + query),
+                baseline.goto(panelsReplayOrigin + '/?' + query),
               ]);
               await body(baseline, kind).waitFor({ state: 'visible' });
               await contentReady(baseline, kind, value);
@@ -697,8 +785,8 @@ suite('installed native employee panels with synthetic business owner', () => {
                 });
                 await settle(view);
               }
-              const actual = await inspectContent(page, kind);
-              const expected = await inspectContent(baseline, kind);
+              const actual = await inspectContent(page, kind, true);
+              const expected = await inspectContent(baseline, kind, true);
               const actualPng = await body(page, kind).screenshot({
                 path: join(artifacts, `${prefix}-native.png`),
                 animations: 'disabled',
