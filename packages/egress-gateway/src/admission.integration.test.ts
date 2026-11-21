@@ -90,6 +90,8 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
     const admitted = latch<PersonVmAdmissionPermit>();
     const waiting = latch<void>();
     const finished = latch<void>();
+    const secondFinished = latch<void>();
+    let finishCount = 0;
     const readyEntered = latch<void>(),
       readyAllowed = latch<void>();
     releases.push(() => readyAllowed.resolve());
@@ -158,6 +160,8 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
         try {
           await host.finish(permit);
           events.push('finished');
+          finishCount++;
+          if (finishCount === 2) secondFinished.resolve();
         } catch (error) {
           finishErrors.push(error);
           throw error;
@@ -292,6 +296,7 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
       admitted,
       waiting,
       finished,
+      secondFinished,
       readyEntered,
       readyAllowed,
       upstream,
@@ -401,6 +406,7 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
     expect(f.upstream).not.toHaveBeenCalled();
     f.readyAllowed.resolve();
     expect(await pending).toMatchObject({ status: 200, body: 'fixture' });
+    await f.secondFinished.promise;
     await f.observe(
       (v) => v.active === 0 && v.queued === 0 && v.deferred === 0,
     );
