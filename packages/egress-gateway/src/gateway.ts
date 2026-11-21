@@ -1,5 +1,6 @@
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
+import { finished } from 'node:stream/promises';
 import type {
   PersonVmBinding,
   PersonVmEgressPort,
@@ -66,6 +67,7 @@ export function createEgressGateway(
     services.some(
       (service) =>
         !service.id ||
+        service.admissionOwner !== 'service' ||
         !service.path.startsWith('/') ||
         /[?#\\]/.test(service.path) ||
         !['GET', 'POST'].includes(service.method) ||
@@ -138,7 +140,8 @@ export function createEgressGateway(
     state: BindingState,
     request: EgressRequest,
     signal: AbortSignal,
-  ): Promise<EgressResponse> {
+    deliver: (response: EgressResponse, signal: AbortSignal) => Promise<void>,
+  ): Promise<void> {
     stateFor(state.receipt);
     signal.throwIfAborted();
     if (
@@ -161,44 +164,101 @@ export function createEgressGateway(
       url.origin !== 'http://egress.invalid'
     )
       throw denied();
-    const timeout = AbortSignal.timeout(route.timeoutMs);
-    const activeSignal = AbortSignal.any([
-      signal,
-      state.controller.signal,
-      timeout,
-    ]);
+    const waitingSignal = AbortSignal.any([signal, state.controller.signal]);
     const binding = state.receipt.binding;
-    const context = await options.authority.context(binding, activeSignal);
-    await options.vm.assertCurrentBinding(context, binding, activeSignal);
-    await options.authority.allow(context, binding, route.id, activeSignal);
-    const target = route.target(url.searchParams, url.pathname);
-    if (
-      !route.origins.includes(target.origin) ||
-      target.username ||
-      target.password ||
-      target.hash ||
-      target.protocol !== 'https:'
-    )
-      throw denied();
-    stateFor(state.receipt);
-    activeSignal.throwIfAborted();
-    const response = await options.transport.read(target, {
-      maxBytes: route.maxResponseBytes,
-      signal: activeSignal,
-    });
-    if (response.body.byteLength > route.maxResponseBytes)
-      throw new EgressError('LIMIT_EXCEEDED');
-    route.validate(response);
-    // Buffered reads never return new bytes after current permission was revoked.
-    await options.vm.assertCurrentBinding(context, binding, activeSignal);
-    await options.authority.allow(context, binding, route.id, activeSignal);
-    stateFor(state.receipt);
-    activeSignal.throwIfAborted();
-    const result =
-      route.transform?.(response, url.pathname, state.origin) ?? response;
-    if (result.body.byteLength > route.maxResponseBytes)
-      throw new EgressError('LIMIT_EXCEEDED');
-    return result;
+    const context = await options.authority.context(binding, waitingSignal);
+    await options.vm.assertAdmissionBinding(context, binding, waitingSignal);
+    const permit = await options.admission.admit(
+      context,
+      binding,
+      { participant: 'gateway', operationId: randomUUID() },
+      waitingSignal,
+    );
+    try {
+      if (permit.disposition === 'deferred') {
+        await options.admission.waitUntilReady(context, permit, waitingSignal);
+        waitingSignal.throwIfAborted();
+        // Ready is not authority to relabel/replay this old request.
+        throw new EgressError('EXECUTION_REBIND_REQUIRED');
+      }
+      const outcome = await options.admission.queued(
+        permit,
+        async (queuedSignal) => {
+          return options.admission.activate(
+            permit,
+            async (ownedSignal) => {
+              try {
+                const activeSignal = AbortSignal.any([
+                  waitingSignal,
+                  queuedSignal,
+                  ownedSignal,
+                  permit.signal,
+                  AbortSignal.timeout(route.timeoutMs),
+                ]);
+                await options.vm.assertAdmissionBinding(
+                  context,
+                  binding,
+                  activeSignal,
+                );
+                await options.authority.allow(
+                  context,
+                  binding,
+                  route.id,
+                  activeSignal,
+                );
+                const target = route.target(url.searchParams, url.pathname);
+                if (
+                  !route.origins.includes(target.origin) ||
+                  target.username ||
+                  target.password ||
+                  target.hash ||
+                  target.protocol !== 'https:'
+                )
+                  throw denied();
+                stateFor(state.receipt);
+                activeSignal.throwIfAborted();
+                const response = await options.transport.read(target, {
+                  maxBytes: route.maxResponseBytes,
+                  signal: activeSignal,
+                });
+                if (response.body.byteLength > route.maxResponseBytes)
+                  throw new EgressError('LIMIT_EXCEEDED');
+                route.validate(response);
+                // Buffered reads never return new bytes after current permission was revoked.
+                await options.vm.assertAdmissionBinding(
+                  context,
+                  binding,
+                  activeSignal,
+                );
+                await options.authority.allow(
+                  context,
+                  binding,
+                  route.id,
+                  activeSignal,
+                );
+                stateFor(state.receipt);
+                activeSignal.throwIfAborted();
+                const result =
+                  route.transform?.(response, url.pathname, state.origin) ??
+                  response;
+                if (result.body.byteLength > route.maxResponseBytes)
+                  throw new EgressError('LIMIT_EXCEEDED');
+                await deliver(result, activeSignal);
+                return { ok: true as const };
+              } catch (error) {
+                // Transport and delivery contracts settle only after actual close/join.
+                return { ok: false as const, error };
+              }
+            },
+            queuedSignal,
+          );
+        },
+        waitingSignal,
+      );
+      if (!outcome.ok) throw outcome.error;
+    } finally {
+      await options.admission.finish(permit);
+    }
   }
   async function retire(state: BindingState, signal: AbortSignal) {
     state.active = false;
@@ -305,7 +365,7 @@ export function createEgressGateway(
                   binding,
                   serviceSignal,
                 );
-                await options.vm.assertCurrentBinding(
+                await options.vm.assertAdmissionBinding(
                   context,
                   binding,
                   serviceSignal,
@@ -334,7 +394,7 @@ export function createEgressGateway(
               )
                 throw denied();
               // GET bodies without framing cannot be smuggled through the strict Node parser.
-              const response = await read(
+              await read(
                 state,
                 {
                   method: req.method ?? '',
@@ -342,14 +402,33 @@ export function createEgressGateway(
                   body: new Uint8Array(),
                 },
                 disconnect.signal,
+                async (response, deliverySignal) => {
+                  const drained = finished(res, { cleanup: true });
+                  // Own rejection immediately while the synchronous write runs.
+                  void drained.catch(() => {});
+                  const abort = () => res.destroy();
+                  deliverySignal.addEventListener('abort', abort, {
+                    once: true,
+                  });
+                  try {
+                    deliverySignal.throwIfAborted();
+                    res.writeHead(response.status, {
+                      'content-type': response.contentType,
+                      'content-length': response.body.byteLength,
+                      'cache-control': 'no-store',
+                      'x-content-type-options': 'nosniff',
+                    });
+                    res.end(response.body);
+                    await drained;
+                  } catch (error) {
+                    res.destroy();
+                    await drained.catch(() => {});
+                    throw error;
+                  } finally {
+                    deliverySignal.removeEventListener('abort', abort);
+                  }
+                },
               );
-              res.writeHead(response.status, {
-                'content-type': response.contentType,
-                'content-length': response.body.byteLength,
-                'cache-control': 'no-store',
-                'x-content-type-options': 'nosniff',
-              });
-              res.end(response.body);
             } catch (error) {
               if (res.headersSent) {
                 // A failed native stream cannot become a second JSON response.
@@ -359,9 +438,12 @@ export function createEgressGateway(
               if (!res.destroyed) {
                 res.writeHead(
                   error instanceof EgressError &&
-                    ['DENIED', 'STALE_BINDING'].includes(error.code)
-                    ? 403
-                    : 502,
+                    error.code === 'EXECUTION_REBIND_REQUIRED'
+                    ? 409
+                    : error instanceof EgressError &&
+                        ['DENIED', 'STALE_BINDING'].includes(error.code)
+                      ? 403
+                      : 502,
                   {
                     'content-type': 'application/json',
                     'cache-control': 'no-store',

@@ -1,6 +1,6 @@
 # MET-269：每人 VM 出口门卫
 
-本层依赖 `@allrice/person-vm` 的接口提交 `abf556870`；PR 指向
+本层依赖 `@allrice/person-vm` 的资格接口提交 `c35c8f17` 和模型网关 `5b7800aa`；PR 指向
 `batch/4.0-n2`。当前交付的是宿主网关和真实 HTTP 入口，VM/身份/密钥投送
 使用显式 owner port，尚未完成 MET-266/268 的真实 VM 联调，不宣称默认拒绝网络已部署。
 
@@ -23,7 +23,8 @@ MET-225：无新增 DSH 默认行为或私有接口；本包仅 AllRice 宿主�
 
 | 接缝                         | owner / 责任                                                                                                                         |
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `vm.assertCurrentBinding`    | MET-266，每请求校对当前人/企业、running、instance、epoch、租约、出口活性；不可直接读 VM 内表                                         |
+| `vm.assertAdmissionBinding`  | MET-266，每请求校对当前人/企业、完整 binding、撤权、精确出口资格；冻结物理租约不拒绝资格，不授予派发                                 |
+| `admission`                  | 与 VM 同一 PG shared host；read 独占 gateway permit，排队、激活、取消和真实收尾由公开 boundary 管理                                  |
 | `authority.context/allow`    | 身份与模块 owner，从受管 binding 查当前可信 RequestContext，再核当前企业/员工/路由资格；不能反序列化 guest header                    |
 | `provisioner.endpoint`       | 宿主出口分配器，持久保留每 vmId 的监听端口和实际 guest 可达地址；不能用端口当身份，重启也须稳定                                      |
 | `provisioner.install/remove` | MET-266 可信盘/config 写入接缝，开机前按精确 instance/epoch 写入、撤销本地 capability；不得写错 VM 或删除新代凭据                    |
@@ -34,6 +35,14 @@ MET-225：无新增 DSH 默认行为或私有接口；本包仅 AllRice 宿主�
 MET-268 公开 authority 解析实际原生会话/call，再调 `ModelGatewayPort.handle`。
 本包不制造 executionId 或 callId。不把 guest 请求中的同名字段变成 host binding。
 真实 endpoint、盘内投送、会话/call 关联尚待 owner 接线，fixture 不是其产品实现。
+
+`services.admissionOwner` 必须显式为 `service`。managed model 的 permit 只由
+model-gateway 持有，`assertCall` 仍核完整执行身份，本地 capability 不能替代它。
+read 冻结前 queued 保留；冻结后的请求进入可取消 deferred，等待双端 exact release
+及真实 ready，期间不因冻结返回 403/502。ready 不授权旧执行：旧请求返回
+`409 EXECUTION_REBIND_REQUIRED`，由调用方发起重新授权的新请求，不自动重绑或重放。
+网络 timeout 只从 active 阶段开始；permit 保留到 HTTPS request/response 真正关闭及
+下游响应结束。取消同样等待实际收尾；没有新增本地冻结状态或 VM 私表读取。
 
 ## 连接资格与生命周期
 

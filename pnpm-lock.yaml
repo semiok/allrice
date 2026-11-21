@@ -724,6 +724,10 @@ importers:
       '@allrice/project-runtime':
         specifier: workspace:*
         version: link:../project-runtime
+    devDependencies:
+      postgres:
+        specifier: 3.4.9
+        version: 3.4.9
 
   packages/file-archives:
     dependencies:
@@ -771,15 +775,6 @@ importers:
       '@earendil-works/pi-ai':
         specifier: 1.1.0
         version: 1.1.0(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(@smithy/signature-v4@5.7.4)(undici@8.11.2)(ws@8.21.3)(zod@4.4.3)
-
-  packages/person-vm:
-    dependencies:
-      '@allrice/contracts':
-        specifier: workspace:*
-        version: link:../contracts
-      postgres:
-        specifier: ^3.4.7
-        version: 3.4.9
 
   packages/office-runtime:
     dependencies:

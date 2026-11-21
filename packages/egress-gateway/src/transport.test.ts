@@ -38,6 +38,7 @@ function reply(
           statusCode: status,
           headers,
         });
+        response.once('close', () => req.emit('close'));
         receive(response);
         response.end(Buffer.from(body));
       },

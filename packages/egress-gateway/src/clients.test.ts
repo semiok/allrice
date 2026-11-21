@@ -1,3 +1,4 @@
+import { admissionFixture } from './admission.fixture.ts';
 import { it, expect } from 'vitest';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -58,7 +59,8 @@ it('npm and pip install dependency graphs through authenticated mirror HTTP with
       },
       remove: async () => {},
     },
-    vm: { assertCurrentBinding: async () => {} },
+    admission: admissionFixture(),
+    vm: { assertAdmissionBinding: async () => {} },
     authority: {
       context: async () => ({}) as RequestContext,
       allow: async () => {},

@@ -17,5 +17,8 @@
     "@allrice/contracts": "workspace:*",
     "@allrice/person-vm": "workspace:*",
     "@allrice/project-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "postgres": "3.4.9"
   }
 }

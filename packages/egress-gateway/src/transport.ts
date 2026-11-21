@@ -36,6 +36,20 @@ export function createPublicHttpsTransport(): EgressTransport {
         throw new EgressError('DENIED');
       const address = answers[0]!;
       return new Promise((resolve, reject) => {
+        let failure: unknown;
+        let result: Awaited<ReturnType<EgressTransport['read']>> | undefined;
+        let requestClosed = false,
+          responseClosed = true;
+        const settle = () => {
+          if (!requestClosed || !responseClosed) return;
+          if (failure) reject(failure);
+          else if (result) resolve(result);
+          else reject(new EgressError('UNAVAILABLE'));
+        };
+        const failed = (error: unknown) => {
+          failure ??= error;
+        };
+
         const req = request(
           {
             hostname: url.hostname,
@@ -54,6 +68,15 @@ export function createPublicHttpsTransport(): EgressTransport {
               callback(null, address.address, address.family),
           },
           (response) => {
+            responseClosed = false;
+            response.once('close', () => {
+              responseClosed = true;
+              settle();
+            });
+            response.once('error', failed);
+            response.once('aborted', () =>
+              failed(new EgressError('UNAVAILABLE')),
+            );
             const status = response.statusCode ?? 0;
             if (
               status < 200 ||
@@ -61,8 +84,8 @@ export function createPublicHttpsTransport(): EgressTransport {
               (response.headers['content-encoding'] &&
                 response.headers['content-encoding'] !== 'identity')
             ) {
+              failed(new EgressError('INVALID_RESPONSE'));
               response.destroy();
-              reject(new EgressError('INVALID_RESPONSE'));
               return;
             }
             const chunks: Buffer[] = [];
@@ -75,22 +98,22 @@ export function createPublicHttpsTransport(): EgressTransport {
               }
               chunks.push(chunk);
             });
-            response.once('error', reject);
-            response.once('aborted', () =>
-              reject(new EgressError('UNAVAILABLE')),
-            );
-            response.once('end', () =>
-              resolve({
+            response.once('end', () => {
+              result = {
                 status,
                 contentType:
                   response.headers['content-type'] ??
                   'application/octet-stream',
                 body: Buffer.concat(chunks),
-              }),
-            );
+              };
+            });
           },
         );
-        req.once('error', reject);
+        req.once('error', failed);
+        req.once('close', () => {
+          requestClosed = true;
+          settle();
+        });
         req.end();
       });
     },

@@ -1,3 +1,4 @@
+import { admissionFixture } from './admission.fixture.ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:net';
 import type { RequestContext } from '@allrice/contracts';
@@ -71,8 +72,9 @@ async function fixture(
         maxCandles: 100,
       }),
     },
+    admission: admissionFixture(),
     vm: {
-      assertCurrentBinding: vi.fn(async (_context, expected) => {
+      assertAdmissionBinding: vi.fn(async (_context, expected) => {
         if (JSON.stringify(expected) !== JSON.stringify(current))
           throw new EgressError('STALE_BINDING');
       }),
@@ -283,6 +285,7 @@ describe('trusted VM HTTP egress (VM and identity owners are explicit fixtures)'
           id: 'native-model',
           path: '/model',
           method: 'POST',
+          admissionOwner: 'service',
           handle: async (_req, res, _trusted, signal) => {
             signal.addEventListener('abort', cancelled, { once: true });
             res.writeHead(200, { 'content-type': 'text/event-stream' });

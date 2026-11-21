@@ -1,10 +1,15 @@
 import type { RequestContext } from '@allrice/contracts';
-import type { PersonVmBinding, PersonVmPort } from '@allrice/person-vm';
+import type {
+  PersonVmBinding,
+  PersonVmAdmissionBindingPort,
+  PersonVmAdmissionBoundary,
+} from '@allrice/person-vm';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 export class EgressError extends Error {
   constructor(
     readonly code:
+      | 'EXECUTION_REBIND_REQUIRED'
       | 'DENIED'
       | 'STALE_BINDING'
       | 'UNAVAILABLE'
@@ -48,6 +53,7 @@ export type EgressReadRoute = Readonly<{
   ): EgressResponse;
 }>;
 export interface EgressTransport {
+  /** Settles only after the owned response/request transport has closed, including cancellation. */
   read(
     url: URL,
     options: { maxBytes: number; signal: AbortSignal },
@@ -68,7 +74,9 @@ export interface EgressAuthority {
   ): Promise<void>;
 }
 export type EgressDependencies = {
-  vm: Pick<PersonVmPort, 'assertCurrentBinding'>;
+  vm: PersonVmAdmissionBindingPort;
+  /** Same shared PG host as vm; read operations own exactly one permit. */
+  admission: PersonVmAdmissionBoundary;
   authority: EgressAuthority;
   transport: EgressTransport;
   /** Actual ModelGatewayPort.revoke adapter; must abort AND await drain. */
@@ -81,6 +89,8 @@ export type ManagedHostService = Readonly<{
   id: string;
   path: string;
   method: 'GET' | 'POST';
+  /** Service owns admission AND complete call identity; local capability is insufficient. */
+  admissionOwner: 'service';
   /** Owner parses native protocol and resolves call/resource authority; no raw proxy. */
   handle(
     request: IncomingMessage,
