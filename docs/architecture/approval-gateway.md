@@ -14,6 +14,8 @@
 | 后台           | 不新增管理员代批权。原始业务效果由模块读取；未知结果由本人在可信入口调用 reconcile，经目的地公开回执接口核对                                                                                                                                                                  |
 | 开关与权限     | 装配方只注册已批准的 destination/resource owner，关闭时不注册 MCP 和 BFF 路由；当前本人/企业/员工/资源权限由必填 authority 与 owner 接口检查，不能依赖 UI 隐藏                                                                                                                |
 
+owner 的具名错误用 `ApprovalOwnerError` 按既有 `ApiErrorSchema` 或 `ReferenceSelectionErrorSchema` 接入；资料拒绝 ID 必须来自 owner 实际收到的选择器白名单，不透传任意异常对象/原文，不扩全局 details。MCP 保持 isError，BFF 返回既有 schema，保留 code/retryable/允许的安全详情；未知异常脱敏，发送后错误同时留在持久首败字段中，retryable 不代表重发许可。
+
 公开入口见包 `src/index.ts`，具名输入契约见 `src/contract.ts`。`ApprovalBinding` 只能来自已认证宿主，包含 VM/租约 epoch、企业/本人、工作区、员工 release、线程、真实执行关联和原生根/子会话映射。MCP request ID 只是关联值，不是身份。新的调用可在同一已验证根会话重试同一业务键；原始 Run/native call 仍保留在记录中。VM epoch、员工 release、根会话或执行代际变化不能沿用批准。
 
 ## 装配必须实现的端口

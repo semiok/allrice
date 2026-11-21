@@ -476,7 +476,11 @@ it.each(['digest', 'receipt-store', 'diagnostic-store'] as const)(
       );
       expect(result.failure?.at).toBeTruthy();
       expect(JSON.stringify(result)).not.toContain('private SQL');
-      await f.store.noteFailure(view.ref, { kind: 'CANCELLED', code: null });
+      await f.store.noteFailure(view.ref, {
+        kind: 'CANCELLED',
+        code: null,
+        publicError: null,
+      });
       expect((await f.store.get(view.ref.requestId))!.failure).toEqual(
         result.failure,
       );

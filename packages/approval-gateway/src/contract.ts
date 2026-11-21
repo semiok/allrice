@@ -1,6 +1,7 @@
 import type { RequestContext } from '@allrice/contracts';
 import type { PersonVmBinding } from '@allrice/person-vm';
 import { z } from 'zod';
+import type { ApprovalPublicError } from './errors.js';
 
 export const APPROVAL_GATEWAY_CONTRACT_VERSION = 1 as const;
 const text = z.string().min(1);
@@ -96,6 +97,7 @@ export type ApprovalFailure = Readonly<{
     | 'RECEIPT_INTEGRITY'
     | 'RECEIPT_PERSIST_FAILED';
   code: ApprovalError['code'] | null;
+  publicError: ApprovalPublicError | null;
   at: string;
 }>;
 export type ApprovalView = Readonly<{
@@ -160,6 +162,7 @@ export interface ApprovalAuthority {
     signal: AbortSignal,
   ): Promise<T>;
 }
+/** Owners map existing named public failures through ApprovalOwnerError; no arbitrary exception passthrough. */
 export interface ApprovalResourceOwner {
   snapshot(
     binding: ApprovalBinding,

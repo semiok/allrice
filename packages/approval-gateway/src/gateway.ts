@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { RequestContext } from '@allrice/contracts';
+import { approvalPublicError } from './errors.js';
 import {
   ApprovalError,
   ApprovalRefSchema,
@@ -353,6 +354,7 @@ export function createApprovalGateway(options: ApprovalOptions) {
                 await store.noteFailure(record.ref, {
                   kind,
                   code: error instanceof ApprovalError ? error.code : null,
+                  publicError: approvalPublicError(error, record.ref.requestId),
                 }),
               );
             } catch {
