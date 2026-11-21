@@ -314,7 +314,7 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 以下条目的复核日期/版本统一继承“本轮复核”。测试路径以仓库根目录为起点。退役必须在同一 PR 删除相应旧实现、更新机器清单并留下验证结果；一项适配中的少量机制可退役，不代表它承担的整项治理责任可以删除。
 
-### allrice-person-vm-entry-admission-v1
+### `allrice-person-vm-entry-admission-v1`
 
 - MET-271 F4 consumer 准备，用户 2026-11-21 已批准门卫/租约及 join 语义；当前 DSH `0.2.1-rc.2`，原生 source `687f282e8625c6b8d11ff58211a90524be2e4317`。原生 turn/子会话/等待/重试与 call 身份直接复用，不修改 DSH 或另建 Agent 状态机。
 - AllRice 只消费 model owner 的公开 admission v1/boundary（合同切片来源 #905 `c041d94c6984463c9ff9a068cba0db58ebc91e16`）；原完整业务 owner 校验和实际连接/typing/prewarm 的 close Promise 由正式宿主注入。DSH 不持有 SaaS 当前权限、双宿主准入与跨 host lease；entry 不构造共享 SQL/权威。
