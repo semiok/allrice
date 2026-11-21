@@ -5,10 +5,13 @@ import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/typ
 import { ReferenceSelectionErrorSchema } from '@allrice/contracts';
 import { riceToolDefinitions } from '../tool-broker/definitions.js';
 import {
+  ALLRICE_MCP_CONTRACT_VERSION,
   createAllriceMcpServer,
   type AllriceMcpBinding,
   type AllriceMcpScope,
   type AllriceMcpServices,
+  type AllriceMcpMemoryRead,
+  type AllriceMcpServerPort,
 } from './allrice-server.js';
 
 const id = (n: number) =>
@@ -90,6 +93,88 @@ afterEach(async () => {
 });
 
 describe('AllRice native SDK MCP managed boundary (contract fixtures, no production gateway)', () => {
+  it('a business owner implements the public callback and consumes the versioned native SDK port', async () => {
+    const f = fixture();
+    const read: AllriceMcpMemoryRead = async (scope, input, signal) => {
+      expect(scope.nativeCallRef).toBe('host-native-call');
+      expect(scope.executionGeneration).toBe('4.0');
+      signal.throwIfAborted();
+      return {
+        content: [{ type: 'text', text: `issued ordinal ${input.number}` }],
+      };
+    };
+    f.services.memoryRead = read;
+    const { client, controller } = await connect(f);
+    const port: AllriceMcpServerPort = controller;
+    expect(port.contractVersion).toBe(ALLRICE_MCP_CONTRACT_VERSION);
+    expect(client.getServerVersion()).toEqual({
+      name: 'allrice',
+      version: '1',
+    });
+    await expect(
+      client.callTool({ name: 'memory_read', arguments: { number: 1 } }),
+    ).resolves.toMatchObject({ content: [{ text: 'issued ordinal 1' }] });
+  });
+
+  it('host revocation joins its actual work, rejects new admission and leaves another MCP connection usable', async () => {
+    const f = fixture();
+    const entered = gate(),
+      aborted = gate(),
+      finish = gate();
+    let signal: AbortSignal | undefined;
+    let completed = false;
+    f.services.memoryRead = async (_scope, _input, incoming) => {
+      signal = incoming;
+      incoming.addEventListener('abort', () => aborted.resolve(), {
+        once: true,
+      });
+      entered.resolve();
+      // Simulates an owner Promise which cannot finish until its I/O joins.
+      await finish.promise;
+      completed = true;
+      return { content: [{ type: 'text', text: 'late private result' }] };
+    };
+    const first = await connect(f);
+    const second = await connect(fixture());
+    const pending = first.client
+      .callTool({ name: 'memory_read', arguments: { number: 1 } })
+      .catch((error: unknown) => error);
+    let revoked: Promise<void> | undefined;
+    let idle: Promise<void> | undefined;
+    let closed = false;
+    try {
+      await entered.promise;
+      idle = first.controller.whenIdle();
+      expect(signal?.aborted).toBe(false); // whenIdle is passive.
+      revoked = first.controller.revoke().then(() => {
+        closed = true;
+      });
+      await aborted.promise;
+      expect(closed).toBe(false);
+      expect(completed).toBe(false);
+      expect((await first.client.listTools()).tools).toEqual([]);
+      await expect(
+        first.client.callTool({
+          name: 'memory_read',
+          arguments: { number: 2 },
+        }),
+      ).rejects.toThrow('Managed binding unavailable');
+      await expect(
+        second.client.callTool({
+          name: 'memory_read',
+          arguments: { number: 1 },
+        }),
+      ).resolves.toMatchObject({ content: [{ text: 'actual module result' }] });
+    } finally {
+      finish.resolve();
+      await revoked;
+      await idle;
+      await pending;
+    }
+    expect(completed).toBe(true);
+    await first.controller.close(); // Joined shutdown is idempotent with revoke.
+  });
+
   it('advertises the complete existing export input schema through the SDK projection', async () => {
     const f = fixture();
     const { client } = await connect(f);

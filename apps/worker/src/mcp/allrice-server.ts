@@ -28,6 +28,9 @@ import {
 import { z } from 'zod';
 import { riceToolDefinitions } from '../tool-broker/definitions.js';
 
+/** Host API version, not a guest-supplied authorization or business schema. */
+export const ALLRICE_MCP_CONTRACT_VERSION = 1 as const;
+
 export interface AllriceMcpBinding {
   personId: string;
   organizationId: string;
@@ -78,6 +81,8 @@ export interface AllriceMcpDeliverableInput {
 }
 export interface AllriceMcpServices {
   readonly executionGeneration: ExecutionGeneration;
+  /** Each returned Promise must join the owner's actual I/O/transaction. A
+   * canceled response does not undo an already committed receipt or effect. */
   referenceRead?(
     scope: AllriceMcpScope,
     input: ReferenceReadInput,
@@ -93,6 +98,43 @@ export interface AllriceMcpServices {
     input: AllriceMcpDeliverableInput,
     signal: AbortSignal,
   ): Promise<CallToolResult>;
+}
+
+/** Public host callbacks for MET-281/283 adapters. These are the exact existing
+ * M1 signatures, not the proposed complete business Ports or a 4.0 carrier. */
+export type AllriceMcpReferenceRead = NonNullable<
+  AllriceMcpServices['referenceRead']
+>;
+export type AllriceMcpMemoryRead = NonNullable<
+  AllriceMcpServices['memoryRead']
+>;
+export type AllriceMcpDeliverableCreate = NonNullable<
+  AllriceMcpServices['deliverableCreate']
+>;
+/** Only these existing thrown payloads are validated and disclosed. Native
+ * CallToolResult.isError remains the owner's ordinary tool-failure channel. */
+export type AllriceMcpBusinessError =
+  | z.infer<typeof ApiErrorSchema>
+  | z.infer<typeof ReferenceSelectionErrorSchema>;
+export interface AllriceMcpServerOptions {
+  host?: AllriceMcpHost;
+  services?: AllriceMcpServices;
+}
+export interface AllriceMcpServerPort {
+  readonly contractVersion: typeof ALLRICE_MCP_CONTRACT_VERSION;
+  /** Use the SDK's public connect(transport); this API adds no handshake,
+   * reconnect or retry. The transport owner must supply the managed route. */
+  readonly server: Server;
+  notifyCatalogChanged(): Promise<void>;
+  /** Passive wait only: never cancels current work or grants admission. */
+  whenIdle(): Promise<void>;
+  /** Permanently stop this connection's admission, abort its operations, join
+   * their actual Promises, then close the SDK. Other connections are untouched.
+   * The host must wire its trusted revocation notification to this method. */
+  revoke(): Promise<void>;
+  /** Same joined shutdown, idempotent with revoke. Never replays a call or
+   * treats cancellation/ACK loss as rollback or permission to republish. */
+  close(): Promise<void>;
 }
 
 const deliverySourceSchema = riceToolDefinitions.find(
@@ -188,10 +230,9 @@ export function allriceMcpApiError(
  * opens no socket, reads no credentials and enables no builtin by default.
  * The advanced SDK API preserves the existing full JSON Schema unchanged.
  * DSH owns public mcp__ names; these are exclusively the raw wire names. */
-export function createAllriceMcpServer(options: {
-  host?: AllriceMcpHost;
-  services?: AllriceMcpServices;
-}) {
+export function createAllriceMcpServer(
+  options: AllriceMcpServerOptions,
+): AllriceMcpServerPort {
   const parsedBinding = bindingSchema.safeParse(options.host?.binding);
   const binding = parsedBinding.success ? parsedBinding.data : null;
   const shutdown = new AbortController();
@@ -199,7 +240,7 @@ export function createAllriceMcpServer(options: {
   let closing = false;
   let closePromise: Promise<void> | undefined;
   const server = new Server(
-    { name: 'allrice', version: '1' },
+    { name: 'allrice', version: String(ALLRICE_MCP_CONTRACT_VERSION) },
     { capabilities: { tools: { listChanged: true } } },
   );
   const sameBinding = (scope: AllriceMcpScope) =>
@@ -418,22 +459,24 @@ export function createAllriceMcpServer(options: {
   const whenIdle = async () => {
     while (active.size) await Promise.allSettled([...active]);
   };
+  const close = () =>
+    (closePromise ??= (async () => {
+      closing = true;
+      shutdown.abort();
+      try {
+        await whenIdle();
+      } finally {
+        await server.close();
+      }
+    })());
   return {
+    contractVersion: ALLRICE_MCP_CONTRACT_VERSION,
     server,
     /** Owner config/revocation notification. Calls still check current rights
      * even if native discovery later fails and keeps its previous catalog. */
     notifyCatalogChanged: () => server.sendToolListChanged(),
     whenIdle,
-    close() {
-      return (closePromise ??= (async () => {
-        closing = true;
-        shutdown.abort();
-        try {
-          await whenIdle();
-        } finally {
-          await server.close();
-        }
-      })());
-    },
+    revoke: close,
+    close,
   };
 }
