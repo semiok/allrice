@@ -92,6 +92,7 @@ files:
   db:
     - packages/egress-gateway/src/admission.integration.test.ts
     - packages/model-gateway/src/postgres-store.integration.test.ts
+    - packages/approval-gateway/src/postgres.integration.test.ts
     - apps/web/lib/execution/model-failure-api.integration.test.ts
     - apps/web/lib/brand-media.integration.test.ts
     - apps/web/lib/reference-publications.integration.test.ts
