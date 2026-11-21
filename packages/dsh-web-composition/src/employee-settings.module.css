@@ -1,0 +1,38 @@
+.section {
+  min-width: 0;
+  color: var(--ar-text);
+  font: var(--ar-font-body);
+}
+.heading {
+  margin: 0 0 var(--ar-space-4);
+  font: var(--ar-font-heading);
+}
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ar-space-4);
+  padding: var(--ar-space-4) 0;
+}
+.copy {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.copy h3 {
+  margin: 0;
+  font: var(--ar-font-label);
+}
+.copy p,
+.description {
+  margin: var(--ar-space-1) 0 0;
+  color: var(--ar-text-secondary);
+}
+.row > button {
+  flex-shrink: 0;
+}
+@media (max-width: 760px) {
+  .section[aria-label='AllRice 账号'] .row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
