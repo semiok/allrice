@@ -11,6 +11,7 @@ import {
 import { refreshTaskClock } from '../task-clock.ts';
 import { notifyJobReady } from '../execution/queue-ready.ts';
 import { getDatabase } from '../core/client.ts';
+import { assertChatExecutionGeneration } from './execution-generation.ts';
 
 /** Caller holds the conversation runtime lock. Never create a second scheduler. */
 export async function releaseNextConversationFollowup(
@@ -42,6 +43,16 @@ export async function updateQueuedMessage(
   const action = QueuedMessageActionSchema.parse(input);
   const sql = getDatabase();
   await sql.begin(async (tx) => {
+    await assertChatExecutionGeneration(
+      tx,
+      {
+        organizationId: context.organizationId,
+        workspaceId,
+        sessionId,
+        ownerId: context.actor.id,
+      },
+      '3.x',
+    );
     await assertWorkbenchSession(
       tx,
       { ...context, workspaceId },

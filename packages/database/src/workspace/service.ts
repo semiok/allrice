@@ -104,6 +104,14 @@ import {
 } from '@allrice/contracts';
 import { z } from 'zod';
 import { newCurrentEmployeeChatOrigin } from '../conversation/current-execution-binding.ts';
+import {
+  assertChatExecutionGeneration,
+  readChatExecutionGeneration,
+} from '../conversation/execution-generation.ts';
+import {
+  ExecutionGenerationSchema,
+  type ExecutionGeneration,
+} from '@allrice/contracts';
 import type { TransactionSql } from 'postgres';
 
 import { DataAccessError, getStoredFile } from '../data.ts';
@@ -161,6 +169,7 @@ interface SessionRow {
   updated_at: Date;
   archived_at: Date | null;
   pinned_at?: Date | null;
+  execution_generation: ExecutionGeneration;
 }
 
 interface MessageRow {
@@ -522,7 +531,12 @@ async function sessionRow(
 export async function createChatSession(
   context: RequestContext,
   input: unknown,
-  options: { sessionId?: string; freezeAccountCapabilities?: true } = {},
+  options: {
+    sessionId?: string;
+    freezeAccountCapabilities?: true;
+    /** Host-selected birth owner. Never copied from browser JSON. */
+    executionGeneration?: ExecutionGeneration;
+  } = {},
 ) {
   const parsed = CreateChatSessionInputSchema.parse(input);
   if (parsed.employeeInstanceId) {
@@ -558,10 +572,17 @@ export async function createChatSession(
 export async function createAssignedChatSession(
   context: ResourcePrincipal,
   input: unknown,
-  options: { sessionId?: string; freezeAccountCapabilities?: true } = {},
+  options: {
+    sessionId?: string;
+    freezeAccountCapabilities?: true;
+    executionGeneration?: ExecutionGeneration;
+  } = {},
   transaction?: TransactionSql,
 ): Promise<z.infer<typeof ChatSessionSchema>> {
   const parsed = CreateChatSessionInputSchema.parse(input);
+  const executionGeneration = ExecutionGenerationSchema.parse(
+    options.executionGeneration ?? '3.x',
+  );
   if (!transaction) {
     const { employeePersonaAdmission } =
       await import('../employees/employee-instances.ts');
@@ -641,22 +662,23 @@ export async function createAssignedChatSession(
     : randomUUID();
   const [existing] =
     await sql`select id from allrice_chat_sessions where id=${fixedSessionId}`;
-  const origin = !existing
-    ? newCurrentEmployeeChatOrigin(
-        {
-          organizationId: context.organizationId,
-          workspaceId,
-          ownerId: requireUser(context),
-          sessionId: fixedSessionId,
-          source: {
-            employeeVersionId,
-            configChecksum: versions[0].config_checksum,
-            manifest: versions[0].manifest,
+  const origin =
+    !existing && executionGeneration === '3.x'
+      ? newCurrentEmployeeChatOrigin(
+          {
+            organizationId: context.organizationId,
+            workspaceId,
+            ownerId: requireUser(context),
+            sessionId: fixedSessionId,
+            source: {
+              employeeVersionId,
+              configChecksum: versions[0].config_checksum,
+              manifest: versions[0].manifest,
+            },
           },
-        },
-        transaction,
-      )
-    : null;
+          transaction,
+        )
+      : null;
   // Both entrypoints also serve scheduled/platform work; only the ordinary
   // authenticated session route opts in. Idempotent retries do not reread config.
   const accountCapabilities =
@@ -672,11 +694,11 @@ export async function createAssignedChatSession(
     insert into allrice_chat_sessions (
       id, organization_id, workspace_id, owner_id, employee_assignment_id,
       employee_instance_id, employee_version_id, title, visibility, native_root_origin,
-      account_capability_snapshot
+      account_capability_snapshot, execution_generation
     ) values (
       ${fixedSessionId}, ${context.organizationId}, ${workspaceId}, ${requireUser(context)},
       ${assignment.id}, ${instance.id}, ${employeeVersionId}, ${parsed.title}, 'private', ${origin ? sql.json(origin) : null},
-      ${accountCapabilities ? sql.json(accountCapabilities) : null}
+      ${accountCapabilities ? sql.json(accountCapabilities) : null}, ${executionGeneration}
     )
     -- The table also has a composite unique identity used by foreign keys.
     -- Concurrent same-ID creation must handle either constraint; the exact
@@ -699,7 +721,8 @@ export async function createAssignedChatSession(
     row.employee_assignment_id !== assignment.id ||
     (row.employee_instance_id ?? row.employee_assignment_id) !== instance.id ||
     row.archived_at ||
-    row.visibility !== 'private'
+    row.visibility !== 'private' ||
+    row.execution_generation !== executionGeneration
   )
     throw new DataAccessError('authorization_denied');
   await audit(
@@ -1312,6 +1335,37 @@ export async function authorizeSessionOwner(
   return mapSession(session);
 }
 
+/** Owner-only cold history admission. Archival does not grant execution. */
+export async function authorizeSessionHistoryOwner(
+  context: RequestContext,
+  workspaceId: string,
+  sessionId: string,
+) {
+  const session = await sessionRow(context, workspaceId, sessionId);
+  if (session.owner_id !== requireUser(context))
+    throw new DataAccessError('authorization_denied');
+  return mapSession(session);
+}
+
+/** Current owner read of the immutable product writer; never grants execution. */
+export async function getSessionExecutionGeneration(
+  context: RequestContext,
+  workspaceId: string,
+  sessionId: string,
+) {
+  const session = await authorizeSessionHistoryOwner(
+    context,
+    workspaceId,
+    sessionId,
+  );
+  return readChatExecutionGeneration(getDatabase(), {
+    organizationId: session.organizationId,
+    workspaceId: session.workspaceId,
+    ownerId: session.ownerId,
+    sessionId: session.id,
+  });
+}
+
 type ChatMessagePersistenceInput = {
   context: ResourcePrincipal;
   workspaceId: string;
@@ -1352,6 +1406,16 @@ async function persistChatMessageInTransaction(
 ): Promise<PersistedChatMessage> {
   const { context, workspaceId, session, message, requestDigest, options } =
     input;
+  await assertChatExecutionGeneration(
+    transaction,
+    {
+      organizationId: context.organizationId,
+      workspaceId,
+      ownerId: context.actor.id,
+      sessionId: session.id,
+    },
+    '3.x',
+  );
   if (message.userQuestionAnswer)
     await requireNativeQuestionAdmission(
       transaction,

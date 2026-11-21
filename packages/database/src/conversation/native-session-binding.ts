@@ -35,6 +35,7 @@ import {
 } from '../platform-technical-tasks.ts';
 import { bindConversationThreadInTransaction } from './conversation-runtime.ts';
 import { nativeContextExecutionRetired } from './native-context-retirement.ts';
+import { assertChatExecutionGeneration } from './execution-generation.ts';
 
 const digest = z.string().regex(/^sha256:[a-f0-9]{64}$/);
 export const NativeSessionDescriptorSchema = z
@@ -395,6 +396,17 @@ export async function prepareLeasedNativeSession(
   job: JobRow,
   input: NativeSessionPreparationInput,
 ) {
+  if (input.subject.kind === 'chat')
+    await assertChatExecutionGeneration(
+      tx,
+      {
+        organizationId: job.organization_id,
+        workspaceId: job.workspace_id!,
+        ownerId: job.owner_id,
+        sessionId: input.subject.id,
+      },
+      '3.x',
+    );
   const origin = await readNativeRootOrigin(tx, job, input.subject);
   const executionBinding =
     input.subject.kind === 'chat'
@@ -465,6 +477,17 @@ export async function bindLeasedNativeSession(
   job: JobRow,
   input: NativeSessionLeaseInput,
 ) {
+  if (input.subject.kind === 'chat')
+    await assertChatExecutionGeneration(
+      tx,
+      {
+        organizationId: job.organization_id,
+        workspaceId: job.workspace_id!,
+        ownerId: job.owner_id,
+        sessionId: input.subject.id,
+      },
+      '3.x',
+    );
   const d = input.descriptor,
     s = input.subject;
   if (

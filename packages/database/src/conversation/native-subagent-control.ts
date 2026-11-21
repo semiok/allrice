@@ -19,6 +19,7 @@ import {
 } from '../run-delivery-authority.ts';
 import { readSessionNativeSubagentTarget } from './native-subagent-query.ts';
 import { getStoredFile } from '../data.ts';
+import { assertChatExecutionGeneration } from './execution-generation.ts';
 
 type Reader = Parameters<typeof assertWorkbenchSession>[0];
 type Principal = Parameters<typeof assertWorkbenchSession>[1];
@@ -157,6 +158,16 @@ export async function enqueueNativeSubagentControl(
   const input = NativeSubagentControlInputSchema.parse(expected.input);
   const rootRunId = UuidSchema.parse(expected.rootRunId).toLowerCase();
   return getDatabase().begin(async (tx) => {
+    await assertChatExecutionGeneration(
+      tx,
+      {
+        organizationId: context.organizationId,
+        workspaceId: context.workspaceId!,
+        ownerId: context.actor.id,
+        sessionId,
+      },
+      '3.x',
+    );
     const reuse = (row: CommandRow) => {
       const saved = NativeSubagentControlRequestSchema.parse(row.native_input);
       if (
