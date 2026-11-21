@@ -87,7 +87,7 @@ suite(
       const native = await responsesFixture();
       close.push(() => native.close());
       let access!: GuestEgressAccess;
-      let model!: ModelGatewayPort;
+      const modelRef: { current?: ModelGatewayPort } = {};
       const portProbe = createServer();
       await new Promise<void>((resolve) =>
         portProbe.listen(0, '127.0.0.1', resolve),
@@ -148,7 +148,7 @@ suite(
           },
         },
         revokeModel: async (binding) => {
-          if (model) await model.revoke(binding);
+          if (modelRef.current) await modelRef.current.revoke(binding);
         },
         services: [
           {
@@ -173,7 +173,7 @@ suite(
               calls.push(call);
               // Mutate only the trusted fixture's execution envelope to prove that
               // local capability does not substitute complete assertCall identity.
-              await model.handle(
+              await modelRef.current!.handle(
                 request,
                 response,
                 invalidIdentity
@@ -206,7 +206,7 @@ suite(
       const binding = await vm.resolve(rc, cancel.signal);
       const receipt = await egress.prepare(binding, cancel.signal);
       const store = createPostgresModelGatewayStore(open());
-      model = createModelGateway({
+      const model = createModelGateway({
         ownerId: randomUUID(),
         store,
         provider: native.provider,
@@ -230,6 +230,7 @@ suite(
           },
         },
       });
+      modelRef.current = model;
       close.push(() => model.close());
       close.push(() =>
         egress.revoke(receipt, 'stop', new AbortController().signal),
