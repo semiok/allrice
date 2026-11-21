@@ -862,7 +862,7 @@ export class PersonVmService implements PersonVmHostPort {
       { now: this.now, ttlMs: this.options.leaseTtlMs, signal },
       async (lease) => {
         const current = AbortSignal.any([signal, lease.signal]);
-        await lease.assertAdmissionOpen();
+        await lease.assertAdmissionOpen(true);
         const row = this.required(lease.row);
         this.checkOrganization(row, identity.organizationId);
         return this.inLeaseFrame(

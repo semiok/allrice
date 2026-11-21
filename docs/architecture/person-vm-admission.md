@@ -36,6 +36,16 @@ explicit `issue→participant.freeze→stopFrozen→exact双thaw→wake` 使用�
 
 PG LISTEN只作提示，读前注册并重读持久cursor，短start/end不会因两次0丢失。postgres.js通知连接独立于专属owner连接，通知重连报告gap；原owner连接失联立即abort，关闭join通知/查询资源。gate revoked投影会取消在途owner/permit，真实组织API的事件producer仍未在本片接入。
 
+双端屏障采用同一PG事务返回条件与共享`admission_revision`水位；participant订阅的cursor覆盖两端ACK/stop/版本事实，wait注册之前发生的peer release仍可由持久水位发现。各端`idleRevision`独立保留accepted活动起点，不能把共享通知当作新的工作或重置连续空闲。
+
+`recoverStop`只对exact round已经持久提交的pending/unknown stop恢复，在新physical owner下重核双端frozen且未release、两端accepted active/queued均为0及hold；物理owner的settled证明不是其他permit的join证明。public `recoverExpired`在cleanup前也核accepted permit，不能借恢复绕过正常保护。拒绝时不物理stop/detach，不自动thaw。
+
+非stop的读取/freeze owner失联，可信host可鉴权后显式使用已有`PostgresPersonVmStore.recover`，在真实settled/fence与新owner下执行无物理动作的guard callback、释放残owner，再对账exact thaw；VM phase、permit及gate不随这一步改写。它不是`recoverStop`的隐式fallback，也不按TTL偷租约。MET273仍须装配此host恢复调用；本片没有新增service模式/port。
+
+旧deferred的exact receipt与当前generation gate分别校验：旧receipt已释放后仍须等当前round双release/已知stop，并在physical owner内再次核定，才可真ready。当前gate不能因旧binding不同就误拒合法等待，也不能因旧receipt合法就跳过当前freeze。返回PersonVmBinding仍不授权旧业务信封改标签/重放。
+
+admission事务使用NEW exclusive max1连接上的guarded BEGIN/各SQL步骤/COMMIT/ROLLBACK；锁定postgres3.4.9原生允许max1显式事务（connection.js:605–606）。不使用其失联后自动rollback的隐藏begin scope。连接失联后不再排新SQL/rollback；关闭先join实际已发query及callback的settlement，再end连接。COMMIT丢ACK仍保留unknown、未交付handle的既有恢复边界。LISTEN先join真实unlisten再end，关闭失败保留首因；不能用end返回或销毁连接冒充未完成操作已join。
+
 自动reconcile积累单调时钟候选；无完整原生producer即unknown。即使注入完整形状的fixture，缺自主admission barrier时也不先freeze用户或停running VM；stopFrozen只允许已由native确认stopped/absent的幂等清理。20min自动回收当前**未完成**，没有新增假native gate。
 
 依据：用户 2026-11-21 决定不等 DSH 上游，按冻结边界合同 v1.0 §9 的门卫/租约实现；持续 20min 同时无原生活动、gateway 本人 inflight/queued、入口本人 active connection/typing/prewarm 后，先冻结双端，再重核，最后安全停机。20min 使用现有 `PERSON_VM_IDLE_MS`。本次经写前核对增加0250共享准入字段/permit表；不增加业务阈值、TTL、私有原生接口或事件总线。

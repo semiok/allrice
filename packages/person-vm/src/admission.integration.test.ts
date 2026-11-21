@@ -1,14 +1,22 @@
 import postgres from 'postgres';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from 'vitest';
 import { assertRuntimeFixtureDatabase } from '../../database/src/runtime-fixture-database.ts';
 import { PersonVmService } from './person-vm.ts';
 import { PostgresPersonVmStore, type PersonVmSqlFactory } from './store.ts';
 import { PERSON_VM_IDLE_MS } from './contract.ts';
 import type { PersonVmAdmissionPermit } from './admission-boundary.ts';
 import type { PersonVmAdmissionHost } from './admission-host.ts';
-import { context, harness, running, signal } from './test-support.ts';
+import { context, harness, running } from './test-support.ts';
 
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -18,10 +26,18 @@ suite(
   'shared PG admission through actual PersonVmService composition; synthetic native, no VM/model',
   () => {
     const schema = 'vm_admit_' + randomUUID().replaceAll('-', '');
-    const prefix = 'vm-admission-' + randomUUID();
+    const prefix = 'vma-' + randomUUID(); // Keep exact PG application_name under 63 bytes, including role/counter.
     const clients = new Set<postgres.Sql>();
     const handles: [PersonVmAdmissionHost, PersonVmAdmissionPermit][] = [];
     const releases = new Set<() => void>();
+    const work = new Set<Promise<unknown>>();
+    let caller = new AbortController();
+    const signal = () => caller.signal;
+    function own<T>(promise: Promise<T>) {
+      work.add(promise);
+      void promise.finally(() => work.delete(promise)).catch(() => {});
+      return promise;
+    }
     let admin: postgres.Sql, db: postgres.Sql;
     function latch() {
       let resolve!: () => void;
@@ -31,20 +47,63 @@ suite(
       releases.add(resolve);
       return { promise, resolve };
     }
-    function factory(role: string) {
+    function factory(
+      role: string,
+      afterCommit?: (name: string) => Promise<void>,
+      afterClose?: (name: string) => void,
+      unlistenFailure?: Error,
+    ) {
       const names: string[] = [];
+      const events: string[] = [];
       const open: PersonVmSqlFactory = () => {
         const name = prefix + '-' + role + '-' + names.length;
         names.push(name);
         const sql = postgres(process.env.ALLRICE_TEST_DATABASE_URL!, {
           max: 1,
           onnotice: () => {},
+          onclose: () => {
+            events.push(name + ':close');
+            afterClose?.(name);
+          },
+          debug: (_id, query) => {
+            events.push(
+              name + ':' + query.trim().split(/\s/)[0]!.toLowerCase(),
+            );
+          },
           connection: { search_path: schema, application_name: name },
         });
+        const end = sql.end.bind(sql);
+        sql.end = (options) => {
+          events.push(name + ':end');
+          return end(options);
+        };
+        if (afterCommit) {
+          const unsafe = sql.unsafe.bind(sql);
+          sql.unsafe = ((text, ...args) => {
+            const query = unsafe(text, ...args);
+            return text === 'commit'
+              ? query.then(async (rows) => {
+                  await afterCommit(name);
+                  return rows;
+                })
+              : query;
+          }) as typeof sql.unsafe;
+        }
+        if (unlistenFailure) {
+          const listen = sql.listen.bind(sql);
+          sql.listen = ((...args: Parameters<typeof sql.listen>) =>
+            listen(...args).then((metadata) => ({
+              ...metadata,
+              unlisten: async () => {
+                await metadata.unlisten();
+                throw unlistenFailure;
+              },
+            }))) as typeof sql.listen;
+        }
         clients.add(sql);
         return sql;
       };
-      return { open, names };
+      return { open, names, events };
     }
     beforeAll(async () => {
       const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
@@ -67,12 +126,17 @@ suite(
           ),
         );
     });
+    beforeEach(() => {
+      caller = new AbortController();
+    });
     afterEach(async () => {
+      caller.abort(new Error('test owner finally cancel/join'));
       for (const release of releases) release();
       releases.clear();
       await Promise.allSettled(
         handles.splice(0).map(([host, permit]) => host.finish(permit)),
       );
+      await Promise.allSettled([...work]);
       await Promise.all([...clients].map((sql) => sql.end({ timeout: 0 })));
       clients.clear();
       await db.unsafe(
@@ -149,35 +213,73 @@ suite(
     async function counts(personId: string) {
       return db`select disposition,count(*)::int as count from person_vm_admission_permits where person_id=${personId} group by disposition order by disposition`;
     }
+    async function settledOrphan(h: Awaited<ReturnType<typeof setup>>) {
+      const entered = latch(),
+        release = latch(),
+        lost = latch();
+      const owned = own(
+        h.store.withLease(
+          h.rc.actor.id,
+          { now: h.now, ttlMs: 90000 },
+          async (lease) => {
+            lease.signal.addEventListener('abort', lost.resolve, {
+              once: true,
+            });
+            entered.resolve();
+            await release.promise;
+            await lease.guard();
+          },
+        ),
+      );
+      const outcome = owned.catch((error: unknown) => error);
+      try {
+        await entered.promise;
+        const owners =
+          await admin`select a.pid from pg_stat_activity a join pg_locks l on a.pid=l.pid
+          where a.application_name like ${prefix + '-physicalA-%'} and l.locktype='advisory' and l.granted`;
+        expect(owners).toHaveLength(1);
+        await admin`select pg_terminate_backend(${owners[0]!.pid})`;
+        await lost.promise;
+        release.resolve();
+        expect(await outcome).toBeInstanceOf(Error);
+        h.advanceMono(90001); // Expiry fixture; actual callback has also joined.
+      } finally {
+        release.resolve();
+        await outcome;
+      }
+    }
 
     it('pre-freeze memory/8-slot wait stays queued; finish waits for actual cancel/join', async () => {
       const h = await setup(),
         item = await permit(h, 'gateway');
       const entered = latch(),
         release = latch();
-      const waiting = h.host.queued(
-        item,
-        async (owned) => {
-          entered.resolve();
-          await release.promise;
-          expect(owned.aborted).toBe(true);
-        },
-        signal(),
+      const waiting = own(
+        h.host.queued(
+          item,
+          async (owned) => {
+            entered.resolve();
+            await release.promise;
+            expect(owned.aborted).toBe(true);
+          },
+          signal(),
+        ),
       );
       await entered.promise;
       const lease = await frozen(h);
       expect(
         await h.peer.participant('gateway').observe(h.binding, signal()),
       ).toMatchObject({ queued: 1, active: 0, deferred: 0 });
-      const closing = h.host.finish(item);
+      const closing = own(h.host.finish(item));
       expect(h.host.finish(item)).toBe(closing);
       expect(item.signal.aborted).toBe(true);
       expect(await counts(h.rc.actor.id)).toEqual([
         { disposition: 'queued', count: 1 },
       ]);
+      h.states.set(h.binding.vmId, 'stopped');
       await expect(
         h.host.stopFrozen(h.rc, lease, signal()),
-      ).rejects.toBeDefined();
+      ).rejects.toMatchObject({ code: 'VM_ACTIVE' });
       expect(h.log).not.toContain('native:stop');
       release.resolve();
       await waiting;
@@ -193,20 +295,22 @@ suite(
       const lease = await frozen(h),
         entered = latch(),
         release = latch();
-      const transport = h.host.activate(
-        item,
-        async () => {
-          entered.resolve();
-          await release.promise;
-          return 'actual-transport-closed';
-        },
-        signal(),
+      const transport = own(
+        h.host.activate(
+          item,
+          async () => {
+            entered.resolve();
+            await release.promise;
+            return 'actual-transport-closed';
+          },
+          signal(),
+        ),
       );
       await entered.promise;
       expect(
         await h.peer.participant('gateway').observe(h.binding, signal()),
       ).toMatchObject({ active: 1, queued: 0 });
-      const finish = h.host.finish(item);
+      const finish = own(h.host.finish(item));
       expect(await counts(h.rc.actor.id)).toEqual([
         { disposition: 'active', count: 1 },
       ]);
@@ -259,8 +363,8 @@ suite(
       await expect(
         h.host.activate(item, forbidden, signal()),
       ).rejects.toMatchObject({ code: 'LEASE_CONFLICT' });
-      const ready = h.host.waitUntilReady(h.rc, item, signal());
       await h.host.participant('gateway').thaw(lease, signal());
+      const ready = own(h.host.waitUntilReady(h.rc, item, signal()));
       const [before] =
         await db`select lease_epoch from person_virtual_machines where person_id=${h.rc.actor.id}`;
       expect(Number(before!.lease_epoch)).toBe(h.binding.leaseEpoch);
@@ -277,6 +381,59 @@ suite(
         ),
       ).toBe('same-epoch-dispatch');
       await h.host.finish(fresh);
+    });
+
+    it.each(['gateway', 'entry'] as const)(
+      'a %s subscriber latches the peer release even before wait registration',
+      async (first) => {
+        const h = await setup(),
+          lease = await frozen(h),
+          participant = h.host.participant(first);
+        await participant.thaw(lease, signal());
+        const subscription = await participant.subscribe(h.binding, signal());
+        try {
+          const before = await participant.observe(h.binding, signal());
+          await h.peer
+            .participant(first === 'gateway' ? 'entry' : 'gateway')
+            .thaw(lease, signal());
+          await subscription.wait(before.coverage.cursor, signal());
+          expect(
+            (await participant.observe(h.binding, signal())).coverage.cursor,
+          ).not.toEqual(before.coverage.cursor);
+        } finally {
+          await subscription.close();
+        }
+      },
+    );
+
+    it('release after the exact predicate snapshot but before wait registration is not consumed as its baseline', async () => {
+      const snapshot = latch(),
+        release = latch();
+      let armed = false,
+        commits = 0;
+      const source = factory('predicate-snapshot', async () => {
+        // subscribe's initial read, then the exact predicate+cursor transaction.
+        if (armed && ++commits === 2) {
+          snapshot.resolve();
+          await release.promise;
+        }
+      });
+      const h = await setup(source.open),
+        lease = await frozen(h),
+        item = await permit(h, 'gateway');
+      await h.host.participant('gateway').thaw(lease, signal());
+      armed = true;
+      const ready = own(h.host.waitUntilReady(h.rc, item, signal()));
+      try {
+        expect(
+          await Promise.race([snapshot.promise, ready.then(() => 'premature')]),
+        ).toBeUndefined();
+        await h.peer.participant('entry').thaw(lease, signal());
+        release.resolve();
+        expect(await ready).toEqual(h.binding);
+      } finally {
+        release.resolve();
+      }
     });
 
     it('A1 blocks ALL public epoch-changing entrances after only one release; two wake callers share one ready generation', async () => {
@@ -297,8 +454,8 @@ suite(
         () => h.service.recoverExpired(h.rc, signal()),
       ])
         await expect(operation()).rejects.toBeDefined();
-      const wakeA = h.host.wake(h.rc, h.binding, signal()),
-        wakeB = h.peer.wake(h.rc, h.binding, signal());
+      const wakeA = own(h.host.wake(h.rc, h.binding, signal())),
+        wakeB = own(h.peer.wake(h.rc, h.binding, signal()));
       expect(h.log.filter((value) => value === 'native:start')).toHaveLength(0);
       await h.peer.participant('entry').thaw(lease, signal());
       const [a, b] = await Promise.all([wakeA, wakeB]);
@@ -358,7 +515,7 @@ suite(
       const subscription = await h.peer
         .participant('gateway')
         .subscribe(h.binding, signal());
-      const closing = subscription.close();
+      const closing = own(subscription.close());
       expect(subscription.close()).toBe(closing);
       await closing;
       expect(
@@ -464,7 +621,7 @@ suite(
         await release.promise;
         await originalStop(binding, owned);
       };
-      const stop = h.host.stopFrozen(h.rc, lease, signal());
+      const stop = own(h.host.stopFrozen(h.rc, lease, signal()));
       const outcome = stop.catch((error: unknown) => error);
       try {
         await entered.promise;
@@ -520,6 +677,87 @@ suite(
       }
     });
 
+    it('a settled read/freeze owner cannot be upgraded into stop recovery with partial ACKs and accepted work', async () => {
+      const h = await setup(),
+        item = await permit(h, 'entry');
+      const lease = await h.host.issue(h.rc, h.binding, signal());
+      await h.host.participant('gateway').freeze(lease, signal());
+      h.states.set(h.binding.vmId, 'stopped');
+      await settledOrphan(h);
+      const before = [...h.log];
+      await expect(
+        h.host.recoverStop(h.rc, lease, signal()),
+      ).rejects.toMatchObject({ code: 'LEASE_CONFLICT' });
+      expect(h.log).toEqual(before);
+      expect(await counts(h.rc.actor.id)).toEqual([
+        { disposition: 'queued', count: 1 },
+      ]);
+      // Existing trusted host store API can explicitly fence/release a
+      // non-stop owner without touching VM, independent work, or the gate.
+      h.advanceMono(90001);
+      await h.store.recover(
+        h.rc.actor.id,
+        { now: h.now, ttlMs: 90000, signal: signal() },
+        async (owned) => {
+          await owned.guard();
+        },
+      );
+      expect((await h.store.read(h.rc.actor.id))!.leaseOwner).toBe(null);
+      expect(h.log).toEqual(before);
+      await h.host.participant('gateway').thaw(lease, signal());
+      await h.peer.participant('entry').thaw(lease, signal());
+      expect(await counts(h.rc.actor.id)).toEqual([
+        { disposition: 'queued', count: 1 },
+      ]);
+      await h.host.finish(item);
+    });
+
+    it('public recoverExpired cannot clean a native-off VM while an independent accepted host permit remains', async () => {
+      const h = await setup(),
+        item = await permit(h, 'gateway');
+      h.states.set(h.binding.vmId, 'stopped');
+      await settledOrphan(h);
+      const before = [...h.log];
+      await expect(
+        h.service.recoverExpired(h.rc, signal()),
+      ).rejects.toMatchObject({ code: 'VM_ACTIVE' });
+      expect(h.log).toEqual(before);
+      expect(await counts(h.rc.actor.id)).toEqual([
+        { disposition: 'queued', count: 1 },
+      ]);
+      await h.host.finish(item);
+      h.advanceMono(90001);
+      expect((await h.service.recoverExpired(h.rc, signal())).phase).toBe(
+        'stopped',
+      );
+    });
+
+    it('even a persisted unknown-stop recovery must recheck accepted work under its new physical owner', async () => {
+      const h = await setup(),
+        item = await permit(h, 'entry'),
+        lease = await frozen(h);
+      // Negative storage-recovery matrix: a stop marker is not proof that a
+      // separately durable accepted permit joined. No successful idle stop is claimed.
+      await db`update person_virtual_machines set admission_state=jsonb_set(admission_state,'{round,stop}','"unknown"'::jsonb),admission_revision=admission_revision+1 where person_id=${h.rc.actor.id}`;
+      h.states.set(h.binding.vmId, 'stopped');
+      await settledOrphan(h);
+      const before = [...h.log];
+      await expect(
+        h.host.recoverStop(h.rc, lease, signal()),
+      ).rejects.toMatchObject({ code: 'VM_ACTIVE' });
+      expect(h.log).toEqual(before);
+      expect(await counts(h.rc.actor.id)).toEqual([
+        { disposition: 'queued', count: 1 },
+      ]);
+      await h.host.finish(item);
+      h.advanceMono(90001);
+      expect((await h.host.recoverStop(h.rc, lease, signal())).phase).toBe(
+        'stopped',
+      );
+      await h.host.participant('gateway').thaw(lease, signal());
+      await h.peer.participant('entry').thaw(lease, signal());
+    });
+
     it('revoke failure still attempts stop; unknown physical cleanup cannot thaw or wake', async () => {
       const h = await setup(),
         lease = await frozen(h);
@@ -537,7 +775,7 @@ suite(
         h.peer.participant('entry').thaw(lease, signal()),
       ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
       const caller = new AbortController();
-      const wake = h.host.wake(h.rc, h.binding, caller.signal);
+      const wake = own(h.host.wake(h.rc, h.binding, caller.signal));
       const joined = wake.catch((error: unknown) => error);
       caller.abort(
         new Error('client cancelled while unknown cleanup remains closed'),
@@ -557,21 +795,25 @@ suite(
         held = latch(),
         release = latch();
       const key = 817523;
-      const owner = blocking.begin(async (sql) => {
-        await sql`select pg_advisory_xact_lock(${key})`;
-        held.resolve();
-        await release.promise;
-      });
-      await held.promise;
-      await db.unsafe(
-        `create function fixture_block_delete() returns trigger language plpgsql as $$ begin perform pg_advisory_xact_lock(${key}); return old; end; $$`,
+      const owner = own(
+        blocking.begin(async (sql) => {
+          await sql`select pg_advisory_xact_lock(${key})`;
+          held.resolve();
+          await release.promise;
+        }),
       );
-      await db.unsafe(
-        'create trigger fixture_block_delete before delete on person_vm_admission_permits for each row execute function fixture_block_delete()',
-      );
-      const finish = h.host.finish(item),
-        outcome = finish.catch((error: unknown) => error);
+      const ownerOutcome = owner.catch((error: unknown) => error);
+      let outcome: Promise<unknown> = Promise.resolve();
       try {
+        await Promise.race([held.promise, owner]);
+        await db.unsafe(
+          `create function fixture_block_delete() returns trigger language plpgsql as $$ begin perform pg_advisory_xact_lock(${key}); return old; end; $$`,
+        );
+        await db.unsafe(
+          'create trigger fixture_block_delete before delete on person_vm_admission_permits for each row execute function fixture_block_delete()',
+        );
+        const finish = own(h.host.finish(item));
+        outcome = finish.catch((error: unknown) => error);
         const pending = () =>
           admin`select pid from pg_stat_activity where application_name like ${prefix + '-physicalA-%'} and wait_event='advisory'`;
         await expect.poll(async () => (await pending()).length).toBe(1);
@@ -594,32 +836,24 @@ suite(
         expect(await counts(h.rc.actor.id)).toEqual([]);
       } finally {
         release.resolve();
-        await owner;
+        await ownerOutcome;
         await outcome;
         await blocking.end({ timeout: 0 });
       }
     });
 
     it('lost admit ACK after a REAL PG commit has no callback; only its settled local issuer can retry that exact operation', async () => {
-      const source = factory('lost-ack');
       let armed = false;
-      const open: PersonVmSqlFactory = () => {
-        const sql = source.open(),
-          begin = sql.begin.bind(sql);
-        sql.begin = ((...args: Parameters<typeof sql.begin>) =>
-          begin(...args).then((value) => {
-            if (armed) {
-              armed = false;
-              throw Object.assign(
-                new Error('synthetic response lost AFTER actual COMMIT'),
-                { code: 'ECONNRESET' },
-              );
-            }
-            return value;
-          })) as typeof sql.begin;
-        return sql;
-      };
-      const h = await setup(open),
+      const source = factory('lost-ack', async () => {
+        if (armed) {
+          armed = false;
+          throw Object.assign(
+            new Error('synthetic response lost AFTER actual COMMIT'),
+            { code: 'ECONNRESET' },
+          );
+        }
+      });
+      const h = await setup(source.open),
         operationId = randomUUID();
       // Initialize the durable projection before injecting the response failure.
       await h.host.participant('gateway').observe(h.binding, signal());
@@ -664,20 +898,141 @@ suite(
       expect(await counts(h.rc.actor.id)).toEqual([]);
     });
 
+    it('a real COMMIT followed by PG loss joins its actual delivery before end and never issues a post-close rollback', async () => {
+      const committed = latch(),
+        closed = latch(),
+        release = latch();
+      let armed = false,
+        name = '',
+        delivered = false,
+        settled = false;
+      const source = factory(
+        'commit-join',
+        async (currentName) => {
+          if (!armed) return;
+          armed = false;
+          name = currentName;
+          committed.resolve();
+          await release.promise;
+          delivered = true;
+        },
+        (currentName) => {
+          if (currentName === name) closed.resolve();
+        },
+      );
+      const h = await setup(source.open),
+        operationId = randomUUID();
+      armed = true;
+      const admission = own(
+        h.host.admit(
+          h.rc,
+          h.binding,
+          { participant: 'gateway', operationId },
+          signal(),
+        ),
+      );
+      const outcome = own(
+        admission.then(
+          (value) => {
+            settled = true;
+            return value;
+          },
+          (error: unknown) => {
+            settled = true;
+            return error;
+          },
+        ),
+      );
+      try {
+        await committed.promise;
+        const [backend] =
+          await admin`select pid from pg_stat_activity where application_name=${name}`;
+        expect(backend).toBeDefined();
+        await admin`select pg_terminate_backend(${backend!.pid})`;
+        await closed.promise;
+        await expect(
+          h.peer.admit(
+            h.rc,
+            h.binding,
+            { participant: 'gateway', operationId },
+            signal(),
+          ),
+        ).rejects.toMatchObject({ code: 'LEASE_CONFLICT' });
+        expect(settled).toBe(false);
+        expect(source.events).not.toContain(name + ':end');
+        release.resolve();
+        expect(await outcome).toBeInstanceOf(Error);
+        expect(delivered).toBe(true);
+        const tail = source.events
+          .slice(source.events.indexOf(name + ':close') + 1)
+          .filter((event) => event.startsWith(name + ':'));
+        expect(tail).toEqual([name + ':end']);
+        expect(await counts(h.rc.actor.id)).toEqual([
+          { disposition: 'queued', count: 1 },
+        ]);
+        const retry = await h.host.admit(
+          h.rc,
+          h.binding,
+          { participant: 'gateway', operationId },
+          signal(),
+        );
+        handles.push([h.host, retry]);
+        await h.host.finish(retry);
+      } finally {
+        release.resolve();
+        await outcome;
+      }
+    });
+
+    it('LISTEN close joins real UNLISTEN before end, preserves its first failure and closes the owner', async () => {
+      const failure = new Error(
+          'synthetic failure AFTER real UNLISTEN acknowledgement',
+        ),
+        closed = latch();
+      let listenName = '';
+      const source = factory(
+        'listen-close',
+        undefined,
+        (name) => {
+          if (name === listenName) closed.resolve();
+        },
+        failure,
+      );
+      const h = await setup(source.open);
+      const subscription = await h.host
+        .participant('gateway')
+        .subscribe(h.binding, signal());
+      listenName = source.events
+        .find((event) => event.endsWith(':listen'))!
+        .slice(0, -':listen'.length);
+      const closing = own(subscription.close());
+      expect(subscription.close()).toBe(closing);
+      await expect(closing).rejects.toBe(failure);
+      await closed.promise;
+      expect(source.events.indexOf(listenName + ':unlisten')).toBeLessThan(
+        source.events.indexOf(listenName + ':end'),
+      );
+      expect(
+        source.events.filter((event) => event === listenName + ':end'),
+      ).toHaveLength(1);
+    });
+
     it('epoch/revocation invalidation cancels a tracked transport but finish still joins it before releasing durable activity', async () => {
       const h = await setup(),
         item = await permit(h, 'gateway'),
         entered = latch(),
         release = latch();
       let ownedSignal: AbortSignal | undefined;
-      const active = h.host.activate(
-        item,
-        async (owned) => {
-          ownedSignal = owned;
-          entered.resolve();
-          await release.promise;
-        },
-        signal(),
+      const active = own(
+        h.host.activate(
+          item,
+          async (owned) => {
+            ownedSignal = owned;
+            entered.resolve();
+            await release.promise;
+          },
+          signal(),
+        ),
       );
       await entered.promise;
       // Simulate a trusted future revocation producer; no organization API is implemented here.
@@ -685,7 +1040,7 @@ suite(
       admission_state=jsonb_set(admission_state,'{revoked}',${db.json('fixture-canonical-source')}::jsonb)
       where person_id=${h.rc.actor.id}`;
       await expect.poll(() => ownedSignal?.aborted).toBe(true);
-      const finish = h.host.finish(item);
+      const finish = own(h.host.finish(item));
       expect(await counts(h.rc.actor.id)).toEqual([
         { disposition: 'active', count: 1 },
       ]);
@@ -722,7 +1077,7 @@ suite(
         await release.promise;
         await original(binding, signal()); // Intentionally ignore abort to model late external completion.
       };
-      const start = h.service.start(h.rc, signal()),
+      const start = own(h.service.start(h.rc, signal())),
         outcome = start.catch((error: unknown) => error);
       try {
         await entered.promise;
@@ -794,7 +1149,18 @@ suite(
     });
 
     it('a pending deferred request retains its exact old release receipt across another same-binding freeze and a later generation', async () => {
-      const h = await setup(),
+      const snapshot = latch(),
+        release = latch();
+      let armed = false,
+        commits = 0;
+      const source = factory('late-receipt', async () => {
+        // Old binding subscribe rolls back; then old receipt and current gate commit.
+        if (armed && ++commits === 2) {
+          snapshot.resolve();
+          await release.promise;
+        }
+      });
+      const h = await setup(source.open),
         first = await frozen(h),
         pending = await permit(h, 'gateway');
       await h.host.participant('gateway').thaw(first, signal());
@@ -805,9 +1171,28 @@ suite(
       await h.host.participant('gateway').thaw(second, signal());
       await h.peer.participant('entry').thaw(second, signal());
       const ready = await h.host.wake(h.rc, h.binding, signal());
-      expect(await h.host.waitUntilReady(h.rc, pending, signal())).toEqual(
-        ready,
-      );
+      const current = await h.host.issue(h.rc, ready, signal());
+      await h.host.participant('gateway').freeze(current, signal());
+      await h.peer.participant('entry').freeze(current, signal());
+      await h.host.participant('gateway').thaw(current, signal());
+      armed = true;
+      const resumed = own(h.host.waitUntilReady(h.rc, pending, signal()));
+      try {
+        expect(
+          await Promise.race([
+            snapshot.promise,
+            resumed.then(() => 'premature'),
+          ]),
+        ).toBeUndefined();
+        await h.peer.participant('entry').thaw(current, signal());
+        release.resolve();
+        expect(await resumed).toEqual(ready);
+        expect(h.log.filter((value) => value === 'native:start')).toHaveLength(
+          1,
+        );
+      } finally {
+        release.resolve();
+      }
       await h.host.finish(pending);
       expect(
         (await h.host.participant('gateway').observe(ready, signal())).state,

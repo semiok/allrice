@@ -258,13 +258,18 @@ export class PersonVmAdmissionHost
       },
     );
   }
+  private cursor(tx: AdmissionTransaction): PersonVmActivityCursor {
+    return {
+      sourceId: this.projection + ':' + tx.state.sourceId,
+      revision: tx.revision,
+    };
+  }
   private async observation(
     tx: AdmissionTransaction,
     participant: PersonVmAdmissionParticipant,
   ): Promise<PersonVmAdmissionObservation> {
     const counts = await this.options.shared.counts(tx, participant);
-    const sourceId = this.projection + ':' + tx.state.sourceId;
-    const cursor = { sourceId, revision: tx.state[participant].revision };
+    const cursor = this.cursor(tx);
     const key = tx.state.binding.personId + ':' + participant;
     const mono = this.mono();
     let window = this.windows.get(key);
@@ -749,7 +754,10 @@ export class PersonVmAdmissionHost
               (value) =>
                 value && owned.freeze && sameLease(value.lease, owned.freeze),
             );
-            return !tx.state.revoked && round && released(round);
+            return {
+              released: !tx.state.revoked && Boolean(round && released(round)),
+              cursor: this.cursor(tx),
+            };
           },
         );
       let subscription: PersonVmAdmissionSubscription;
@@ -763,30 +771,45 @@ export class PersonVmAdmissionHost
         if (
           error instanceof PersonVmError &&
           error.code === 'LEASE_LOST' &&
-          (await oldReleased())
+          (await oldReleased()).released
         )
-          return this.wake(context, permit.binding, current);
+          return this.wakeCurrent(
+            context,
+            permit.binding,
+            current,
+            owned.freeze!,
+          );
         throw error;
       }
       try {
         for (;;) {
           await this.authorize(context, permit.binding, current);
           const barrier = await oldReleased();
-          if (barrier) return await this.wake(context, permit.binding, current);
-          const observation = await this.participant(
-            permit.participant,
-          ).observe(permit.binding, current);
+          if (barrier.released)
+            return await this.wakeCurrent(
+              context,
+              permit.binding,
+              current,
+              owned.freeze!,
+            );
           try {
-            await subscription.wait(observation.coverage.cursor, current);
+            // Predicate and watermark come from ONE locked snapshot. A peer
+            // ACK between this read and wait remains visible in the PG revision.
+            await subscription.wait(barrier.cursor, current);
           } catch (error) {
             // Another deferred waiter may already have completed the one wake.
             // Only authoritative old-round release can resolve this to ready.
             if (
               error instanceof PersonVmError &&
               error.code === 'LEASE_LOST' &&
-              (await oldReleased())
+              (await oldReleased()).released
             )
-              return await this.wake(context, permit.binding, current);
+              return await this.wakeCurrent(
+                context,
+                permit.binding,
+                current,
+                owned.freeze!,
+              );
             throw error;
           }
         }
@@ -802,6 +825,48 @@ export class PersonVmAdmissionHost
     context: RequestContext,
     previousBinding: PersonVmBinding,
     signal: AbortSignal,
+  ) {
+    return this.wakeCurrent(context, previousBinding, signal);
+  }
+  private wakeBarrier(
+    tx: AdmissionTransaction,
+    previousBinding: PersonVmBinding,
+    receipt?: PersonVmAdmissionLease,
+  ) {
+    if (tx.state.revoked) throw new PersonVmError('AUTHORIZATION_DENIED');
+    const currentBinding = rowBinding(tx.row);
+    if (
+      currentBinding.organizationId !== previousBinding.organizationId ||
+      currentBinding.vmId !== previousBinding.vmId
+    )
+      throw new PersonVmError('ORGANIZATION_CONFLICT');
+    const old = [tx.state.round, tx.state.previous, ...tx.state.history].find(
+      (round) =>
+        round &&
+        (receipt
+          ? sameLease(round.lease, receipt)
+          : sameBinding(round.lease.binding, previousBinding)),
+    );
+    if (!old) throw new PersonVmError('LEASE_LOST');
+    const current = tx.state.round;
+    for (const round of [old, current])
+      if (round && !round.demand) {
+        round.demand = true;
+        tx.touch();
+      }
+    // Old receipt proves only its own release. A later generation's gate is
+    // independently closed until its exact dual release and known stop result.
+    return [old, current].every(
+      (round) =>
+        !round ||
+        (released(round) && ['none', 'confirmed'].includes(round.stop)),
+    );
+  }
+  private async wakeCurrent(
+    context: RequestContext,
+    previousBinding: PersonVmBinding,
+    signal: AbortSignal,
+    receipt?: PersonVmAdmissionLease,
   ) {
     await this.authorize(context, previousBinding, signal, 'start');
     let sequence = 0;
@@ -842,20 +907,7 @@ export class PersonVmAdmissionHost
         const barrier = await this.options.shared.transaction(
           previousBinding.personId,
           current,
-          async (tx) => {
-            if (tx.state.revoked)
-              throw new PersonVmError('AUTHORIZATION_DENIED');
-            const round = tx.state.round ?? tx.state.previous;
-            if (!round || !sameBinding(round.lease.binding, previousBinding))
-              throw new PersonVmError('LEASE_LOST');
-            if (!round.demand) {
-              round.demand = true;
-              tx.touch();
-            }
-            return (
-              released(round) && ['none', 'confirmed'].includes(round.stop)
-            );
-          },
+          async (tx) => this.wakeBarrier(tx, previousBinding, receipt),
         );
         if (!barrier) {
           await wait(after);
@@ -877,20 +929,8 @@ export class PersonVmAdmissionHost
                 previousBinding.personId,
                 operationSignal,
                 async (tx) => {
-                  const round = tx.state.round ?? tx.state.previous;
-                  if (
-                    tx.state.revoked ||
-                    !round ||
-                    !sameBinding(round.lease.binding, previousBinding) ||
-                    !released(round) ||
-                    !['none', 'confirmed'].includes(round.stop)
-                  )
+                  if (!this.wakeBarrier(tx, previousBinding, receipt))
                     throw new PersonVmError('LEASE_CONFLICT');
-                  if (
-                    String(tx.row.organization_id) !==
-                    previousBinding.organizationId
-                  )
-                    throw new PersonVmError('ORGANIZATION_CONFLICT');
                 },
               );
               return this.trackOwner(
@@ -931,18 +971,7 @@ export class PersonVmAdmissionHost
           lease.binding.personId,
           current,
           async (tx) => {
-            const round = this.exact(tx, lease);
-            for (const participant of ['gateway', 'entry'] as const) {
-              if (
-                !round.frozen.includes(participant) ||
-                round.released.includes(participant)
-              )
-                throw new PersonVmError('LEASE_LOST');
-              const counts = await this.options.shared.counts(tx, participant);
-              if (counts.active + counts.queued)
-                throw new PersonVmError('VM_ACTIVE');
-            }
-            if (owned.row?.holds.length) throw new PersonVmError('VM_ACTIVE');
+            const round = await this.stopFacts(tx, lease, false);
             round.stop = 'pending';
             tx.touch();
           },
@@ -975,6 +1004,27 @@ export class PersonVmAdmissionHost
       signal,
     );
   }
+  private async stopFacts(
+    tx: AdmissionTransaction,
+    lease: PersonVmAdmissionLease,
+    recovery: boolean,
+  ) {
+    const round = this.exact(tx, lease);
+    if (recovery && !['pending', 'unknown'].includes(round.stop))
+      throw new PersonVmError('LEASE_CONFLICT');
+    for (const participant of ['gateway', 'entry'] as const) {
+      if (
+        !round.frozen.includes(participant) ||
+        round.released.includes(participant)
+      )
+        throw new PersonVmError('LEASE_LOST');
+      const counts = await this.options.shared.counts(tx, participant);
+      if (counts.active + counts.queued) throw new PersonVmError('VM_ACTIVE');
+    }
+    if ((tx.row.holds as unknown[]).length)
+      throw new PersonVmError('VM_ACTIVE');
+    return round;
+  }
   /** Explicit existing-store recovery. Consumes only that store's joined proof
    * or MET274's real fence, then claims a NEW recovery owner before providers. */
   async recoverStop(
@@ -992,7 +1042,13 @@ export class PersonVmAdmissionHost
           lease.binding.personId,
           current,
           async (ownedSignal) => {
-            await this.assertLease(lease, ownedSignal);
+            await this.options.shared.transaction(
+              lease.binding.personId,
+              ownedSignal,
+              async (tx) => {
+                await this.stopFacts(tx, lease, true);
+              },
+            );
             await this.options.assertStopSafe(owned, ownedSignal);
             const result = await this.options.stopOwned(
               context,

@@ -108,6 +108,8 @@ export class VmSqlSession {
   }
   private failure: unknown;
   private disposing = false;
+  private ending?: Promise<void>;
+  private readonly pending = new Set<Promise<unknown>>();
   private readonly closed: Promise<void>;
   constructor(readonly client: postgres.Sql) {
     if (usedClients.has(client) || client.options.max !== 1)
@@ -134,9 +136,17 @@ export class VmSqlSession {
   }
   async query<T>(operation: () => PromiseLike<T>): Promise<T> {
     if (this.failure) throw this.failure;
+    if (this.disposing) throw lostConnection();
+    const pending = Promise.resolve().then(() => {
+      if (this.failure) throw this.failure;
+      if (this.disposing) throw lostConnection();
+      return operation();
+    });
+    this.pending.add(pending);
+    void pending.finally(() => this.pending.delete(pending)).catch(() => {});
     try {
       return await Promise.race([
-        operation(),
+        pending,
         this.closed.then(() => {
           throw this.failure;
         }),
@@ -149,10 +159,14 @@ export class VmSqlSession {
     }
   }
   async end() {
+    if (this.ending) return this.ending;
     this.disposing = true;
-    // This client has no other owners or later callers. Destroy its protocol
-    // state rather than release/reconnect it, including on the failure path.
-    await this.client.end({ timeout: 0 });
+    // Close stops new steps, then joins the ACTUAL queries, not just their
+    // connection-loss race. No transaction-library scope may outlive this owner.
+    return (this.ending = (async () => {
+      await Promise.allSettled([...this.pending]);
+      await this.client.end({ timeout: 0 });
+    })());
   }
 }
 

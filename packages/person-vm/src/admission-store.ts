@@ -24,11 +24,19 @@ export type AdmissionState = {
   gateway: { revision: string; idleRevision: string };
   entry: { revision: string; idleRevision: string };
 };
+type AdmissionSql = {
+  <T extends readonly (object | undefined)[] = postgres.Row[]>(
+    template: TemplateStringsArray,
+    ...parameters: readonly postgres.ParameterOrFragment<never>[]
+  ): Promise<postgres.RowList<T>>;
+  json: postgres.Sql['json'];
+};
 export type AdmissionTransaction = {
-  sql: postgres.TransactionSql;
+  sql: AdmissionSql;
   row: Record<string, unknown>;
   state: AdmissionState;
   version: string;
+  readonly revision: string;
   touch(participant?: PersonVmAdmissionParticipant, accepted?: boolean): void;
 };
 export const sameBinding = (a: PersonVmBinding, b: PersonVmBinding) =>
@@ -85,72 +93,99 @@ export class PostgresPersonVmAdmissionStore {
   ): Promise<T> {
     signal.throwIfAborted();
     const session = new VmSqlSession(this.openSql());
+    let began = false;
+    // One NEW max1 client owns this transaction. Every step goes through the
+    // same fail-stop guard; postgres.begin's hidden post-close rollback is not used.
+    const sql: AdmissionSql = Object.assign(
+      <T extends readonly (object | undefined)[] = postgres.Row[]>(
+        template: TemplateStringsArray,
+        ...parameters: readonly postgres.ParameterOrFragment<never>[]
+      ) => session.query(() => session.client<T>(template, ...parameters)),
+      { json: session.client.json },
+    );
     try {
-      return (await session.query(() =>
-        session.client.begin(async (sql) => {
-          signal.throwIfAborted();
-          const [row] =
-            await sql`select * from person_virtual_machines where person_id=${personId} for update`;
-          if (!row || (row.phase === 'deleted' && !allowDeleted))
-            throw new PersonVmError('NOT_FOUND');
-          if (!('admission_state' in row))
-            throw new PersonVmError('PROVIDER_FAILED');
-          const binding = rowBinding(row);
-          let state = row.admission_state as AdmissionState;
-          let version = row.admission_version as string | null;
-          let dirty = false;
-          if (version && !state.sourceId)
-            throw new PersonVmError('PROVIDER_FAILED');
-          if (!state.sourceId || !sameBinding(state.binding, binding)) {
-            if (
-              state.round &&
-              (!released(state.round) ||
-                !['none', 'confirmed'].includes(state.round.stop))
-            )
-              throw new PersonVmError('LEASE_LOST');
-            state = {
-              sourceId: randomUUID(),
-              binding,
-              revoked: state.revoked ?? null,
-              previous: state.round ?? state.previous ?? null,
-              history: [
-                ...(state.history ?? []),
-                ...(state.round && state.previous ? [state.previous] : []),
-              ],
-              round: null,
-              gateway: { revision: '0', idleRevision: '0' },
-              entry: { revision: '0', idleRevision: '0' },
-            };
-            version = randomUUID();
-            dirty = true;
+      await session.query(() => session.client.unsafe('begin'));
+      began = true;
+      signal.throwIfAborted();
+      const [row] =
+        await sql`select * from person_virtual_machines where person_id=${personId} for update`;
+      if (!row || (row.phase === 'deleted' && !allowDeleted))
+        throw new PersonVmError('NOT_FOUND');
+      if (!('admission_state' in row))
+        throw new PersonVmError('PROVIDER_FAILED');
+      const binding = rowBinding(row);
+      let state = row.admission_state as AdmissionState;
+      let version = row.admission_version as string | null;
+      let dirty = false;
+      if (version && !state.sourceId)
+        throw new PersonVmError('PROVIDER_FAILED');
+      if (!state.sourceId || !sameBinding(state.binding, binding)) {
+        if (
+          state.round &&
+          (!released(state.round) ||
+            !['none', 'confirmed'].includes(state.round.stop))
+        )
+          throw new PersonVmError('LEASE_LOST');
+        state = {
+          sourceId: randomUUID(),
+          binding,
+          revoked: state.revoked ?? null,
+          previous: state.round ?? state.previous ?? null,
+          history: [
+            ...(state.history ?? []),
+            ...(state.round && state.previous ? [state.previous] : []),
+          ],
+          round: null,
+          gateway: { revision: '0', idleRevision: '0' },
+          entry: { revision: '0', idleRevision: '0' },
+        };
+        version = randomUUID();
+        dirty = true;
+      }
+      state.history ??= [];
+      const tx: AdmissionTransaction = {
+        sql,
+        row,
+        state,
+        version: version!,
+        get revision() {
+          return String(
+            BigInt(row.admission_revision) +
+              (dirty || tx.version !== version ? 1n : 0n),
+          );
+        },
+        touch: (participant, accepted = false) => {
+          dirty = true;
+          if (participant) {
+            const cursor = state[participant];
+            cursor.revision = String(BigInt(cursor.revision) + 1n);
+            if (accepted)
+              cursor.idleRevision = String(BigInt(cursor.idleRevision) + 1n);
           }
-          state.history ??= [];
-          const tx: AdmissionTransaction = {
-            sql,
-            row,
-            state,
-            version: version!,
-            touch: (participant, accepted = false) => {
-              dirty = true;
-              if (participant) {
-                const cursor = state[participant];
-                cursor.revision = String(BigInt(cursor.revision) + 1n);
-                if (accepted)
-                  cursor.idleRevision = String(
-                    BigInt(cursor.idleRevision) + 1n,
-                  );
-              }
-            },
-          };
-          const value = await work(tx);
-          signal.throwIfAborted();
-          if (dirty || tx.version !== version)
-            await sql`update person_virtual_machines set admission_version=${tx.version},
+        },
+      };
+      const value = await work(tx);
+      signal.throwIfAborted();
+      if (dirty || tx.version !== version)
+        await sql`update person_virtual_machines set admission_version=${tx.version},
             admission_state=${sql.json(state as unknown as postgres.JSONValue)},admission_revision=admission_revision+1
             where person_id=${personId}`;
-          return value;
-        }),
-      )) as T;
+      await session.query(() => session.client.unsafe('commit'));
+      began = false;
+      return value;
+    } catch (error) {
+      if (began && !session.connectionFailure) {
+        try {
+          await session.query(() => session.client.unsafe('rollback'));
+        } catch (rollback) {
+          throw new AggregateError(
+            [error, rollback],
+            'VM_ADMISSION_ROLLBACK_FAILED',
+            { cause: error },
+          );
+        }
+      }
+      throw error;
     } finally {
       await session.end();
     }
@@ -187,11 +222,20 @@ export class PostgresPersonVmAdmissionStore {
     const close = () =>
       (closing ??= (async () => {
         session.signal.removeEventListener('abort', lost);
-        // end(timeout:0) destroys BOTH this exclusive client and postgres.js's
-        // owned notification client; never release/reuse a broken reservation.
-        const detach = listener?.unlisten();
-        const results = await Promise.allSettled([detach, session.end()]);
-        if (results[1]?.status === 'rejected') throw results[1].reason;
+        // unlisten issues SQL on the owned notification connection. Join it
+        // before ending that connection; preserve the first cleanup failure.
+        let failure: unknown;
+        try {
+          await listener?.unlisten();
+        } catch (error) {
+          failure = error;
+        }
+        try {
+          await session.end();
+        } catch (error) {
+          failure ??= error;
+        }
+        if (failure) throw failure;
       })());
     try {
       await session.query(() => session.client`select 1`); // Real owner liveness, separate from LISTEN hints.
