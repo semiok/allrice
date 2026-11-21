@@ -10,6 +10,33 @@ import type { BaselineEntry } from './dsh-convergence-gate.ts';
 export const baseline: readonly BaselineEntry[] = [
   {
     kind: 'table',
+    id: 'person_vm_admission_permits',
+    category: '租约',
+    basis:
+      'MET-266：跨host共享普通请求准入与freeze的线性化边界；只记宿主queued/active/deferred范围租约与owner收尾，不复制DSH任务状态。',
+    approvedBy:
+      '2026-11-21 用户批准AllRice共享门卫/版本租约；root已核新增PG与超原2x方案，见ADMISSION-HOST-IMPLEMENTATION-PLAN.md及本片派活。',
+  },
+  {
+    kind: 'table',
+    id: 'person_virtual_machines',
+    category: '租约',
+    basis:
+      'MET-266 / M1-02：DSH 不管理宿主 VM 或个人加密盘。只记本人唯一盘、宿主开停/所有权租约、精确实例/epoch、连续空闲观察与停机时刻；host hold 不是原生 turn/job/子任务/审批权威，不建第二 Agent 状态机。',
+    approvedBy:
+      '2026-11-21 用户批准 AllRice 4.0 MET-266 产品开工，MET-265 合同 v1.0 冻结且 MET-264 基线通过；root 同日派活及新增 PG 四类核对，见本任务 PLAN.md 与 docs/architecture/person-vm.md。',
+  },
+  {
+    kind: 'table',
+    id: 'person_vm_audit',
+    category: '账本',
+    basis:
+      'MET-266 / M1-02：只追加宿主个人盘/VM 开停、显式删盘授权与实际失败/完成回执；不从账本驱动原生 Agent 执行。DSH 不拥有宿主盘删除及租约审计。',
+    approvedBy:
+      '2026-11-21 用户批准 AllRice 4.0 MET-266 产品开工；root 同日确认 VM 存储/宿主租约/审计属于已批范围，见本任务 PLAN.md。',
+  },
+  {
+    kind: 'table',
     id: 'allrice_employee_module_bindings',
     category: '门卫',
     basis:
