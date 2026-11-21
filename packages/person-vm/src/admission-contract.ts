@@ -102,8 +102,12 @@ export interface PersonVmAdmissionPort {
    * A read by itself is not the atomic stop commit; use authority.withLease. */
   assertFrozen(lease: PersonVmAdmissionLease, signal: AbortSignal): Promise<void>;
   /** Release ONLY the exact holder. A late/stale thaw cannot open a new freeze.
-   * Release is not permission to dispatch: deferred demand must first call
-   * authority.wake and reauthorize its current, complete execution binding. */
+   * One participant's release only records deferred demand. Before actual wake/boot,
+   * instance/epoch advance or dispatch, the model host must confirm BOTH
+   * participants released this exact freeze by ACK/authoritative reconciliation.
+   * Lost/late ACKs require exact old-lease reconciliation; superseded is NOT
+   * release evidence. No cross-epoch cleanup exception. Then authority.wake
+   * must reauthorize the current, complete execution binding. */
   thaw(
     lease: PersonVmAdmissionLease,
     signal: AbortSignal,
@@ -129,9 +133,12 @@ export interface PersonVmAdmissionAuthorityPort {
     signal: AbortSignal,
   ): Promise<T>;
   /** Called by the participant holding deferred demand, never by guest input.
-   * Reauthorize context/person/organization, serialize wake through the host,
-   * then return the current full binding ONLY after authenticated/editorReady/
-   * canSend all hold. Old execution envelopes must not be relabeled to it. */
+   * An early call records demand only: the host must first confirm release of
+   * BOTH participants for the same exact old freeze before boot, instance/epoch
+   * advance or dispatch. Then reauthorize context/person/organization, serialize
+   * wake and return the current full binding ONLY after authenticated/editorReady/
+   * canSend all hold. Settle the old freeze before a new generation; never
+   * relabel old execution envelopes or treat superseded as release evidence. */
   wake(
     context: RequestContext,
     previousBinding: PersonVmBinding,

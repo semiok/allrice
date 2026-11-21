@@ -44,10 +44,10 @@ native producer 必须覆盖本人的所有 root/后代、job、当前 schedule 
 | subscription `close()` | 幂等；取消并 join 本订阅的 waits。不得隐式 thaw、cancel 工作、关闭整个 participant，或声称远端已收尾；不能把 Promise 仍在跑的等待留在后台 |
 | `freeze(lease, signal)` | 在共享权威的准入边界 CAS；返回可对账的 frozen exact lease。相同 lease 重试幂等。返回不保证活动已为零；部分 ACK/取消/失败可能已生效，必须 observe/retry 对账 |
 | `assertFrozen(lease, signal)` | 验证完整 authoritative lease 与本端 frozen ACK；不代替原生/host hold 读取，不代替最终原子提交 |
-| `thaw(lease, signal)` | 仅 exact binding/freezeId/version 持有者；重复已释放返回 already-released，旧 lease 返回 superseded 且无开门效果。成功仅释放本次 freeze，仍需 wake 真 ready 才可 dispatch |
+| `thaw(lease, signal)` | 仅 exact binding/freezeId/version 持有者；重复已释放返回 already-released，旧 lease 返回 superseded 且无开门效果。单端释放只登记需求；host 必须收到同次 exact freeze 双端释放 ACK/权威对账后才可实际唤醒/开机/推进 instance/epoch/dispatch。迟到或丢 ACK 按旧 exact lease 对账，superseded 不是释放证据，无跨 epoch 清理例外 |
 | authority `assertLease` | 当前 host owner、完整 binding 与 version 的独立阶段校验；starting 可调用，不调用仅 running 的 `assertCurrentBinding` |
 | authority `withLease` | 共享比较并执行的 fence，不是 assert 后自由运行。用于 participant CAS 与最终 recheck/物理 stop/确认；同人不嵌套。final callback 内调用只读 assertFrozen，freeze/thaw 在 callback 外，避免互相重入 |
-| authority `wake(context, previousBinding, signal)` | deferred 的 participant 调模型 host；从当前可信身份/成员资格核本人企业，序列化开机并取得当前 full binding，authenticated/editorReady/canSend 全真才返回。不能把旧 execution envelope 改标签成新 epoch |
+| authority `wake(context, previousBinding, signal)` | deferred 的 participant 调模型 host；提前调用只登记需求，必须先过同次 exact freeze 双端释放屏障，再从当前可信身份/成员资格核本人企业、序列化开机并取得当前 full binding，authenticated/editorReady/canSend 全真才返回。先收齐旧 freeze 的释放，再新 generation；不能把旧 execution envelope 改标签成新 epoch |
 
 沿用 `PersonVmError`：身份/企业不合法为 AUTHORIZATION_DENIED/ORGANIZATION_CONFLICT；精确租约不符为 LEASE_LOST，其他 holder 为 LEASE_CONFLICT；活动/覆盖不明为 ACTIVITY_UNKNOWN；实际活动为 VM_ACTIVE；wake 未达真 ready 为 RUNTIME_NOT_READY；停止/清理未知为 CLEANUP_INCOMPLETE。取消传播原 signal 原因，不能转成成功或零；未知故障保留原因，必要时沿既有 PROVIDER_FAILED。**正常冻结只排队，不向新请求返回 ADMISSION_CLOSED/503 来代替等待**；真实授权撤销、客户端取消、已有关闭错误仍沿现有语义。
 
@@ -56,9 +56,9 @@ native producer 必须覆盖本人的所有 root/后代、job、当前 schedule 
 1. 先 subscribe，再 observe native/gateway/entry，结合 host hold 核持续 20min 候选。任一 unknown/非零/覆盖不完整就保留运行并记录具体来源原因。
 2. 从单一逻辑权威取得当前 full binding、freezeId/version；依次/并行请求两端 freeze。两端 ack 或 exact observe 未收齐不得 stop；部分生效先对账，再仅释放自己的 exact lease。
 3. 双端冻结后重读全部事实与 hold。freeze 前 queued/active 非零就取消本次停机并 thaw；freeze 后 deferred 留给后续唤醒，不构造已准入活动。
-4. 在 authority.withLease 的同一比较并执行 fence 内，再查 exact version/binding、双端 assertFrozen、连续来源当前尾部、native 与 hold，然后物理 stop 并确认。version/来源变化不能沿用旧结论。普通 assert 后做 stop 存在 TOCTOU，不满足本合同。
-5. 停止确认才 exact thaw；participant 持有的 deferred 需求触发 host wake。先真 ready、重新解析当前完整执行绑定/现权，再 dispatch。guest 原连接随停机关闭的，按原连接取消/join；不擅自跨 epoch 重放旧 native call，不改变去重/usage。
-6. stop 结果 unknown 或执行仍未 settled，保留 gate 禁新 dispatch；由模型 host 恢复 owner 对账 native/参与者后决定确认 stopped → thaw/wake，或确认运行且放弃停止 → exact thaw。participant 只报告需求和事实，不自行假定 stopped/开门。
+4. 在 authority.withLease 的同一比较并执行 fence 内，再查 exact version/binding、双端 assertFrozen、连续来源当前尾部、native 与 hold，然后物理 stop 并确认。version/来源变化不能沿用旧结论；version 变化放弃 stop 仍只 release 自身 exact lease。普通 assert 后做 stop 存在 TOCTOU，不满足本合同。
+5. 停止确认才 exact thaw；单端释放成功及其 deferred wake 请求只能登记需求。模型 host 在同次 exact binding/freezeId/version 的双端释放 ACK/权威对账均完成前，不得推进 instanceId/leaseEpoch、实际开机或 dispatch；先收齐旧 freeze 全部 release，再新 generation。迟到/丢 ACK 先按旧 exact lease 对账，不能用 superseded 当已释放，不设跨 epoch 清理例外。过屏障后先真 ready、重新解析当前完整执行绑定/现权，再 dispatch。guest 原连接随停机关闭的，按原连接取消/join；不擅自跨 epoch 重放旧 native call，不改变去重/usage。
+6. stop 结果 unknown 或执行仍未 settled，保留 gate 禁新 dispatch；由模型 host 恢复 owner 对账 native/参与者后决定确认 stopped → thaw/wake，或确认运行且放弃停止 → exact thaw，同样服从双端释放屏障。participant 只报告需求和事实，不自行假定 stopped/开门。
 
 `withLease` 的共享线性化、所有相关 host admission 对它的服从、以及 native 自主 start 的公开边界都必须有实现证据。原生自主 start 若可能绕过 freeze 并在最后读取后发生，producer/owner 必须用公开接缝闭合该 race；不能证明则 unknown、不 stop。声明一个 token、每个进程各存一张 map、订阅最终一致事件或“两次读未变”均不提供这个保证。
 
@@ -68,4 +68,4 @@ owner 崩溃或 ACK 丢失不会自动开门。模型 host 可信恢复先 fence
 
 DSH `0.2.1-rc.2` 的公开 Agent.whenIdle/runMaintenance 只有单 Agent 范围；原生 turn/subagent/session-activity 仍按原语义复用，schedule 归档 active 不能当当前 delivery。AllRice 只增加多租户 host 门卫/租约与原生单向事实投影。完整写前核对、源码位置、后续三线估算与直接旧断言见 QA `IDLE-ADMISSION-DESIGN.md`；MET-225 待主会话登记本候选差异。
 
-后续真实入口验证必须包含短活动、未知/断线与重新积累窗口，freeze 前排队/后 deferred、memory/8slot/refresh/drain、部分 freeze/ACK 丢失、版本竞争/迟到 thaw、starting、取消/close/join、跨 host owner 崩溃与恢复、stop unknown、stop 后 wake 真 ready，以及现有 normal turn/pending approval/host hold 保护。当前合同无运行证据，不算 ready/已验收。
+后续真实入口验证必须包含短活动、未知/断线与重新积累窗口，freeze 前排队/后 deferred、memory/8slot/refresh/drain、部分 freeze/ACK 丢失、版本竞争/迟到 thaw、starting、取消/close/join、跨 host owner 崩溃与恢复、stop unknown、stop 后 wake 真 ready，以及现有 normal turn/pending approval/host hold 保护。加入“一端 thaw 成功即请求 wake，另一端释放延迟/丢 ACK”：只登记需求，旧 exact freeze 双端释放完成前 instance/epoch、开机与 dispatch 均不推进。当前合同无运行证据，不算 ready/已验收。
