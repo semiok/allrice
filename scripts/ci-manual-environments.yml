@@ -75,6 +75,7 @@ files:
     - packages/dsh-web-composition/tests/employee-sidebar.browser.test.ts
     - packages/dsh-web-composition/tests/settings-integration.browser.test.ts
     - packages/dsh-web-composition/tests/employee-panels.browser.test.ts
+    - packages/dsh-web-composition/tests/employee-panels-causal-probe.browser.test.ts
     - apps/web/app/chatflow/brand-media.browser.test.ts
     - apps/web/app/chatflow/brand-content-panel.test.tsx
     - scripts/test-proxy.browser.test.mjs
