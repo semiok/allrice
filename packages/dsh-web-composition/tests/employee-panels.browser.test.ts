@@ -39,6 +39,11 @@ import {
 } from './fixtures/employee-panels/data';
 import type { PanelsIntegration } from './fixtures/employee-panels/client';
 import type { SessionIdOf } from '@deepseek-ai/dsh-client-ui-slots';
+import {
+  fixtureAbortCode,
+  observePanelsNetwork,
+  PanelsNetworkErrors,
+} from './employee-panels-network-errors';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -172,9 +177,15 @@ suite('installed native employee panels with synthetic business owner', () => {
   let host: Awaited<ReturnType<typeof startInstalledProfile>>;
   let baselineHtml: string;
   let state: PanelsState = 'list';
-  const pending: Route[] = [],
+  type Observation = Awaited<ReturnType<typeof observePanelsNetwork>>;
+  const network = new PanelsNetworkErrors();
+  const observations = new Map<Page, Observation>();
+  const pending: {
+      route: Route;
+      fixture: ReturnType<Observation['fixture']>;
+    }[] = [],
     requests: { url: string; method: string; state: PanelsState }[] = [];
-  const errors: { test: string | null; source: string; message: string }[] = [];
+  const errors = network.diagnostics;
   let currentTest: string | null = null;
   const evidence = () =>
     page.evaluate(() => window.__allricePanelsIntegration!.evidence());
@@ -192,8 +203,12 @@ suite('installed native employee panels with synthetic business owner', () => {
       { name, args },
     );
   const businessRoute = async (route: Route) => {
-    const url = new URL(route.request().url()),
-      method = route.request().method();
+    const request = route.request();
+    const url = new URL(request.url()),
+      method = request.method();
+    const observation = observations.get(request.frame().page());
+    if (!observation) throw Error('Missing request observer for fixture page');
+    const fixture = observation.fixture(request);
     requests.push({ url: url.pathname + url.search, method, state });
     if (method !== 'GET') {
       await route.fulfill({
@@ -208,14 +223,17 @@ suite('installed native employee panels with synthetic business owner', () => {
       return;
     }
     if (state === 'loading') {
-      pending.push(route);
+      fixture.held = true;
+      pending.push({ route, fixture });
       return;
     }
     if (state === 'denied') {
       await route.fulfill({
         status: 403,
+        headers: network.deny(fixture),
         json: { error: { code: 'FORBIDDEN', message: '无权访问' } },
       });
+      fixture.completed = true;
       return;
     }
     const data = createSyntheticPanelsData(state);
@@ -240,7 +258,22 @@ suite('installed native employee panels with synthetic business owner', () => {
     }
   };
   const changeState = async (value: PanelsState) => {
-    for (const route of pending.splice(0)) await route.abort().catch(() => {});
+    if (pending.length) {
+      for (const observation of observations.values())
+        await observation.flush();
+      const held = pending.splice(0);
+      network.abort(held.map(({ fixture }) => fixture));
+      for (const { route, fixture } of held) {
+        try {
+          await route.abort(fixtureAbortCode);
+          fixture.completed = true;
+        } catch (error) {
+          network.issues.push(
+            `Loading-exit abort failed for ${fixture.id}: ${String(error)}`,
+          );
+        }
+      }
+    }
     state = value;
     await command('setState', value);
   };
@@ -333,21 +366,15 @@ suite('installed native employee panels with synthetic business owner', () => {
     }, panelsClock);
     page = await context.newPage();
     page.setDefaultTimeout(15_000);
-    page.on('pageerror', (error) =>
-      errors.push({
-        test: currentTest,
-        source: 'pageerror',
-        message: error.message,
-      }),
+    observations.set(
+      page,
+      await observePanelsNetwork(
+        page,
+        `native-${observations.size}`,
+        currentTest,
+        network,
+      ),
     );
-    page.on('console', (message) => {
-      if (message.type() === 'error')
-        errors.push({
-          test: currentTest,
-          source: 'console',
-          message: message.text(),
-        });
-    });
     await page.route('**/api/v1/**', businessRoute);
     await page.goto(host.authUrl);
     const proceed = page.getByRole('button', { name: /^(Continue|继续)$/ });
@@ -384,6 +411,7 @@ suite('installed native employee panels with synthetic business owner', () => {
         fullPage: true,
       });
     }
+    for (const observation of observations.values()) await observation.flush();
     await context?.close();
     pending.length = 0;
     await writeFile(
@@ -393,6 +421,19 @@ suite('installed native employee panels with synthetic business owner', () => {
     await writeFile(
       join(artifacts, 'business-requests.json'),
       JSON.stringify(requests, null, 2),
+    );
+    await writeFile(
+      join(artifacts, 'network-errors.json'),
+      JSON.stringify(
+        {
+          fixtures: network.fixtures,
+          requests: network.requests,
+          logs: network.logs,
+          audit: network.audit(),
+        },
+        null,
+        2,
+      ),
     );
     currentTest = null;
   });
@@ -586,12 +627,14 @@ suite('installed native employee panels with synthetic business owner', () => {
         await page.setViewportSize({ width, height: 1000 });
         await command('setTheme', theme);
         const baseline = await context.newPage();
-        baseline.on('pageerror', (error) =>
-          errors.push({
-            test: currentTest,
-            source: 'rev2-pageerror',
-            message: error.message,
-          }),
+        observations.set(
+          baseline,
+          await observePanelsNetwork(
+            baseline,
+            `rev2-${observations.size}`,
+            currentTest,
+            network,
+          ),
         );
         await baseline.route(
           'http://allrice-panels-rev2.invalid/**',
@@ -779,7 +822,31 @@ suite('installed native employee panels with synthetic business owner', () => {
       }, 180_000);
     }
 
-  it('keeps all native/runtime errors visible for the whole file', () => {
-    expect(errors).toEqual([]);
+  it('keeps all native/runtime errors visible for the whole file', async () => {
+    for (const observation of observations.values()) await observation.flush();
+    const audit = network.audit();
+    expect(audit.issues).toEqual([]);
+    expect(audit.unexpectedDiagnostics).toEqual([]);
+    expect(audit.unexpectedLogs).toEqual([]);
+    expect(audit.unexpectedRequests).toEqual([]);
+    // The four visual cases must really exercise denied HTTP and loading aborts.
+    for (const prefix of ['native-', 'rev2-']) {
+      expect(
+        network.fixtures.some(
+          (request) =>
+            request.page.startsWith(prefix) &&
+            request.plan === 'denied' &&
+            request.status === 403,
+        ),
+      ).toBe(true);
+      expect(
+        network.fixtures.some(
+          (request) =>
+            request.page.startsWith(prefix) &&
+            request.plan === 'loading-exit' &&
+            request.failure === 'net::ERR_ABORTED',
+        ),
+      ).toBe(true);
+    }
   });
 });
