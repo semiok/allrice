@@ -450,6 +450,51 @@ suite('real AllRice sidebar in installed native profiles', () => {
             commands: window.__allriceSidebarTest?.commands,
             events: window.__allriceSidebarTest?.controlledOwner.events,
           })),
+          layout: await page
+            .evaluate(() => {
+              const describe = (node: Element) => {
+                const rect = node.getBoundingClientRect(),
+                  style = getComputedStyle(node);
+                return {
+                  tag: node.tagName,
+                  className: node.getAttribute('class'),
+                  label: node.getAttribute('aria-label'),
+                  rect: rect.toJSON(),
+                  display: style.display,
+                  position: style.position,
+                  zIndex: style.zIndex,
+                  padding: style.padding,
+                  margin: style.margin,
+                  font: style.font,
+                  color: style.color,
+                  pointerEvents: style.pointerEvents,
+                };
+              };
+              const sidebar = document.querySelector('#chat-sidebar');
+              const targets = [
+                sidebar,
+                sidebar?.firstElementChild,
+                document.querySelector('[data-row-key="session:thread-0"]'),
+                document.querySelector('[aria-label="自动化任务"]'),
+                [...(sidebar?.querySelectorAll('button') ?? [])].find(
+                  (button) => button.textContent?.startsWith('展开其余'),
+                ),
+              ].filter((node): node is Element => !!node);
+              return targets.map((node) => {
+                const rect = node.getBoundingClientRect();
+                return {
+                  ...describe(node),
+                  centerHitStack: document
+                    .elementsFromPoint(
+                      rect.x + rect.width / 2,
+                      rect.y + rect.height / 2,
+                    )
+                    .slice(0, 6)
+                    .map(describe),
+                };
+              });
+            })
+            .catch((error) => ({ diagnosticError: String(error) })),
           reading: reading && {
             ...reading,
             last: await page

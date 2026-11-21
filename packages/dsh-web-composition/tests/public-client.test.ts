@@ -17,6 +17,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import * as Primitives from '@deepseek-ai/dsh-client-ui-primitives';
 import ts from 'typescript';
 import { expect, it, vi } from 'vitest';
+import type { ChatSidebarFrame } from '../../../apps/web/app/chatflow/chat-sidebar-frame';
 import {
   SidebarSettingsButton,
   SidebarSettingsTrigger,
@@ -197,4 +198,89 @@ it('preserves the existing 3.x settings row and uses only its button inside a na
     expect(button).not.toContain('<div');
     expect(button.includes('>设置</span>')).toBe(!collapsed);
   }
+});
+
+it('keeps the installed sidebar frame free of panel action spacing and danger styling', async () => {
+  type Style = {
+    dataset: Record<string, string>;
+    textContent: string;
+    remove: () => void;
+  };
+  const sheets: Style[] = [];
+  let factory:
+    | ((require: (name: string) => unknown) => Record<string, unknown>)
+    | undefined;
+  runInNewContext(
+    await readFile(new URL('../dist/client.js', import.meta.url), 'utf8'),
+    {
+      AbortController,
+      document: {
+        createElement: (tag: string) => {
+          if (tag === 'style')
+            return { dataset: {}, textContent: '', remove: vi.fn() };
+          expect(tag).toBe('i');
+          return { innerHTML: '', textContent: '' };
+        },
+        head: { append: (style: Style) => sheets.push(style) },
+      },
+      window: {
+        __ModuleLoader__: {
+          load: (entry: { factory: typeof factory }) => {
+            factory = entry.factory;
+          },
+        },
+      },
+    },
+  );
+  const baseline = {
+    react: React,
+    'react-dom': ReactDom,
+    'react/jsx-runtime': Jsx,
+    '@deepseek-ai/dsh-client-ui-primitives': Primitives,
+    zod: require('zod'),
+  };
+  const exports = factory!((name) => {
+    if (!(name in baseline)) throw Error('Unpublished external: ' + name);
+    return baseline[name as keyof typeof baseline];
+  });
+  const disposers: (() => void)[] = [];
+  (exports.apply as (ctx: object) => void)({
+    slots: { inject: vi.fn() },
+    theme: { overrideTokens: () => () => {} },
+    inject: vi.fn(),
+    effect: (effect: () => () => void) => disposers.push(effect()),
+  });
+  expect(sheets).toHaveLength(1);
+  const Frame = exports.ChatSidebarFrame as typeof ChatSidebarFrame;
+  const markup = renderToStaticMarkup(
+    React.createElement(Frame, {
+      collapsed: false,
+      employeeTree: 'synthetic tree',
+      settings: 'synthetic settings',
+      onCollapsedChange: vi.fn(),
+      onCreateEmployee: vi.fn(),
+    }),
+  );
+  const frameClasses = markup
+    .match(/<aside[^>]*class="([^"]+)"/)![1]!
+    .split(/\s+/)
+    .filter(Boolean);
+  const directRules = [
+    ...sheets[0]!.textContent.matchAll(/([^{}]+)\{([^{}]*)\}/g),
+  ].filter((rule) =>
+    rule[1]!
+      .split(',')
+      .some((selector) =>
+        frameClasses.some((name) => selector.trim() === '.' + name),
+      ),
+  );
+  expect(directRules.length).toBeGreaterThanOrEqual(frameClasses.length);
+  // These declarations came from colliding panel actions in the first real
+  // failure. The actual sidebar frame has no action padding/margins/font/color.
+  for (const rule of directRules)
+    expect(rule[2], rule[1]).not.toMatch(
+      /(?:^|;)(?:padding(?:-[a-z-]+)?|margin(?:-[a-z-]+)?|color|font|font-size|line-height|cursor):/,
+    );
+  for (const dispose of disposers) dispose();
+  expect(sheets[0]!.remove).toHaveBeenCalledOnce();
 });

@@ -12,46 +12,43 @@ const baselineExternals = [
   '@deepseek-ai/dsh-client-ui-primitives',
   'zod',
 ];
-/** Bundle one AllRice contribution against the native public module table.
- * @param {string} entry
- */
-async function contribution(entry) {
-  const result = await build({
-    entryPoints: [new URL(entry, import.meta.url).pathname],
-    bundle: true,
-    write: false,
-    format: 'cjs',
-    minify: true,
-    platform: 'browser',
-    jsx: 'automatic',
-    outdir: new URL('./dist/', import.meta.url).pathname,
-    external: baselineExternals,
-    metafile: true,
-    define: { 'process.env.NODE_ENV': '"production"' },
-    loader: {
-      '.woff': 'dataurl',
-      '.woff2': 'dataurl',
-      '.ttf': 'dataurl',
-      '.svg': 'dataurl',
-    },
-  });
-  const js = result.outputFiles.find((file) => file.path.endsWith('.js'))?.text;
-  const css = result.outputFiles.find((file) =>
-    file.path.endsWith('.css'),
-  )?.text;
-  if (!js || !css)
-    throw new Error('Employee contribution bundle missing: ' + entry);
-  if (
-    Object.keys(result.metafile.inputs).some((path) =>
-      /\/(?:@shikijs\/|shiki\/|katex\/)|\.(?:woff2?|ttf)$/.test(path),
-    )
+// All contributions share one CSS Modules renaming graph. Independent minified
+// builds can assign the same short class to unrelated components in this page.
+const result = await build({
+  stdin: {
+    contents: `export * as sidebar from './src/employee-sidebar.tsx';
+export * as settings from './src/employee-settings.tsx';
+export * as panels from './src/employee-panels.tsx';`,
+    resolveDir: new URL('.', import.meta.url).pathname,
+    sourcefile: 'allrice-employee-contributions.ts',
+    loader: 'ts',
+  },
+  bundle: true,
+  write: false,
+  format: 'cjs',
+  minify: true,
+  platform: 'browser',
+  jsx: 'automatic',
+  outdir: new URL('./dist/', import.meta.url).pathname,
+  external: baselineExternals,
+  metafile: true,
+  define: { 'process.env.NODE_ENV': '"production"' },
+  loader: {
+    '.woff': 'dataurl',
+    '.woff2': 'dataurl',
+    '.ttf': 'dataurl',
+    '.svg': 'dataurl',
+  },
+});
+const js = result.outputFiles.find((file) => file.path.endsWith('.js'))?.text;
+const css = result.outputFiles.find((file) => file.path.endsWith('.css'))?.text;
+if (!js || !css) throw new Error('Employee contributions bundle missing');
+if (
+  Object.keys(result.metafile.inputs).some((path) =>
+    /\/(?:@shikijs\/|shiki\/|katex\/)|\.(?:woff2?|ttf)$/.test(path),
   )
-    throw new Error('Native shared markdown/font code was bundled: ' + entry);
-  return { js, css };
-}
-const sidebar = await contribution('./src/employee-sidebar.tsx');
-const settings = await contribution('./src/employee-settings.tsx');
-const panels = await contribution('./src/employee-panels.tsx');
+)
+  throw new Error('Native shared markdown/font code was bundled');
 const source = await readFile(
   new URL('./src/client.cjs', import.meta.url),
   'utf8',
@@ -64,22 +61,10 @@ const artifact = `window.__ModuleLoader__.load({
   factory: (require) => {
     const exports = {};
 ${source}
-    const sidebar = (() => {
+    const { sidebar, settings, panels } = (() => {
       const module = { exports: {} };
       const exports = module.exports;
-${sidebar.js}
-      return module.exports;
-    })();
-    const settings = (() => {
-      const module = { exports: {} };
-      const exports = module.exports;
-${settings.js}
-      return module.exports;
-    })();
-    const panels = (() => {
-      const module = { exports: {} };
-      const exports = module.exports;
-${panels.js}
+${js}
       return module.exports;
     })();
     const baseApply = exports.apply;
@@ -88,7 +73,7 @@ ${panels.js}
       ctx.effect(() => {
         const style = document.createElement('style');
         style.dataset.allriceEmployeeSidebar = '';
-        style.textContent = ${JSON.stringify(sidebar.css + '\n' + settings.css + '\n' + panels.css)};
+        style.textContent = ${JSON.stringify(css)};
         document.head.append(style);
         return () => style.remove();
       });
@@ -117,12 +102,9 @@ await writeFile(
   JSON.stringify(
     {
       artifactBytes: Buffer.byteLength(artifact),
-      sidebarJavaScriptBytes: Buffer.byteLength(sidebar.js),
-      sidebarCssBytes: Buffer.byteLength(sidebar.css),
-      settingsJavaScriptBytes: Buffer.byteLength(settings.js),
-      settingsCssBytes: Buffer.byteLength(settings.css),
-      panelsJavaScriptBytes: Buffer.byteLength(panels.js),
-      panelsCssBytes: Buffer.byteLength(panels.css),
+      contributionJavaScriptBytes: Buffer.byteLength(js),
+      contributionCssBytes: Buffer.byteLength(css),
+      cssModules: 'single shared compilation',
       compression: 'none',
     },
     null,

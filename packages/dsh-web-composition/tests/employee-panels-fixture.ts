@@ -19,7 +19,11 @@ export async function writeEmployeePanelsFixture(artifacts: string) {
     platform: 'browser',
     jsx: 'automatic',
     outdir: join(artifacts, 'panels-fixture'),
-    minify: true,
+    // This separately loaded test package shares a document with the installed
+    // product. Keep source-qualified CSS Module names out of its short names.
+    minifyIdentifiers: false,
+    minifySyntax: true,
+    minifyWhitespace: true,
     define: { 'process.env.NODE_ENV': '"production"' },
     external: [
       'react',

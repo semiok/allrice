@@ -10,6 +10,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client';
 import type {} from '@deepseek-ai/dsh-client-ui-theme/client';
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client';
 import type {
+  EmployeePanelsBinding,
   EmployeePanelsPort,
   EmployeePanelsSnapshot,
 } from '../../../src/employee-panels-port';
@@ -164,6 +165,14 @@ function installSyntheticPanelsOwner(ctx: Context, product: Product) {
     },
   };
   let owner = product.bindEmployeePanels(ctx, port);
+  let ownerBinding: EmployeePanelsBinding | undefined;
+  ctx.inject(['allriceEmployeePanels'], (scope) => {
+    const binding = scope.allriceEmployeePanels;
+    ownerBinding = binding;
+    scope.effect(() => () => {
+      if (ownerBinding === binding) ownerBinding = undefined;
+    });
+  });
   const CaptureInput = (
     props: PropsRuntime<'conversation.session.header.actions'>,
   ) => {
@@ -203,9 +212,7 @@ function installSyntheticPanelsOwner(ctx: Context, product: Product) {
       nativeInputReady: bindings.has(ctx.sidebarRight.mounted.getSnapshot()!),
       expanded: ctx.sidebarRight.isExpanded(),
       activeKind: ctx.sidebarRight.active()?.kind ?? null,
-      ownerBound:
-        !ctx.allriceEmployeePanels?.signal.aborted &&
-        !!ctx.allriceEmployeePanels,
+      ownerBound: !!ownerBinding && !ownerBinding.signal.aborted,
       scopeKey: ctx.sidebarRight.mounted.getSnapshot()
         ? (port.getSnapshot(ctx.sidebarRight.mounted.getSnapshot()!)
             ?.scopeKey ?? null)
@@ -275,7 +282,7 @@ function installSyntheticPanelsOwner(ctx: Context, product: Product) {
     },
     openSession: (id: SessionIdOf) => ctx.uiWorkspace.openSession(id),
     async unload() {
-      oldOwnerSignal = ctx.allriceEmployeePanels.signal;
+      oldOwnerSignal = ownerBinding?.signal;
       await owner.dispose();
     },
     async rebind() {
