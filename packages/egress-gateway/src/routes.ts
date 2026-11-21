@@ -193,7 +193,9 @@ export function createPackageMirrorRoutes(
       target.hash ||
       !origins.includes(target.origin) ||
       !name ||
-      /[\/\\\u0000-\u001f]/.test(name)
+      name.includes('/') ||
+      name.includes('\\') ||
+      [...name].some((character) => character.charCodeAt(0) < 32)
     )
       return invalid();
     const id = createHash('sha256')

@@ -1,10 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createServer } from 'node:net';
 import type { RequestContext } from '@allrice/contracts';
-import type {
-  PersonVmBinding,
-  PersonVmEgressReceipt,
-} from '@allrice/person-vm';
+import type { PersonVmBinding } from '@allrice/person-vm';
 import { createEgressGateway } from './gateway.js';
 import { createOkxMarketRoutes, createPackageMirrorRoutes } from './routes.js';
 import {
