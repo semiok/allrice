@@ -44,6 +44,12 @@ interface SidebarTest {
   nativeInput: (
     id?: string,
   ) => Promise<{ draft: string; attachmentCount: number }>;
+  retainInput: (id?: string) => Promise<void>;
+  releaseInput: (id?: string) => void;
+  nativeRetention: (id?: string) => {
+    referenceCount: number;
+    retainedBy: Record<string, number>;
+  };
   nativeScroll: (id?: string) => Promise<{
     anchorKey: string;
     anchorTop: number;
@@ -110,6 +116,10 @@ suite('real AllRice sidebar in installed native profiles', () => {
     const options = {
       fixtureGlobals: {
         __allriceSidebarFixtureData: createSidebarFixtureData(),
+        __allriceSidebarNativeSessions: {
+          first: processSession,
+          second: documentSession,
+        },
       },
     };
     hosts.push(
@@ -178,6 +188,10 @@ suite('real AllRice sidebar in installed native profiles', () => {
           errors: task.result.errors,
           pageErrors: errors,
           legacyRequests,
+          navigation: await page.evaluate(() => ({
+            commands: window.__allriceSidebarTest?.commands,
+            events: window.__allriceSidebarTest?.controlledOwner.events,
+          })),
         },
         null,
         2,
@@ -432,7 +446,7 @@ suite('real AllRice sidebar in installed native profiles', () => {
     }
   }, 60_000);
 
-  it('keeps native draft and runtime attachment ownership within one Host and records the real cross-root storage boundary', async () => {
+  it('keeps attachments only while a native Session reference is retained and records scope-release/cross-root boundaries', async () => {
     await page.evaluate(
       (id) => window.__allriceSidebarTest!.openSession(id),
       processSession,
@@ -454,6 +468,44 @@ suite('real AllRice sidebar in installed native profiles', () => {
         (await window.__allriceSidebarTest!.nativeInput()).attachmentCount ===
         1,
     );
+    // This is an explicit native reference owned by the fixture, not the
+    // production navigation owner (which is still unbound). Keep the original
+    // positive attachment assertion and also prove what happens after release.
+    await page.evaluate(() => window.__allriceSidebarTest!.retainInput());
+    let retainedOwnership, retainedInput;
+    try {
+      await page.evaluate(
+        (id) => window.__allriceSidebarTest!.openSession(id),
+        documentSession,
+      );
+      await page
+        .getByText('已按你选择的 Markdown 格式交付核对说明。', { exact: true })
+        .waitFor();
+      expect(
+        await page.evaluate(
+          (id) => window.__allriceSidebarTest!.nativeInput(id),
+          documentSession,
+        ),
+      ).toEqual({ draft: '', attachmentCount: 0 });
+      retainedOwnership = await page.evaluate(() =>
+        window.__allriceSidebarTest!.nativeRetention(),
+      );
+      expect(retainedOwnership.retainedBy.workspaceOperation).toBe(1);
+      await page.evaluate(
+        (id) => window.__allriceSidebarTest!.openSession(id),
+        processSession,
+      );
+      await editor.waitFor();
+      retainedInput = await page.evaluate(() =>
+        window.__allriceSidebarTest!.nativeInput(),
+      );
+      expect(retainedInput).toEqual({
+        draft: '员工 A 的未发送草稿',
+        attachmentCount: 1,
+      });
+    } finally {
+      await page.evaluate(() => window.__allriceSidebarTest!.releaseInput());
+    }
     await page.evaluate(
       (id) => window.__allriceSidebarTest!.openSession(id),
       documentSession,
@@ -461,20 +513,22 @@ suite('real AllRice sidebar in installed native profiles', () => {
     await page
       .getByText('已按你选择的 Markdown 格式交付核对说明。', { exact: true })
       .waitFor();
-    expect(
-      await page.evaluate(
-        (id) => window.__allriceSidebarTest!.nativeInput(id),
-        documentSession,
-      ),
-    ).toEqual({ draft: '', attachmentCount: 0 });
+    const afterRelease = await page.evaluate(() =>
+      window.__allriceSidebarTest!.nativeRetention(),
+    );
+    expect(afterRelease.referenceCount).toBe(0);
     await page.evaluate(
       (id) => window.__allriceSidebarTest!.openSession(id),
       processSession,
     );
     await editor.waitFor();
-    expect(
-      await page.evaluate(() => window.__allriceSidebarTest!.nativeInput()),
-    ).toEqual({ draft: '员工 A 的未发送草稿', attachmentCount: 1 });
+    const reopened = await page.evaluate(() =>
+      window.__allriceSidebarTest!.nativeInput(),
+    );
+    expect(reopened).toEqual({
+      draft: '员工 A 的未发送草稿',
+      attachmentCount: 0,
+    });
     expect(
       await other.evaluate(() => window.__allriceSidebarTest!.nativeInput()),
     ).toEqual({ draft: '', attachmentCount: 0 });
@@ -509,12 +563,18 @@ suite('real AllRice sidebar in installed native profiles', () => {
           {
             nativeSessionId: processSession,
             syntheticBusinessEmployees: ['rice', 'writer'],
+            retainedSession: {
+              retentionWhileAway: retainedOwnership,
+              reopened: retainedInput,
+              owner: 'explicit test-only native SessionReference',
+            },
+            releasedSession: { retention: afterRelease, reopened },
             sameOriginSecondRoot: same,
             otherOrigin: await other.evaluate(() =>
               window.__allriceSidebarTest!.nativeInput(),
             ),
             conclusion:
-              'Native draft persistence is origin/session-scoped; attachments are runtime-owned. No authenticated AllRice route or cross-root receipt restore is proven.',
+              'Draft persistence is origin/session-scoped. Attachments survive only while a Session reference keeps the input scope alive; after the final release they are absent even in the same Host. The fixture retain is not a bound production owner. No authenticated route or cross-root receipt restore is proven.',
           },
           null,
           2,
@@ -527,16 +587,15 @@ suite('real AllRice sidebar in installed native profiles', () => {
   }, 60_000);
 
   it('uses the native reading anchor for same-Host session switches', async () => {
-    await page.setViewportSize({ width: 1440, height: 600 });
+    // This history fits at 600px. Use an actually overflowing native viewport,
+    // so wheel movement (rather than a synthetic saved value) owns the anchor.
+    // Keep the native default disclosure state on both sides of the switch;
+    // expanded local details are not a persisted reading-position contract.
+    await page.setViewportSize({ width: 1440, height: 300 });
     await page.evaluate(
       (id) => window.__allriceSidebarTest!.openSession(id),
       processSession,
     );
-    for (const name of [/^已完成，用时/, /^执行了命令$/, /^运行命令/]) {
-      const button = page.getByRole('button', { name }).first();
-      if ((await button.getAttribute('aria-expanded')) === 'false')
-        await button.click();
-    }
     const scrollport = async () => {
       const text = await page
         .getByText('请核对三条销售记录，计算合计，并简要说明结果。', {
@@ -544,30 +603,37 @@ suite('real AllRice sidebar in installed native profiles', () => {
         })
         .elementHandle();
       const handle = await text!.evaluateHandle((node) => {
-        let current = node.parentElement;
-        while (
-          current &&
-          !(
-            current.scrollHeight > current.clientHeight + 20 &&
-            /auto|scroll/.test(getComputedStyle(current).overflowY)
-          )
-        )
-          current = current.parentElement;
-        return current;
+        // ChatViewport binds this same public shell marker before falling back
+        // to its own list; do not guess which ancestor happens to overflow.
+        return node.closest('[data-conversation-scroll]');
       });
       return handle.asElement();
     };
     const port = await scrollport();
     expect(port).not.toBeNull();
+    await page.waitForFunction(
+      (node) =>
+        node!.scrollHeight > node!.clientHeight + 20 && node!.scrollTop > 0,
+      port,
+    );
+    await settle(page);
+    const before = await port!.evaluate((node) => ({
+      scrollTop: node.scrollTop,
+      scrollHeight: node.scrollHeight,
+      clientHeight: node.clientHeight,
+    }));
+    expect(before.scrollHeight - before.clientHeight).toBeGreaterThan(20);
+    expect(before.scrollTop).toBeGreaterThan(0);
     const box = await port!.boundingBox();
     await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
-    await page.mouse.wheel(0, -240);
+    await page.mouse.wheel(0, -80);
     await page.waitForFunction(
       async () => (await window.__allriceSidebarTest!.nativeScroll()) !== null,
     );
     const saved = await page.evaluate(() =>
       window.__allriceSidebarTest!.nativeScroll(),
     );
+    expect(saved!.scrollTop).toBeLessThan(before.scrollTop);
     await page.evaluate(
       (id) => window.__allriceSidebarTest!.openSession(id),
       documentSession,
@@ -581,6 +647,7 @@ suite('real AllRice sidebar in installed native profiles', () => {
     );
     await settle(page);
     const restoredPort = await scrollport();
+    expect(restoredPort).not.toBeNull();
     expect(
       Math.abs(
         (await restoredPort!.evaluate((node) => node.scrollTop)) -
@@ -592,6 +659,7 @@ suite('real AllRice sidebar in installed native profiles', () => {
       JSON.stringify(
         {
           saved,
+          beforeWheel: before,
           restored: await page.evaluate(() =>
             window.__allriceSidebarTest!.nativeScroll(),
           ),
@@ -627,7 +695,9 @@ suite('real AllRice sidebar in installed native profiles', () => {
             () => document.documentElement.scrollWidth > innerWidth,
           ),
         ).toBe(false);
-        const native = page.locator('#chat-sidebar > div').last();
+        const nativeFrame = page.locator('#chat-sidebar');
+        const frameBox = await nativeFrame.boundingBox();
+        const native = nativeFrame.locator(':scope > div').last();
         const box = await native.boundingBox();
         await native.screenshot({
           animations: 'disabled',
@@ -640,12 +710,20 @@ suite('real AllRice sidebar in installed native profiles', () => {
         });
         const baseUrl = new URL(legacyUrl);
         baseUrl.searchParams.set('theme', theme);
-        baseUrl.searchParams.set('sidebarWidth', String(box!.width));
+        // sidebarWidth is the containing column's border-box budget. Passing
+        // the inner width would subtract the Frame's 1px border a second time.
+        baseUrl.searchParams.set('sidebarWidth', String(frameBox!.width));
         await legacy.setViewportSize({ width, height: 1000 });
         await legacy.goto(baseUrl.href);
         await legacy.locator('#chat-sidebar').waitFor();
         await settle(legacy);
         const old = legacy.locator('#chat-sidebar > div').last();
+        expect(
+          Math.abs(
+            (await legacy.locator('#chat-sidebar').boundingBox())!.width -
+              frameBox!.width,
+          ),
+        ).toBeLessThanOrEqual(0.5);
         expect(
           Math.abs((await old.boundingBox())!.width - box!.width),
         ).toBeLessThanOrEqual(0.5);
@@ -660,12 +738,18 @@ suite('real AllRice sidebar in installed native profiles', () => {
         });
         await page.evaluate(
           (size) => window.__allriceSidebarTest!.baseline(true, size),
-          box!.width,
+          frameBox!.width,
         );
         const baseline = page.locator('[data-sidebar-baseline] #chat-sidebar');
         await baseline.waitFor();
         expect(
-          Math.abs((await baseline.boundingBox())!.width - box!.width),
+          Math.abs((await baseline.boundingBox())!.width - frameBox!.width),
+        ).toBeLessThanOrEqual(0.5);
+        expect(
+          Math.abs(
+            (await baseline.locator(':scope > div').last().boundingBox())!
+              .width - box!.width,
+          ),
         ).toBeLessThanOrEqual(0.5);
         await baseline.screenshot({
           animations: 'disabled',

@@ -12,8 +12,7 @@ window.__ModuleLoader__.load({
       EmployeeClientNavigation,
     } = require('@allrice/dsh-web-composition');
     const { Context } = require('@deepseek-ai/cordis');
-    const first = 'session-00000000-0000-4000-8000-000000000036';
-    const second = 'session-00000000-0000-4000-8000-000000000031';
+    const { first, second } = window.__allriceSidebarNativeSessions;
     const fixtureEmployee = window.__allriceFixtureEmployee ?? 'rice';
     const { employees, sessions } = window.__allriceSidebarFixtureData;
     return {
@@ -158,7 +157,8 @@ window.__ModuleLoader__.load({
                 const root = new Context();
                 const references = [];
                 let live = true;
-                const push = (event) => ownerEvents.push({ event, root: id });
+                const push = (event, detail = {}) =>
+                  ownerEvents.push({ event, root: id, ...detail });
                 const reader = new ReadableStream({
                   cancel() {
                     push('resource:cancel');
@@ -192,12 +192,13 @@ window.__ModuleLoader__.load({
                 return {
                   async openSession(nativeSessionId, signal) {
                     if (signal.aborted) return;
+                    push('native-reference:start', { nativeSessionId });
                     const reference = ctx.sessions.retain(nativeSessionId, {
                       source: 'workspaceOperation',
                     });
                     references.push(reference);
                     await reference.ready;
-                    push('native-reference:ready');
+                    push('native-reference:ready', { nativeSessionId });
                   },
                   async abort() {
                     if (!lifetime.aborted)
@@ -256,6 +257,11 @@ window.__ModuleLoader__.load({
                 },
                 (error) => {
                   if (request !== viewRequest) return;
+                  ownerEvents.push({
+                    event: 'navigation:error',
+                    employee: row.employeeAssignmentId,
+                    message: error.message,
+                  });
                   publish({
                     ownerCurrent: '',
                     error: error.message,
@@ -379,6 +385,16 @@ window.__ModuleLoader__.load({
           );
         };
         let removeBaseline;
+        // Test-only explicit ownership. Merely keeping the Host alive does not
+        // keep a SessionInputShell alive after mainView releases its reference.
+        const inputReferences = new Map();
+        const releaseInput = (id) => {
+          inputReferences.get(id)?.release();
+          inputReferences.delete(id);
+        };
+        ctx.effect(() => () => {
+          for (const id of inputReferences.keys()) releaseInput(id);
+        });
         const test = {
           fixtureEmployee,
           commands,
@@ -412,6 +428,23 @@ window.__ModuleLoader__.load({
                 Baseline,
               );
           },
+          async retainInput(id = first) {
+            if (inputReferences.has(id))
+              throw new Error('Input already retained by test owner');
+            const reference = ctx.sessions.retain(id, {
+              source: 'workspaceOperation',
+            });
+            inputReferences.set(id, reference);
+            try {
+              await reference.ready;
+            } catch (error) {
+              releaseInput(id);
+              throw error;
+            }
+          },
+          releaseInput: (id = first) => releaseInput(id),
+          nativeRetention: (id = first) =>
+            ctx.sessions.retainInfo(id).getSnapshot(),
           async nativeInput(id = first) {
             const reference = ctx.sessions.retain(id, {
               source: 'workspaceOperation',

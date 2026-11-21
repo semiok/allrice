@@ -133,8 +133,14 @@ storage-context/official namespace solution. A caller-supplied namespace string
 is not sufficient. No new domain or authentication bypass is selected here.
 Different-origin synthetic Host tests are not approval of production routing.
 
-Native draft attachments are runtime-owned and reading anchors live in a
-ui-chat root-local Map. Same-root restoration has browser coverage written;
+Native draft attachments belong to a retained Session input scope. Native
+navigation releases the old main-view reference; with no other owner, the last
+release disposes that scope and its attachments even within the same Host.
+The browser coverage keeps the positive attachment assertion under an explicit
+test-owned native reference and also checks loss after final release; it does
+not supply the missing production owner or finish the attachment-retention
+requirement. Reading anchors live in a ui-chat root-local Map. Same-root
+restoration has browser coverage written;
 cross-root attachment restoration has no public re-admission port. A legitimate
 owner holding full `ChatViewSlotProps` can wrap its public `chatScroll` read/save
 with trusted person/employee/profile/session/remount scope and canonical native

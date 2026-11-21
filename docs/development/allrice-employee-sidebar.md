@@ -1,6 +1,6 @@
 # AllRice 员工左栏公开接线（MET-276 / M1-14）
 
-离当前目标还差什么：本候选交付共享真实左栏、公开 sidebar 槽和客户端重挂端口；正式 DEntry mount/transport、同 origin 的员工原生草稿隔离、跨根附件和阅读位置恢复仍未绑定。浏览器用例已写，当前受 M1 资源限制未运行；不能把本票记为员工入口迁入完成或正式 SSO 已通过。
+离当前目标还差什么：本候选交付共享真实左栏、公开 sidebar 槽和客户端重挂端口；正式 DEntry mount/transport、同 origin 的员工原生草稿隔离、同根切会话时的附件引用 owner、跨根附件和阅读位置恢复仍未绑定。首轮 `3e42ca7` 浏览器有四条首败，修复候选尚待主线定向重验；不能把本票记为员工入口迁入完成或正式 SSO 已通过。
 
 ## 原生对照与批准范围
 
@@ -47,19 +47,19 @@ SaaS 自补仅为已批门卫的 UI 接线与业务呈现：不新增认证、�
 
 ## 草稿、附件、阅读位置：真实边界
 
-下表当前均为读源或已写测试，**尚无本候选浏览器执行结果**。
+下表按 rc.2 官方源码及 `3e42ca7` 首败修正；**修复候选尚无浏览器执行结果**。
 
-| 能力     | 同原生根内切线程                                                                                                      | 销毁/重建根或跨 Host                                                                                                                                                                                                                                              |
-| -------- | --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 草稿     | 公开声明 persisted；新用例经真实 editor + `conversation.input.for(binding.ctx).state` 验证，待运行                    | 原生 key 是 `dsh.conversation.${sessionId}`，同 origin 同 ID 会共享；新用例明确断言此负向事实并保存 JSON，待运行。不同测试 origin 的隔离不等于正式 AllRice 路由已批准                                                                                             |
-| 附件     | 原生 runtime owner 跨 session navigation 保留；新用例真实文件 picker + public InputState，待运行                      | 原生描述为 runtime-only；新根没有旧 File/receipt ownership。没有公开跨根恢复/重新准入接口，本票不拷旧 upload receipt 或伪装成功；同员工 revision/binding 变化也不能复用旧 receipt                                                                                 |
-| 阅读位置 | `ChatViewSlotProps.chatScroll` 公开 read/save；原生根内使用原生 anchor；新用例真实 wheel + 实际 viewport 恢复，待运行 | 原生默认 Map 随根销毁。持有完整 ChatViewSlotProps 的合法 owner 可包装公开 read/save，以可信 person/employee/profile/session/remount scope 保存 canonical ChatScrollPosition；公开合同支持，但本票 owner 未绑定、跨根未实测。不能因缺独立 decorator 判定绝对不可能 |
+| 能力     | 同原生根内切线程                                                                                                                                                                                                                                                          | 销毁/重建根或跨 Host                                                                                                                                                                                                                                              |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 草稿     | 公开声明 persisted；新用例经真实 editor + `conversation.input.for(binding.ctx).state` 验证，待运行                                                                                                                                                                        | 原生 key 是 `dsh.conversation.${sessionId}`，同 origin 同 ID 会共享；新用例明确断言此负向事实并保存 JSON，待运行。不同测试 origin 的隔离不等于正式 AllRice 路由已批准                                                                                             |
+| 附件     | 同 Host 不等于同 Session scope。`uiWorkspace` 切换会释放旧 `mainView` 引用；最后引用归零时销毁 input shell 并释放附件。用例保留真实 picker/附件为 1 的正向断言，但仅在显式原生 retain 下成立，并补验 release 后重新打开为 0；此 retain 仅属夹具，不证明产品保留需求已交付 | 原生描述为 runtime-only；新根没有旧 File/receipt ownership。没有公开跨根恢复/重新准入接口，本票不拷旧 upload receipt 或伪装成功；同员工 revision/binding 变化也不能复用旧 receipt                                                                                 |
+| 阅读位置 | `ChatViewSlotProps.chatScroll` 公开 read/save；原生根内使用原生 anchor；新用例真实 wheel + 实际 viewport 恢复，待运行                                                                                                                                                     | 原生默认 Map 随根销毁。持有完整 ChatViewSlotProps 的合法 owner 可包装公开 read/save，以可信 person/employee/profile/session/remount scope 保存 canonical ChatScrollPosition；公开合同支持，但本票 owner 未绑定、跨根未实测。不能因缺独立 decorator 判定绝对不可能 |
 
 直接源码依据均为锁定 `0.2.1-rc.2` 的发布产物，只读，不作为私有 import：
 
 - ui-conversation `lib/types/client/contract/views.d.ts:19-21` 声明 draft persisted；`lib/client.js:4426,4438,4471,4488` 定义 `dsh.conversation` 和 session suffix。
 - client-store `lib/index.js:112-123,151-152` 直接读写当前 window localStorage、按 scopeKey 后缀持久化，无根存储 namespace 注入。
-- ui-conversation `lib/types/client/service.d.ts:114-124` 声明 runtime-only 附件及跨 session navigation owner；公开 `InputState.attachmentIds` 同样注明 runtime-only。
+- ui-conversation `lib/types/client/service.d.ts:114-124` 声明 runtime-only 附件及上传 service owner；这不能推导 SessionInput 附件在 scope 释放后恢复。rc.2 官方 `ui-workspace/src/client/navigation.ts:506-527` 释放旧主视图引用，`session-controller/src/client/sessions/service.ts:543-562,586-594` 在计数归零时撤销 scope；`ui-conversation/src/client/input/hub.ts:144-164` 随 scope 调用 shell.dispose 并 releaseDraftAttachment。公开 `InputState.attachmentIds` 同样注明 runtime-only。
 - ui-chat `lib/types/client/contract/slots.d.ts:232-269` 导出 `ChatScrollPosition` 与 read/save；`lib/client.js:13116,13259-13265` 为根内 Map。
 
 scroll owner 只能传递/保存原生 `ChatScrollPosition` 纯 UI 值并保留完整原生 props，不能取代原生滚动算法、DOM 采样、复制 ChatView、保留旧根 callbacks 或引入 Agent 状态机。不同员工同 ID、同员工 revision/binding 更换都须隔离。当前 sidebar owner 仅拿 SidebarOwnerProps，不持有完整 ChatViewSlotProps；ChatView 也未直接 runtime export。公开 slots ledger 检查不等于可修改 component/inject，shadow 时直接复制 native child 声明会撞单 declarer，因此不能凭 registry 类型宣布已接通。
@@ -67,6 +67,8 @@ scroll owner 只能传递/保存原生 `ChatScrollPosition` 纯 UI 值并保留�
 ## 验证、证据和交付状态
 
 本候选只完成串行轻量 build/typecheck/lint。所有单元、原生 profile、旧入口浏览器、视觉/Astra/联合门禁和 Dev 验收由主线绑定提交后执行。新 browser 文件已加入 `scripts/ci-manual-environments.yml` 的 browser 资源；没有放宽原测试时限、断言或重试。原 installed-profile suite 使用同一安装 helper，保留原 90s setup/60s 行为时限。
+
+首轮定向 M5 的原件保存在 `qa/codex/allrice40-m1-14-20261121/first-3e42ca7/`：第二受控线程指向未导入的 native ID、默认切会话销毁附件 scope、600px 视口未溢出、基准把内容宽度当外框预算而重复减去 1px 边框。本次仅改测试接线/数据与边界说明；阅读测试用 300px 高度、两侧一致的原生默认折叠状态和原生 scroll 标记，要求实际溢出及 wheel 位移；该前置条件仍待主线浏览器执行核验。几何仍按 ±0.5 CSS px 比较相同外框及内框。未新增重试或扩大时限，产品的正式附件保留 owner 仍未绑定。
 
 `employee-sidebar.browser.test.ts` 使用真实 tarball、两个独立同代 Host、同一 browser context、合成业务端口和同 native ID，零模型。保留 same-origin 双根负向；不同 origin 只验证原生存储行为。创建/详情/归档/设置仅验证公开命令派发，不冒充业务 owner 的实际写入或 SSO。
 
