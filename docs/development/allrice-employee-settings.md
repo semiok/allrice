@@ -106,4 +106,6 @@ ALLRICE_RUN_BROWSER_INTEGRATION=1 ALLRICE_BROWSER_EXECUTABLE=/absolute/existing/
 
 风险与未做：原生shell渲染位、账号全员工偏好→Host单权威映射、真实业务port、M1-12 HTTP/WS/remote.settings敏感namespace权限均待组合owner；无browser/build/profile安装/真实model/Dev/独审结论。节点4按固定组合树门禁和本人工作日认可收口，不以源码/单测完成宣布整卡ready。
 
+本任务中间层按本次用户明确约定执行Astra high和受影响测试/浏览器，不逐卡另跑四门全量；节点4组合门禁由owner统一收口。R1修复只增加同scope单次launcher binding的失效检查，不改变该测试与复核范围。
+
 MET-225待主线登记：员工管理UI隐藏、AllRice账号替代供应商账号、保留既有流式行；通知默认隐藏依据本次裁定，不启通道。原生语言/主题/字号/步骤组件保留，既有默认/持久化差异沿各owner账目核对。
