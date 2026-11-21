@@ -19,6 +19,7 @@
     "@allrice/project-runtime": "workspace:*"
   },
   "devDependencies": {
-    "postgres": "3.4.9"
+    "postgres": "3.4.9",
+    "@allrice/model-gateway": "workspace:*"
   }
 }
