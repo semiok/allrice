@@ -93,6 +93,29 @@ const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
     ? describe
     : describe.skip;
+// Wrap only measured pixel geometry; retain array/object shape and exact nonnumeric values.
+function pixelGeometry(expected: object): object;
+function pixelGeometry(expected: unknown): unknown;
+function pixelGeometry(expected: unknown): unknown {
+  if (typeof expected === 'number') {
+    return {
+      expectedPx: expected,
+      asymmetricMatch: (actual: unknown) =>
+        typeof actual === 'number' && Math.abs(actual - expected) <= 0.5,
+    };
+  }
+  if (Array.isArray(expected)) return expected.map(pixelGeometry);
+  if (expected !== null && typeof expected === 'object') {
+    return Object.fromEntries(
+      Object.entries(expected).map(([key, value]) => [
+        key,
+        pixelGeometry(value),
+      ]),
+    );
+  }
+  return expected;
+}
+
 async function selectSettings(dialog: Locator, label: string) {
   const mobile = dialog.getByRole('combobox', { name: '设置页面' });
   if (await mobile.isVisible()) await mobile.selectOption({ label });
@@ -3391,7 +3414,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await f.page
           .locator('[data-step-id="tool:native-0"]')
           .waitFor({ state: 'attached' });
-        await expect.poll(placement).toEqual(before);
+        await expect.poll(placement).toEqual(pixelGeometry(before));
         await expect
           .poll(() =>
             f.panel.locator('[data-native-subagent-id="child-b"]').innerText(),
@@ -3711,7 +3734,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           const strip = (await f.panel
             .locator('[data-dockkit-strip]')
             .boundingBox())!;
-          expect(strip.height).toBe(56);
+          expect(strip.height).toEqual(pixelGeometry(56));
           const closeBox = await close.boundingBox();
           expect(closeBox!.width).toBeGreaterThanOrEqual(
             width <= 760 ? 44 : 32,
@@ -3726,8 +3749,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ).toBeLessThanOrEqual(1);
           if (width <= 1100) {
             const target = await back.boundingBox();
-            expect(target!.width).toBe(44);
-            expect(target!.height).toBe(44);
+            expect(target!.width).toEqual(pixelGeometry(44));
+            expect(target!.height).toEqual(pixelGeometry(44));
             expect(target!.x).toBeGreaterThanOrEqual(strip.x);
             expect(target!.x + target!.width).toBeLessThanOrEqual(strip.x + 56);
             expect(target!.y).toBeGreaterThanOrEqual(strip.y);
@@ -3932,8 +3955,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           ),
       ).toEqual(
         Array.from({ length: 4 }, () => ({
-          target: [32, 32],
-          glyph: [20, 20],
+          target: pixelGeometry([32, 32]),
+          glyph: pixelGeometry([20, 20]),
           strokes: expect.arrayContaining(['1.75px']),
         })),
       );
@@ -5668,7 +5691,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             headerDelta: after.top - before.top,
             outerScrollDelta: after.scroll - before.scroll,
           });
-          expect(after.height - before.height).toBe(detailHeight);
+          expect(after.height - before.height).toEqual(
+            pixelGeometry(detailHeight),
+          );
           expect(detailHeight).toBeGreaterThan(100);
           expect(Math.abs(after.top - before.top)).toBeLessThan(2);
           expect(Math.abs(after.scroll - before.scroll)).toBeLessThan(2);
@@ -5928,7 +5953,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             };
           });
         const before = await measure();
-        expect(before).toMatchObject({ height: 24, secondHeight: 24, gap: 6 });
+        expect(before).toMatchObject(
+          pixelGeometry({ height: 24, secondHeight: 24, gap: 6 }),
+        );
         expect(
           await first
             .locator('[data-disclosure-row]')
@@ -5950,10 +5977,14 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               parseFloat(style.marginBottom)
             );
           });
-        expect(after.height - before.height).toBe(detailHeight);
-        expect(after.secondHeight).toBe(before.secondHeight);
-        expect(after.gap).toBe(before.gap);
-        expect(after.distance - before.distance).toBe(detailHeight);
+        expect(after.height - before.height).toEqual(
+          pixelGeometry(detailHeight),
+        );
+        expect(after.secondHeight).toEqual(pixelGeometry(before.secondHeight));
+        expect(after.gap).toEqual(pixelGeometry(before.gap));
+        expect(after.distance - before.distance).toEqual(
+          pixelGeometry(detailHeight),
+        );
         expect(
           await second
             .locator('[data-disclosure-row]')
@@ -6409,7 +6440,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await toggle.press('Space');
         expect(await toggle.getAttribute('aria-expanded')).toBe('false');
         expect(await material.count()).toBe(0);
-        expect((await card.boundingBox())!.height).toBe(runningHeight);
+        expect((await card.boundingBox())!.height).toEqual(
+          pixelGeometry(runningHeight),
+        );
         return;
       }
       await toggle.click();
@@ -8571,8 +8604,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(
           await connect.evaluate((button) => getComputedStyle(button).fontSize),
         ).toBe('13px');
-        expect((await connect.boundingBox())!.height).toBe(
-          width < 600 ? 44 : 32,
+        expect((await connect.boundingBox())!.height).toEqual(
+          pixelGeometry(width < 600 ? 44 : 32),
         );
         expect(
           (await computer
@@ -8899,11 +8932,11 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         // persona section. The existing edit form retains its own layout.
         expect(createLayout.personaPadding).toBe(width < 600 ? '14px' : '16px');
         expect(createLayout.personaBorder).toBe('1px');
-        expect(createLayout.width).toBe(
-          width < 600 ? createLayout.rootWidth : 688,
+        expect(createLayout.width).toEqual(
+          pixelGeometry(width < 600 ? createLayout.rootWidth : 688),
         );
-        expect(createLayout.x - createLayout.rootX).toBe(
-          (createLayout.rootWidth - createLayout.width) / 2,
+        expect(createLayout.x - createLayout.rootX).toEqual(
+          pixelGeometry((createLayout.rootWidth - createLayout.width) / 2),
         );
         for (const field of ['员工名字', '使命', '工作方式'])
           expect(
@@ -9025,7 +9058,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           expect(timeBox!.x + timeBox!.width).toBeLessThanOrEqual(
             rowBox!.x + rowBox!.width,
           );
-          expect(timeBox!.y).toBe(labelBox!.y);
+          expect(timeBox!.y).toEqual(pixelGeometry(labelBox!.y));
         };
         const expectCreatedIdentity = async (created: Locator) => {
           const createdName = created.getByText('财务专员', { exact: true });
@@ -9128,7 +9161,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               const box = node.getBoundingClientRect();
               return [box.width, box.height, css.backgroundColor, css.color];
             }),
-          ).toEqual([56, 56, 'rgb(59, 130, 246)', 'rgb(9, 13, 22)']);
+          ).toEqual(
+            pixelGeometry([56, 56, 'rgb(59, 130, 246)', 'rgb(9, 13, 22)']),
+          );
         };
         const expectMobileHeader = async () => {
           const title = f.page.locator('header h1');
@@ -9285,7 +9320,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             await header.evaluate(
               (node) => node.getBoundingClientRect().height,
             ),
-          ).toBe(72);
+          ).toEqual(pixelGeometry(72));
           expect(
             await header
               .getByRole('button', { name: /^交付成果(?:，\d+ 项新增)?$/ })
@@ -9310,7 +9345,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               const box = node.getBoundingClientRect();
               return [box.width, box.height];
             }),
-          ).toEqual([56, 56]);
+          ).toEqual(pixelGeometry([56, 56]));
           expect(await mark.locator('svg').getAttribute('viewBox')).toBe(
             '0 0 24 24',
           );
@@ -9343,7 +9378,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             'creation content uses its own scroll surface',
           ).not.toBeNull();
           if (bottom) expect(dimensions!.scrollTop).toBeGreaterThan(0);
-          else expect(dimensions!.scrollTop).toBe(0);
+          else expect(dimensions!.scrollTop).toEqual(pixelGeometry(0));
           const footer = dialog.locator('footer');
           const box = (await footer.boundingBox())!;
           expect(box.y).toBeGreaterThanOrEqual(0);
@@ -10263,8 +10298,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             ' {width:min(560px,100%);max-height:min(680px,calc(100dvh - 48px));}';
           document.head.append(sheet);
         });
-        expect((await loading.boundingBox())!.width).toBe(
-          width === 1440 ? 848 : width,
+        expect((await loading.boundingBox())!.width).toEqual(
+          pixelGeometry(width === 1440 ? 848 : width),
         );
         release();
         const details = f.page.getByRole('dialog', {
@@ -10277,7 +10312,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           })
           .waitFor();
         const rect = (await details.boundingBox())!;
-        expect(rect.width).toBe(width === 1440 ? 848 : width);
+        expect(rect.width).toEqual(pixelGeometry(width === 1440 ? 848 : width));
         expect(rect.height).toBeLessThanOrEqual(
           f.page.viewportSize()!.height - (width < 700 ? 0 : 48),
         );
@@ -10306,7 +10341,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             return node.scrollTop;
           }),
         ).toBeGreaterThan(100);
-        expect(await close.boundingBox()).toEqual(initial);
+        expect(await close.boundingBox()).toEqual(pixelGeometry(initial));
         expect(await close.isVisible()).toBe(true);
         expect(
           await details.evaluate(
@@ -10466,7 +10501,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         // Wait for the mobile drawer to finish entering before choosing touch coordinates.
         await expect
           .poll(() => sidebar.evaluate((n) => n.getBoundingClientRect().left))
-          .toBe(0);
+          .toEqual(pixelGeometry(0));
         const box = (await tree.boundingBox())!;
         await tree.evaluate((n) => {
           n.scrollTop = 0;
@@ -10531,8 +10566,10 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(last.y + last.height).toBeLessThanOrEqual(
           box.y + box.height + 1,
         );
-        expect(await top.boundingBox()).toEqual(before.top);
-        expect(await settings.boundingBox()).toEqual(before.settings);
+        expect(await top.boundingBox()).toEqual(pixelGeometry(before.top));
+        expect(await settings.boundingBox()).toEqual(
+          pixelGeometry(before.settings),
+        );
         await sidebar
           .getByRole('button', { name: '收起更多会话', exact: true })
           .click();
@@ -10608,7 +10645,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .toBe(active ? 'rgb(225, 230, 237)' : 'rgb(235, 238, 242)');
         await row.hover();
         expect(await letter.isVisible()).toBe(true);
-        expect(await letter.boundingBox()).toEqual(before);
+        expect(await letter.boundingBox()).toEqual(pixelGeometry(before));
         await expect
           .poll(() => card.evaluate((e) => getComputedStyle(e).backgroundColor))
           .toBe(active ? 'rgb(225, 230, 237)' : 'rgb(233, 236, 241)');
@@ -12462,7 +12499,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .poll(() => process.getByText('加载过程…', { exact: true }).count())
           .toBe(0);
         await f.page.waitForTimeout(100);
-        expect(await measure()).toEqual(before);
+        expect(await measure()).toEqual(pixelGeometry(before));
         // Restoring native reply IDs must preserve the displayed Markdown node.
         expect(
           await text.evaluate((node, previous) => node === previous, handle),
@@ -15179,11 +15216,13 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             });
             expect(seen.font).toEqual(['13px', '400', '19.5px']);
             expect(seen.ellipsis).toBe('ellipsis');
-            expect(seen.icon).toEqual([28, 28]);
-            expect(seen.actions).toEqual([
-              [28, 28],
-              [28, 28],
-            ]);
+            expect(seen.icon).toEqual(pixelGeometry([28, 28]));
+            expect(seen.actions).toEqual(
+              pixelGeometry([
+                [28, 28],
+                [28, 28],
+              ]),
+            );
             expect(Math.abs(seen.actionWidth - 56)).toBeLessThanOrEqual(0.5);
             expect(Math.abs(seen.actionInset - 10)).toBeLessThanOrEqual(0.5);
             expect(seen.subtitleStyle).toEqual(['12px', '18px', 'ellipsis']);
@@ -15277,7 +15316,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           );
           await materialRow.waitFor();
           const published = await measure(materialRow);
-          expect(published.height).toBe(delivered.height);
+          expect(published.height).toEqual(pixelGeometry(delivered.height));
           expect(published.subtitleTitle).toBe(`${purpose} · 我 · 今日 10:30`);
           expect(published.subtitleText).toBe(published.subtitleTitle);
           expect(
@@ -16436,8 +16475,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 };
               }),
             );
-            expect(styles[0]).toEqual(styles[1]);
-            expect(styles[1]).toEqual(styles[2]);
+            expect(styles[0]).toEqual(pixelGeometry(styles[1]));
+            expect(styles[1]).toEqual(pixelGeometry(styles[2]));
             expect(parseFloat(styles[0]!.border)).toBeGreaterThan(0);
             await captureF3(f.page, `reading-${kind}-footer`, { width, theme });
             if (kind === 'pdf' || kind === 'docx') {
@@ -18054,8 +18093,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
                 };
               }),
             );
-            expect(buttonStyles[0]).toEqual(buttonStyles[1]);
-            expect(buttonStyles[1]).toEqual(buttonStyles[2]);
+            expect(buttonStyles[0]).toEqual(pixelGeometry(buttonStyles[1]));
+            expect(buttonStyles[1]).toEqual(pixelGeometry(buttonStyles[2]));
             expect(parseFloat(buttonStyles[0]!.border)).toBeGreaterThan(0);
             await capture('footer');
             let nativeZoom: string | undefined;
@@ -18463,7 +18502,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
               node.querySelector<HTMLElement>('[data-document-zoom-scrollport]')
                 ?.scrollTop,
           ),
-        ).toBe(top);
+        ).toEqual(pixelGeometry(top));
       expect(f.state.workbenchPreviewReads).toBe(previewReads);
       if (visible === true)
         expect(
@@ -18939,7 +18978,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             true,
           );
           expect(await fonts.isVisible()).toBe(true);
-          expect(await scroll.evaluate((node) => node.scrollTop)).toBe(top);
+          expect(await scroll.evaluate((node) => node.scrollTop)).toEqual(
+            pixelGeometry(top),
+          );
           expect(
             await frame.evaluate((node) =>
               node.style.getPropertyValue('--document-zoom'),
@@ -22028,8 +22069,8 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           .poll(async () => Math.abs((await geometry(expand)).gap - 28))
           .toBeLessThanOrEqual(0.5);
         const folded = await geometry(expand);
-        expect(folded.target).toEqual([32, 32]);
-        expect(folded.glyph).toEqual([20, 20]);
+        expect(folded.target).toEqual(pixelGeometry([32, 32]));
+        expect(folded.glyph).toEqual(pixelGeometry([20, 20]));
         expect(
           centerDelta(folded.glyphCenter, folded.center),
         ).toBeLessThanOrEqual(0.5);
@@ -22044,7 +22085,7 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(centerDelta(expanded.target, folded.target)).toBeLessThanOrEqual(
           0.5,
         );
-        expect(expanded.glyph).toEqual(folded.glyph);
+        expect(expanded.glyph).toEqual(pixelGeometry(folded.glyph));
         expect(
           centerDelta(expanded.glyphCenter, expanded.center),
         ).toBeLessThanOrEqual(0.5);
@@ -22098,7 +22139,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             delta: left.bottom - right.bottom,
           };
         });
-      expect(await headerGeometry()).toEqual({ left: 56, right: 56, delta: 0 });
+      expect(await headerGeometry()).toEqual(
+        pixelGeometry({ left: 56, right: 56, delta: 0 }),
+      );
       expect(await f.panel.getByRole('tab', { name: /^开始/ }).count()).toBe(1);
       expect(
         await f.page
@@ -22152,7 +22195,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         expect(box.x).toBeGreaterThanOrEqual(center.x);
         expect(box.x + box.width).toBeLessThanOrEqual(center.x + center.width);
       }
-      expect(await headerGeometry()).toEqual({ left: 56, right: 56, delta: 0 });
+      expect(await headerGeometry()).toEqual(
+        pixelGeometry({ left: 56, right: 56, delta: 0 }),
+      );
       await splitter.dblclick({ position: { x: 4, y: 100 } });
       await expect.poll(panelWidth).toBe(defaultWidth);
       await splitter.focus();
@@ -24321,19 +24366,21 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await expect
             .poll(() => y.evaluate((node) => node.scrollTop))
             .toBeGreaterThan(0);
-          expect(await reading.evaluate((node) => node.scrollTop)).toBe(
-            initialOuter,
+          expect(await reading.evaluate((node) => node.scrollTop)).toEqual(
+            pixelGeometry(initialOuter),
           );
           await f.page.mouse.wheel(0, 100_000);
           await expect.poll(remaining).toBeLessThanOrEqual(0.5);
-          expect(await reading.evaluate((node) => node.scrollTop)).toBe(
-            initialOuter,
+          expect(await reading.evaluate((node) => node.scrollTop)).toEqual(
+            pixelGeometry(initialOuter),
           );
         } else {
           await expect
             .poll(() => reading.evaluate((node) => node.scrollTop))
             .toBeGreaterThan(initialOuter);
-          expect(await y.evaluate((node) => node.scrollTop)).toBe(0);
+          expect(await y.evaluate((node) => node.scrollTop)).toEqual(
+            pixelGeometry(0),
+          );
         }
         // The next real wheel stays over the table. No click/scrollIntoView or
         // programmatic outer scrolling is allowed to make the footer visible.
@@ -24366,15 +24413,17 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
         await pointAtTable();
         if (length === 'long') {
           await f.page.mouse.wheel(0, -100_000);
-          await expect.poll(() => y.evaluate((node) => node.scrollTop)).toBe(0);
-          expect(await reading.evaluate((node) => node.scrollTop)).toBe(
-            bottomOuter,
+          await expect
+            .poll(() => y.evaluate((node) => node.scrollTop))
+            .toEqual(pixelGeometry(0));
+          expect(await reading.evaluate((node) => node.scrollTop)).toEqual(
+            pixelGeometry(bottomOuter),
           );
         }
         await f.page.mouse.wheel(0, -1000);
         await expect
           .poll(() => reading.evaluate((node) => node.scrollTop))
-          .toBe(0);
+          .toEqual(pixelGeometry(0));
         await pointAtTable();
         // This exception must leave modified wheels at the original grid
         // handler. Excel's existing buttons remain the zoom entry point.
@@ -24506,28 +24555,40 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           });
           await diagnostics.mark('image-scrollport-geometry', geometry);
           expect(geometry.supported).toBe(true);
-          expect(geometry.inner.height).toBe(Math.floor(geometry.frame.height));
+          expect(geometry.inner.height).toEqual(
+            pixelGeometry(Math.floor(geometry.frame.height)),
+          );
           expect(geometry.frame.height - geometry.inner.height).toBeLessThan(1);
-          expect(geometry.parent).toEqual(geometry.host);
+          expect(geometry.parent).toEqual(pixelGeometry(geometry.host));
           // The native frame fills its parent's content box, including when
           // the image canvas gives that parent inline padding.
-          expect(geometry.frame.x).toBe(geometry.parent.x + geometry.insetLeft);
-          expect(geometry.frame.right).toBe(
-            geometry.parent.right - geometry.insetRight,
+          expect(geometry.frame.x).toEqual(
+            pixelGeometry(geometry.parent.x + geometry.insetLeft),
           );
-          expect(geometry.frame.width).toBe(
-            geometry.parent.width - geometry.insetLeft - geometry.insetRight,
+          expect(geometry.frame.right).toEqual(
+            pixelGeometry(geometry.parent.right - geometry.insetRight),
+          );
+          expect(geometry.frame.width).toEqual(
+            pixelGeometry(
+              geometry.parent.width - geometry.insetLeft - geometry.insetRight,
+            ),
           );
           for (const key of ['x', 'y', 'height'] as const)
-            expect(geometry.reading[key]).toBe(geometry.host[key]);
+            expect(geometry.reading[key]).toEqual(
+              pixelGeometry(geometry.host[key]),
+            );
           for (const key of ['y', 'height'] as const)
-            expect(geometry.frame[key]).toBe(geometry.host[key]);
+            expect(geometry.frame[key]).toEqual(
+              pixelGeometry(geometry.host[key]),
+            );
           // Platforms with non-overlay scrollbars reserve width in the reader.
           expect(geometry.host.right).toBeLessThanOrEqual(
             geometry.reading.right,
           );
           for (const key of ['x', 'y', 'width'] as const)
-            expect(geometry.inner[key]).toBe(geometry.frame[key]);
+            expect(geometry.inner[key]).toEqual(
+              pixelGeometry(geometry.frame[key]),
+            );
           // The real long-image cases retain the fractional outer viewport
           // that exposed the failure; only the inner viewport is rounded.
           if (kind === 'image-tall')
@@ -24546,12 +24607,16 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           await expect
             .poll(() => reading.evaluate((n) => n.scrollTop))
             .toBeGreaterThan(initialOuter);
-          expect(await inner.evaluate((n) => n.scrollTop)).toBe(0);
+          expect(await inner.evaluate((n) => n.scrollTop)).toEqual(
+            pixelGeometry(0),
+          );
         } else {
           await expect
             .poll(() => inner.evaluate((n) => n.scrollTop))
             .toBeGreaterThan(0);
-          expect(await reading.evaluate((n) => n.scrollTop)).toBe(initialOuter);
+          expect(await reading.evaluate((n) => n.scrollTop)).toEqual(
+            pixelGeometry(initialOuter),
+          );
         }
         await diagnostics.mark('after-wheel-180');
         // Use actual browser wheel input, not scrollIntoView or a footer click
@@ -24610,7 +24675,9 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
             Math.max(visible.y + 80, box.y + 40),
           );
           await f.page.mouse.wheel(0, -1000);
-          await expect.poll(() => reading.evaluate((n) => n.scrollTop)).toBe(0);
+          await expect
+            .poll(() => reading.evaluate((n) => n.scrollTop))
+            .toEqual(pixelGeometry(0));
         }
         {
           await reading.evaluate((n) => {

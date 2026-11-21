@@ -46,6 +46,41 @@ export const baseline: readonly BaselineEntry[] = [
   },
   {
     kind: 'table',
+    id: 'allrice_model_gateway_calls',
+    category: '账本',
+    basis:
+      'MET-268：VM外可信原生调用关联及不可变幂等claim，重连不重放模型请求；不存Agent执行状态。DSH不持有SaaS当前本人/VM epoch/Run计费归属。',
+    approvedBy:
+      '2026-11-21 MET-268用户开工授权；主会话审PLAN.md四类核定通过，calls限宿主幂等关联。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_model_gateway_attempts',
+    category: '账本',
+    basis:
+      'MET-268：实际HTTP模型/刷新尝试及其独立响应、关闭、terminal与usage事实；dispatch intent不证明上游收到/费用，缺失为null，不用guest日志收费。',
+    approvedBy:
+      '2026-11-21 MET-268用户开工授权；主会话审PLAN.md四类核定通过，attempts限单向上游账本。',
+  },
+  {
+    kind: 'table',
+    id: 'allrice_model_gateway_slots',
+    category: '租约',
+    basis:
+      'MET-268：用户每人8个活跃上游模型流，跨gateway/企业按全局personId原子领取；实际transport收敛及receipt提交才释放，无TTL或Agent生命周期。',
+    approvedBy:
+      '2026-11-21 MET-268用户开工授权；主会话审PLAN.md四类核定通过，slots限每人准入租约。',
+  },
+  {
+    kind: 'patch',
+    id: 'allrice-host-model-gateway-v1',
+    category: '账本',
+    basis:
+      'MET-268：公开DSH LlmAdapter/prepareCall/StreamChunk接缝外补可信身份、实际HTTP逐尝试计量、持久准入；原生消息/工具/取消语义保留，无新loop/账户路由/扣费权威。',
+    approvedBy: '2026-11-21 MET-268用户开工授权；主会话审PLAN.md四类核定通过。',
+  },
+  {
+    kind: 'table',
     id: 'allrice_employee_module_bindings',
     category: '门卫',
     basis:

@@ -21,6 +21,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      '@allrice/model-gateway': fileURLToPath(
+        new URL('./packages/model-gateway/src/index.ts', import.meta.url),
+      ),
       '@allrice/person-vm': fileURLToPath(
         new URL('./packages/person-vm/src/index.ts', import.meta.url),
       ),
