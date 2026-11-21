@@ -396,7 +396,20 @@ suite('installed AllRice native Web composition', () => {
         .first();
       if ((await questionProcess.getAttribute('aria-expanded')) === 'false')
         await questionProcess.click();
-      await page.getByRole('button', { name: '查看回答', exact: true }).click();
+      const questionStep = page.getByRole('button', {
+        name: '向用户提出了问题并已调用工具',
+        exact: true,
+      });
+      if ((await questionStep.getAttribute('aria-expanded')) === 'false')
+        await questionStep.click();
+      // The fixture follows the standard preset's legacy ask-user tool. Its
+      // answered transcript opens inline; timed calls alone have View answers.
+      const questionRow = page.getByRole('button', { name: /^提问/ });
+      const questionExpanded = await questionRow.getAttribute('aria-expanded');
+      expect(
+        await page.getByText('1/1 已回答', { exact: true }).isVisible(),
+      ).toBe(true);
+      if (questionExpanded === 'false') await questionRow.click();
       expect(
         await page
           .getByText('核对说明采用哪种格式？', { exact: true })
@@ -405,11 +418,6 @@ suite('installed AllRice native Web composition', () => {
       expect(
         await page.getByText('Markdown', { exact: true }).first().isVisible(),
       ).toBe(true);
-      const closeQuestion = page.getByRole('button', {
-        name: '收起问题面板，可从工具调用重新打开',
-        exact: true,
-      });
-      if (await closeQuestion.isVisible()) await closeQuestion.click();
       await page
         .getByRole('button', {
           name: new RegExp(`^在侧边栏预览 .*${deliveryName}$`),
