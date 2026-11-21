@@ -6782,23 +6782,69 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
 
   it('restores long history without caught React update errors before switching sessions', async ({
     onTestFinished,
+    task,
   }) => {
     const f = await fixture();
-    let probe: ReturnType<typeof observeCdpExceptions> | undefined = undefined;
-    onTestFinished(async () => {
-      const pending = probe?.stop();
-      // Closing the context also detaches CDP, even after a test timeout.
-      try {
-        await f.close();
-      } finally {
-        await pending;
-      }
-    });
-    const cdp = await f.context.newCDPSession(f.page);
+    const started = performance.now();
+    const timeline: { ms: number; event: string; details?: unknown }[] = [];
+    const mark = (event: string, details?: unknown) =>
+      timeline.push({
+        ms: Math.round((performance.now() - started) * 10) / 10,
+        event,
+        details,
+      });
     const internalErrors: string[] = [];
     const traces = new Set<string>();
     const expectedTraces = new Set(
       Array.from({ length: 100 }, (_, i) => id(3000 + i)),
+    );
+    const observation = () => ({
+      internalErrors,
+      finishedTraces: traces.size,
+      missingTraces: [...expectedTraces].filter((runId) => !traces.has(runId)),
+      timeline,
+    });
+    const evidence = createFailureEvidence({
+      file: import.meta.url,
+      test: task.name,
+      collect: observation,
+    });
+    evidence.observePage(f.page);
+    let probe: ReturnType<typeof observeCdpExceptions> | undefined = undefined;
+    onTestFinished(async () => {
+      try {
+        mark('test-finished', { state: task.result?.state });
+        // One final write retains successful diagnostic runs as well as failures.
+        console.log(
+          'HISTORY_RESTORE_DIAGNOSTIC',
+          JSON.stringify(observation()),
+        );
+        if (task.result?.state === 'fail')
+          await evidence.capture(task.result.errors);
+      } finally {
+        const pending = probe?.stop();
+        // Capture failures must still close the context and detach CDP.
+        try {
+          await f.close();
+        } finally {
+          try {
+            await pending;
+          } finally {
+            evidence.dispose();
+          }
+        }
+      }
+    });
+    const cdp = await f.context.newCDPSession(f.page);
+    cdp.on('Debugger.paused', (event) =>
+      mark('cdp-paused', {
+        reason: event.reason,
+        description: event.data?.description,
+      }),
+    );
+    cdp.on('Debugger.resumed', () => mark('cdp-resumed'));
+    cdp.on('Runtime.executionContextsCleared', () =>
+      mark('cdp-contexts-cleared'),
     );
     // pageerror alone misses exceptions consumed by a successful fetch's catch.
     // Observe real exceptions without changing React, its scheduler or the store.
@@ -6809,42 +6855,81 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
           internalErrors.push(error);
         }
       },
-      (cause) => internalErrors.push(String(cause)),
+      (cause) => {
+        mark('probe-failure', String(cause));
+        internalErrors.push(String(cause));
+      },
     );
     f.page.on('console', (message) => {
       if (/Maximum update depth exceeded/.test(message.text())) {
         internalErrors.push(message.text());
       }
     });
-    f.page.on('requestfinished', (request) => {
+    const requests = new Map<Request, number>();
+    const traceRequest = (
+      event: string,
+      request: Request,
+      details?: unknown,
+    ) => {
       const url = new URL(request.url());
       const match = url.pathname.match(/^\/api\/v1\/runs\/([^/]+)\/events$/);
       if (
         match &&
         expectedTraces.has(match[1]!) &&
         url.searchParams.get('format') === 'json'
-      )
-        traces.add(match[1]!);
-    });
+      ) {
+        if (!requests.has(request)) requests.set(request, requests.size + 1);
+        mark(event, {
+          request: requests.get(request),
+          runId: match[1],
+          details,
+        });
+        if (event === 'trace-finished') traces.add(match[1]!);
+      }
+    };
+    f.page.on('request', (request) => traceRequest('trace-requested', request));
+    f.page.on('response', (response) =>
+      traceRequest('trace-response', response.request(), {
+        status: response.status(),
+      }),
+    );
+    f.page.on('requestfinished', (request) =>
+      traceRequest('trace-finished', request),
+    );
+    f.page.on('requestfailed', (request) =>
+      traceRequest('trace-failed', request, request.failure()),
+    );
     await cdp.send('Runtime.enable');
     await cdp.send('Debugger.enable');
     await cdp.send('Debugger.setPauseOnExceptions', { state: 'all' });
     f.state.messages = navigationHistory(100, 2);
+    mark('reload-started');
     await f.page.reload();
+    mark('reload-finished');
     const rail = f.page.getByRole('navigation', { name: '轮次导航' });
     await rail
       .getByRole('button', { name: '跳转到第 100 轮', exact: true })
       .waitFor({ timeout: 15_000 });
+    mark('rail-ready');
     await expect
       .poll(
-        async () =>
-          internalErrors.length > 0 ||
-          (traces.size === 100 &&
-            (await f.page.getByText('加载过程…', { exact: true }).count()) ===
-              0),
+        async () => {
+          const loading = await f.page
+            .getByText('加载过程…', { exact: true })
+            .count();
+          mark('restore-poll', {
+            traces: traces.size,
+            loading,
+            errors: internalErrors.length,
+          });
+          return (
+            internalErrors.length > 0 || (traces.size === 100 && loading === 0)
+          );
+        },
         { timeout: 5000 },
       )
       .toBe(true);
+    mark('restore-passed');
     await probe.drain();
     expect(internalErrors).toEqual([]);
     await expect
