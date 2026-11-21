@@ -218,8 +218,9 @@ async function reserve(port: number, signal: AbortSignal) {
         ),
       );
       for (const socket of sockets.keys()) socket.destroy();
-      await Promise.all([listener, closed]); // ERR_NOT_RUNNING alone is not a join.
+      const [listenerResult] = await Promise.allSettled([listener, closed]); // Even a callback error must join real close.
       while (sockets.size) await Promise.all(sockets.values());
+      if (listenerResult!.status === 'rejected') throw listenerResult!.reason;
     })());
   }
   let abort = () => {};
