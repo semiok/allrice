@@ -6,7 +6,7 @@
 
 moduleId=`host-model-gateway`；owner=MET-268；contractVersion=`MODEL_GATEWAY_CONTRACT_VERSION=1`，包0.1.0。producer/consumer仅支持v1；HTTP header版本不符拒绝，不声称支持未来schema。DSH单代`0.2.1-rc.2`，源码commit`687f282e8625c6b8d11ff58211a90524be2e4317`（`apps/worker/dsh/distribution.json`），Node22.23.2。此服务不是EmployeeModuleRelease，使用宿主gatewayRelease/employeeRelease精确pin。
 
-公开根入口`@allrice/model-gateway`，无deep exports。实现源码提交将在本记录封版后附；每个方法与下列具名type一一对应，JSON检查器不建立信任。
+公开根入口`@allrice/model-gateway`，无deep exports。新增出口sourceAtSha=`733163b1c65404f8002bfe81013817f0b31481d4`，符号清单位于`packages/model-gateway/src/index.ts`，具名合同位于`src/contract.ts`，方法分别在`src/gateway.ts`、`src/dsh-provider.ts`、`src/postgres-store.ts`。该提交的产品源码与本记录封版时相同；每个方法与下列具名type一一对应，JSON检查器不建立信任。
 
 | 允许符号                                                                                                 | 用途/来源                                                                     |
 | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
