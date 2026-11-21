@@ -9,6 +9,15 @@ import type { BaselineEntry } from './dsh-convergence-gate.ts';
 
 export const baseline: readonly BaselineEntry[] = [
   {
+    kind: 'patch',
+    id: 'allrice-native-web-local-auth-v1',
+    category: '门卫',
+    basis:
+      'MET-273：复用rc.2公开Host插件、authenticatedUrl与Node Connection；仅将VM内原生本地认证资格经固定nonce工件有界交给可信宿主，绑定本人VM/epoch，不把guest资格当SaaS身份，不另造认证协议或Agent状态。',
+    approvedBy:
+      '2026-11-21 用户批准4.0原生D Web与MET-273开工；规划线裁定dfbc1979-56e3-4c9b-8c4e-2d1490c9100c，root首endpoint派活及本轮NW修复核定，见NATIVE-WEB-CONTRACT-PLAN.md。',
+  },
+  {
     kind: 'table',
     id: 'person_vm_admission_permits',
     category: '租约',

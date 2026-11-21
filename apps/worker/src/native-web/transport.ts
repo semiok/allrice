@@ -1,5 +1,5 @@
 import { request, Agent, type ClientRequest } from 'node:http';
-import type { Socket } from 'node:net';
+import type { Duplex } from 'node:stream';
 import WebSocket from 'ws';
 import type {
   ConnectionWebSocket,
@@ -13,8 +13,7 @@ export function nativeWebTransport(
   signal: AbortSignal,
   lost: () => void,
 ) {
-  const agent = new Agent({ keepAlive: false });
-  const sockets = new Set<Socket>(),
+  const sockets = new Set<Duplex>(),
     websockets = new Set<WebSocket>();
   const calls = new Set<ClientRequest>();
   const joins = new Set<Promise<void>>();
@@ -23,6 +22,37 @@ export function nativeWebTransport(
   function joined(promise: Promise<void>) {
     joins.add(promise);
     void promise.then(() => joins.delete(promise));
+  }
+  function socketJoin(socket: Duplex) {
+    if (sockets.has(socket)) return;
+    sockets.add(socket);
+    joined(
+      new Promise((done) =>
+        socket.once('close', () => {
+          sockets.delete(socket);
+          done();
+        }),
+      ),
+    );
+  }
+  const agent = new (class extends Agent {
+    override createConnection(...args: Parameters<Agent['createConnection']>) {
+      const socket = super.createConnection(...args);
+      if (socket) socketJoin(socket); // Before ClientRequest's asynchronous assignment.
+      return socket;
+    }
+  })({ keepAlive: false });
+  function requestJoin(call: ClientRequest) {
+    calls.add(call);
+    joined(
+      new Promise((done) =>
+        call.once('close', () => {
+          calls.delete(call);
+          done();
+        }),
+      ),
+    );
+    call.on('socket', socketJoin);
   }
   function target(input: string | URL) {
     signal.throwIfAborted();
@@ -87,27 +117,9 @@ export function nativeWebTransport(
             });
           },
         );
-        calls.add(call);
-        joined(
-          new Promise((done) =>
-            call.once('close', () => {
-              calls.delete(call);
-              reject(new PersonVmError('PROVIDER_FAILED')); // A closed, unanswered request is not a reply.
-              done();
-            }),
-          ),
-        );
-        call.on('socket', (socket) => {
-          sockets.add(socket);
-          joined(
-            new Promise((done) =>
-              socket.once('close', () => {
-                sockets.delete(socket);
-                done();
-              }),
-            ),
-          );
-        });
+        requestJoin(call);
+        // A closed, unanswered request is not a reply.
+        call.once('close', () => reject(new PersonVmError('PROVIDER_FAILED')));
         call.on('error', () => reject(new PersonVmError('PROVIDER_FAILED')));
         // Native Connection unary calls provide their already encoded JSON string.
         if (
@@ -155,6 +167,11 @@ export function nativeWebTransport(
       let socket: WebSocket;
       try {
         socket = new WebSocket(url, {
+          agent,
+          finishRequest(call) {
+            requestJoin(call);
+            call.end();
+          },
           headers: {
             Cookie: cookie,
             Host: url.host,

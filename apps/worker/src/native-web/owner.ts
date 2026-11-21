@@ -132,7 +132,7 @@ export async function openNativeWebOwner(input: {
       revoked: signal,
       /** Connectivity only; never conveys current execution authorization. */
       controlReady: () => ready && !signal.aborted,
-      async readSessions(requestSignal: AbortSignal) {
+      readSessions(requestSignal: AbortSignal) {
         async function assertCurrent(current: AbortSignal) {
           try {
             await input.vm.assertCurrentBinding(
@@ -146,12 +146,19 @@ export async function openNativeWebOwner(input: {
           }
         }
         const current = AbortSignal.any([signal, requestSignal]);
-        current.throwIfAborted();
-        await assertCurrent(current);
-        const result = await own(root.remote.session.list({}, current));
-        await assertCurrent(current);
-        current.throwIfAborted();
-        return result;
+        if (current.aborted) return Promise.reject(current.reason);
+        // Register before entering either asynchronous guard, including reentrant close.
+        return own(
+          Promise.resolve().then(async () => {
+            current.throwIfAborted();
+            await assertCurrent(current);
+            current.throwIfAborted(); // A late guard success cannot dispatch after close.
+            const result = await root.remote.session.list({}, current);
+            await assertCurrent(current);
+            current.throwIfAborted();
+            return result;
+          }),
+        );
       },
       async close() {
         try {

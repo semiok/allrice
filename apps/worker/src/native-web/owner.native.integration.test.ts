@@ -19,6 +19,7 @@ import {
 import { runCommand } from '../../../../packages/person-vm/src/process.ts';
 import { prepareNativeWebLaunch } from './launch.js';
 import { openNativeWebOwner } from './owner.js';
+import * as NativeTransport from './transport.js';
 
 // Actual published rc.2 entry, not a fixture protocol server. Its complete
 // compatible-OS package tree must be provisioned separately and recorded.
@@ -26,6 +27,13 @@ const cli = process.env.ALLRICE_NATIVE_WEB_TEST_CLI;
 const tag = 'manual:ALLRICE_NATIVE_WEB_TEST_CLI';
 const roots: string[] = [],
   cleanup: (() => Promise<void>)[] = [];
+function latch() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 afterEach(async () => {
   const joined = await Promise.allSettled(
     cleanup
@@ -35,6 +43,7 @@ afterEach(async () => {
   );
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
+  vi.restoreAllMocks();
   const failure = joined.find((result) => result.status === 'rejected');
   if (failure?.status === 'rejected') throw failure.reason;
 });
@@ -86,6 +95,7 @@ async function setup() {
   const startup = new AbortController(),
     lifetime = new AbortController();
   let kills = 0,
+    exited!: Promise<{ exitCode: number; timedOut: boolean }>,
     child!: ReturnType<typeof spawn>;
   const scope: PersonVmBootstrapScope = {
     binding,
@@ -105,7 +115,7 @@ async function setup() {
         },
         stdio: 'ignore',
       });
-      const exited = new Promise<{ exitCode: number; timedOut: boolean }>(
+      exited = new Promise<{ exitCode: number; timedOut: boolean }>(
         (done, reject) => {
           child.once('error', reject);
           child.once('close', (code) =>
@@ -168,7 +178,15 @@ async function setup() {
     cleanupTimeoutMs: 5000,
   });
   cleanup.push(() => owner.close());
-  return { owner, startup, lifetime, child, current, kills: () => kills };
+  return {
+    owner,
+    startup,
+    lifetime,
+    child,
+    current,
+    exited,
+    kills: () => kills,
+  };
 }
 
 it.skipIf(!cli)(
@@ -189,6 +207,71 @@ it.skipIf(!cli)(
     expect(f.child.exitCode !== null || f.child.signalCode !== null).toBe(true);
   },
 );
+
+for (const check of [1, 2])
+  it.skipIf(!cli)(
+    `真实readSessions第${check}次现权检查阻塞时close等待完整operation，禁止新读`,
+    { tags: [tag], timeout: 30000 },
+    async () => {
+      const ioClosed = latch();
+      const createTransport = NativeTransport.nativeWebTransport;
+      let fetches = 0;
+      // Observe real public transport.close completion; no fake protocol/readiness.
+      vi.spyOn(NativeTransport, 'nativeWebTransport').mockImplementation(
+        (...args) => {
+          const transport = createTransport(...args);
+          return {
+            ...transport,
+            fetch: (...call) => {
+              fetches++;
+              return transport.fetch(...call);
+            },
+            close: async () => {
+              await transport.close();
+              ioClosed.resolve();
+            },
+          };
+        },
+      );
+      const f = await setup(),
+        entered = latch(),
+        release = latch();
+      cleanup.push(async () => {
+        release.resolve();
+      });
+      if (check === 2) f.current.mockResolvedValueOnce(undefined);
+      f.current.mockImplementationOnce(async () => {
+        entered.resolve();
+        await release.promise; // Deliberately join even after its signal is aborted.
+      });
+      const reading = f.owner.readSessions(new AbortController().signal).then(
+        () => {
+          throw Error('closed reader must not return data');
+        },
+        (error: unknown) => error,
+      );
+      await entered.promise;
+      const atGuard = fetches;
+      let settled = false;
+      const closed = f.owner.close().then(() => {
+        settled = true;
+      });
+      await Promise.all([ioClosed.promise, f.exited]); // Real network and exact child join.
+      await new Promise<void>((done) => setImmediate(done)); // Drain their settled continuations.
+      expect(settled).toBe(false);
+      await expect(
+        f.owner.readSessions(new AbortController().signal),
+      ).rejects.toBeDefined();
+      expect(f.current).toHaveBeenCalledTimes(check);
+      expect(fetches).toBe(atGuard);
+      release.resolve();
+      expect(await reading).toBeDefined();
+      await closed;
+      expect(f.current).toHaveBeenCalledTimes(check);
+      expect(fetches).toBe(atGuard);
+      expect(f.kills()).toBe(1);
+    },
+  );
 it.skipIf(!cli)(
   '真实native control失联只撤可达资格，不重放；lifetime取消仍精确结束job并join',
   { tags: [tag], timeout: 30000 },

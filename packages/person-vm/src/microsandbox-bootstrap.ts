@@ -195,7 +195,7 @@ export async function bootstrapMicrosandbox(input: {
           '--no-stdin',
           '--no-tty',
           '--timeout',
-          `${request.timeoutMs}ms`,
+          `${Math.ceil(request.timeoutMs / 1000)}s`,
           '--',
           'node',
           '-e',
@@ -203,7 +203,8 @@ export async function bootstrapMicrosandbox(input: {
           path,
           String(maxBytes),
         ],
-        scope.signal,
+        // exec accepts whole seconds; keep the host's exact millisecond budget.
+        AbortSignal.any([scope.signal, AbortSignal.timeout(request.timeoutMs)]),
       );
       await scope.assertCurrent();
       return parseNativeWebAuth(text, request);

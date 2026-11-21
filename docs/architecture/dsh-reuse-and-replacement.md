@@ -864,3 +864,5 @@ R4b extends the same `allrice-reference-read-v1` seam with `workspace_reference_
 ## MET273：Native Web 宿主认证与控制
 
 `allrice-native-web-local-auth-v1` 复用 rc.2 的公开 `connection.authenticatedUrl`、`/connect`、Node Connection/Gateway/SessionController 和 Cordis Fiber lifecycle。Host 插件只原子投送0600、宿主 nonce 指定的 native local auth；Microsandbox 固定有界 reader 私下读取。Worker 固定已声明 endpoint 和 VM binding/epoch，独立长期 lifetime，关闭 join 自有 HTTP/WS/iterator 与 exact Job；无私有DSH接口、stdio桥、Agent状态或PG权威。该门卫/租约片不启用4.0流量，不代表 editor-ready、发送许可、完整idle或Linux工件已交付；新增员工端口的三方冻结安全重启另片实现。
+
+rc.2 的 Web runtime config 整块替换，须同时保留 `openBrowser:false`、可信 `publicUrl`、`surfaceContext:true` 和 `printUrl:false`。v0.7.16 exec 使用整秒参数并保留独立 host 毫秒预算；CLI close 不替代 guest stop/status。Node owner 通过公开 Agent/finishRequest 跟踪 WS 握手的真实 request/socket close，完整读操作含前后现权均纳入关闭 join。

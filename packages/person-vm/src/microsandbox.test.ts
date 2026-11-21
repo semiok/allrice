@@ -21,6 +21,7 @@ import type { PersonVmMemoryGuestPlan } from './guest-bootstrap.ts';
 
 const temporary: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   for (const path of temporary.splice(0))
     await rm(path, { recursive: true, force: true });
@@ -55,13 +56,18 @@ else if(a[0]==='list')console.log(JSON.stringify(v.name?[{name:v.name,status:v.s
 else if(a[0]==='pull'){}
 else if(a[0]==='create'){v.name=a[a.indexOf('--name')+1];v.status='Running';}
 else if(a[0]==='start')v.status='Running';
-else if(a[0]==='stop'){if(mode!=='lost-id-unknown-stop')v.status='Stopped';}
+else if(a[0]==='stop'){if(!['lost-id-unknown-stop','auth-unknown-stop'].includes(mode))v.status='Stopped';}
 else if(a[0]==='ping'){if(v.status!=='Running')process.exit(41);}
 else if(a[0]==='cp'){
  const meta=fs.statSync(a[1]);(v.copies??=[]).push({target:a[2],mode:meta.mode&511,contents:fs.readFileSync(a[1],'utf8')});
 }
 else if(a[0]==='exec'){
  if(!a.includes('--detach')){
+  // v0.7.16 exec uses parse_duration_secs, not the separate ms parser.
+  if(!/^[0-9]+[smh]?$/.test(a[a.indexOf('--timeout')+1]??''))process.exit(44);
+  if(mode==='auth-budget'){
+   fs.writeFileSync(p.join(home,'auth-reading'),String(process.pid));setInterval(()=>{},1000);return;
+  }
   const cmd=a.slice(a.indexOf('--')+1);
   process.exit(require('node:child_process').spawnSync(process.execPath,cmd.slice(1),{stdio:'inherit'}).status??1);
  }
@@ -143,41 +149,136 @@ save();
 }
 
 describe('Microsandbox public CLI protocol through real child processes (no actual VM)', () => {
-  it('真实service scope把固定nonce reader送入原生exec；argv无资格，过期scope拒绝读取', async () => {
-    const f = await bootstrapFixture(),
+  it.each([3000, 3001])(
+    '真实service scope把固定nonce reader送入原生exec（%sms）；argv无资格，过期scope拒绝读取',
+    async (timeoutMs) => {
+      const f = await bootstrapFixture(),
+        dshHome = await directory(),
+        nonce = randomUUID();
+      await mkdir(join(dshHome, 'native-web'));
+      const localAuthSample = 'QWxsUmljZU5hdGl2ZVdlYkF1dGhGaXh0dXJlT25seTA';
+      const authenticatedUrl = `http://127.0.0.1:32179/?token=${localAuthSample}`;
+      await writeFile(
+        join(dshHome, 'native-web', `auth-${nonce}.json`),
+        JSON.stringify({ v: 1, nonce, authenticatedUrl }),
+      );
+      const request = {
+        dshHome,
+        nonce,
+        origin: 'http://127.0.0.1:32179/',
+        timeoutMs,
+      };
+      let read!: NonNullable<PersonVmBootstrapScope['readNativeWebAuth']>;
+      f.h.runtime.start = async (_binding, _signal, scope) => {
+        read = scope.readNativeWebAuth!;
+        expect(await read(request)).toEqual({ authenticatedUrl });
+      };
+      await f.service.prewarm(f.rc, { trigger: 'page' }, signal());
+      const calls = await f.calls();
+      expect(
+        calls.some(
+          (args) =>
+            args[0] === 'exec' &&
+            !args.includes('--detach') &&
+            args.includes('--timeout'),
+        ),
+      ).toBe(true);
+      const reader = calls.find(
+        (args) => args[0] === 'exec' && !args.includes('--detach'),
+      )!;
+      expect(reader[reader.indexOf('--timeout') + 1]).toBe(
+        `${Math.ceil(timeoutMs / 1000)}s`,
+      );
+      expect(JSON.stringify(calls)).not.toContain(localAuthSample);
+      await expect(read(request)).rejects.toMatchObject({ code: 'LEASE_LOST' });
+      expect(await f.calls()).toEqual(calls);
+    },
+  );
+  it.each([false, true])(
+    '真实reader失败仍stop/status；未知stop=%s不得detach或ready',
+    async (unknownStop) => {
+      const f = await bootstrapFixture(
+          unknownStop ? 'auth-unknown-stop' : 'ok',
+        ),
+        dshHome = await directory(),
+        nonce = randomUUID();
+      // A directory is an invalid artifact: the real fixed reader must fail.
+      await mkdir(join(dshHome, 'native-web', `auth-${nonce}.json`), {
+        recursive: true,
+      });
+      f.h.runtime.start = async (_binding, _signal, scope) => {
+        await scope.readNativeWebAuth!({
+          dshHome,
+          nonce,
+          origin: 'http://127.0.0.1:32179/',
+          timeoutMs: 3001,
+        });
+      };
+      await expect(
+        f.service.prewarm(f.rc, { trigger: 'page' }, signal()),
+      ).rejects.toMatchObject({
+        code: unknownStop ? 'CLEANUP_INCOMPLETE' : 'PROVIDER_FAILED',
+      });
+      const calls = await f.calls(),
+        stopped = calls.findIndex((args) => args[0] === 'stop');
+      expect(stopped).toBeGreaterThan(0);
+      expect(calls.slice(stopped + 1).some((args) => args[0] === 'list')).toBe(
+        true,
+      );
+      expect(f.h.mounts.size).toBe(unknownStop ? 1 : 0);
+    },
+  );
+  it('原生秒预算向上取整不延长host毫秒预算，取消后join实际CLI再stop/status', async () => {
+    const f = await bootstrapFixture('auth-budget'),
       dshHome = await directory(),
-      nonce = randomUUID();
-    await mkdir(join(dshHome, 'native-web'));
-    const localAuthSample = 'QWxsUmljZU5hdGl2ZVdlYkF1dGhGaXh0dXJlT25seTA';
-    const authenticatedUrl = `http://127.0.0.1:32179/?token=${localAuthSample}`;
-    await writeFile(
-      join(dshHome, 'native-web', `auth-${nonce}.json`),
-      JSON.stringify({ v: 1, nonce, authenticatedUrl }),
-    );
-    const request = {
-      dshHome,
-      nonce,
-      origin: 'http://127.0.0.1:32179/',
-      timeoutMs: 3000,
-    };
-    let read!: NonNullable<PersonVmBootstrapScope['readNativeWebAuth']>;
+      budget = new AbortController(),
+      timeout = AbortSignal.timeout.bind(AbortSignal);
+    // Control the actual host deadline at admission, rather than rely on wall-clock sleeps.
+    const deadline = vi
+      .spyOn(AbortSignal, 'timeout')
+      .mockImplementation((ms) => (ms === 1001 ? budget.signal : timeout(ms)));
     f.h.runtime.start = async (_binding, _signal, scope) => {
-      read = scope.readNativeWebAuth!;
-      expect(await read(request)).toEqual({ authenticatedUrl });
+      await scope.readNativeWebAuth!({
+        dshHome,
+        nonce: randomUUID(),
+        origin: 'http://127.0.0.1:32179/',
+        timeoutMs: 1001,
+      });
     };
-    await f.service.prewarm(f.rc, { trigger: 'page' }, signal());
-    const calls = await f.calls();
-    expect(
-      calls.some(
-        (args) =>
-          args[0] === 'exec' &&
-          !args.includes('--detach') &&
-          args.includes('--timeout'),
-      ),
-    ).toBe(true);
-    expect(JSON.stringify(calls)).not.toContain(localAuthSample);
-    await expect(read(request)).rejects.toMatchObject({ code: 'LEASE_LOST' });
-    expect(await f.calls()).toEqual(calls);
+    const start = f.service.prewarm(f.rc, { trigger: 'page' }, signal());
+    const failure = expect(start).rejects.toMatchObject({
+      code: 'PROVIDER_FAILED',
+    });
+    let pid = 0;
+    try {
+      await vi.waitFor(
+        async () => {
+          pid = Number(
+            await readFile(join(f.mount, 'host-home/auth-reading'), 'utf8'),
+          );
+          expect(pid).toBeGreaterThan(0);
+        },
+        { timeout: 5000 },
+      );
+      expect(deadline).toHaveBeenCalledWith(1001);
+      budget.abort();
+      await failure;
+      expect(() => process.kill(pid, 0)).toThrow();
+      const calls = await f.calls();
+      const reader = calls.find(
+        (args) => args[0] === 'exec' && !args.includes('--detach'),
+      )!;
+      expect(reader[reader.indexOf('--timeout') + 1]).toBe('2s');
+      const stopped = calls.findIndex((args) => args[0] === 'stop');
+      expect(stopped).toBeGreaterThan(0);
+      expect(calls.slice(stopped + 1).some((args) => args[0] === 'list')).toBe(
+        true,
+      );
+      expect(f.h.mounts.size).toBe(0);
+    } finally {
+      budget.abort();
+      await start.catch(() => {});
+    }
   });
   it('service真实启动入口按cp/mode→managed init wait→固定launcher/env，running不重init', async () => {
     const f = await bootstrapFixture();

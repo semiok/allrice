@@ -83,7 +83,16 @@ export async function prepareNativeWebLaunch(
       {
         path: patch,
         contents: JSON.stringify([
-          { id: 'web-runtime', config: { printUrl: false } },
+          {
+            id: 'web-runtime',
+            // rc.2 replaces config as a whole; CLI webStartup values are not merged.
+            config: {
+              openBrowser: false,
+              publicUrl: publicUrl.href,
+              surfaceContext: true,
+              printUrl: false,
+            },
+          },
           {
             insert: [
               {

@@ -14,6 +14,7 @@ COPY packages/file-archives/package.json packages/file-archives/package.json
 COPY packages/skill-import/package.json packages/skill-import/package.json
 COPY packages/project-runtime/package.json packages/project-runtime/package.json
 COPY packages/office-runtime/package.json packages/office-runtime/package.json
+COPY packages/person-vm/package.json packages/person-vm/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/storage/package.json packages/storage/package.json
 COPY patches patches

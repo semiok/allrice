@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { expect, it, vi } from 'vitest';
+import { composeEntries } from '@deepseek-ai/dsh-app-boot';
 import type { PersonVmBootstrapScope } from '@allrice/person-vm';
 import { prepareNativeWebLaunch } from './launch.js';
 import { openNativeWebOwner } from './owner.js';
@@ -48,7 +49,38 @@ it('stage实际native Host插件/patch，独立员工HOME并保原生no-open CLI
   );
   expect(JSON.parse(a.files[1]!.contents)[0]).toEqual({
     id: 'web-runtime',
-    config: { printUrl: false },
+    config: {
+      openBrowser: false,
+      publicUrl: config.publicUrl,
+      surfaceContext: true,
+      printUrl: false,
+    },
+  });
+  // Use rc.2's public boot composition, which replaces the whole config.
+  const composed = composeEntries([
+    [
+      {
+        insert: [
+          {
+            id: 'web-runtime',
+            name: '@deepseek-ai/dsh-web-app',
+            config: {
+              openBrowser: true,
+              publicUrl: 'http://10.0.0.2:8080/',
+              surfaceContext: true,
+              printUrl: true,
+            },
+          },
+        ],
+      },
+    ],
+    JSON.parse(a.files[1]!.contents),
+  ]);
+  expect(composed.find((entry) => entry.id === 'web-runtime')?.config).toEqual({
+    openBrowser: false,
+    publicUrl: config.publicUrl,
+    surfaceContext: true,
+    printUrl: false,
   });
   expect(b.auth.nonce).not.toBe(a.auth.nonce);
   expect(JSON.stringify(a)).not.toContain('?token=');
