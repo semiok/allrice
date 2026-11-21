@@ -15,7 +15,7 @@ import {
  * Reuses the existing publisher input verbatim; no guest filesystem paths. */
 export type PreparedMcpDeliverable = Omit<
   Parameters<typeof publishWorkbenchArtifact>[0],
-  'context' | 'sessionId' | 'callId'
+  'context' | 'sessionId' | 'callId' | 'expectedExecution'
 >;
 
 /** M1 prepared-publication subset of DeliverablesPort.create. Full Office,
@@ -36,6 +36,7 @@ export function createLegacyDeliverablesMcpPort(storage: StoragePort) {
             context: authority.context,
             sessionId: authority.sessionId,
             callId: authority.callId,
+            expectedExecution: { ...authority.worker },
           },
           storage,
         );

@@ -6,6 +6,7 @@ import {
   ErrorCode,
   ListToolsRequestSchema,
   McpError,
+  ToolSchema,
   type CallToolResult,
   type Tool,
 } from '@modelcontextprotocol/sdk/types.js';
@@ -13,14 +14,14 @@ import {
   ApiErrorSchema,
   ExecutionGenerationSchema,
   MemoryOrdinalInputSchema,
-  NativeOfficeExportSchema,
-  OfficePdfExportSchema,
   ReferenceReadInputSchema,
   ReferenceSelectionErrorSchema,
   RequestContextSchema,
   UuidSchema,
   type DeliveryFormat,
   type ExecutionGeneration,
+  type NativeOfficeExportSchema,
+  type OfficePdfExportSchema,
   type ReferenceReadInput,
   type RequestContext,
 } from '@allrice/contracts';
@@ -94,9 +95,17 @@ export interface AllriceMcpServices {
   ): Promise<CallToolResult>;
 }
 
-const deliverySchema = riceToolDefinitions.find(
+const deliverySourceSchema = riceToolDefinitions.find(
   (tool) => tool.name === 'workspace.export.create',
 )!.inputSchema;
+// Preserve the complete wire JSON, including nested oneOf/allOf/defaults and
+// refinements. SDK parsing checks its MCP shape without projecting a subset.
+// This also removes undefined-only implementation properties that have no
+// representation on the wire and reconciles the schema libraries' TS types.
+const deliveryWireSchema: unknown = JSON.parse(
+  JSON.stringify(deliverySourceSchema),
+);
+const deliverySchema = ToolSchema.shape.inputSchema.parse(deliveryWireSchema);
 const validateDelivery =
   new AjvJsonSchemaValidator().getValidator<AllriceMcpDeliverableInput>(
     deliverySchema,
@@ -132,7 +141,7 @@ const tools: Tool[] = [
     name: 'deliverable_create',
     description:
       'Save generated deliverable bytes and return its real version.',
-    inputSchema: deliverySchema as Tool['inputSchema'],
+    inputSchema: deliverySchema,
   },
 ];
 const moduleForTool = {
