@@ -57,6 +57,8 @@ function scope(binding: ApprovalBinding) {
 export function approvalView(record: ApprovalRecord): ApprovalView {
   return clone({
     ref: record.ref,
+    adapterId: record.payload.adapterId,
+    actionLabel: record.payload.actionLabel,
     target: record.payload.target,
     body: record.payload.body,
     attachments: record.payload.attachments.map((file) => ({
@@ -201,11 +203,11 @@ export function createApprovalGateway(options: ApprovalOptions) {
       )
         throw new ApprovalError('LIMIT_EXCEEDED');
       await authority.assertCall(binding, signal);
-      const target = await destination(request.adapterId).resolve(
-        binding,
-        request.target,
-        signal,
-      );
+      const adapter = destination(request.adapterId);
+      const actionLabel = adapter.actionLabel;
+      if (typeof actionLabel !== 'string' || !actionLabel.trim())
+        throw new ApprovalError('INVALID_INPUT');
+      const target = await adapter.resolve(binding, request.target, signal);
       if (!target.id || !target.label) throw new ApprovalError('INVALID_INPUT');
       const attachments: FrozenPayload['attachments'][number][] = [];
       let remaining = policy.maxAttachmentBytes;
@@ -240,6 +242,7 @@ export function createApprovalGateway(options: ApprovalOptions) {
       }
       const payload: FrozenPayload = {
         adapterId: request.adapterId,
+        actionLabel,
         target: clone(target),
         body: request.body,
         attachments,

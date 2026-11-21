@@ -68,6 +68,7 @@ export type FrozenAttachment = Readonly<{
 }>;
 export type FrozenPayload = Readonly<{
   adapterId: string;
+  actionLabel: string;
   target: Readonly<{ id: string; label: string }>;
   body: string;
   attachments: readonly FrozenAttachment[];
@@ -89,6 +90,8 @@ export type ApprovalRecord = Readonly<{
 export type ExternalReceipt = Readonly<{ id: string; digest: string }>;
 export type ApprovalView = Readonly<{
   ref: ApprovalRef;
+  adapterId: string;
+  actionLabel: string;
   target: FrozenPayload['target'];
   body: string;
   attachments: readonly Omit<FrozenAttachment, 'base64'>[];
@@ -161,6 +164,8 @@ export interface ApprovalResourceOwner {
   ): Promise<void>;
 }
 export interface ApprovalDestination {
+  /** Trusted description of the registered operation shown to the human. */
+  readonly actionLabel: string;
   resolve(
     binding: ApprovalBinding,
     selector: string,

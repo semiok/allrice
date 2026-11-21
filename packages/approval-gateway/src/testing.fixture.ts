@@ -160,6 +160,7 @@ export function fixture(store: ApprovalStore = memoryStore()) {
     },
     destinations: {
       inbox: {
+        actionLabel: '发送到合成接收器',
         resolve: async () => ({ id: 'synthetic:inbox', label: '合成接收器' }),
         assertCurrent: check,
         dispatch: async (
