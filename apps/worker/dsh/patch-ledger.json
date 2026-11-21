@@ -7,7 +7,7 @@
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
       "path": "packages/database/src/d-entry-admission.ts",
-      "reason": "Shared Web/Worker host-injected consumer of the public c041 person VM admission boundary. Preserve original native call identity and current SaaS authority; fulfil business outcomes only after the actual owner joins all children. Unknown acquisition/close rejects; always finally finish and retain the original error chain. The reviewed producer is upstream; this tree carries public contracts only and does not construct a host, SQL authority, VM or Agent lifecycle. Full execution owner, per-request transports and physical fence remain unbound."
+      "reason": "Shared Web/Worker host-injected consumer of the public c041 person VM admission boundary. Preserve original native call identity and current SaaS authority; fulfil business outcomes only after the actual owner joins all children. Unknown acquisition/close rejects; always finally finish and retain the original error chain. Fixed n3 supplies the reviewed producer; entry consumes its public boundary and does not construct a host, SQL authority, VM or Agent lifecycle. Full execution owner, per-request transports and physical fence remain unbound."
     },
     {
       "id": "allrice-d-entry-native-root-v1",
@@ -24,6 +24,14 @@
       "kind": "protocol-extension",
       "path": "apps/worker/src/d-entry/native-invocation.ts",
       "reason": "SaaS current-session/employee/release and immutable thread-root guard on existing Web/Worker listeners. Reuse public rc.2 generated Remote strict codecs and Mux frame parsers, with an explicit source-verified endpoint/effect map. Each logical stream is authorized; child browser writes, unclassified global/plugin methods and arbitrary uplink are denied. Harmless late cancel/end tails follow native Mux semantics. Transactional PG authority notifications trigger current SQL rechecks after subscribe-before-recheck; real session expiry or notification disconnect aborts idle I/O and joins pending checks. Native authentication and actual joined-close handles must be injected by their trusted owner; discovery controlReady never grants editor/send readiness. No new listener, provider, identity authority, VM table or Agent state machine."
+    },
+    {
+      "id": "allrice-host-model-gateway-v1",
+      "issue": "MET-268",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "packages/model-gateway/src/index.ts",
+      "reason": "Opt-in host gateway uses public LlmAdapter, prepared native calls and StreamChunk vocabulary. SaaS owns current person/VM epoch/native-call authority, per-HTTP model/refresh receipts and global per-person eight-stream leases. Provider credentials remain in the existing host loader, absent wire usage stays unknown and reconnect never replays a call. No native loop, agent state machine, account router, pricing or automatic 4.0 activation."
     },
     {
       "id": "allrice-reference-read-v1",

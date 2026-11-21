@@ -247,7 +247,7 @@ describe('immutable CI material capture and final production inventory', () => {
       );
       expect(repositoryGitTree(archive)).toBe(git('rev-parse', 'HEAD^{tree}'));
       const script = resolve('scripts/acceptance/platform/repository-ci.mjs');
-      const run = (mode: 'capture' | 'finish') =>
+      const run = (mode: 'capture' | 'finish', eventName = 'pull_request') =>
         execFileSync(
           process.execPath,
           [
@@ -266,7 +266,7 @@ describe('immutable CI material capture and final production inventory', () => {
               GITHUB_RUN_ID: '123',
               GITHUB_RUN_ATTEMPT: '2',
               GITHUB_JOB: 'validate',
-              GITHUB_EVENT_NAME: 'pull_request',
+              GITHUB_EVENT_NAME: eventName,
               GITHUB_EVENT_PATH: join(root, 'event.json'),
               RUNNER_OS: 'Linux',
               RUNNER_ARCH: 'X64',
@@ -307,6 +307,27 @@ describe('immutable CI material capture and final production inventory', () => {
         build: { packages: [{ name: '@allrice/contracts', fileCount: 1 }] },
       });
       rmSync(join(root, 'receipt.json'));
+      for (const eventName of ['push', 'schedule']) {
+        file('event.json', '{}');
+        run('finish', eventName);
+        const observation = JSON.parse(
+          readFileSync(join(root, 'receipt.json'), 'utf8'),
+        );
+        expect(observation).toMatchObject({
+          scope:
+            eventName === 'schedule'
+              ? 'allrice.repository-nightly-ci.v1'
+              : 'allrice.repository-ci.v1',
+          event: eventName,
+          checkoutSha: sha,
+          headSha: null,
+          baseSha: null,
+        });
+        expect(RepositoryCiReceiptSchema.safeParse(observation).success).toBe(
+          eventName === 'push',
+        );
+        rmSync(join(root, 'receipt.json'));
+      }
       file('package.json', JSON.stringify({ scripts: { build: 'different' } }));
       expect(() => run('finish')).toThrow();
     } finally {

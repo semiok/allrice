@@ -19,7 +19,9 @@ prepare/assertActive/revoke 均 host-only，不是可让模型调用的工具。
 
 v0.7.16 的 `start` 不接受网络覆盖参数，因此 MET-269 必须为每个 vmId 保留同一组 gatewayPorts；首次 native create 后把端口固定在存储回执，后续 prepare 若改端口即拒绝。绑定资格与 epoch 每次更新，不能用固定端口当身份。原生 idle-timeout 不启用（detached job 可能不重置原生 idle），20 分钟策略只由 host 依据活动事实执行。
 
-MET-268/MET-271 只调用 host-only `resolve(RequestContext, signal)` 与 `assertCurrentBinding(RequestContext, binding, signal)`。两者重新核本人/企业现权、运行阶段、精确 instance/epoch 与出口活性；不返回 ownerToken、不暴露内部表。RequestContext 必须来自各自可信会话/受管连接，不能由 guest header 或 JSON 反序列化生成。resolve 是本次快照，各次实际请求仍须 assert；启动/停止/接管中的租约不发新路由。
+普通路由的 MET-268/MET-271 调用 host-only `resolve(RequestContext, signal)` 与 `assertCurrentBinding(RequestContext, binding, signal)`。两者重新核本人/企业现权、运行阶段、精确 instance/epoch 与出口活性；不返回 ownerToken、不暴露内部表。RequestContext 必须来自各自可信会话/受管连接，不能由 guest header 或 JSON 反序列化生成。resolve 是本次快照，各次实际请求仍须 assert；启动/停止/接管中的租约不发新路由。
+
+正式共享 admission 路径另消费根出口 `PersonVmAdmissionBindingPort.assertAdmissionBinding(context, binding, signal)`，由同一个 `PersonVmService` 提供；未创建 shared host 即拒绝，不接另一 factory/DB 的权威。此口只核当前 user/企业、完整五字段、shared revoked 与内部 exact egress receipt，不公开 receipt/capability/ownerToken，不判断 ready 或授 dispatch 权。正常 freeze/physical lease 不构成资格错误；后续实际工作仍必须在同一 shared boundary 的 admit/queued/activate/finish 内，starting/stop/epoch/recovery 保证不变。egress.assertActive 只核本地 exact receipt，不能反调 VM 校验形成递归。
 
 可信宿主调度另用`PersonVmHostPort`：`reconcileIdle`、`recoverExpired`、`acquireHold`/`releaseHold`。hold参数只有明确kind/operationId及已解析binding，返回host-only holdId；每次现权与epoch复核，不暴露guest工具。原生活动探针在同一可信调用链重入binding校验时，用AsyncLocalStorage中该请求的租约guard，不误判为外部worker；其他请求仍拒绝开停期间的新路由。出口provider的assertActive只核自己拥有的binding回执，不反向递归调用VM的assertCurrentBinding。
 
@@ -58,3 +60,13 @@ postgres.js 3.4.9的`release()`无条件把reserved连接标回可用，FATAL关
 真实前置：固定 v0.7.16 二进制与其公共配置、宿主加密盘密钥托管、MET-269 出口、DSH 装配与活动/就绪公开接缝、MET-271 身份/BFF 页面绑定。未绑定这些前置时不得报可交付或迁入完成。样机证据只作实现参照，不替代产品验收。
 
 故障依据为domain错误、开停/删盘audit、持久phase/租约和真实native/hdiutil检查；`CLEANUP_INCOMPLETE`或未知物理状态不能冒称已释放。自动巡检/告警尚未接入，交主会话在MET-222登记VM失败/残租约/残挂载监测项。运行时装配仍需证明员工/工作区绑定后的实际编辑器可发送，本卡没有用协议fixture替代该证据。
+
+## n2-A starting owner / native bootstrap kernel
+
+`PersonVmRuntimePort.memoryGuestPlan(binding, signal)` 必须注入 MET267 公开 `VmMemoryGuestPlan`（当前候选 `fbbc52163f82e2e201e2d6bfe835e709f3f2abc2`）的实际工件，不能从 guest 请求选策略。`PersonVmMemoryGuestPlan` 只作结构投影，没有复制内存策略。缺该函数或 native bootstrap，在出口/挂盘/原生 create 前拒绝。`MicrosandboxPersonVm.bootstrap` 实际用公开 managed exec 创建父目录、私有临时 stage + `cp` 保留 mode、detached node initializer + exact `wait --job --format json`；initializer exit0 且非 timed-out 后才进入 runtime.start。临时 stage 位于本次加密挂载内的0700 host-home，用完清除，不暴露其路径。原生 CLI/source 固定 v0.7.16 `0fefb8f2fed3da964819afd222227dc1c5b0e78f`，cp 会 resolve/start，必须只在真实 starting owner 内调用。
+
+`start(binding, signal, scope)` 的第三参 `PersonVmBootstrapScope` 为 host callback 能力：仅含 frozen binding、startup signal、`assertCurrent()`、`launch(command)`。assertCurrent 直接核本次 active lease frame、真实 PG guard/现权、starting/full instance+epoch、admission 及精确 egress receipt，不调用只支持 running 的 resolve、不泄露 ownerToken/key/host盘。callback settle 后 scope 立即禁止新操作，abort 并 join 已发起的 scope 调用，持物理租约到实际收尾；回调返回不能把未 await 的原生 launch 留给释放器。启动 callback 必须等实际 startup/control 操作 join，并将长生 native job 交给真实 runtime owner；startup signal 返回即失效，不能用作 DSH 的长期信号。ready 前后仍重核同一 starting owner。
+
+`scope.launch({executable,args,env?,workdir?})` 只能在 person init 成功后调用，执行固定 `plan.launcher <native executable> ...argv`，env 合并固定 plan.env，冲突拒绝。返回 `PersonVmManagedJob{binding,jobId,wait(signal),cancelAndWait(signal)}`；wait 返回 `{exitCode,timedOut}`。handle 精确绑定 sandbox/job，可由 native owner 持有以完成读取/取消，不能启动新命令；其 cleanup 不依赖已撤销本人的普通权限。公开 native wait 先输出 JobExit JSON 再以 guest code 退出，所以仅该内部调用允许读取正常非零 CLI 退出的 stdout，严格核 code/success/timed_out；spawn、abort、signal、超限或无合法 JSON 都不算 join。cancelAndWait 即 exact kill + wait，kill 失败仍试 wait，CLI 被杀或 wait 超时本身不证明 guest 完成。host 应给 start/prewarm 传入覆盖启动预算的 AbortSignal；原生 wait 的超时不杀 job，本适配以该信号取消等待再执行 kill+wait，不声称已设置原生 job deadline。`jobCleanupTimeoutMs` 为 host 可信配置（默认10000ms），独立于已取消 startup signal；未知 job ID/通信/完成状态走现有 revoke→native stop/status，仅确认停止才 detach，不能扫描猜 id、重放 initializer 或报告 ready。
+
+同一 running start 入口只重核 readiness，**不重跑 person init**。MET273 运行中新员工须由真实 running owner 继续用已安装 launcher/env，不可复用过期 starting scope 或重配活跃 cgroup。本 kernel 不建立 DSH 控制通道/guest header 身份；273 必须实际装配 native owner、认证 editor/send ready、独立员工 homes/配置/会话与所有 launcher。未装配时不得返回 ready。此片不证明 MET26702 镜像内没有抢跑 producer、04 exact-child/OOM、实际2G运行读回、n2-B全 producer/20min 或组织撤权；真实联验另排，协议 fixture 不作产品启动验收。

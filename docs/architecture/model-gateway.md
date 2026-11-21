@@ -1,0 +1,137 @@
+# 宿主模型网关 v1（MET-268 / M1-04）
+
+离当前目标还差什么：本片提供可装配宿主包、实际HTTP计量和持久准入。还需当前身份/受管VM入口/原生会话树owner、真实subscription loader的SSE配置与出口接线、账号/后台消费、隔离PG验证和批次独立复核；真实VM/模型与Dev验收尚未执行。没有开启4.0或改变3.x运行入口。
+
+本片仅记录每次实际上游请求的原始tokens、成功/失败/未知事实及人/员工/会话归属；不含价格表、金额、财务对账、账单或收费依据，未来M4另做。`reconcileOwner`仅凭可信死transport事实恢复占位，不是财务对账。
+
+## 版本、公开出口与五面
+
+moduleId=`host-model-gateway`；owner=MET-268；contractVersion=`MODEL_GATEWAY_CONTRACT_VERSION=1`，包0.1.0。producer/consumer仅支持v1；HTTP header版本不符拒绝，不声称支持未来schema。DSH单代`0.2.1-rc.2`，源码commit`687f282e8625c6b8d11ff58211a90524be2e4317`（`apps/worker/dsh/distribution.json`），Node22.23.2。此服务不是EmployeeModuleRelease，使用宿主gatewayRelease/employeeRelease精确pin。
+
+公开根入口`@allrice/model-gateway`，无deep exports。初版出口sourceAtSha=`9934c160951ac493c22e87be51fce09f5122f344`，符号清单位于`packages/model-gateway/src/index.ts`，具名合同位于`src/contract.ts`，方法分别在`src/gateway.ts`、`src/dsh-provider.ts`、`src/postgres-store.ts`、`src/transport.ts`（原生关闭观察位于内部`src/native-close.ts`，无新增公开出口）。后续公开方法增量以下文为准；每个方法与下列具名type一一对应，JSON检查器不建立信任。
+
+| 允许符号                                                                                                 | 用途/来源                                                                             |
+| -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| `MODEL_GATEWAY_CONTRACT_VERSION`, `MODEL_STREAMS_PER_PERSON`                                             | v1和用户决定每人8路                                                                   |
+| `ModelCallBinding`, `ModelGatewayAuthority`                                                              | host-only当前身份/VM epoch/native root-child/Run/call/release合同                     |
+| `GatewayModelInput`, `GatewayProvider`, `GatewayFetchClassification`                                     | DSH GenerateOptions消息/工具/生成控制项的薄projection；host provider/HTTP分类         |
+| `ModelAttemptStart`, `ModelAttemptReceipt`, `ModelUsage`                                                 | 持久意图和独立上游事实；缺失tokens/status/terminal为null                              |
+| `ModelGatewayStore`, `CapacitySubscription`                                                              | owner构造/存储端口，其他业务模块不得绕过授权端口使用其read/reconcile方法              |
+| `UsageLedgerPort`, `ModelGatewayPort`, `ModelGatewayError`, `ModelGatewayErrorCode`                      | 对外服务合同与具名错误；不扩ApiError.details                                          |
+| `createModelGateway`, `createDshGatewayProvider`, `GatewayLlmAdapter`, `createPostgresModelGatewayStore` | 可信宿主装配、现有native loader注入、guest公开原生LLM adapter、owner PG后端           |
+| `withGatewayAuthTransaction`                                                                             | 现有凭据owner的完整modify/modifyRecord事务Promise追踪；不接收凭据、不实现刷新或持久化 |
+
+| 面                         | 当前实现与未接边界                                                                                                                                     |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 后端/私有数据              | present：网关、UsageLedgerPort和三表owner，表不向其他模块开放                                                                                          |
+| MCP                        | none：模型/计费管理不是员工工具；本片只接原生LLM provider                                                                                              |
+| 员工右栏/主区              | 既有账号用量入口是present需求；本片未接UI，后续经可信BFF消费UsageLedgerPort，不新增业务tab，不等同计费完整迁入                                         |
+| 后台                       | 既有用量/计费/诊断面是present需求；本片无UI实现/授权。当前port只查询本人当前企业原始用量，跨本人后台查询须另由现权owner公开口接线                      |
+| 权限/企业员工开关/资料级别 | present：当前身份+员工/VM/native call资格由authority核验；开关/名单沿已批发布配置。本片无新默认env；模型不得自启。资料级none（计量运维事实不授资料权） |
+
+## 精确依赖及schema映射
+
+- `@allrice/contracts#RequestContext`/`RequestContextSchema`与`ExecutionContext`：sourceAtSha=`6bf356b5a8e3ce2b72a20fd825e5e2ec77dd7190`，`packages/contracts/src/authorization.ts`。本包只取ExecutionContext的runId/executionId关联，不创建Run/Job或把policySnapshot当当前权限。
+- `@allrice/contracts#RuntimeRunUsage`：同SHA，`packages/contracts/src/runtime-run-usage.ts`。输出input含cache、cache是input子集；null不是0、usageComplete/cacheUsageKnown及真实attempt/receipt计数沿既有type，不谎称已有Zod schema。
+- `@allrice/person-vm#PersonVmBinding`：sourceAtSha=`34c6589bcfbb0283a886da2759277424718d6047`，`packages/person-vm/src/contract.ts`。精确vmId/personId/org/instanceId/leaseEpoch；本包不读其表、不管理VM生命周期。
+- `@deepseek-ai/dsh-llm#LlmRuntime.prepareCall`, `LlmAdapter`, `GenerateOptions`, `StreamChunk`, `LlmError`：上述固定代际公开根出口。消息/工具/增量保持原生type。GatewayModelInput明确排除guest的provider/model/sessionId/signal；身份不是body DTO。
+
+owner数据：`allrice_model_gateway_calls`仅不可变可信调用claim和请求digest；`allrice_model_gateway_attempts`仅逐HTTP intent/receipt/usage；`allrice_model_gateway_slots`仅全局person的1..8格租约。其他模块只调授权后的公开服务，不跨表联查。unknown关闭的receipt仍保存已观察httpStatus/terminal/usage并保留slot；closed_at仅是回执封存时间，不证明transport停止。已有raw receipt/closed_at不可改；reconcileOwner仅可补一次非空可信死transport旁证并释放精确slot。无secret/header/原始prompt/response字节持久化；binding中身份/权限快照是host审计关联，不能替代调用时现权。
+
+现有runtime-ledger需要RuntimeRoot/ExecutionTarget/Bridge operation及预算状态，不表达原始HTTP retry/refresh或跨Run每人流数；旧llm/stream账本是native聚合且provider可能合成0。本片的host attempt只提供4.0实际上游原始计量事实；UsageLedgerPort单向投影RuntimeRunUsage，不提供收费依据。未接价格/金额/财务对账/结算，旧3.x原始账本未修改。
+
+## 方法、权限、取消和恢复
+
+| 公开方法                                              | 输入/结果/错误及真实保证                                                                                                                                                                                                                                                                                                      |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ModelGatewayPort.handle(req,res,binding,signal)`     | 可信host route参数传ModelCallBinding；业务JSON为GatewayModelInput。返回v1 StreamChunk NDJSON。ModelGatewayError或原生LlmFailure；guest header/body不参与绑定。入口、每次新fetch/排队后/返回chunk前复核当前authority                                                                                                           |
+| `ModelGatewayPort.revoke(binding)`                    | 精确PersonVmBinding；拒绝新准入，主动abort当前/排队请求，等待实际owned drain。旧epoch延迟撤销不作用新epoch；不能把whenIdle当cancel                                                                                                                                                                                            |
+| `ModelGatewayPort.close()`                            | 停新准入、取消模型并等待本实例请求/provider iterator及已开始原生凭据事务持久化收尾，才归还自己fetch hook；不停止别人gateway/VM/服务                                                                                                                                                                                           |
+| `ModelGatewayPort.reconcileOwner(ctx,ownerId,signal)` | authority先认证当前操作者并取得该精确宿主死进程/全部transport已停止的独立evidenceRef，才可记unknown并释放owner精确slots；guest header/receipt、超时或心跳缺失无效                                                                                                                                                             |
+| `UsageLedgerPort.summarize(ctx,signal)`               | authority核当前本人和企业，再输出RuntimeRunUsage。没有guest personId选择器，没有写账/价格/额度接口                                                                                                                                                                                                                            |
+| `createDshGatewayProvider(llm,route)`                 | 现有subscription loader已初始化的LlmRuntime；prepareCall固定adapter代际。route必须是同provider/model与SSE，`classify`固定host model/refresh endpoints；未分类外发拒绝。凭据owner必须用withGatewayAuthTransaction包住完整原生modify/modifyRecord和持久化Promise，漏接refresh在外发前拒绝。生产API实现注入同GatewayProvider合同 |
+| `withGatewayAuthTransaction(operation)`               | 仅在现有宿主凭据owner公开modify/modifyRecord外围追踪完整Promise；刷新开始后保留原生独立15秒signal及锁内落盘。不能只包网络fetch，也不能把模型signal重新传给refresh                                                                                                                                                             |
+| `GatewayLlmAdapter.stream(options)`                   | guest公开DSH端口，只把原生消息/工具/控制项送受管host endpoint；不持上游凭据、不增加retry/reconnect/账户路由，native signal传实际HTTP                                                                                                                                                                                          |
+
+`new GatewayLlmAdapter(endpoint, egressCapability?)` 显式消费同一 VM/epoch 投送的
+`GuestEgressAccess`：宿主装配从 `access.origin` 拼固定 `/v1/stream` endpoint，
+把 `access.capability` 作为第二参数。非 undefined 时只加本地 Bearer 头；未传不加，
+空值/错值交既有出口拒绝，不读环境变量、不刷新或隐式补值。本地资格不是上游模型
+secret，也不授 person/tenant/native-call 权限；不进入 URL、业务 body 或账本。
+固定 contract/content-type、native signal 和 redirect:error 保留。managed model
+只有 model gateway 持 permit；出口只核资格，当前 Host/epoch/现权/撤权门卫仍须生效。
+本参数不代表真实 guest 配置投送或完整生产 assertCall 身份装配已经完成。
+
+ModelCallBinding每次调用必有current RequestContext、PersonVmBinding、员工实例/release、allriceThreadRef、native instance/profile/session/root/parent/call、run/execution、executionGeneration、gatewayRelease和host provider/model。root parent必须null，child必须有parent/root映射；实际谱系/归属由authority从当前host/原生descriptor事实核验，字符串形状不是信任。workspaceId沿原RequestContext可null。ownerId每个真实宿主进程/transport owner独立产生，重启不能复用旧ownerId冒领恢复。
+
+原生VM侧call选择器仍需可信入口/原生事实owner绑定，不能仅凭guest自报相同call字符串生成此binding。本片不提供能把任意JSON提升为可信context的构造器。登录/会员/VM实例等依赖不可用时拒绝，不跨读其表维持表面成功。
+
+`GatewayProvider`的受管模型/刷新endpoint须接受一次性请求体；固定原生模型与刷新均为POST。GET/HEAD的null body允许内建Fetch隐藏421重发，故以`UNSUPPORTED_UPSTREAM`在dispatch/intent前拒绝；需要这类endpoint的未来provider须先提供可逐次计量的公开transport接缝。独立SDK fetch重试仍逐次准入和记账。
+
+## 实际HTTP、8路与未知
+
+每个实际上游fetch在其完整不可变async scope中执行，包含prepare与iterator.next/return，父/子调用沿各自可信绑定。classifier不从模型消息选账户。model和auth-refresh分别落attempt；8格只约束活跃模型流，按全局personId跨org/gateway共享。先LISTEN再原子重查；PG NOTIFY重连也唤醒重查，无任意轮询/TTL/队列上限或新增产品超时。每个调用方持有的PG pool仅一个长期LISTEN fan-out，waiter关闭立即删除本地person订阅；postgres 3.4.9重连替换listener对象时不再依赖失效的旧unlisten。首次LISTEN拒绝时driver仍持有callback，故保留同一pool owner；仅当前waiter失败，后续waiter可取消或等待原生onlisten恢复，不再注册第二个owner。该监听随pool.end释放，由pool owner在所有使用者收尾后负责关闭。
+
+每人事务advisory锁保护slot领取和intent写入。intent提交后才调用fetch；DB故障发前fail closed。DB与网络无法原子，所以intent不证明上游收到/收费；崩溃未闭记录保留dispatchObserved=null/usage=null。请求失败也有独立回执，不把最终provider usage复制给所有HTTP retry。auth-refresh无模型usage，不推断余额。已开始原生刷新属于同一原call/person的独立auth attempt；模型取消、撤权、close不打断原生刷新独立超时及锁内凭据保存。close/drain同时等待HTTP回执与完整owner事务Promise；刷新后已取消模型仍被准入拒绝。
+
+fetch明确`redirect:manual`，拒绝隐藏重定向。准入及intent提交后才构造公开Request，保持其headers/原始规范化body字节，取Request.body作为一次性stream并设置duplex=half（空POST也传空stream）；不读/tee/复制body或实现SDK retry。Node22.23.2内建Undici6.28.0不能以此body隐藏421重发，首个421如实落失败账，后续显式SDK fetch另记attempt。wire observer跟随consumer pull，不tee、不全量缓冲响应，逐行/事件计量捕获各最多65,536字符；超过观察范围仍原字节流过，usage未知，不改变请求/输出容量。chat必须finish_reason和[DONE]；Responses必须明确terminal；仅原生max-tokens且wire明确incomplete/status=incomplete/reason=max_output_tokens时保留合法截断结果，回执仍记incomplete。Codex response.done按明确status识别；content_filter、failed或缺终帧保持失败。provider最后的usage不作为原始请求计量，合成0不转为已知数。公开LlmFailure的offloadImages结构化恢复事实继续透传，让原生图片卸载插件执行记录和retry。
+
+slot在reader EOF、成功awaited cancel，或原生实际请求关闭被确认后，仍须receipt提交成功才释放。原生SDK异常退出会先abort再清reader，cancel拒绝本身不能推导未关闭。Node22.23.2内建Undici6.28.0的公开diagnostics_channel以request对象关联实际socket close/完整response trailers；不读headers，不把abort/error通知当关闭旁证。真正无法确认关闭时封存已知wire事实为outcome=unknown、保留slot，只有可信死transport恢复可释放；DB提交失败同样保留slot。不因时间流逝或进程心跳消失而提前释放。原生pi-ai在解析terminal后会关闭私有consumer信号，此正常close和真实host/client/revoke取消分开；在持久原始terminal与native成功finish均成立前不输出成功finish。取消不撤销已发生费用/副作用。
+
+重连同一(vm/instance/epoch/native instance/session/call)命中持久claim则409，不自动重放、重建native线程或迁到3.x。恢复集合包含三表、host owner/transport停止旁证、VM epoch/原生映射/员工和gateway release；恢复旧盘/账本不能使旧claim和效果丢失重收。
+
+## 验证和未接事项
+
+### 每人准入冻结接线（MET-268 增量）
+
+`createModelGateway` 现在必须由可信宿主注入 `ModelGatewayAdmission`；
+`boundary` 与 `participant` 必须来自同一 `PersonVmService.createAdmissionHost({openSql})`，
+后者为 `host.participant('gateway')`。公开方法 `ModelGatewayPort.admission`
+直接返回该 participant，沿原 `observe/subscribe/freeze/assertFrozen/thaw` 合同，
+不在 gateway 建立第二份 gate、ACK、连续计数、permit 表或迁移。
+实例装配仍由模型 host owner 完成，本分支只搬运公开合同，不复制其 PG 实现。
+
+新增依赖只从 `@allrice/person-vm` 根出口消费：
+`PersonVmAdmissionBoundary/Permit`、`PersonVmAdmissionPort` 及其 lease/observation/subscription。
+合同及 callback/finish 语义 sourceAtSha=`c041d94c6984463c9ff9a068cba0db58ebc91e16`；
+`admission-contract.ts` blob=`9a2ae42938b7dcaa4f15c3a572c602340b190b5e`，
+`admission-boundary.ts` blob=`727c0acfe94250322aa09a19fac78e82969a24ea`，均原字节搬运。
+根 barrel 仅追加这两条 export；0250 及 shared authority/recovery 属模型 owner。
+
+`handle` 在读取业务 body、claim、provider、8slot 或任何刷新工作前 `admit`；
+memory 层尚未叠入本树，未来等待也必须放在该同一 admitted callback 内。
+旧的 8slot 等待保持 queued，首个 model intent 获得 slot 后、实际 dispatch 前激活；
+若先进入凭据刷新，则在真实完整 `modify/modifyRecord` 事务开始前激活。
+single activate 与 queued 都拥有同一个真实整请求 Promise，包括 iterator return、
+实际响应关闭、所有 auth transport 与锁内保存；不是用永不完成 Promise 模拟运行。
+原生 refresh 已开始后保留其独立 signal，关闭仍等待完整保存，不能派发后续模型请求。
+
+freeze 后的新请求只在 `waitUntilReady` 中可取消等待，不启动 provider/claim/刷新/上游 HTTP。
+共享 host 负责 exact 旧 lease 双端释放 ACK/权威对账和真 ready；gateway 不把单端 thaw
+或 `superseded` 解释为放行。`waitUntilReady` 的 `PersonVmBinding` 不是完整执行身份。
+当前没有公开 `ModelCallBinding` 重解析出口，即便返回相同 VM 也取消旧执行，返回原生
+NDJSON `finish.reason.kind=aborted`、`EXECUTION_REBIND_REQUIRED`（HTTP 200），不重标旧
+employee/release/Run/thread/native root-parent-call/generation/route，不自动重放。
+正常 frozen 等待本身不返回 503，不新增 retry/轮询/TTL/排队上限。
+
+正常 provider 业务失败在确认实际 join 后作为本地 outcome 返回，再在 finish 后传给调用者。
+receipt 写失败与实际关闭事实分别记录：已经真实关闭仍保留原账本错误/slot，不能据错误码
+伪造活动；reader cancel/fetch 拒绝且没有独立真实关闭确认则保留 unknown wire facts/slot。
+queued/activate 均以 fulfilled 的 consumer 本地 outcome 表示确认实际 join 的业务失败/合作取消，
+在所有 callback 及 finish 之外抛原错；该 outcome 不新增公共 API 或 wire 协议。
+真实 drain/iterator 收尾未知仍拒绝两层 callback，finally 总调用 finish 取消/join 本端资源。
+producer 的 sticky unsafe 在 CLEANUP_INCOMPLETE 后保留 durable permit；首次业务/真实 join
+错误与 cleanup 错误一起保留，不把 finally 失败改成成功。没有跨 owner 未知恢复或完整执行
+重解析的消费装配证据，不能报全链 ready；producer 的测试不能替代本消费者真实接线回归。
+
+五面沿本模块记录：本增量仅 host 后端/当前身份门卫及租约接线；MCP、员工 UI、后台
+均无新增需求，资料级别不适用（运维事实不授数据权）。不改变 DSH Agent/工具/子智能体
+生命周期、instructions/Skill/MCP 目录或收费；MET-225 的 host 门卫/租约差异由主会话登记。
+
+本地单包loopback检查走真实HTTP fake upstream→固定代际原生DSH provider→host gateway HTTP→公开guest adapter：文本/工具增量/工具结果往返、401/429/5xx、无terminal/usage、取消、9路队列/两人隔离、跨gateway同person、guest伪造/child/跨await归属、重连去重、模型重试/刷新独立回执、redirect拒绝、撤权/epoch及ledger失败。原有20项断言保留。R1新增纯合成OAuth原生锁/刷新/落盘HTTP夹具，覆盖client/revoke/close；Responses/Codex合法与失败终止、图片卸载原生插件恢复，以及本地LISTEN fan-out重连所有权。R2恢复严格失败回执/slot断言，真实失败SSE带usage且body保持打开，连续8次确认关闭后第9路正常成功；另有真正关闭未知/DB提交失败反例与初次LISTEN失败残留callback回归。R3保留全部36项并新增原生SDK maxRetries=0的421→下一显式调用200、空刷新POST 421及GET/HEAD拒绝四项；首败原件与40项结果见主会话证据目录FIX-R3-CHECKS.json，本文不替代独立复核。
+
+`postgres-store.integration.test.ts`声明db资源，默认环境不运行；由主会话m5-test执行跨store真实PG8路、NOTIFY/恢复、无TTL、claim幂等、receipt/slot事务回滚与不可变事实，另含真实LISTEN backend断线重连后100次waiter释放和pool终止清理、初次连接失败→恢复/取消、unknown回执保留事实/租约及一次性可信恢复旁证。新增收敛登记须跑直接受影响的既有`dsh-convergence-gate.test.ts`/`.integration.test.ts`，以及既有`route-usage-unknown.integration.test.ts`，保护unknown语义。本片不声称这些检查已通过。
+
+未证：真实host identity/native树owner装配、SSE-only loader固定与MET-269出口阻止直连旁路、真实VM/模型运行、账号/后台消费、整批Astra/门禁、迁移演练、Dev部署/验收。instructions未新增AllRice段，未做装配tokenizer验收。本片不以native parent/child fixture替代真实子会话回归。MET-225行交主会话登记；无Linear写入。
+
+原生关闭旁证参考：[Undici6.28.0公开诊断通道](https://github.com/nodejs/undici/blob/v6.28.0/docs/docs/api/DiagnosticsChannel.md)。依赖未更改；没有事件或关闭证据时不能凭错误名/reader.closed拒绝直接释放。

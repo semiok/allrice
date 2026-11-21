@@ -77,7 +77,7 @@ admission事务使用NEW exclusive max1连接上的guarded BEGIN/各SQL步骤/CO
 
 ## 活动、排队与连续窗口
 
-gateway 的 active 包含已准入 model fetch、refresh transaction/transport 及其真正收尾；queued 包含已进入 host 的 memory admission、每人 8 路、容量等等待。refresh 不计 charge 不能证明没有 activity；账本 terminal 也不能替代实际 transport/持久化 transaction 已 settled。入口 active 包含已准入连接、typing、prewarm；不得用“无 turn”推断没有这些 host 活动。
+gateway 的 active 包含已准入 model fetch、refresh transaction/transport、受管只读出口 I/O 及 HTTP 交付/真正收尾；queued 包含已进入 host 的 memory admission、每人 8 路、容量等等待。同一个实际操作只能有一个 permit owner：受管模型由 model gateway 持有/finish，只读 HTTP 请求由 egress 持有到后验与真实交付/收尾，不能双 claim 或只做资格校验。refresh 不计 charge 不能证明没有 activity；账本 terminal 也不能替代实际 transport/持久化 transaction 已 settled。入口 active 包含已准入连接、typing、prewarm；不得用“无 turn”推断没有这些 host 活动。
 
 freeze 在线性化点之前已准入的 queued 保持 queued，不能改记 deferred。冻结后新到达者只进 deferred，尚未创建 native work/transport；它们保留请求身份、取消和等待责任，但不当作已准入活动重置 idleSince。新连接在门卫外等待时也属于 deferred，不能误记已准入 active connection 导致自锁。source revision 仍记录 deferred 变化，供重新读取与 wake 发现，不丢请求。
 
