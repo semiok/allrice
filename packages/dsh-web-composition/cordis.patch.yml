@@ -1,0 +1,15 @@
+- insert:
+    - id: allrice-web-composition
+      name: '@allrice/dsh-web-composition'
+- id: ui-trajectory
+  disabled: true
+- id: open-in-app
+  disabled: true
+- id: ui-open-in-app
+  disabled: true
+- id: locale
+  config:
+    preference: zh
+- id: ui-chat
+  config:
+    performanceUsage: compact
