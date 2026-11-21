@@ -24,6 +24,7 @@ import type { PersonVmNativeActivityPort } from './admission-contract.ts';
 import type { PersonVmSqlFactory } from './store.ts';
 import type { PersonVmDiskPort } from './encrypted-disk.ts';
 import type { PersonVmNativePort } from './microsandbox.ts';
+import { bootstrapPersonVm } from './guest-bootstrap.ts';
 import {
   bindingOf,
   PostgresPersonVmStore,
@@ -408,6 +409,11 @@ export class PersonVmService implements PersonVmHostPort {
     const row = this.required(lease.row);
     if (!this.options.egress) throw new PersonVmError('EGRESS_UNAVAILABLE');
     if (!this.options.runtime) throw new PersonVmError('RUNTIME_NOT_READY');
+    if (
+      typeof this.options.runtime.memoryGuestPlan !== 'function' ||
+      typeof this.options.native.bootstrap !== 'function'
+    )
+      throw new PersonVmError('RUNTIME_NOT_READY');
     if (row.phase === 'running') {
       await this.mounted(row, signal, lease);
       await this.ready(row, signal);
@@ -476,8 +482,33 @@ export class PersonVmService implements PersonVmHostPort {
         await this.options.native.start(binding, signal);
       else throw new PersonVmError('PROVIDER_FAILED');
       await lease.guard();
-      await this.options.runtime.start(binding, signal);
+      const frame = this.currentLease.getStore();
+      const assertStarting = async () => {
+        if (!frame?.active || frame.lease !== lease)
+          throw new PersonVmError('LEASE_LOST');
+        await lease.guard();
+        const identity = await this.identity(context, 'start', signal);
+        if (
+          identity.personId !== binding.personId ||
+          identity.organizationId !== binding.organizationId
+        )
+          throw new PersonVmError('AUTHORIZATION_DENIED');
+        if (row.phase !== 'starting' || !sameVmBinding(bindingOf(row), binding))
+          throw new PersonVmError('LEASE_LOST');
+        await lease.assertAdmissionOpen(true);
+        await this.options.egress!.assertActive(receipt, signal);
+        await lease.guard();
+      };
+      await bootstrapPersonVm({
+        binding,
+        signal,
+        native: this.options.native,
+        runtime: this.options.runtime,
+        assertCurrent: assertStarting,
+      });
+      await assertStarting();
       await this.ready(row, signal);
+      await assertStarting();
       row.phase = 'running';
       await lease.save(row);
       await lease.audit(row, {

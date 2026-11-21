@@ -1,4 +1,8 @@
 import type { RequestContext } from '@allrice/contracts';
+import type {
+  PersonVmBootstrapScope,
+  PersonVmMemoryGuestPlan,
+} from './guest-bootstrap.ts';
 
 export const PERSON_VM_CONTRACT_VERSION = 1 as const;
 export const PERSON_VM_MEMORY_MIB = 2048 as const;
@@ -68,8 +72,19 @@ export type PersonVmActivity = Readonly<{
 }>;
 
 export interface PersonVmRuntimePort {
-  /** DSH startup/configuration stays with the native runtime owner. */
-  start(binding: PersonVmBinding, signal: AbortSignal): Promise<void>;
+  /** Trusted MET267 guest plan injection, never a guest-selected policy. */
+  memoryGuestPlan(
+    binding: PersonVmBinding,
+    signal: AbortSignal,
+  ): Promise<PersonVmMemoryGuestPlan>;
+  /** DSH startup/configuration stays with the native runtime owner. Fulfil only
+   * after startup/control operations join and live native jobs have that owner.
+   * The callback-scoped signal expires on return; it is not a DSH lifetime signal. */
+  start(
+    binding: PersonVmBinding,
+    signal: AbortSignal,
+    scope: PersonVmBootstrapScope,
+  ): Promise<void>;
   activity(
     binding: PersonVmBinding,
     signal: AbortSignal,

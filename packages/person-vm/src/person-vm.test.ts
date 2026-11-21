@@ -7,6 +7,7 @@ import {
 } from './contract.ts';
 import { PersonVmService } from './person-vm.ts';
 import { MicrosandboxPersonVm } from './microsandbox.ts';
+import type { PersonVmBootstrapScope } from './guest-bootstrap.ts';
 import {
   context,
   harness,
@@ -17,6 +18,109 @@ import {
 } from './test-support.ts';
 
 describe('host lifecycle service entrypoints (synthetic runtime; not real VM acceptance)', () => {
+  it('starting scope核现权/出口；callback完结后失效，running重复入口不重init', async () => {
+    const h = harness(),
+      rc = context();
+    let scope!: PersonVmBootstrapScope;
+    h.runtime.start = async (_binding, _signal, current) => {
+      scope = current;
+      expect(h.log.indexOf('native:bootstrap')).toBeGreaterThan(
+        h.log.indexOf('native:create'),
+      );
+      await scope.assertCurrent();
+      h.authorize(false);
+      await expect(scope.assertCurrent()).rejects.toMatchObject({
+        code: 'AUTHORIZATION_DENIED',
+      });
+      h.authorize(true);
+      h.active.clear();
+      await expect(scope.assertCurrent()).rejects.toMatchObject({
+        code: 'EGRESS_UNAVAILABLE',
+      });
+      // Restore the exact current receipt, not a second binding.
+      const row = await h.store.read(rc.actor.id);
+      h.active.add(row!.egressReceipt!.bindingId);
+    };
+    await h.service.prewarm(rc, { trigger: 'page' }, signal());
+    expect(Object.keys(scope).sort()).toEqual([
+      'assertCurrent',
+      'binding',
+      'launch',
+      'signal',
+    ]);
+    expect(Object.keys(scope.binding).sort()).toEqual([
+      'instanceId',
+      'leaseEpoch',
+      'organizationId',
+      'personId',
+      'vmId',
+    ]);
+    expect(scope.signal.aborted).toBe(true);
+    await expect(scope.assertCurrent()).rejects.toMatchObject({
+      code: 'LEASE_LOST',
+    });
+    await expect(
+      scope.launch({ executable: 'node', args: [] }),
+    ).rejects.toMatchObject({ code: 'LEASE_LOST' });
+    await h.service.start(rc, signal());
+    expect(h.log.filter((item) => item === 'native:bootstrap')).toHaveLength(1);
+  });
+  it('callback不await的launch仍abort并join后才允许stop/detach；不把父callback退出作收尾', async () => {
+    const h = harness(),
+      rc = context();
+    let entered!: () => void,
+      release!: () => void,
+      joined = false;
+    const inLaunch = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const completed = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    h.native.bootstrap = async (scope) => ({
+      launch: async () => {
+        entered();
+        await new Promise<void>((resolve) =>
+          scope.signal.addEventListener('abort', () => resolve(), {
+            once: true,
+          }),
+        );
+        await completed;
+        joined = true;
+        throw new PersonVmError('PROVIDER_FAILED');
+      },
+    });
+    h.runtime.start = async (_binding, _signal, scope) => {
+      void scope.launch({ executable: 'node', args: [] });
+      await inLaunch;
+    };
+    const start = h.service.prewarm(rc, { trigger: 'page' }, signal());
+    const failure = expect(start).rejects.toMatchObject({
+      code: 'CLEANUP_INCOMPLETE',
+    });
+    await inLaunch;
+    expect(h.log).not.toContain('native:stop');
+    expect(h.mounts.size).toBe(1);
+    release();
+    await failure;
+    expect(joined).toBe(true);
+    expect(h.log.slice(-2)).toEqual(['native:stop', 'disk:detach']);
+  });
+  it('缺实际bootstrap依赖在egress/attach/create前拒绝', async () => {
+    const h = harness(),
+      rc = context();
+    await h.service.create(rc, signal());
+    h.log.length = 0;
+    const runtime = { ...h.runtime, memoryGuestPlan: undefined };
+    // JS host composition can omit the required provider despite TS's contract.
+    await expect(
+      new PersonVmService({
+        ...h.options,
+        runtime: runtime as unknown as typeof h.runtime,
+      }).start(rc, signal()),
+    ).rejects.toMatchObject({ code: 'RUNTIME_NOT_READY' });
+    expect(h.log).toEqual([]);
+  });
   it.each(['warm', 'cold'] as const)(
     '已建%s盘的host装配→start入口：长socketRoot在egress/move/attach/create前拒绝',
     async (tier) => {

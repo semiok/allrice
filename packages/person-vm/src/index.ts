@@ -1,4 +1,13 @@
 export * from './contract.ts';
+export type {
+  PersonVmMemoryGuestPlan,
+  PersonVmGuestCommand,
+  PersonVmJobExit,
+  PersonVmManagedJob,
+  PersonVmStartingScope,
+  PersonVmBootstrapScope,
+  PersonVmGuestBootstrapPort,
+} from './guest-bootstrap.ts';
 export * from './admission-contract.ts';
 export * from './admission-boundary.ts';
 export { PersonVmAdmissionHost } from './admission-host.ts';

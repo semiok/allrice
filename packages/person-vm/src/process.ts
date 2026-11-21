@@ -6,6 +6,9 @@ export type Command = {
   args: readonly string[];
   env: Record<string, string>;
   input?: Uint8Array;
+  /** Native job wait prints a confirmed guest exit before exiting nonzero.
+   * Only that protocol consumer may opt in and must validate its JSON result. */
+  readNonzeroExit?: boolean;
   signal: AbortSignal;
 };
 export type CommandRunner = (command: Command) => Promise<string>;
@@ -40,7 +43,12 @@ export const runCommand: CommandRunner = async (command) => {
     });
     child.on('close', (code) => {
       command.signal.removeEventListener('abort', abort);
-      if (failed || code !== 0 || command.signal.aborted) {
+      if (
+        failed ||
+        code === null ||
+        (code !== 0 && !command.readNonzeroExit) ||
+        command.signal.aborted
+      ) {
         reject(new PersonVmError('PROVIDER_FAILED'));
       } else resolve(Buffer.concat(chunks).toString('utf8'));
     });

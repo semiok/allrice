@@ -8,6 +8,12 @@ import {
 } from './contract.ts';
 import { privateDirectory } from './encrypted-disk.ts';
 import { hostEnvironment, runCommand, type CommandRunner } from './process.ts';
+import { bootstrapMicrosandbox } from './microsandbox-bootstrap.ts';
+import type {
+  PersonVmGuestBootstrapPort,
+  PersonVmMemoryGuestPlan,
+  PersonVmStartingScope,
+} from './guest-bootstrap.ts';
 
 // v0.7.16 client/ipc.rs uses 12 SHA-256 bytes (24 hex chars) for the
 // canonical directory; Darwin sys/un.h has sun_path[104], including NUL.
@@ -27,7 +33,7 @@ function assertSocketHome(home: string) {
     throw new PersonVmError('PROVIDER_FAILED');
 }
 
-export interface PersonVmNativePort {
+export interface PersonVmNativePort extends PersonVmGuestBootstrapPort {
   prepare(
     binding: PersonVmBinding,
     mount: string,
@@ -63,6 +69,7 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
       rootDiskGiB: number;
       socketRoot: string;
       runner?: CommandRunner;
+      jobCleanupTimeoutMs?: number;
     },
   ) {
     this.options = { ...options };
@@ -76,7 +83,9 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
       ].every(isAbsolute) ||
       !/^.+@sha256:[a-f0-9]{64}$/.test(options.image) ||
       !Number.isInteger(options.rootDiskGiB) ||
-      options.rootDiskGiB <= 0
+      options.rootDiskGiB <= 0 ||
+      !Number.isFinite(options.jobCleanupTimeoutMs ?? 10000) ||
+      (options.jobCleanupTimeoutMs ?? 10000) <= 0
     )
       throw new PersonVmError('PROVIDER_FAILED');
     assertSocketHome(
@@ -90,6 +99,7 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
     binding: PersonVmBinding,
     args: string[],
     signal: AbortSignal,
+    readNonzeroExit = false,
   ) {
     const paths = this.homes.get(binding.vmId);
     if (!paths) throw new PersonVmError('PROVIDER_FAILED');
@@ -97,6 +107,7 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
       executable: this.options.binary,
       args,
       signal,
+      readNonzeroExit,
       env: {
         ...hostEnvironment(paths.userHome),
         MSB_HOME: paths.home,
@@ -236,7 +247,20 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
   async ping(binding: PersonVmBinding, signal: AbortSignal) {
     await this.command(binding, ['ping', this.name(binding)], signal);
   }
-  /** Trusted host diagnostics/bootstrap only; no guest-provided executable/arguments. */
+  async bootstrap(scope: PersonVmStartingScope, plan: PersonVmMemoryGuestPlan) {
+    const paths = this.homes.get(scope.binding.vmId);
+    if (!paths) throw new PersonVmError('PROVIDER_FAILED');
+    return bootstrapMicrosandbox({
+      scope,
+      plan,
+      name: this.name(scope.binding),
+      stagingRoot: paths.userHome,
+      cleanupTimeoutMs: this.options.jobCleanupTimeoutMs ?? 10000,
+      command: (args, signal, readNonzeroExit) =>
+        this.command(scope.binding, args, signal, readNonzeroExit),
+    });
+  }
+  /** Trusted diagnostics only. CLI abort is not proof of guest cancellation. */
   async exec(
     binding: PersonVmBinding,
     args: readonly string[],

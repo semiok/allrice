@@ -134,6 +134,14 @@ export function harness(store: PersonVmStore = new MemoryStore()) {
     },
   };
   const native: PersonVmNativePort = {
+    bootstrap: async () => {
+      log.push('native:bootstrap');
+      return {
+        launch: async () => {
+          throw new PersonVmError('RUNTIME_NOT_READY');
+        },
+      };
+    },
     prepare: async () => {
       log.push('native:prepare');
     },
@@ -176,6 +184,12 @@ export function harness(store: PersonVmStore = new MemoryStore()) {
   let activity: Partial<PersonVmActivity> = {};
   let readiness = { authenticated: true, editorReady: true, canSend: true };
   const runtime: PersonVmRuntimePort = {
+    memoryGuestPlan: async () => ({
+      files: [],
+      initialize: { executable: 'node', args: [] },
+      launcher: '/synthetic/launcher',
+      env: {},
+    }),
     start: async () => {
       log.push('runtime:start');
     },

@@ -11,6 +11,7 @@ import { context, harness, running, signal } from './test-support.ts';
 import { ApfsPersonVmDisk, FilePersonVmKeyStore } from './encrypted-disk.ts';
 import type { CommandRunner } from './process.ts';
 import { PersonVmService } from './person-vm.ts';
+import type { PersonVmStartingScope } from './guest-bootstrap.ts';
 
 // Actual adapter and filesystem renames, with a synthetic hdiutil protocol.
 // These bytes are NOT encrypted and no VM, mount, or hdiutil process is started.
@@ -123,6 +124,58 @@ suite(
         await admin`select pg_terminate_backend(${rows[0]!.pid}) as killed`;
       expect(killed!.killed).toBe(true);
     }
+    it('starting scope使用实际PG owner guard：断线立即失效，bootstrap实际join前不释放/停机', async () => {
+      const h = harness(store),
+        rc = context();
+      await h.service.create(rc, signal());
+      let scope!: PersonVmStartingScope,
+        entered!: () => void,
+        release!: () => void,
+        launched = false;
+      const inside = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const joined = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      h.native.bootstrap = async (current) => {
+        scope = current;
+        await scope.assertCurrent();
+        entered();
+        await joined;
+        await scope.assertCurrent();
+        throw new Error('unreachable after real owner loss');
+      };
+      h.runtime.start = async () => {
+        launched = true;
+      };
+      const opening = h.service.start(rc, signal());
+      const failure = expect(opening).rejects.toMatchObject({
+        code: 'CLEANUP_INCOMPLETE',
+      });
+      try {
+        await inside;
+        const closed = workerClosures.at(-1)!;
+        await terminateWorker();
+        await closed;
+        await expect(scope.assertCurrent()).rejects.toBe(scope.signal.reason);
+        expect(scope.signal.reason).toMatchObject({
+          code: 'CONNECTION_CLOSED',
+        });
+        expect(scope.signal.aborted).toBe(true);
+        expect(h.log).not.toContain('native:stop');
+        expect(h.mounts.size).toBe(1);
+      } finally {
+        release();
+        await failure;
+      }
+      expect(launched).toBe(false);
+      expect(h.log).toContain('native:stop');
+      expect((await store.read(rc.actor.id))!.leaseOwner).not.toBe(null);
+      await expect(scope.assertCurrent()).rejects.toMatchObject({
+        code: 'LEASE_LOST',
+      });
+    });
     it('“进入员工页后可以输入”：入口落库本人唯一盘、精确binding、开停审计；返回不含ownerToken', async () => {
       const h = harness(store),
         rc = context();
