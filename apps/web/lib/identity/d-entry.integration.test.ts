@@ -4,6 +4,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
   afterAll,
+  afterEach,
   beforeAll,
   beforeEach,
   describe,
@@ -104,6 +105,10 @@ suite(
   () => {
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let runtimePackage: EmployeeRuntimePackage;
+    const probes = new Set<() => Promise<void>>();
+    afterEach(async () => {
+      await Promise.all([...probes].map((close) => close()));
+    });
     beforeAll(async () => {
       vi.stubEnv('DATABASE_URL', process.env.ALLRICE_TEST_DATABASE_URL!);
       vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '0');
@@ -315,7 +320,8 @@ suite(
       const [scope] = await fixture.db`select current_schema() schema`;
       const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
       url.searchParams.set('options', `-csearch_path=${scope!.schema}`);
-      const { stdout } = await promisify(execFile)(
+      const stop = new AbortController();
+      const probe = promisify(execFile)(
         process.execPath,
         [
           '--import',
@@ -338,6 +344,7 @@ suite(
       `,
         ],
         {
+          signal: stop.signal,
           env: {
             ...process.env,
             DATABASE_URL: url.toString(),
@@ -359,11 +366,29 @@ suite(
           },
         },
       );
-      return JSON.parse(stdout.trim()) as {
-        calls: number;
-        error?: string;
-        root?: string;
-      };
+      // AbortError alone is not process completion: join the actual close event.
+      const exited = new Promise<void>((resolve) =>
+        probe.child.once('close', () => resolve()),
+      );
+      let closing: Promise<void> | undefined;
+      const close = () =>
+        (closing ??= (async () => {
+          stop.abort();
+          await exited;
+        })());
+      probes.add(close);
+      void probe.catch(() => {}); // Teardown may cancel an interrupted test.
+      try {
+        const { stdout } = await probe;
+        return JSON.parse(stdout.trim()) as {
+          calls: number;
+          error?: string;
+          root?: string;
+        };
+      } finally {
+        await close();
+        probes.delete(close);
+      }
     }
 
     it('persists only host creation provenance, scopes duplicate ids, and keeps the root stable across ordinary lease restarts', async () => {
@@ -591,7 +616,7 @@ suite(
             signal,
             create: competing,
           }),
-        ).rejects.toThrow('D_ENTRY_ROOT_CREATION_BUSY');
+        ).rejects.toThrow('D_ENTRY_ROOT_CREATION_UNCONFIRMED');
         expect(competing).not.toHaveBeenCalled();
         await fixture.db`update allrice_memberships set role='viewer' where user_id=${f.user} and organization_id=${f.org}`;
         release.resolve();
@@ -605,7 +630,7 @@ suite(
           native_root_origin: null,
         });
         // The create really ran, but current authority denied the final write.
-        // Its immutable dispatch fact survives the released connection gate.
+        // Its immutable dispatch fact, not a connection lock, prevents replay.
         await fixture.db`update allrice_memberships set role='member' where user_id=${f.user} and organization_id=${f.org}`;
         const replay = vi.fn(async () => fact);
         await expect(
@@ -627,6 +652,93 @@ suite(
         await clearPublished();
       }
     });
+
+    for (const otherOnly of [true, false])
+      it(`rechecks the current person/employee rollout after create, ignoring only unrelated policy changes (otherOnly=${otherOnly})`, async () => {
+        const f = await enabledFour(),
+          other = otherOnly ? await setup() : null,
+          fact = creation(f),
+          operationId = randomUUID(),
+          signal = new AbortController().signal;
+        const create = vi.fn(async () => {
+          const policy = await updateDEntryReleasePolicy(f.context, {
+            ...f.policy,
+            selections: other
+              ? [
+                  ...f.policy.selections,
+                  {
+                    organizationId: other.org,
+                    personId: other.user,
+                    employeeInstanceId: other.assignment,
+                    generation: '4.0',
+                  },
+                ]
+              : f.policy.selections.map((entry) => ({
+                  ...entry,
+                  generation: '3.x',
+                })),
+          });
+          expect(policy.revision).not.toBe(f.policy.revision);
+          return fact;
+        });
+        try {
+          const result = ensureDEntryNativeRoot(
+            f.context,
+            f.selection,
+            f.identity,
+            {
+              operationId,
+              host: fact.host,
+              signal,
+              create,
+            },
+          );
+          if (otherOnly) {
+            expect(await result).toMatchObject({
+              rootNativeSessionId: fact.nativeSessionId,
+            });
+            expect(
+              await getDEntryNativeRootPin(f.context, f.selection),
+            ).toEqual(await result);
+          } else
+            await expect(result).rejects.toMatchObject({
+              code: 'authorization_denied',
+            });
+          const [row] =
+            await fixture.db`select d_entry_native_root_claim,d_entry_native_root,native_root_origin
+            from allrice_chat_sessions where id=${f.thread.id}`;
+          const birth = {
+            operationId,
+            identity: f.identity,
+            host: fact.host,
+            releaseRevision: f.policy.revision,
+          };
+          expect(row!.d_entry_native_root_claim).toMatchObject(birth);
+          expect(row!.native_root_origin).toBeNull();
+          if (otherOnly)
+            expect(row!.d_entry_native_root).toMatchObject({
+              ...birth,
+              nativeSessionId: fact.nativeSessionId,
+            });
+          else {
+            expect(row!.d_entry_native_root).toBeNull();
+            await updateDEntryReleasePolicy(f.context, f.policy);
+            const replay = vi.fn(async () => fact);
+            await expect(
+              ensureDEntryNativeRoot(f.context, f.selection, f.identity, {
+                operationId: randomUUID(),
+                host: fact.host,
+                signal,
+                create: replay,
+              }),
+            ).rejects.toThrow('D_ENTRY_ROOT_CREATION_UNCONFIRMED');
+            expect(replay).not.toHaveBeenCalled();
+          }
+          expect(create).toHaveBeenCalledTimes(1);
+        } finally {
+          await clearPublished();
+        }
+      });
 
     it('uses the real PG commit notification, discards rolled-back revocation, and closes the subscribe-before-recheck gap', async () => {
       const f = await enabledFour(),

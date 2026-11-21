@@ -1,8 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import {
-  DataAccessError,
-  DEntryNativeRootStorageCloseError,
-} from '@allrice/database';
+import { DataAccessError } from '@allrice/database';
+import * as admission from '../../../../packages/database/src/d-entry-admission.ts';
 import { nativeEntryServer, deferred } from './native-entry.fixture.js';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -121,30 +119,6 @@ describe('same-listener original-session native HTTP adapters', () => {
     expect(f.admission.boundary.finish).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps a failed storage-gate close as entered-callback rejection even after the native handle joined', async () => {
-    const f = await fixture();
-    f.expectUnknownClose();
-    const unknown = new DEntryNativeRootStorageCloseError(
-      [Error('gate end unknown')],
-      'storage cleanup unknown',
-    );
-    f.deps.ensureRoot.mockRejectedValueOnce(unknown);
-    let rejection: unknown;
-    f.admission.boundary.activate = async (_permit, callback, signal) => {
-      try {
-        return await callback(signal);
-      } catch (error) {
-        rejection = error;
-        throw error;
-      }
-    };
-    expect((await f.request('native-root')).status).toBe(503);
-    expect(rejection).toBeInstanceOf(AggregateError);
-    expect((rejection as AggregateError).errors).toContain(unknown);
-    expect(f.rootClose).toHaveBeenCalledTimes(1);
-    expect(f.admission.boundary.finish).toHaveBeenCalledTimes(1);
-  });
-
   for (const rejects of [false, true])
     it(`joins the FIRST body cancel promise before finish, preserving cancellation and unknown cleanup (reject=${rejects})`, async () => {
       const f = await fixture(),
@@ -218,6 +192,141 @@ describe('same-listener original-session native HTTP adapters', () => {
       await vi.waitFor(() => expect(f.authorityClose).toHaveBeenCalledTimes(1));
       // No fixture assertion here establishes the real producer's PG retention.
     });
+
+  it.each([
+    { cancelRejects: false, finishRejects: false },
+    { cancelRejects: true, finishRejects: false },
+    { cancelRejects: true, finishRejects: true },
+  ])(
+    'joins late body cancel before finish ($cancelRejects/$finishRejects), preserving E/C/F',
+    async ({ cancelRejects, finishRejects }) => {
+      const f = await fixture(),
+        reading = new AbortController(),
+        cancelStarted = deferred<void>(),
+        cleanup = deferred<void>(),
+        finished = deferred<void>();
+      if (cancelRejects || finishRejects) f.expectUnknownClose();
+      const original = Error('late reading cancellation'),
+        closeError = Error('late body cleanup unknown'),
+        finishError = Error('finish acknowledgement unknown'),
+        events: string[] = [];
+      let running: Promise<void> | undefined,
+        callbackError: unknown,
+        outerError: unknown;
+      const fulfilled = vi.fn();
+      const actualRun = admission.runDEntryAdmittedActivity;
+      const run = vi
+        .spyOn(admission, 'runDEntryAdmittedActivity')
+        .mockImplementation(async (...args) => {
+          try {
+            return await actualRun(...args);
+          } catch (error) {
+            outerError = error;
+            throw error;
+          }
+        });
+      f.admission.boundary.activate = async (_permit, callback, signal) => {
+        try {
+          const outcome = await callback(signal);
+          fulfilled(outcome);
+          return outcome;
+        } catch (error) {
+          callbackError = error;
+          throw error;
+        }
+      };
+      const cancel = vi.fn(() => {
+        events.push('body-cancel');
+        cancelStarted.resolve();
+        return cleanup.promise;
+      });
+      const nativeClose = vi.fn(async () => {
+        events.push('native-close');
+        reading.abort(original); // The run signal never directly aborts this controller.
+        await running?.catch(() => {}); // Transport joined; entry body cleanup is a separate fact.
+        events.push('native-joined');
+      });
+      vi.mocked(f.data.acquireRpc).mockImplementationOnce((input) => ({
+        run() {
+          return (running = input.consume(
+            new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode('opening'));
+                },
+                cancel,
+              }),
+            ),
+            reading.signal,
+          ));
+        },
+        close: nativeClose,
+      }));
+      vi.mocked(f.admission.boundary.finish).mockImplementationOnce(
+        async () => {
+          events.push('finish');
+          finished.resolve();
+          if (finishRejects) throw finishError;
+        },
+      );
+      try {
+        const response = await f.request('native-rpc', {
+          ...f.body,
+          ...prompt(),
+        });
+        f.identityRevoked.abort(original);
+        await cancelStarted.promise;
+        expect(events).toEqual(['native-close', 'body-cancel']);
+        expect(cancel).toHaveBeenCalledTimes(1);
+        expect(nativeClose).toHaveBeenCalledTimes(1);
+        expect(fulfilled).not.toHaveBeenCalled();
+        expect(f.admission.boundary.finish).not.toHaveBeenCalled();
+        if (cancelRejects) cleanup.reject(closeError);
+        else cleanup.resolve();
+        await expect(response.text()).rejects.toThrow();
+        await finished.promise;
+        await vi.waitFor(() =>
+          expect(f.authorityClose).toHaveBeenCalledTimes(1),
+        );
+        expect(events).toEqual([
+          'native-close',
+          'body-cancel',
+          'native-joined',
+          'finish',
+        ]);
+        expect(cancel).toHaveBeenCalledTimes(1);
+        expect(nativeClose).toHaveBeenCalledTimes(1);
+        expect(f.admission.boundary.finish).toHaveBeenCalledTimes(1);
+        const errors: unknown[] = [];
+        const collect = (error: unknown) => {
+          if (errors.includes(error)) return;
+          errors.push(error);
+          if (error instanceof AggregateError) error.errors.forEach(collect);
+          if (error instanceof Error && error.cause) collect(error.cause);
+        };
+        collect(outerError);
+        expect(errors).toContain(original);
+        if (cancelRejects) {
+          expect(fulfilled).not.toHaveBeenCalled();
+          expect(callbackError).toBeInstanceOf(AggregateError);
+          expect(errors).toContain(closeError);
+        } else {
+          expect(callbackError).toBeUndefined();
+          expect(fulfilled).toHaveBeenCalledWith({
+            ok: false,
+            error: original,
+          });
+          expect(outerError).toBe(original);
+        }
+        if (finishRejects) expect(errors).toContain(finishError);
+        // Actual helper observed above; fake boundary still proves no PG retention.
+      } finally {
+        cleanup.resolve();
+        run.mockRestore();
+      }
+    },
+  );
+
   it('reauthenticates the original Bearer and emits only host discovery, not editor/send readiness', async () => {
     const f = await fixture();
     const response = await f.request();

@@ -17,7 +17,6 @@ import {
   runDEntryAdmittedActivity,
   watchDEntryNativeAuthority,
   ensureDEntryNativeRoot,
-  DEntryNativeRootStorageCloseError,
   type DEntryOwnedActivity,
   type DEntryNativeRootCreation,
 } from '@allrice/database';
@@ -330,7 +329,6 @@ export function createDEntryHttpHandler(
               }
               let nativeTask: Promise<void> | undefined;
               let nativeClosing: Promise<void> | undefined;
-              let storageClose: DEntryNativeRootStorageCloseError | undefined;
               const closeNative = () =>
                 (nativeClosing ??= Promise.resolve().then(() =>
                   native.close(),
@@ -338,80 +336,73 @@ export function createDEntryHttpHandler(
               activity = {
                 run(running) {
                   return (nativeTask = (async () => {
-                    const bound = await deps
-                      .ensureRoot(
-                        auth.context,
-                        input.selection,
-                        auth.identity,
-                        {
-                          operationId,
-                          host: {
-                            binding: { ...current.view.receipt.binding },
-                            bindingRef: current.view.bindingRef,
-                            rosterDigest: current.view.receipt.rosterDigest,
-                          },
-                          signal: running,
-                          async create(creating) {
-                            const cancel = () => {
-                              void closeNative().catch(() => {});
-                            };
-                            creating.addEventListener('abort', cancel, {
-                              once: true,
-                            });
-                            if (creating.aborted) cancel();
-                            let failed = false,
-                              failure: unknown;
-                            let created: DEntryNativeRootCreation | undefined;
-                            try {
-                              await assertCurrent(creating);
-                              creating.throwIfAborted();
-                              const result = await native.run(creating);
-                              if (!result.ok)
-                                throw new RemoteError(
-                                  result.error.code,
-                                  result.error.message,
-                                  result.error.details,
-                                );
-                              const receipt = method.result
-                                .create()
-                                .parse(result.value);
-                              await assertCurrent(creating);
-                              creating.throwIfAborted();
-                              created = {
-                                nativeSessionId: String(receipt.sessionId),
-                                host: {
-                                  binding: { ...current.view.receipt.binding },
-                                  bindingRef: current.view.bindingRef,
-                                  rosterDigest:
-                                    current.view.receipt.rosterDigest,
-                                },
-                              };
-                            } catch (error) {
-                              failed = true;
-                              failure = error;
-                            }
-                            creating.removeEventListener('abort', cancel);
-                            try {
-                              await closeNative();
-                            } catch (error) {
-                              if (failed)
-                                throw new AggregateError(
-                                  [failure, error],
-                                  'Root creation cleanup is unknown',
-                                  { cause: failure },
-                                );
-                              throw error;
-                            }
-                            if (failed) throw failure;
-                            return created!;
-                          },
+                    const bound = await deps.ensureRoot(
+                      auth.context,
+                      input.selection,
+                      auth.identity,
+                      {
+                        operationId,
+                        host: {
+                          binding: { ...current.view.receipt.binding },
+                          bindingRef: current.view.bindingRef,
+                          rosterDigest: current.view.receipt.rosterDigest,
                         },
-                      )
-                      .catch((error: unknown) => {
-                        if (error instanceof DEntryNativeRootStorageCloseError)
-                          storageClose = error;
-                        throw error;
-                      });
+                        signal: running,
+                        async create(creating) {
+                          const cancel = () => {
+                            void closeNative().catch(() => {});
+                          };
+                          creating.addEventListener('abort', cancel, {
+                            once: true,
+                          });
+                          if (creating.aborted) cancel();
+                          let failed = false,
+                            failure: unknown;
+                          let created: DEntryNativeRootCreation | undefined;
+                          try {
+                            await assertCurrent(creating);
+                            creating.throwIfAborted();
+                            const result = await native.run(creating);
+                            if (!result.ok)
+                              throw new RemoteError(
+                                result.error.code,
+                                result.error.message,
+                                result.error.details,
+                              );
+                            const receipt = method.result
+                              .create()
+                              .parse(result.value);
+                            await assertCurrent(creating);
+                            creating.throwIfAborted();
+                            created = {
+                              nativeSessionId: String(receipt.sessionId),
+                              host: {
+                                binding: { ...current.view.receipt.binding },
+                                bindingRef: current.view.bindingRef,
+                                rosterDigest: current.view.receipt.rosterDigest,
+                              },
+                            };
+                          } catch (error) {
+                            failed = true;
+                            failure = error;
+                          }
+                          creating.removeEventListener('abort', cancel);
+                          try {
+                            await closeNative();
+                          } catch (error) {
+                            if (failed)
+                              throw new AggregateError(
+                                [failure, error],
+                                'Root creation cleanup is unknown',
+                                { cause: failure },
+                              );
+                            throw error;
+                          }
+                          if (failed) throw failure;
+                          return created!;
+                        },
+                      },
+                    );
                     if (bound.vmId !== current.view.receipt.binding.vmId)
                       throw new DataAccessError('authorization_denied');
                     value = {
@@ -434,7 +425,6 @@ export function createDEntryHttpHandler(
                   const errors = settled.flatMap((r) =>
                     r.status === 'rejected' ? [r.reason] : [],
                   );
-                  if (storageClose) errors.push(storageClose);
                   if (errors.length)
                     throw new AggregateError(
                       errors,
@@ -570,8 +560,10 @@ export function createDEntryHttpHandler(
                       : undefined,
                     catalog.close(),
                     task?.catch(() => {}), // Join the controlled run; close failures stay rejected below.
-                    bodyClose,
                   ]);
+                  // Native close/run may register the FIRST body cancellation.
+                  // Read it only after those real children can no longer add it.
+                  results.push(...(await Promise.allSettled([bodyClose])));
                   const errors = results.flatMap((result) =>
                     result.status === 'rejected' ? [result.reason] : [],
                   );

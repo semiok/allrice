@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { TransactionSql } from 'postgres';
-import { Client } from 'pg';
 import {
   DEntryIdentitySchema,
   DEntrySelectionInputSchema,
@@ -53,65 +52,6 @@ const deny = (): never => {
   throw new DataAccessError('authorization_denied');
 };
 type Sql = ReturnType<typeof getDatabase>;
-
-/** The entry must retain this as unknown cleanup in its owned close result,
- * even when a business error was already raised. Never fulfil a safe outcome
- * from an unconfirmed storage-gate connection close. */
-export class DEntryNativeRootStorageCloseError extends AggregateError {}
-
-async function withCreationGate<T>(
-  threadId: string,
-  signal: AbortSignal,
-  work: (signal: AbortSignal) => Promise<T>,
-) {
-  signal.throwIfAborted();
-  const url = process.env.DATABASE_URL;
-  if (!url) throw Error('DATABASE_URL is required');
-  // Do not reserve a business pool slot across native I/O: distinct concurrent
-  // creators must leave that pool available for real current-owner rechecks.
-  const client = new Client({
-    connectionString: url,
-    application_name: 'allrice-d-entry-root-create',
-    connectionTimeoutMillis: 5000,
-  });
-  const lost = new AbortController();
-  const active = AbortSignal.any([signal, lost.signal]);
-  let ending = false;
-  client.on('error', (error) => lost.abort(error));
-  client.on('end', () => {
-    if (!ending) lost.abort(Error('D_ENTRY_ROOT_GATE_DISCONNECTED'));
-  });
-  let failed = false,
-    failure: unknown;
-  let value: T | undefined;
-  try {
-    await client.connect();
-    active.throwIfAborted();
-    const { rows } = await client.query<{ held: boolean }>(
-      'select pg_try_advisory_lock(hashtextextended($1,0)) held',
-      [`d-entry-root:${threadId}`],
-    );
-    if (!rows[0]?.held) throw Error('D_ENTRY_ROOT_CREATION_BUSY');
-    active.throwIfAborted();
-    value = await work(active);
-    active.throwIfAborted();
-  } catch (error) {
-    failed = true;
-    failure = error;
-  }
-  ending = true;
-  try {
-    await client.end();
-  } catch (error) {
-    throw new DEntryNativeRootStorageCloseError(
-      failed ? [failure, error] : [error],
-      'D entry root storage close is unknown',
-      { cause: failed ? failure : error },
-    );
-  }
-  if (failed) throw failure;
-  return value!;
-}
 
 function projectPin(raw: unknown, identity: DEntryIdentity) {
   const pin = pinSchema.parse(raw);
@@ -169,8 +109,8 @@ export async function getDEntryNativeRootPin(
 
 /** Host-only storage producer. Commit an immutable at-most-once claim BEFORE
  * dispatch. A missing result is unknown, never permission to create again,
- * including the same operationId after a lost commit/reply ACK. No state,
- * retry, TTL, Run/Job or recovery policy is introduced. */
+ * including the same operationId after a lost commit/reply ACK. No Agent
+ * lifecycle, retry, TTL, Run/Job or recovery policy is introduced. */
 export async function ensureDEntryNativeRoot(
   context: RequestContext,
   input: unknown,
@@ -195,105 +135,96 @@ export async function ensureDEntryNativeRoot(
     host.binding.personId !== current.personId
   )
     return deny();
-  return withCreationGate(
-    selection.threadId,
-    creation.signal,
-    async (active) => {
-      active.throwIfAborted();
-      const identity = await requireDEntryNativeIdentity(scope, selection);
-      if (!sameDEntryIdentity(identity, expected)) return deny();
-      const existing = await readPin(getDatabase(), identity);
-      if (existing) {
-        if (existing.vmId !== host.binding.vmId) return deny();
-        return existing;
-      }
-      // Current identity → assignment → instance → Session → release locks.
-      // Both short transactions recheck authority; neither holds a business
-      // pool slot/identity lock across the native call or its real close join.
-      const lockCurrent = async (tx: TransactionSql) => {
-        const [before] =
-          await tx`select employee_assignment_id from allrice_chat_sessions
-      where id=${identity.threadId} and organization_id=${identity.organizationId}
-        and workspace_id=${identity.workspaceId} and owner_id=${identity.personId}`;
-        if (!before) return deny();
-        const instance = await resolveEmployeeSessionInstance(
-          scope,
-          before.employee_assignment_id,
-          identity.employeeInstanceId,
-          tx,
-        );
-        if (
-          instance.revision !== identity.employeeRevision ||
-          instance.source.employeeVersionId !== identity.employeeVersionId
-        )
-          return deny();
-        const [thread] =
-          await tx`select id,d_entry_native_root_claim,d_entry_native_root from allrice_chat_sessions
-      where id=${identity.threadId} and organization_id=${identity.organizationId}
-        and workspace_id=${identity.workspaceId} and owner_id=${identity.personId}
-        and employee_assignment_id=${instance.assignmentId}
-        and coalesce(employee_instance_id,employee_assignment_id)=${identity.employeeInstanceId}
-        and execution_generation='4.0' and native_root_origin is null and archived_at is null
-      for update`;
-        if (!thread) return deny();
-        const policy = await readDEntryReleasePolicy(tx, true);
-        if (selectDEntryGeneration(policy, identity) !== '4.0') return deny();
-        active.throwIfAborted();
-        return { thread, policy };
-      };
-      // A begin/COMMIT rejection is not proof of rollback. Never dispatch
-      // unless this very transaction's success ACK has reached the caller.
-      const claim = await getDatabase().begin(async (tx) => {
-        const { thread, policy } = await lockCurrent(tx);
-        if (thread.d_entry_native_root_claim != null)
-          throw Error('D_ENTRY_ROOT_CREATION_UNCONFIRMED');
-        const value = claimSchema.parse({
-          schemaVersion: 1,
-          identity,
-          host,
-          operationId,
-          releaseRevision: policy.revision,
-        });
-        const [written] =
-          await tx`update allrice_chat_sessions set d_entry_native_root_claim=${tx.json(value)}
-          where id=${identity.threadId} and d_entry_native_root_claim is null returning id`;
-        if (!written) return deny();
-        return value;
-      });
-      active.throwIfAborted();
-      // Only this original callback can supply the actual host creation fact.
-      // An equal JSON claim on a later request is NOT a creation receipt.
-      const receipt = await creation.create(active);
-      active.throwIfAborted();
-      if (
-        JSON.stringify(hostSchema.parse(receipt.host)) !==
-        JSON.stringify(claim.host)
-      )
-        return deny();
-      return getDatabase().begin(async (tx) => {
-        const { thread, policy } = await lockCurrent(tx);
-        if (
-          policy.revision !== claim.releaseRevision ||
-          thread.d_entry_native_root != null
-        )
-          return deny();
-        const pin = pinSchema.parse({
-          ...claim,
-          nativeSessionId: receipt.nativeSessionId,
-        });
-        projectPin(pin, identity); // Also binds the receipt's person/organization.
-        const [written] =
-          await tx`update allrice_chat_sessions set d_entry_native_root=${tx.json(pin)}
-      where id=${identity.threadId} and d_entry_native_root is null
-        and d_entry_native_root_claim=${tx.json(claim)} returning id`;
-        if (!written) return deny();
-        await tx`insert into allrice_audit_events
-      (organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata)
-      values(${identity.organizationId},${identity.workspaceId},${identity.personId},'d_entry_root.bind',
-        'chat_session',${identity.threadId},'recorded','host_native_create',${context.requestId},
-        ${tx.json({ operationId, releaseRevision: policy.revision })})`;
-        return projectPin(pin, identity);
-      });
-    },
-  );
+  const active = creation.signal;
+  active.throwIfAborted();
+  const identity = await requireDEntryNativeIdentity(scope, selection);
+  if (!sameDEntryIdentity(identity, expected)) return deny();
+  const existing = await readPin(getDatabase(), identity);
+  if (existing) {
+    if (existing.vmId !== host.binding.vmId) return deny();
+    return existing;
+  }
+  // Current identity → assignment → instance → Session → release locks.
+  // Both short transactions recheck authority; neither holds a business
+  // pool slot/identity lock across the native call or its real close join.
+  const lockCurrent = async (tx: TransactionSql) => {
+    const [before] =
+      await tx`select employee_assignment_id from allrice_chat_sessions
+  where id=${identity.threadId} and organization_id=${identity.organizationId}
+    and workspace_id=${identity.workspaceId} and owner_id=${identity.personId}`;
+    if (!before) return deny();
+    const instance = await resolveEmployeeSessionInstance(
+      scope,
+      before.employee_assignment_id,
+      identity.employeeInstanceId,
+      tx,
+    );
+    if (
+      instance.revision !== identity.employeeRevision ||
+      instance.source.employeeVersionId !== identity.employeeVersionId
+    )
+      return deny();
+    const [thread] =
+      await tx`select id,d_entry_native_root_claim,d_entry_native_root from allrice_chat_sessions
+  where id=${identity.threadId} and organization_id=${identity.organizationId}
+    and workspace_id=${identity.workspaceId} and owner_id=${identity.personId}
+    and employee_assignment_id=${instance.assignmentId}
+    and coalesce(employee_instance_id,employee_assignment_id)=${identity.employeeInstanceId}
+    and execution_generation='4.0' and native_root_origin is null and archived_at is null
+  for update`;
+    if (!thread) return deny();
+    const policy = await readDEntryReleasePolicy(tx, true);
+    if (selectDEntryGeneration(policy, identity) !== '4.0') return deny();
+    active.throwIfAborted();
+    return { thread, policy };
+  };
+  // A begin/COMMIT rejection is not proof of rollback. Never dispatch
+  // unless this very transaction's success ACK has reached the caller.
+  const claim = await getDatabase().begin(async (tx) => {
+    const { thread, policy } = await lockCurrent(tx);
+    if (thread.d_entry_native_root_claim != null)
+      throw Error('D_ENTRY_ROOT_CREATION_UNCONFIRMED');
+    const value = claimSchema.parse({
+      schemaVersion: 1,
+      identity,
+      host,
+      operationId,
+      releaseRevision: policy.revision,
+    });
+    const [written] =
+      await tx`update allrice_chat_sessions set d_entry_native_root_claim=${tx.json(value)}
+      where id=${identity.threadId} and d_entry_native_root_claim is null returning id`;
+    if (!written) return deny();
+    return value;
+  });
+  active.throwIfAborted();
+  // Only this original callback can supply the actual host creation fact.
+  // An equal JSON claim on a later request is NOT a creation receipt.
+  const receipt = await creation.create(active);
+  active.throwIfAborted();
+  if (
+    JSON.stringify(hostSchema.parse(receipt.host)) !==
+    JSON.stringify(claim.host)
+  )
+    return deny();
+  return getDatabase().begin(async (tx) => {
+    const { thread, policy } = await lockCurrent(tx);
+    if (thread.d_entry_native_root != null) return deny();
+    const pin = pinSchema.parse({
+      ...claim,
+      nativeSessionId: receipt.nativeSessionId,
+    });
+    projectPin(pin, identity); // Also binds the receipt's person/organization.
+    const [written] =
+      await tx`update allrice_chat_sessions set d_entry_native_root=${tx.json(pin)}
+  where id=${identity.threadId} and d_entry_native_root is null
+    and d_entry_native_root_claim=${tx.json(claim)} returning id`;
+    if (!written) return deny();
+    await tx`insert into allrice_audit_events
+  (organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata)
+  values(${identity.organizationId},${identity.workspaceId},${identity.personId},'d_entry_root.bind',
+    'chat_session',${identity.threadId},'recorded','host_native_create',${context.requestId},
+    ${tx.json({ operationId, releaseRevision: policy.revision })})`;
+    return projectPin(pin, identity);
+  });
 }

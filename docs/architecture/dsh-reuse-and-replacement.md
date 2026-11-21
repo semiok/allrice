@@ -318,7 +318,7 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 - MET-271，用户 2026-11-21 已批准可信本人/员工、线程单代入口，主线续派 271 自有 root producer；四类为存储后端。DSH rc.2 `session/create` 返回真实普通根，可能与请求 id 不同；直接消费生成 input/result codec，不从 catalog 列表或 guest JSON 任选根。
 - 0251 在既有 chat Session 增不可变 JSONB claim 与真实结果 pin 两个事实，保完整 org/workspace/person/employee instance/revision/version/release 和原 host receipt；唯一性按持久 VM/员工 profile/native id scope。临时 instance/epoch/bindingRef 只作创建出处，正常重启不重建根。旧 native origin、3.x binder 和 Run/Job 不改，不造 Agent 状态。
-- 完整 scope/可信 operationId 的 claim 事务成功 ACK 后，才允许原始宿主 callback 唯一 create；同 claim 真实返回与最终现权复核后落 pin。提交/结果未知时保留 claim、不算创建成功，后续同键或换键均不重放，无 TTL 或自动恢复；pin 已提交而回复丢失只读原 pin。同线程竞争 try-lock 忙时沿既有依赖错误退出，零 native dispatch、不自动重试。真实原生认证/数据面和完整 envelope owner 仍由正式273宿主提供，替身不证明原生创建/VM验收。退役须由原生正式提供同等 SaaS immutable business pin 时删除本适配及登记。
+- 完整 scope/可信 operationId 的 claim 在短事务内由同一 chat 行锁串行领取，成功 ACK 后才允许原始宿主 callback 唯一 create；同 claim 真实返回与最终现权复核后落 pin。提交/结果未知时保留 claim、不算创建成功，后续同键或换键均不重放，无 TTL 或自动恢复；pin 已提交而回复丢失只读原 pin。并发请求读取已提交 claim 后拒绝 UNCONFIRMED、零 native dispatch，不持第二套 advisory 连接锁。最终仍核当前本人/员工政策；整份名单的无关修改不作本人撤权，出生 revision 保留出处。真实原生认证/数据面和完整 envelope owner 仍由正式273宿主提供，替身不证明原生创建/VM验收。退役须由原生正式提供同等 SaaS immutable business pin 时删除本适配及登记。
 
 ### `allrice-native-web-entry-guard-v1`
 
