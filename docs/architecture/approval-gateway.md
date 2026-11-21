@@ -18,9 +18,9 @@
 
 ## 装配必须实现的端口
 
-- `ApprovalAuthority.assertCall/assertUser`：从实际身份、当前员工配置/开关和受管会话确认准入。`admit` 必须与撤权串行化，覆盖领取到真实发送的整段操作；撤权要 abort 并 drain 在途调用。不能接空实现，也不能凭 guest JSON 构造上下文。
+- `ApprovalAuthority.assertCall/assertUser`：从实际身份、当前员工配置/开关和受管会话确认准入。`admit` 必须与撤权串行化，覆盖领取到真实发送的整段操作；撤权要 abort 并 drain 在途调用；callback 显式接收 owner 控制的 admissionSignal，与调用方 signal 合并后传给发送方。不能接空实现，也不能凭 guest JSON 构造上下文。
 - `ApprovalResourceOwner.snapshot/assertCurrent`：通过资料/成果等所属模块公开 API 获取不可变精确版本与真实字节，每次查看/批准/执行/下载再查现权；不能把 guest 路径当宿主文件权限。`maxBytes` 是可接受剩余量，owner 应在读取中实施限制。
-- `ApprovalDestination.resolve/assertCurrent/dispatch/lookup`：宿主注册的固定能力，不能让模型传任意 URL。resolve 得到实际目标和可读标识；dispatch 使用 `requestId` 为接收端业务幂等键，回执必须绑定冻结 digest；lookup 查询同一个键，不能补发。发送权限/凭据留在宿主，错误回执不输出内部异常。
+- `ApprovalDestination.resolve/assertCurrent/dispatch/lookup`：宿主注册的固定能力，不能让模型传任意 URL。resolve 得到实际目标和可读标识；dispatch 使用 `requestId` 为接收端业务幂等键，回执必须绑定冻结 digest；lookup 查询同一个键，不能补发。dispatch/lookup 显式接收 host-only binding，按真实本人选择宿主凭据；不依赖 guest 目标文本决定账号。发送权限/凭据留在宿主，错误回执不输出内部异常。
 - 请求/正文/附件大小和数量从装配方既有业务限制配置传入；本模块无默认 TTL、自动批准、自动补发或隐式外发地址。
 
 ## 数据、迁移与恢复

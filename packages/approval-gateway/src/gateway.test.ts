@@ -253,7 +253,7 @@ it('rechecks withdrawal at dispatch admission, after the earlier permission read
       ...f.options.authority,
       admit: async (_binding, callback) => {
         f.setPermitted(false);
-        return callback();
+        return callback(signal());
       },
     },
   });
@@ -263,7 +263,7 @@ it('rechecks withdrawal at dispatch admission, after the earlier permission read
   expect(f.dispatches).toBe(0);
   expect((await f.store.get(view.ref.requestId))!.intentAt).toBeNull();
 });
-it('passes actual cancellation to the in-flight destination while preserving unknown effect', async () => {
+it('lets the authority abort admitted effects without controlling the caller signal', async () => {
   const f = fixture(),
     view = await f.gateway.stage(f.binding, f.input, signal());
   await f.gateway.decide(
@@ -279,10 +279,14 @@ it('passes actual cancellation to the in-flight destination while preserving unk
   const controller = new AbortController();
   const gateway = createApprovalGateway({
     ...f.options,
+    authority: {
+      ...f.options.authority,
+      admit: async (_binding, callback) => callback(controller.signal),
+    },
     destinations: {
       inbox: {
         ...f.options.destinations.inbox,
-        dispatch: async (_ref, _payload, signal) => {
+        dispatch: async (_binding, _ref, _payload, signal) => {
           began();
           await new Promise<void>((resolve) =>
             signal.addEventListener(
@@ -300,11 +304,13 @@ it('passes actual cancellation to the in-flight destination while preserving unk
       },
     },
   });
-  const executing = gateway.execute(f.binding, view.ref, controller.signal);
+  const callerSignal = signal();
+  const executing = gateway.execute(f.binding, view.ref, callerSignal);
   await started;
   controller.abort();
   expect((await executing).effect).toBe('unknown');
   expect(aborted).toBe(true);
+  expect(callerSignal.aborted).toBe(false);
 });
 it('does not trust stored bytes whose frozen digest no longer matches', async () => {
   const f = fixture(),
@@ -366,4 +372,40 @@ it('serves the exact frozen attachment for trusted preview after the mutable sou
   await expect(
     f.gateway.attachment(f.context, { ...view.ref, index: 0 }, signal()),
   ).rejects.toThrow();
+});
+
+it('passes host-only identity to dispatch and receipt lookup without exposing it in the view', async () => {
+  const f = fixture();
+  const seen: unknown[] = [];
+  const destination = f.options.destinations.inbox;
+  f.loseAck();
+  const gateway = createApprovalGateway({
+    ...f.options,
+    destinations: {
+      inbox: {
+        ...destination,
+        dispatch: async (binding, ref, payload) => {
+          seen.push(structuredClone(binding));
+          return destination.dispatch(binding, ref, payload);
+        },
+        lookup: async (binding, ref) => {
+          seen.push(structuredClone(binding));
+          return destination.lookup(binding, ref);
+        },
+      },
+    },
+  });
+  const view = await gateway.stage(f.binding, f.input, signal());
+  await gateway.decide(
+    f.context,
+    { ...view.ref, decision: 'approved' },
+    signal(),
+  );
+  expect((await gateway.execute(f.binding, view.ref, signal())).effect).toBe(
+    'unknown',
+  );
+  const reconciled = await gateway.reconcile(f.context, view.ref, signal());
+  expect(reconciled.effect).toBe('received');
+  expect(seen).toEqual([f.binding, f.binding]);
+  expect(JSON.stringify(reconciled)).not.toContain(f.binding.vm.personId);
 });

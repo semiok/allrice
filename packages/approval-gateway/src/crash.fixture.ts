@@ -9,7 +9,7 @@ try {
   const record = await store.get(process.env.APPROVAL_TEST_REQUEST_ID!);
   if (!record) throw Error('fixture missing');
   const f = fixture(store);
-  f.options.destinations.inbox.dispatch = async (ref, payload) => {
+  f.options.destinations.inbox.dispatch = async (_binding, ref, payload) => {
     const response = await fetch(
       process.env.APPROVAL_TEST_RECEIVER! + '/accept',
       {
