@@ -143,14 +143,15 @@ describe('trusted VM HTTP egress (VM and identity owners are explicit fixtures)'
   });
   it('rejects unauthenticated host callers and forged identity before upstream', async () => {
     const f = await fixture();
-    for (const headers of [
+    const requests: Record<string, string>[] = [
       {},
       {
         authorization: 'Bearer wrong',
         'x-person-id': 'person-a',
         'x-vm-id': binding.vmId,
       },
-    ]) {
+    ];
+    for (const headers of requests) {
       const r = await fetch(f.access.origin + '/market/okx/instruments', {
         headers,
       });
