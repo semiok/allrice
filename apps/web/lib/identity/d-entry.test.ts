@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
-import { DataAccessError, EmployeeInstanceError } from '@allrice/database';
+import {
+  DataAccessError,
+  EmployeeInstanceError,
+  IdentityError,
+} from '@allrice/database';
 import {
   DEntryRolloutPolicySchema,
   selectDEntryGeneration,
@@ -30,6 +34,7 @@ const ports = vi.hoisted(() => ({
   historyOwner: vi.fn(),
   generation: vi.fn(),
   policy: vi.fn(),
+  writable: vi.fn(),
 }));
 vi.mock('./session', () => ({ requireRequestContext: ports.context }));
 vi.mock('@allrice/database', async (original) => ({
@@ -39,6 +44,7 @@ vi.mock('@allrice/database', async (original) => ({
   authorizeSessionOwner: ports.owner,
   authorizeSessionHistoryOwner: ports.historyOwner,
   getSessionExecutionGeneration: ports.generation,
+  requireCurrentWorkspaceWriteAuthority: ports.writable,
 }));
 vi.mock('../d-entry/release-policy', async (original) => ({
   ...(await original<typeof import('../d-entry/release-policy')>()),
@@ -116,12 +122,33 @@ beforeEach(() => {
   ports.owner.mockResolvedValue(thread);
   ports.historyOwner.mockResolvedValue(thread);
   ports.generation.mockResolvedValue('4.0');
+  ports.writable.mockResolvedValue(undefined);
   ports.policy.mockRejectedValue(
     new DEntryDependencyUnavailable('release-policy'),
   );
 });
 
 describe('trusted cookie D entry and explicit release selection', () => {
+  it('requires current write authority for existing and new execution, while retaining history reads', async () => {
+    ports.writable.mockRejectedValue(new IdentityError('authorization_denied'));
+    await expect(
+      resolveDEntryIdentity(context, selection, 'execute'),
+    ).rejects.toMatchObject({
+      code: 'authorization_denied',
+    });
+    await expect(
+      resolveDEntryIdentity(
+        context,
+        { workspaceId, employeeInstanceId },
+        'execute',
+      ),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    expect(ports.writable).toHaveBeenCalledTimes(2);
+    await expect(
+      resolveDEntryIdentity(context, selection, 'history'),
+    ).resolves.toEqual(identity);
+    expect(ports.writable).toHaveBeenCalledTimes(2);
+  });
   it('requires a login before parsing selectors and ignores person headers', async () => {
     ports.context.mockRejectedValueOnce(
       new DataAccessError('authentication_required'),

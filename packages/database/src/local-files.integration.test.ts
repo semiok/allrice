@@ -243,6 +243,72 @@ suite(
       action,
       ...extra,
     });
+    it('rejects a 4.0 local attachment before command/blob allocation and fences old queued or claimed commands, retaining 3.x uploads', async () => {
+      const f = await fixture(),
+        sessionId = randomUUID(),
+        path = 'generation.txt',
+        bytes = Buffer.from('synthetic generation guard');
+      // An isolated 4.0 birth has no legacy native origin. The real device,
+      // folder grant and upload entrypoints below retain their original checks.
+      await database.db`insert into allrice_chat_sessions(id,organization_id,workspace_id,owner_id,title,employee_assignment_id,employee_instance_id,employee_version_id,execution_generation)
+        select ${sessionId},organization_id,workspace_id,owner_id,'Synthetic 4.0',employee_assignment_id,employee_instance_id,employee_version_id,'4.0'
+        from allrice_chat_sessions where id=${f.session}`;
+      await writeFile(join(f.folder, path), bytes);
+      const expected = await inspectLocalFile(f.folder, path);
+      const counts = () => database.db`select
+        (select count(*)::int from allrice_bridge_commands where organization_id=${f.org}) commands,
+        (select count(*)::int from allrice_storage_objects where organization_id=${f.org}) objects,
+        (select count(*)::int from allrice_file_references where session_id=${sessionId}) links`;
+      const before = await counts();
+      await expect(
+        enqueueLocalFileCommand(
+          f.context,
+          request(f, 'import', { path, expected, sessionId }),
+        ),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      expect(await counts()).toEqual(before);
+      const queued = await enqueueLocalFileCommand(
+        f.context,
+        request(f, 'import', { path, expected }),
+      );
+      await database.db`update allrice_bridge_commands set session_id=${sessionId} where id=${queued.id}`;
+      expect(await claimNextBridgeCommand(f.token)).toBeNull();
+      await database.db`update allrice_bridge_commands set session_id=${f.session} where id=${queued.id}`;
+      const command = (await claimNextBridgeCommand(f.token))!;
+      expect(command.id).toBe(queued.id);
+      await database.db`update allrice_bridge_commands set session_id=${sessionId} where id=${queued.id}`;
+      const put = vi.spyOn(f.storage, 'put');
+      try {
+        const transfer = () =>
+          storeLocalFileUpload({
+            token: f.token,
+            kind: 'command',
+            id: queued.id,
+            leaseToken: command.leaseToken,
+            version: expected,
+            fileName: path,
+            stream: stream(bytes),
+            storage: f.storage,
+          });
+        const claimed = await counts();
+        await expect(transfer()).rejects.toMatchObject({ code: 'lease_lost' });
+        expect(put).not.toHaveBeenCalled();
+        expect(await counts()).toEqual(claimed);
+        await database.db`update allrice_bridge_commands set session_id=${f.session} where id=${queued.id}`;
+        const object = await transfer();
+        expect(put).toHaveBeenCalledTimes(1);
+        const stored = await getStoredFile(f.context, object.objectId);
+        expect(
+          Buffer.from(
+            await new Response(
+              await f.storage.get(stored.object),
+            ).arrayBuffer(),
+          ),
+        ).toEqual(bytes);
+      } finally {
+        put.mockRestore();
+      }
+    });
     it('inspect→import verifies real byte checksum/size, links the existing attachment and keeps ACK retries idempotent', async () => {
       const f = await fixture(),
         path = '中文 输入.xlsx',

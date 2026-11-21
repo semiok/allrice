@@ -7,7 +7,7 @@ import {
 import {
   DataAccessError,
   abandonStorageMetadata,
-  authorizeSessionOwner,
+  authorizeLegacySessionWrite,
   createStorageMetadata,
   linkFileToSession,
   linkWorkspaceFileToSession,
@@ -40,7 +40,7 @@ export async function POST(
     const workspaceId = new URL(request.url).searchParams.get('workspaceId');
     if (!workspaceId) throw new DataAccessError('not_found');
     const { id: sessionId } = await route.params;
-    await authorizeSessionOwner(context, workspaceId, sessionId);
+    await authorizeLegacySessionWrite(context, workspaceId, sessionId);
     const input = CreateSessionAttachmentInputSchema.parse(
       await request.json(),
     );
@@ -95,6 +95,7 @@ export async function PUT(
     const workspaceId = new URL(request.url).searchParams.get('workspaceId');
     if (!workspaceId) throw new DataAccessError('not_found');
     const { id: sessionId } = await route.params;
+    await authorizeLegacySessionWrite(context, workspaceId, sessionId);
     const input = LinkSessionAttachmentInputSchema.parse(await request.json());
     const linked = await linkWorkspaceFileToSession({
       context,

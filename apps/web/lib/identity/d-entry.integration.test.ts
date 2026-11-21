@@ -8,9 +8,12 @@ import {
   it,
   vi,
 } from 'vitest';
-import type { EmployeeRuntimePackage } from '@allrice/contracts';
+import type { EmployeeRuntimePackage, StoragePort } from '@allrice/contracts';
 import * as client from '../../../../packages/database/src/core/client.ts';
-import { createRuntimeFixtureDatabase } from '../../../../packages/database/src/runtime.fixture.ts';
+import {
+  createRuntimeFixtureDatabase,
+  runtimeFixtureStorage,
+} from '../../../../packages/database/src/runtime.fixture.ts';
 import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
 import { buildEmployeeRuntimePackage } from '../../../../packages/database/src/platform-employees/runtime-package.ts';
@@ -24,7 +27,14 @@ import {
   createChatSession,
   getSessionExecutionGeneration,
   sendChatMessage,
+  updateChatSession,
+  linkFileToSession,
+  linkWorkspaceFileToSession,
 } from '../../../../packages/database/src/workspace/service.ts';
+import { initializeNativeOncePartition } from '../../../../packages/database/src/native-schedule-once-product.ts';
+import { initializeNativeRecurringPartition } from '../../../../packages/database/src/native-schedule-recurring-product.ts';
+import { prepareAutomationConversation } from '../../../../packages/database/src/automation-conversation.ts';
+import { readScheduleTarget } from '../../../../packages/database/src/native-schedule-authority.ts';
 import {
   claimNextJob,
   startClaimedJob,
@@ -35,8 +45,21 @@ import { enqueueNativeSubagentControl } from '../../../../packages/database/src/
 import { updateQueuedMessage } from '../../../../packages/database/src/conversation/queued-messages.ts';
 import { GET } from '../../app/api/v1/d-entry/identity/route';
 import { POST } from '../../app/api/v1/d-entry/admission/route';
+import { PATCH } from '../../app/api/v1/sessions/[id]/route';
+import {
+  POST as uploadAttachment,
+  PUT as attachWorkspaceFile,
+} from '../../app/api/v1/sessions/[id]/attachments/route';
+import { POST as createOnceTask } from '../../app/api/v1/sessions/[id]/once-tasks/route';
+import { POST as cancelOnceTask } from '../../app/api/v1/sessions/[id]/once-tasks/[taskId]/cancel/route';
+import { POST as createRecurringTask } from '../../app/api/v1/sessions/[id]/schedule-tasks/route';
+import { resolveDEntryAdmission } from '../d-entry/admission';
+import { resolveDEntryIdentity } from '../d-entry/identity';
 
-const cookie = vi.hoisted(() => ({ token: '' }));
+const cookie = vi.hoisted(() => ({
+  token: '',
+  storage: null as StoragePort | null,
+}));
 vi.mock('next/headers', () => ({
   cookies: async () => ({
     get: (name: string) =>
@@ -44,6 +67,9 @@ vi.mock('next/headers', () => ({
         ? { value: cookie.token }
         : undefined,
   }),
+}));
+vi.mock('../storage/runtime', () => ({
+  getStorageAdapter: () => cookie.storage!,
 }));
 const suite =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -64,6 +90,25 @@ suite(
       );
       fixture = await createRuntimeFixtureDatabase({ ownSchemaOnly: true });
       vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
+      cookie.storage = runtimeFixtureStorage(fixture.db);
+      for (const kind of ['once', 'recurring'] as const) {
+        const reference = {
+          artifactId: 'sha256:' + 'a'.repeat(64),
+          profileId: `allrice-${kind}-control-v1`,
+          storageId: 'synthetic-sql-only',
+          stateRoot: fixture.storageRoot,
+        };
+        vi.stubEnv(`ALLRICE_NATIVE_${kind.toUpperCase()}_ENABLED`, '1');
+        vi.stubEnv(
+          `ALLRICE_NATIVE_${kind.toUpperCase()}_REFERENCE`,
+          JSON.stringify(reference),
+        );
+        await (
+          kind === 'once'
+            ? initializeNativeOncePartition
+            : initializeNativeRecurringPartition
+        )(reference);
+      }
       const source = await createEmployeeAdministrationFixture(fixture.db);
       runtimePackage = buildEmployeeRuntimePackage({
         revision: 1,
@@ -124,7 +169,11 @@ suite(
       };
     }
     type Fixture = Awaited<ReturnType<typeof setup>>;
-    function request(f: Fixture, post = false, selection = f.selection) {
+    function request(
+      f: Fixture,
+      post = false,
+      selection: Record<string, string> = f.selection,
+    ) {
       return new Request(
         `https://allrice.test/api/v1/d-entry/${post ? 'admission' : 'identity'}${post ? '' : '?' + new URLSearchParams(selection)}`,
         {
@@ -139,6 +188,29 @@ suite(
         },
       );
     }
+    function legacyRequest(
+      f: Fixture,
+      sessionId: string,
+      path: string,
+      method: string,
+      body: unknown,
+    ) {
+      return new Request(
+        `https://allrice.test/api/v1/sessions/${sessionId}${path}?workspaceId=${f.workspace}`,
+        {
+          method,
+          headers: {
+            host: 'allrice.test',
+            origin: 'https://allrice.test',
+            'content-type': 'application/json',
+            'x-allrice-organization-id': f.org,
+            'x-allrice-workspace-id': f.workspace,
+          },
+          body: JSON.stringify(body),
+        },
+      );
+    }
+    const route = (id: string) => ({ params: Promise.resolve({ id }) });
     async function four(f: Fixture) {
       return createChatSession(
         f.context,
@@ -194,6 +266,307 @@ suite(
       await fixture.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${f.session}`;
       expect((await GET(request(f))).status).toBe(200);
       expect((await POST(request(f, true))).status).toBe(403);
+    });
+    it('rechecks current writable authority for an already logged-in member downgraded to viewer, including new threads', async () => {
+      const f = await setup(),
+        thread = await four(f);
+      const existing = { ...f.selection, threadId: thread.id };
+      const newThread = {
+        workspaceId: f.workspace,
+        employeeInstanceId: f.assignment,
+      };
+      const policy = {
+        revision: 'synthetic-approved-policy',
+        defaultGeneration: '3.x' as const,
+        selections: [
+          {
+            organizationId: f.org,
+            personId: f.user,
+            employeeInstanceId: f.assignment,
+            generation: '4.0' as const,
+          },
+        ],
+      };
+      for (const selection of [existing, newThread])
+        expect(
+          (await resolveDEntryAdmission(f.context, selection, policy))
+            .executionGeneration,
+        ).toBe('4.0');
+      await fixture.db`update allrice_memberships set role='viewer' where id=${f.membership}`;
+      expect(
+        f.context.memberships.find((m) => m.id === f.membership)?.role,
+      ).toBe('member');
+      const fresh = await authenticateSession(f.login.token, {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+      });
+      expect(fresh?.memberships.find((m) => m.id === f.membership)?.role).toBe(
+        'viewer',
+      );
+      const [assignment] =
+        await fixture.db`select active from allrice_employee_assignments where id=${f.assignment}`;
+      expect(assignment!.active).toBe(true);
+      for (const selection of [existing, newThread]) {
+        await expect(
+          resolveDEntryAdmission(f.context, selection, policy),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        expect((await POST(request(f, true, selection))).status).toBe(403);
+      }
+      expect((await GET(request(f, false, existing))).status).toBe(200);
+      await expect(
+        resolveDEntryIdentity(f.context, existing, 'history'),
+      ).resolves.toMatchObject({ threadId: thread.id });
+    });
+    it('rejects 4.0 legacy PATCH before metadata and message visibility writes, preserving 3.x updates and history', async () => {
+      const f = await setup(),
+        thread = await four(f),
+        messageId = randomUUID();
+      await fixture.db`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
+        values(${messageId},${f.org},${f.workspace},${thread.id},${f.user},'user','{"text":"synthetic history","citations":[]}')`;
+      const snapshot =
+        () => fixture.db`select s.title,s.visibility,s.archived_at,s.pinned_at,s.updated_at,m.visibility message_visibility
+        from allrice_chat_sessions s join allrice_messages m on m.session_id=s.id where s.id=${thread.id}`;
+      const before = await snapshot();
+      for (const patch of [
+        { title: 'No legacy rename' },
+        { visibility: 'workspace' },
+        { archived: true, stopActivity: true },
+        { pinned: true },
+      ]) {
+        expect(
+          (
+            await PATCH(
+              legacyRequest(f, thread.id, '', 'PATCH', patch),
+              route(thread.id),
+            )
+          ).status,
+        ).toBe(403);
+        await expect(
+          updateChatSession(f.context, f.workspace, thread.id, patch),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+      }
+      expect(await snapshot()).toEqual(before);
+      expect(
+        (await GET(request(f, false, { ...f.selection, threadId: thread.id })))
+          .status,
+      ).toBe(200);
+      const legacy = await createChatSession(f.context, {
+        workspaceId: f.workspace,
+        employeeInstanceId: f.assignment,
+      });
+      await fixture.db`insert into allrice_messages(organization_id,workspace_id,session_id,owner_id,role,content)
+        values(${f.org},${f.workspace},${legacy.id},${f.user},'user','{"text":"legacy history","citations":[]}')`;
+      const changed = await PATCH(
+        legacyRequest(f, legacy.id, '', 'PATCH', {
+          title: 'Legacy rename',
+          visibility: 'workspace',
+          pinned: true,
+        }),
+        route(legacy.id),
+      );
+      expect(changed.status).toBe(200);
+      expect((await changed.json()).session).toMatchObject({
+        title: 'Legacy rename',
+        visibility: 'workspace',
+      });
+      const [message] =
+        await fixture.db`select visibility from allrice_messages where session_id=${legacy.id}`;
+      expect(message!.visibility).toBe('workspace');
+      expect(
+        (
+          await PATCH(
+            legacyRequest(f, legacy.id, '', 'PATCH', { archived: true }),
+            route(legacy.id),
+          )
+        ).status,
+      ).toBe(200);
+    });
+    it('rejects 4.0 legacy uploads before bytes or metadata, and guards both final file link services while preserving 3.x', async () => {
+      const f = await setup(),
+        thread = await four(f);
+      const content = {
+        fileName: 'synthetic.txt',
+        mediaType: 'text/plain',
+        contentBase64: Buffer.from('isolated fixture bytes').toString('base64'),
+      };
+      const put = vi.spyOn(cookie.storage!, 'put');
+      try {
+        const uploaded = await uploadAttachment(
+          legacyRequest(f, f.session, '/attachments', 'POST', content),
+          route(f.session),
+        );
+        expect(uploaded.status).toBe(201);
+        const objectId = (await uploaded.json()).attachment.id as string;
+        expect(put).toHaveBeenCalledTimes(1);
+        const legacy = await createChatSession(f.context, {
+          workspaceId: f.workspace,
+          employeeInstanceId: f.assignment,
+        });
+        expect(
+          (
+            await attachWorkspaceFile(
+              legacyRequest(f, legacy.id, '/attachments', 'PUT', { objectId }),
+              route(legacy.id),
+            )
+          ).status,
+        ).toBe(200);
+        put.mockClear();
+        const counts = () => fixture.db`select
+          (select count(*)::int from allrice_storage_objects where organization_id=${f.org}) objects,
+          (select count(*)::int from allrice_file_references where organization_id=${f.org}) links`;
+        const before = await counts();
+        expect(
+          (
+            await uploadAttachment(
+              legacyRequest(f, thread.id, '/attachments', 'POST', content),
+              route(thread.id),
+            )
+          ).status,
+        ).toBe(403);
+        expect(
+          (
+            await attachWorkspaceFile(
+              legacyRequest(f, thread.id, '/attachments', 'PUT', { objectId }),
+              route(thread.id),
+            )
+          ).status,
+        ).toBe(403);
+        await expect(
+          linkFileToSession({
+            context: f.context,
+            workspaceId: f.workspace,
+            sessionId: thread.id,
+            objectId,
+            fileName: content.fileName,
+          }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        await expect(
+          linkWorkspaceFileToSession({
+            context: f.context,
+            workspaceId: f.workspace,
+            sessionId: thread.id,
+            objectId,
+          }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        expect(put).not.toHaveBeenCalled();
+        expect(await counts()).toEqual(before);
+        const [linked] =
+          await fixture.db`select count(*)::int count from allrice_file_references where session_id=${thread.id}`;
+        expect(linked!.count).toBe(0);
+      } finally {
+        put.mockRestore();
+      }
+    });
+    it('rejects 4.0 once/recurring new_each_run at real routes and before creating a fresh 3.x target', async () => {
+      const f = await setup(),
+        thread = await four(f);
+      const task = {
+        name: 'Synthetic only',
+        prompt: 'No native execution',
+        conversationMode: 'new_each_run' as const,
+      };
+      const once = {
+        ...task,
+        clientRequestId: randomUUID(),
+        runAt: new Date(Date.now() + 3600_000).toISOString(),
+        timezone: 'UTC',
+      };
+      const recurring = {
+        ...task,
+        clientRequestId: randomUUID(),
+        rule: { kind: 'every', seconds: 3600 },
+      };
+      const counts = () => fixture.db`select
+        (select count(*)::int from allrice_automations where organization_id=${f.org}) clocks,
+        (select count(*)::int from allrice_native_once_controls where immutable_control->>'organizationId'=${f.org}) once_controls,
+        (select count(*)::int from allrice_native_recurring_controls where immutable_identity->>'organizationId'=${f.org}) recurring_controls,
+        (select count(*)::int from allrice_chat_sessions where organization_id=${f.org} and execution_generation='3.x') legacy_threads,
+        (select count(*)::int from allrice_automation_runs where organization_id=${f.org}) automation_runs,
+        (select count(*)::int from allrice_jobs where organization_id=${f.org}) jobs`;
+      const before = await counts();
+      expect(
+        (
+          await createOnceTask(
+            legacyRequest(f, thread.id, '/once-tasks', 'POST', once),
+            route(thread.id),
+          )
+        ).status,
+      ).toBe(403);
+      expect(
+        (
+          await createRecurringTask(
+            legacyRequest(f, thread.id, '/schedule-tasks', 'POST', recurring),
+            route(thread.id),
+          )
+        ).status,
+      ).toBe(403);
+      const scope = {
+        organizationId: f.org,
+        workspaceId: f.workspace,
+        ownerId: f.user,
+      };
+      await expect(
+        fixture.db.begin(async (tx) =>
+          prepareAutomationConversation(
+            tx,
+            f.context,
+            scope,
+            {
+              id: randomUUID(),
+              name: task.name,
+              revision: 1,
+              session_id: thread.id,
+              employee_assignment_id: f.assignment,
+              conversation_mode: 'new_each_run',
+            },
+            await readScheduleTarget(tx, scope, thread.id),
+            { kind: 'manual', requestId: randomUUID() },
+          ),
+        ),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      expect(await counts()).toEqual(before);
+      const legacyOnce = await createOnceTask(
+        legacyRequest(f, f.session, '/once-tasks', 'POST', once),
+        route(f.session),
+      );
+      expect(legacyOnce.status).toBe(201);
+      const taskId = (await legacyOnce.json()).task.id as string;
+      expect(
+        (
+          await createRecurringTask(
+            legacyRequest(f, f.session, '/schedule-tasks', 'POST', recurring),
+            route(f.session),
+          )
+        ).status,
+      ).toBe(201);
+      const [after] = await counts();
+      expect(after).toMatchObject({
+        clocks: 2,
+        once_controls: 1,
+        recurring_controls: 1,
+        legacy_threads: 1,
+        automation_runs: 0,
+        jobs: before[0]!.jobs,
+      });
+      const [controlBefore] =
+        await fixture.db`select snapshot,snapshot_version from allrice_native_once_controls where automation_id=${taskId}`;
+      expect(
+        (
+          await cancelOnceTask(
+            legacyRequest(
+              f,
+              thread.id,
+              `/once-tasks/${taskId}/cancel`,
+              'POST',
+              {},
+            ),
+            { params: Promise.resolve({ id: thread.id, taskId }) },
+          )
+        ).status,
+      ).toBe(403);
+      const [controlAfter] =
+        await fixture.db`select snapshot,snapshot_version from allrice_native_once_controls where automation_id=${taskId}`;
+      expect(controlAfter).toEqual(controlBefore);
     });
     it('pins old and new threads permanently and never creates a 3.x native origin for 4.0', async () => {
       const f = await setup(),

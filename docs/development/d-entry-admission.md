@@ -28,6 +28,8 @@
 
 上述UUID字符串是字段说明，实际值须通过UuidSchema。无threadId时只允许有效员工；带threadId的本人冷历史沿`getEmployeeInstanceForHistory`和`authorizeSessionHistoryOwner`保留归档/撤配读取，但不授执行。当前员工服务每次核session/user/membership，历史接口也不能绕过登录或当前租户权限。
 
+执行分支另调用身份owner公开口`@allrice/database#requireCurrentWorkspaceWriteAuthority(context, workspaceId)`，实时核有效登录session、active用户、未归档租户/空间及当前admin/member资格。旧RequestContext里的member快照不能覆盖已降为viewer的现状；无thread新建准入同核，降权仍保留本人历史读。失败沿现有`AUTHORIZATION_DENIED`/403，不变更登录或历史错误合同。
+
 `POST /api/v1/d-entry/admission`使用同一选择器JSON、现有cookie并要求真实同源Origin。先核当前员工/root可继续权限，再读显式发布policy。成功选择结果为`DEntryAdmissionSchema`（identity、executionGeneration、policyRevision）；已有线程以永久pin为准，名单选择只作用于新线程。4.0名单被关闭后，4.0旧线程拒绝继续，身份历史入口仍按当前读权可用。
 
 **当前边界：** `readDEntryReleasePolicy`刻意返回依赖未绑定，不读猜测env、空名单或自设默认值。以后配置接通后，3.x admission可返回既有选择结果；4.0仍因native route未绑定返回503。不会创建线程、启动VM、刷新模型凭据、发prompt或回落到3.x执行。
@@ -41,6 +43,10 @@
 `allrice_chat_sessions.execution_generation`由0249迁移加入；已有线程/3.x创建是3.x，4.0创建由可信宿主调用`createChatSession(...,{executionGeneration:'4.0'})`同事务写入。该options不是浏览器body。DB trigger禁止更新pin；固定ID幂等重试必须匹配代际。4.0创建不伪造3.x native_root_origin。后续VM/native root绑定由各owner公开口完成。
 
 旧send/steer/问答/queue edit/自动任务producer经现有message/queue事务门卫；3.x claim过滤4.0，start/native prepare/bind、native runtime acquire/owned writes与网页子控制再核pin。不按可变名单改旧线程，不改DSH出生元数据，不增Agent状态、自动重放或回退迁移。
+
+旧PATCH会话的title/visibility/archive/pin和messages.visibility写入均只允许3.x。旧附件POST/PUT在分配存储ID、metadata与blob之前调用公开口`authorizeLegacySessionWrite`；`linkFileToSession`和`linkWorkspaceFileToSession`最终写点独立核pin，读取历史不受此门卫影响。本地附件的旧command入队、local.file设备claim、实际transfer前同核3.x，不能先上传再以link失败收尾。无session的旧设备文件功能保持原语义。
+
+旧once/recurring（含monthly）登记与执行门卫核**源线程**3.x；`new_each_run`在新建目标前复核源pin，后续job准入同时核冻结source和target的3.x pin。不能以创建一个新3.x目标替4.0源线程执行。所有检查复用不可变出生pin，不增clock或产品状态机；3.x原有定时能力保留。
 
 迁移只作用现有线程owner表，发布前必须停旧writer、做迁移快照并核旧版本兼容；旧binary不认识新pin，所以首次创建4.0线程前不能与旧writer同跑。代码不执行共享Dev迁移。
 
@@ -64,7 +70,7 @@ UI把remountKey作为DSH Client根的key：key变化时先abort所有旧HTTP/WS/
 
 ## 直接受影响验证
 
-单文件快测`apps/web/lib/identity/d-entry.test.ts`覆盖真实route handler边界、显式policy/永久pin、child写拒绝、逐chunk现权、idle撤权signal收尾和remount key。`d-entry.integration.test.ts`经真实cookie认证/隔离PG验证跨租户/人、撤权、冷历史、不可变pin/竞争创建、legacy send/queue/claim/start/prepare拒绝；集成门禁由主线M5运行，未跑不能报通过。
+单文件快测`apps/web/lib/identity/d-entry.test.ts`覆盖真实route handler边界、显式policy/永久pin、child写拒绝、逐chunk现权、idle撤权signal收尾和remount key。`d-entry.integration.test.ts`经真实cookie认证/隔离PG验证跨租户/人、旧RC降viewer、撤权、冷历史、不可变pin/竞争创建、legacy send/queue/claim/start/prepare拒绝；还经实际PATCH/附件/once/recurring handler验证4.0零写及3.x正向。`local-files.integration.test.ts`新增真实设备/文件夹夹具下的4.0拒绝入队、claim、上传及3.x原上传回归。集成门禁由主线M5运行，未跑不能报通过。
 
 旧native-subagent-authorized-query、native-subagent-control、native-session-binding/generation、employee-instances、message route、conversation-input/queued-messages/runtime、task-native-wait和run-delivery-authority相关完整文件必须一并由主线核受影响范围。Astra xhigh绑定确切提交。无真实模型Run、VM启动、共享Dev迁移、部署或本人验收。
 

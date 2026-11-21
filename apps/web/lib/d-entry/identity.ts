@@ -10,6 +10,7 @@ import {
   DataAccessError,
   getEmployeeInstance,
   getEmployeeInstanceForHistory,
+  requireCurrentWorkspaceWriteAuthority,
 } from '@allrice/database';
 
 /** Host-only service. The caller obtains context from the real login cookie;
@@ -53,6 +54,8 @@ export async function resolveDEntryIdentity(
     employee.workspaceId !== selection.workspaceId
   )
     throw new DataAccessError('authorization_denied');
+  if (access === 'execute')
+    await requireCurrentWorkspaceWriteAuthority(scope, selection.workspaceId);
   return DEntryIdentitySchema.parse({
     organizationId: context.organizationId,
     workspaceId: employee.workspaceId,

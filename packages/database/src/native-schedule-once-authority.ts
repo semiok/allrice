@@ -214,7 +214,7 @@ export async function lockNativeOnceJobAdmission(
       and s.organization_id=a.organization_id and s.workspace_id=a.workspace_id and s.owner_id=a.user_id
     where a.id=${d.employeeAssignmentId} and a.organization_id=${scope.organizationId} and a.workspace_id=${scope.workspaceId}
       and a.user_id=${scope.actor.id} and a.active and e.status='active' and e.employee_key not like 'platform-%'
-      and i.archived_at is null and s.archived_at is null for share of a,e,i,s`;
+      and i.archived_at is null and s.archived_at is null and s.execution_generation='3.x' for share of a,e,i,s`;
   if (!target) return deny();
   return {
     scheduled: true,
