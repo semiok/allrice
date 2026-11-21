@@ -205,7 +205,16 @@ suite(
       await vm.prewarm(rc, { trigger: 'page' }, cancel.signal);
       const binding = await vm.resolve(rc, cancel.signal);
       const receipt = await egress.prepare(binding, cancel.signal);
-      const store = createPostgresModelGatewayStore(open());
+      const actualStore = createPostgresModelGatewayStore(open());
+      const claimIds: string[] = [];
+      const store = {
+        ...actualStore,
+        async claimCall(...args: Parameters<typeof actualStore.claimCall>) {
+          const id = await actualStore.claimCall(...args);
+          claimIds.push(id);
+          return id;
+        },
+      };
       const model = createModelGateway({
         ownerId: randomUUID(),
         store,
@@ -270,6 +279,7 @@ suite(
         calls,
         native,
         store,
+        claimIds,
         post,
         get egressClaims() {
           return egressClaims;
@@ -344,7 +354,10 @@ suite(
       const f = await setup();
       const chunks = await f.collect();
       expect(chunks.some((c) => c.type === 'text-delta')).toBe(true);
-      expect(chunks.at(-1)?.type).toBe('finish');
+      expect(chunks.at(-1)).toMatchObject({
+        type: 'finish',
+        reason: { kind: 'stop' },
+      });
       expect(f.checked).toBeGreaterThan(0);
       expect(f.handled).toBe(1);
       expect(f.egressClaims).toBe(0);
@@ -355,7 +368,30 @@ suite(
         f.binding.personId,
         f.binding.organizationId,
       );
-      expect(usage).toBeDefined();
+      expect(usage).toMatchObject({
+        inputTokens: 12,
+        outputTokens: 3,
+        totalTokens: 15,
+      });
+      expect(f.claimIds).toHaveLength(1);
+      const persisted = await f.store.attempts(f.claimIds[0]!);
+      expect(persisted).toHaveLength(1);
+      expect(persisted[0]).toMatchObject({
+        protocol: 'openai-responses',
+        kind: 'model',
+        dispatchObserved: true,
+        httpStatus: 200,
+        terminal: 'completed',
+        outcome: 'closed',
+        usage: {
+          inputTokens: 12,
+          outputTokens: 3,
+          totalTokens: 15,
+          cachedInputTokens: 4,
+          usageComplete: true,
+          cacheUsageKnown: true,
+        },
+      });
       expect(
         await f.host.participant('gateway').observe(f.binding, cancel.signal),
       ).toMatchObject({ state: 'known', active: 0, queued: 0, deferred: 0 });
@@ -364,7 +400,7 @@ suite(
       const f = await setup();
       f.invalidateIdentity();
       const response = await f.post();
-      expect(response.status).toBe(403);
+      expect(response.status).toBe(503);
       expect(response.body).toContain('BINDING_INVALID');
       expect(f.permits).toHaveLength(0);
       expect(f.native.requests).toHaveLength(0);
