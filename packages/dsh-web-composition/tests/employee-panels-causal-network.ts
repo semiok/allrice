@@ -1,5 +1,14 @@
 import type { Page } from 'playwright-core';
 
+export const causalReplayOrigin = 'http://allrice-panels-causal-replay.invalid';
+export type CausalReplayRegistration = {
+  id: string;
+  origin: typeof causalReplayOrigin;
+  navigationUrl: string;
+  method: 'GET';
+  bodySha256: string;
+};
+
 export function causalJournal() {
   const events: {
     seq: number;
@@ -22,7 +31,189 @@ export function causalJournal() {
   };
 }
 
-/** Passive public events only. This does not classify or waive any audit error. */
+/** Diagnostic A only: B proved this CDP-only tool cancellation. Every receipt,
+ * request and raw failure remains append-only. This is not the panels UI audit. */
+export function auditCausalToolControl(
+  events: ReturnType<typeof causalJournal>['events'],
+  side: string,
+) {
+  const own = events.filter((event) => event.side === side);
+  type Data = Partial<CausalReplayRegistration> & {
+    requestId?: string;
+    loaderId?: string;
+    frameId?: string;
+    documentURL?: string;
+    type?: string;
+    redirectResponse?: unknown;
+    status?: number;
+    mainFrame?: boolean;
+    request?: {
+      url?: string;
+      method?: string;
+      headers?: Record<string, string>;
+    };
+    response?: {
+      url?: string;
+      status?: number;
+      headers?: Record<string, string>;
+    };
+    initiator?: { type?: string };
+    timestamp?: number;
+    errorText?: string;
+    canceled?: boolean;
+    blockedReason?: unknown;
+    corsErrorStatus?: unknown;
+    url?: string;
+  };
+  const named = (name: string) => own.filter((event) => event.name === name);
+  const data = (event: (typeof own)[number]) => event.data as Data;
+  const registrations = named('replay-registration');
+  const controlledFailures: unknown[] = [],
+    issues: string[] = [];
+  if (!registrations.length) return { controlledFailures, issues };
+  const reject = () => {
+    issues.push('Trusted replay tool-control chain is incomplete or ambiguous');
+    return { controlledFailures, issues };
+  };
+  if (side !== 'reference' || registrations.length !== 1) return reject();
+  const registration = registrations[0]!,
+    r = data(registration);
+  let navigation: URL;
+  try {
+    navigation = new URL(r.navigationUrl!);
+  } catch {
+    return reject();
+  }
+  if (
+    r.origin !== causalReplayOrigin ||
+    navigation.origin !== causalReplayOrigin ||
+    navigation.pathname !== '/' ||
+    navigation.username ||
+    navigation.password ||
+    navigation.hash ||
+    r.method !== 'GET' ||
+    !r.id ||
+    !/^[a-f0-9]{64}$/.test(r.bodySha256 ?? '')
+  )
+    return reject();
+  const starts = named('Network.requestWillBeSent');
+  const docs = starts.filter(
+    (event) => data(event).request?.url === r.navigationUrl,
+  );
+  const icons = starts.filter(
+    (event) => data(event).request?.url === r.origin + '/favicon.ico',
+  );
+  if (starts.length !== 2 || docs.length !== 1 || icons.length !== 1)
+    return reject();
+  const doc = docs[0]!,
+    icon = icons[0]!,
+    d = data(doc),
+    i = data(icon);
+  if (
+    !d.requestId ||
+    d.requestId === i.requestId ||
+    d.requestId !== d.loaderId ||
+    !d.frameId ||
+    d.type !== 'Document' ||
+    d.documentURL !== r.navigationUrl ||
+    d.request?.method !== 'GET' ||
+    d.redirectResponse !== undefined ||
+    !i.requestId ||
+    i.type !== 'Other' ||
+    i.documentURL !== r.navigationUrl ||
+    i.request?.method !== 'GET' ||
+    i.request.headers?.Referer !== r.navigationUrl ||
+    i.initiator?.type !== 'other' ||
+    i.loaderId !== d.loaderId ||
+    i.frameId !== d.frameId ||
+    i.redirectResponse !== undefined
+  )
+    return reject();
+  const terminal = (name: string, id: string) =>
+    named(name).filter((event) => data(event).requestId === id);
+  const responses = terminal('Network.responseReceived', d.requestId);
+  const finished = terminal('Network.loadingFinished', d.requestId);
+  const failed = terminal('Network.loadingFailed', i.requestId);
+  const entries = named('route-entry'),
+    issued = named('route-fulfill-issued'),
+    completed = named('route-fulfilled'),
+    navigations = named('replay-navigation-complete');
+  if (
+    responses.length !== 1 ||
+    finished.length !== 1 ||
+    failed.length !== 1 ||
+    terminal('Network.loadingFailed', d.requestId).length ||
+    terminal('Network.responseReceived', i.requestId).length ||
+    terminal('Network.loadingFinished', i.requestId).length ||
+    entries.length !== 1 ||
+    issued.length !== 1 ||
+    completed.length !== 1 ||
+    navigations.length !== 1
+  )
+    return reject();
+  const response = responses[0]!,
+    end = finished[0]!,
+    failure = failed[0]!,
+    f = data(failure),
+    responseData = data(response);
+  for (const receipt of [
+    entries[0]!,
+    issued[0]!,
+    completed[0]!,
+    navigations[0]!,
+  ]) {
+    const value = data(receipt);
+    if (
+      value.id !== r.id ||
+      value.url !== r.navigationUrl ||
+      value.method !== 'GET' ||
+      value.bodySha256 !== r.bodySha256
+    )
+      return reject();
+  }
+  if (
+    data(issued[0]!).status !== 200 ||
+    data(completed[0]!).status !== 200 ||
+    data(navigations[0]!).status !== 200 ||
+    data(navigations[0]!).mainFrame !== true ||
+    responseData.type !== 'Document' ||
+    responseData.loaderId !== d.loaderId ||
+    responseData.frameId !== d.frameId ||
+    responseData.response?.url !== r.navigationUrl ||
+    responseData.response?.status !== 200 ||
+    responseData.response?.headers?.['x-allrice-causal-replay'] !== r.id ||
+    f.type !== 'Other' ||
+    f.errorText !== 'net::ERR_ABORTED' ||
+    f.canceled !== true ||
+    f.blockedReason !== undefined ||
+    f.corsErrorStatus !== undefined ||
+    typeof i.timestamp !== 'number' ||
+    typeof f.timestamp !== 'number' ||
+    f.timestamp < i.timestamp ||
+    ![
+      registration.seq,
+      doc.seq,
+      entries[0]!.seq,
+      issued[0]!.seq,
+      response.seq,
+      end.seq,
+      icon.seq,
+      failure.seq,
+    ].every((seq, index, list) => index === 0 || seq > list[index - 1]!) ||
+    completed[0]!.seq <= issued[0]!.seq ||
+    navigations[0]!.seq <= issued[0]!.seq ||
+    own.some(
+      (event) =>
+        event.name.startsWith('Page.') &&
+        data(event).url === r.origin + '/favicon.ico',
+    )
+  )
+    return reject();
+  controlledFailures.push(failure.data);
+  return { controlledFailures, issues };
+}
+
+/** Passive public events; only explicitly registered diagnostic replay can classify. */
 export async function observeCausalPage(
   page: Page,
   side: string,
@@ -130,14 +321,31 @@ export async function observeCausalPage(
   });
   await session.send('Network.enable');
   await session.send('Log.enable');
+  const audit = () => {
+    const control = auditCausalToolControl(journal.events, side);
+    return {
+      ...control,
+      publicErrors: errors,
+      rawCdpFailures: cdpFailures,
+      unknownCdpFailures: cdpFailures.filter(
+        (failure) => !control.controlledFailures.includes(failure),
+      ),
+    };
+  };
   return {
     side,
     session,
     errors,
     cdpFailures,
     requests,
+    audit,
     assertClean() {
-      if (errors.length || cdpFailures.length)
+      const value = audit();
+      if (
+        errors.length ||
+        value.issues.length ||
+        value.unknownCdpFailures.length
+      )
         throw Error('Unclassified public runtime/network outcomes remain');
     },
     async layers() {

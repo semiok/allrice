@@ -11,6 +11,16 @@ export function createPanelsCausalDom() {
     'letter-spacing',
     'color',
     'background',
+    'background-color',
+    'background-image',
+    'border-image-source',
+    'outline-width',
+    'outline-style',
+    'pointer-events',
+    'cursor',
+    'z-index',
+    'visibility',
+    'content',
     'border-radius',
     'border-width',
     'border-color',
@@ -67,11 +77,18 @@ export function createPanelsCausalDom() {
       throw Error('Diagnostic requires exactly one real visible memory panel');
     return nodes[0]!;
   };
+  const identities = new WeakMap<Element, number>();
+  let nextIdentity = 0;
+  const identity = (element: Element) => {
+    if (!identities.has(element)) identities.set(element, nextIdentity++);
+    return identities.get(element)!;
+  };
   const node = (element: Element) => {
     const svg = element instanceof SVGGraphicsElement;
     const bbox = svg ? element.getBBox() : null;
     const matrix = svg ? element.getScreenCTM() : null;
     return {
+      identity: identity(element),
       tag: element.tagName,
       className: element.getAttribute('class'),
       text: element.textContent?.slice(0, 180),
@@ -210,23 +227,92 @@ export function createPanelsCausalDom() {
             box.y >= r.y + parent.clientTop &&
             box.y + box.height <= r.y + parent.clientTop + parent.clientHeight;
       }
-      const hits = [
-        [1, 1],
-        [box.width - 1, 1],
-        [1, box.height - 1],
-        [box.width - 1, box.height - 1],
-        [box.width / 2, box.height / 2],
-      ].map(([x, y]) =>
-        root.contains(document.elementFromPoint(box.x + x!, box.y + y!)),
+      const hit = (x: number, y: number) => {
+        const element = document.elementFromPoint(x, y);
+        return {
+          x,
+          y,
+          rootContains: root.contains(element),
+          element: element && {
+            ...node(element),
+            attributes: Object.fromEntries(
+              [...element.attributes].map(({ name, value }) => [name, value]),
+            ),
+          },
+        };
+      };
+      const sample = (r: typeof box) =>
+        [
+          [Math.min(1, r.width / 2), Math.min(1, r.height / 2)],
+          [r.width - Math.min(1, r.width / 2), Math.min(1, r.height / 2)],
+          [Math.min(1, r.width / 2), r.height - Math.min(1, r.height / 2)],
+          [
+            r.width - Math.min(1, r.width / 2),
+            r.height - Math.min(1, r.height / 2),
+          ],
+          [r.width / 2, r.height / 2],
+        ].map(([x, y]) => hit(r.x + x!, r.y + y!));
+      const raw = sample(box),
+        hits = raw.map((value) => value.rootContains);
+      const rightbar = root.closest('[data-rightbar-col]');
+      const controls = rightbar?.parentElement?.querySelectorAll(
+        ':scope > [data-side="rightbar"]',
+      );
+      const control = controls?.[0];
+      const resize =
+        rightbar && control
+          ? {
+              count: controls!.length,
+              rightbar: rect(rightbar),
+              rightbarIdentity: identity(rightbar),
+              control: {
+                ...node(control),
+                attributes: Object.fromEntries(
+                  [...control.attributes].map(({ name, value }) => [
+                    name,
+                    value,
+                  ]),
+                ),
+              },
+              empty: control.childNodes.length === 0,
+            }
+          : null;
+      // Do not relabel the original full-root hit test. The transparent native
+      // resize control owns an interaction strip; causal paint claims are scoped
+      // to the remaining content and to the recorded rounded/SVG subjects.
+      const left = resize
+        ? resize.control.rect.x + resize.control.rect.width
+        : box.x;
+      const interior = { ...box, x: left, width: box.x + box.width - left };
+      const elements = [root, ...root.querySelectorAll('*')].filter(
+        (el) => rect(el).width > 0 && rect(el).height > 0,
       );
       return {
         root: box,
-        nodes: [root, ...root.querySelectorAll('*')]
-          .filter((el) => rect(el).width > 0 && rect(el).height > 0)
-          .map(node),
+        nodes: elements.map(node),
         ancestors,
         unclipped: visible && hits.every(Boolean),
         hits,
+        sampling: {
+          clipBudgetVisible: visible,
+          raw,
+          resize,
+          interior,
+          interiorHits: sample(interior),
+          subjects: elements
+            .filter(
+              (el) =>
+                el instanceof SVGElement ||
+                getComputedStyle(el)
+                  .borderRadius.split(/[ /]+/)
+                  .some((part) => parseFloat(part) > 0),
+            )
+            .map((el) => ({
+              identity: identity(el),
+              rect: rect(el),
+              hits: sample(rect(el)),
+            })),
+        },
         active: document.activeElement?.tagName,
         pointerOutside: !root.contains(document.elementFromPoint(720, 0)),
       };

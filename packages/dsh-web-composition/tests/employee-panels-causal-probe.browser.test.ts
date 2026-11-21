@@ -20,11 +20,14 @@ import type { PanelsCausalSnapshot } from './employee-panels-causal-dom';
 import type {} from './fixtures/employee-panels/client';
 import {
   assertCausalInvariant,
+  assertCausalSampling,
   assertToolFaviconOutcome,
 } from './employee-panels-causal-proof';
 import {
   causalJournal,
+  causalReplayOrigin,
   observeCausalPage,
+  type CausalReplayRegistration,
 } from './employee-panels-causal-network';
 import { compareSidebarPixels } from './sidebar-pixels';
 import { readPanelsRenderingDiagnostics } from './employee-panels-rendering-diagnostics';
@@ -200,6 +203,81 @@ async function checkDomRestoration(page: Page, script: string) {
   });
 }
 
+// Real DOM/hit testing, deferred to A's actual browser execution. These controls
+// test the diagnostic helper; they do not stand in for DSH or product acceptance.
+async function checkSamplingDom(page: Page, script: string) {
+  await page.setContent(
+    '<!doctype html><style>html,body{margin:0}</style><body></body>',
+  );
+  await page.addScriptTag({ content: script });
+  const checks = [];
+  for (const kind of [
+    'clear',
+    'native-control',
+    'foreign-control',
+    'opaque-control',
+    'interior-overlay',
+    'subject-in-strip',
+    'duplicate-control',
+    'short-control',
+  ]) {
+    const value = await page.evaluate((kind) => {
+      document.body.innerHTML =
+        '<div id="frame" style="position:relative;width:200px;height:160px"><div data-rightbar-col style="position:absolute;left:80px;top:0;width:120px;height:160px;box-sizing:border-box;border-left:1px solid transparent;padding-top:12px"><div><section aria-label="Rice · 记忆" style="height:148px;position:relative"><i id="subject" style="position:absolute;left:12px;top:12px;width:16px;height:16px;border-radius:8px"></i></section></div></div><div data-side="rightbar" style="position:absolute;left:80px;top:0;bottom:0;width:8px;margin-left:-4px;cursor:col-resize;z-index:11"></div></div>';
+      const control = document.querySelector<HTMLElement>(
+        '[data-side="rightbar"]',
+      )!;
+      if (kind === 'clear') {
+        control.remove();
+        document
+          .querySelector('[data-rightbar-col]')!
+          .removeAttribute('data-rightbar-col');
+      }
+      if (kind === 'foreign-control') {
+        const foreign = control.cloneNode() as HTMLElement;
+        foreign.removeAttribute('data-side');
+        foreign.style.zIndex = '12';
+        control.parentElement!.append(foreign);
+      }
+      if (kind === 'opaque-control') control.style.backgroundColor = 'red';
+      if (kind === 'interior-overlay') {
+        const overlay = document.createElement('div');
+        overlay.style.cssText =
+          'position:absolute;left:84px;top:12px;width:116px;height:148px;z-index:12';
+        control.parentElement!.append(overlay);
+      }
+      if (kind === 'subject-in-strip')
+        document.getElementById('subject')!.style.left = '0';
+      if (kind === 'duplicate-control')
+        control.parentElement!.append(control.cloneNode());
+      if (kind === 'short-control') control.style.bottom = '50px';
+      return window.__allricePanelsCausalDomFactory!().snapshot();
+    }, kind);
+    let rejection: string | undefined;
+    try {
+      assertCausalSampling(value);
+    } catch (error) {
+      rejection = String(error);
+    }
+    checks.push({
+      kind,
+      passed: ['clear', 'native-control'].includes(kind)
+        ? !rejection && (kind !== 'native-control' || !value.unclipped)
+        : !!rejection,
+      rejection,
+      snapshot: value,
+    });
+  }
+  return {
+    actualBrowserDom: true,
+    syntheticDomFixture: true,
+    productAcceptance: false,
+    expectedChecks: 8,
+    checks,
+    valid: checks.length === 8 && checks.every((check) => check.passed),
+  };
+}
+
 suite('diagnostic-only panels causal probes; no acceptance claim', () => {
   let browser: Browser, artifacts: string;
   beforeAll(async () => {
@@ -225,6 +303,7 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
           expectedPaintPhases: phases,
           expectedACompletePngs: expectedPngs,
           expectedActualDomChecks: 9,
+          expectedSamplingDomChecks: 8,
           expectedBCompletePhases: ['OFF', 'ON'],
           browser: browser.version(),
           node: process.version,
@@ -350,30 +429,58 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
       });
       await settle(native);
       original = await snapshot(native);
-      const origin = 'http://allrice-panels-causal-replay.invalid';
-      await reference.route(origin + '/**', async (route) => {
-        journal.record('reference', 'route-entry', {
+      const navigationUrl =
+        causalReplayOrigin +
+        '/?' +
+        new URLSearchParams({
+          kind: 'experience',
+          state: 'list',
+          theme: 'light',
+          paneWidth: String(original.root.width),
+          paneHeight: String(original.root.height),
+        });
+      const replay: CausalReplayRegistration = {
+        id: randomUUID(),
+        origin: causalReplayOrigin,
+        navigationUrl,
+        method: 'GET',
+        bodySha256: sha(html),
+      };
+      journal.record('reference', 'replay-registration', replay);
+      await reference.route(replay.origin + '/**', async (route) => {
+        const receipt = {
+          ...replay,
           url: route.request().url(),
           method: route.request().method(),
-        });
+        };
+        journal.record('reference', 'route-entry', receipt);
         if (
-          new URL(route.request().url()).pathname !== '/' ||
+          route.request().url() !== replay.navigationUrl ||
           route.request().method() !== 'GET'
         )
           throw Error('Unprovided reference resource');
-        await route.fulfill({ contentType: 'text/html', body: html });
+        journal.record('reference', 'route-fulfill-issued', {
+          ...receipt,
+          status: 200,
+        });
+        await route.fulfill({
+          contentType: 'text/html',
+          body: html,
+          headers: { 'x-allrice-causal-replay': replay.id },
+        });
+        journal.record('reference', 'route-fulfilled', {
+          ...receipt,
+          status: 200,
+        });
       });
-      await reference.goto(
-        origin +
-          '/?' +
-          new URLSearchParams({
-            kind: 'experience',
-            state: 'list',
-            theme: 'light',
-            paneWidth: String(original.root.width),
-            paneHeight: String(original.root.height),
-          }),
-      );
+      const navigation = await reference.goto(replay.navigationUrl);
+      journal.record('reference', 'replay-navigation-complete', {
+        ...replay,
+        url: reference.url(),
+        method: navigation?.request().method(),
+        status: navigation?.status(),
+        mainFrame: navigation?.frame() === reference.mainFrame(),
+      });
       await memory(reference).waitFor({ state: 'visible' });
       await reference.mouse.move(0, 0);
       await reference.evaluate(async () => {
@@ -600,6 +707,9 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
           const domChecks = await checkDomRestoration(domPage, script!);
           await save('dom-restoration-checks.json', domChecks);
           expect(domChecks.valid).toBe(true);
+          const samplingChecks = await checkSamplingDom(domPage, script!);
+          await save('sampling-dom-checks.json', samplingChecks);
+          expect(samplingChecks.valid).toBe(true);
           await domObserver.flush();
           domObserver.assertClean();
         } catch (error) {
@@ -622,14 +732,19 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
           failures.push(error);
           cleanup.push({ closeError: String(error) });
         } finally {
-          for (const observer of observers)
-            if (observer.errors.length || observer.cdpFailures.length) {
+          const audits = observers.map((observer) => ({
+            side: observer.side,
+            ...observer.audit(),
+          }));
+          await save('network-audit.json', audits);
+          for (const audit of audits)
+            if (
+              audit.publicErrors.length ||
+              audit.issues.length ||
+              audit.unknownCdpFailures.length
+            ) {
               valid = false;
-              cleanup.push({
-                side: observer.side,
-                publicErrors: observer.errors,
-                cdpFailures: observer.cdpFailures,
-              });
+              cleanup.push(audit);
               failures.push(
                 new Error(
                   'Unknown public runtime/network errors remain after diagnostic cleanup',
@@ -640,6 +755,8 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
           await save('result.json', {
             diagnosticOnly: true,
             acceptanceSatisfied: false,
+            paintClaimScope:
+              'Only recorded rounded/SVG subjects inside the sampled content interior; the native resize interaction strip and full-root visibility are not proved. Full PNG and original acceptance gates remain unchanged.',
             valid,
             failures: failures.map((error) => ({
               message: String(error),

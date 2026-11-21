@@ -3,10 +3,13 @@ import type { Page } from 'playwright-core';
 import { describe, expect, it, vi } from 'vitest';
 import {
   causalJournal,
+  causalReplayOrigin,
+  auditCausalToolControl,
   observeCausalPage,
 } from './employee-panels-causal-network';
 import {
   assertCausalInvariant,
+  assertCausalSampling,
   assertToolFaviconOutcome,
 } from './employee-panels-causal-proof';
 import type { PanelsCausalSnapshot } from './employee-panels-causal-dom';
@@ -18,27 +21,49 @@ function snapshot(): PanelsCausalSnapshot {
     '--dsw-corner-shape': 'round',
     color: 'rgb(1,2,3)',
   };
+  const content = {
+    identity: 1,
+    tag: 'SECTION',
+    className: 'synthetic',
+    text: 'synthetic',
+    rect: { ...rect },
+    styles: { ...styles },
+    before: { ...styles },
+    after: { ...styles },
+    hovered: false,
+    focused: false,
+    bbox: null,
+    matrix: null,
+    animations: [],
+  };
+  const hits = [
+    [21, 31],
+    [119, 31],
+    [21, 129],
+    [119, 129],
+    [70, 80],
+  ].map(([x, y]) => ({
+    x: x!,
+    y: y!,
+    rootContains: true,
+    element: { ...content, attributes: {} as Record<string, string> },
+  }));
   return {
     root: { ...rect },
-    nodes: [
-      {
-        tag: 'SECTION',
-        className: 'synthetic',
-        text: 'synthetic',
-        rect: { ...rect },
-        styles: { ...styles },
-        before: { ...styles },
-        after: { ...styles },
-        hovered: false,
-        focused: false,
-        bbox: null,
-        matrix: null,
-        animations: [],
-      },
-    ],
+    nodes: [content],
     ancestors: [],
     unclipped: true,
-    hits: [true],
+    hits: hits.map(() => true),
+    sampling: {
+      clipBudgetVisible: true,
+      raw: hits,
+      resize: null,
+      interior: { ...rect },
+      interiorHits: structuredClone(hits),
+      subjects: [
+        { identity: 1, rect: { ...rect }, hits: structuredClone(hits) },
+      ],
+    },
     active: 'BODY',
     pointerOutside: true,
   };
@@ -51,6 +76,14 @@ describe('causal experiment validity (pure data, no browser/Host)', () => {
     after.root.y -= 9;
     after.nodes[0]!.rect.x += 17;
     after.nodes[0]!.rect.y -= 9;
+    after.sampling.interior.x += 17;
+    after.sampling.interior.y -= 9;
+    after.sampling.subjects[0]!.rect.x += 17;
+    after.sampling.subjects[0]!.rect.y -= 9;
+    for (const hit of [...after.sampling.raw, ...after.sampling.interiorHits]) {
+      hit.x += 17;
+      hit.y -= 9;
+    }
     expect(() =>
       assertCausalInvariant(before, after, { x: 17, y: -9 }),
     ).not.toThrow();
@@ -64,6 +97,7 @@ describe('causal experiment validity (pure data, no browser/Host)', () => {
   });
   it('rejects clipping/occlusion', () => {
     const b = snapshot();
+    b.sampling.clipBudgetVisible = false;
     b.unclipped = false;
     expect(() => assertCausalInvariant(snapshot(), b)).toThrow('clipped');
   });
@@ -113,6 +147,437 @@ describe('causal experiment validity (pure data, no browser/Host)', () => {
     expect(() => assertCausalInvariant(a, b)).not.toThrow();
     b.nodes[0]!.bbox!.width += 0.01;
     expect(() => assertCausalInvariant(a, b)).toThrow('SVG shape');
+  });
+});
+
+function resizeSnapshot(): PanelsCausalSnapshot {
+  const value = snapshot();
+  const control = {
+    ...structuredClone(value.nodes[0]!),
+    identity: 99,
+    tag: 'DIV',
+    attributes: { 'data-side': 'rightbar' } as Record<string, string>,
+    rect: { x: 15, y: 20, width: 8, height: 120 },
+    styles: {
+      position: 'absolute',
+      cursor: 'col-resize',
+      'pointer-events': 'auto',
+      'z-index': '11',
+      visibility: 'visible',
+      opacity: '1',
+      'background-color': 'rgba(0, 0, 0, 0)',
+      'background-image': 'none',
+      'border-width': '0px',
+      'border-image-source': 'none',
+      'box-shadow': 'none',
+      'outline-style': 'none',
+      filter: 'none',
+      'backdrop-filter': 'none',
+      'mask-image': 'none',
+      'clip-path': 'none',
+    },
+    before: { content: 'none' },
+    after: { content: 'none' },
+  };
+  value.sampling.resize = {
+    count: 1,
+    rightbar: { x: 19, y: 20, width: 101, height: 120 },
+    rightbarIdentity: 98,
+    control,
+    empty: true,
+  };
+  for (const index of [0, 2])
+    value.sampling.raw[index] = {
+      ...value.sampling.raw[index]!,
+      rootContains: false,
+      element: { ...control, attributes: { 'data-side': 'rightbar' } },
+    };
+  value.hits = value.sampling.raw.map((hit) => hit.rootContains);
+  value.unclipped = false;
+  value.sampling.interior = { x: 23, y: 30, width: 97, height: 100 };
+  value.sampling.interiorHits[0]!.x = value.sampling.interiorHits[2]!.x = 24;
+  value.sampling.subjects = [
+    {
+      identity: 1,
+      rect: { x: 40, y: 50, width: 16, height: 16 },
+      hits: structuredClone(value.sampling.interiorHits),
+    },
+  ];
+  return value;
+}
+describe('scoped paint sampling preserves the failed full-root verdict', () => {
+  it('requires direct native-control identity and leaves both raw misses false', () => {
+    const value = resizeSnapshot();
+    expect(() => assertCausalSampling(value)).not.toThrow();
+    expect(value.unclipped).toBe(false);
+    expect(value.hits).toEqual([false, true, false, true, true]);
+    expect(() => assertCausalInvariant(value, resizeSnapshot())).not.toThrow();
+  });
+  it.each([
+    [
+      'relabelled full-root result',
+      (v: PanelsCausalSnapshot) => {
+        v.unclipped = true;
+      },
+    ],
+    [
+      'foreign hit identity',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.raw[0]!.element!.identity = 88;
+      },
+    ],
+    [
+      'missing native attribute',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.raw[0]!.element!.attributes = {};
+      },
+    ],
+    [
+      'interior occluder',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.interiorHits[0]!.rootContains = false;
+      },
+    ],
+    [
+      'missing hit identity',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.interiorHits[0]!.element = null;
+      },
+    ],
+    [
+      'opaque control',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.resize!.control.styles['background-color'] = 'rgb(1, 2, 3)';
+      },
+    ],
+    [
+      'painted control pseudo',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.resize!.control.before.content = '"x"';
+      },
+    ],
+    [
+      'duplicate control',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.resize!.count = 2;
+      },
+    ],
+    [
+      'changed native width',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.resize!.control.rect.width = 9;
+      },
+    ],
+    [
+      'short control',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.resize!.control.rect.height = 100;
+      },
+    ],
+    [
+      'arbitrary exclusion',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.interior.x++;
+      },
+    ],
+    [
+      'curve in unproved strip',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.subjects[0]!.rect.x = 21;
+      },
+    ],
+    [
+      'covered curve',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.subjects[0]!.hits[0]!.rootContains = false;
+      },
+    ],
+    [
+      'clip budget failure',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.clipBudgetVisible = false;
+      },
+    ],
+    [
+      'missing paint subjects',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.subjects = [];
+      },
+    ],
+    [
+      'active native drag',
+      (v: PanelsCausalSnapshot) => {
+        v.sampling.resize!.control.attributes['data-dragging'] = 'true';
+      },
+    ],
+  ])('rejects %s', (_label, mutate) => {
+    const value = resizeSnapshot();
+    mutate(value);
+    expect(() => assertCausalSampling(value)).toThrow(
+      'Invalid causal sampling',
+    );
+  });
+  it('still rejects foreign occlusion when no native-control exclusion is registered', () => {
+    const value = snapshot();
+    value.sampling.raw[0]!.rootContains = false;
+    value.hits[0] = false;
+    value.unclipped = false;
+    expect(() => assertCausalSampling(value)).toThrow('unrecognized');
+  });
+  it('rejects replacement of a valid native control between phases', () => {
+    const a = resizeSnapshot(),
+      b = resizeSnapshot();
+    b.sampling.resize!.control.identity = 100;
+    for (const hit of b.sampling.raw)
+      if (!hit.rootContains) hit.element!.identity = 100;
+    expect(() => assertCausalInvariant(a, b)).toThrow(
+      'resize control identity',
+    );
+  });
+  it('rejects a changed rightbar scope even when the handle is unchanged', () => {
+    const a = resizeSnapshot(),
+      b = resizeSnapshot();
+    b.sampling.resize!.rightbarIdentity = 101;
+    expect(() => assertCausalInvariant(a, b)).toThrow(
+      'resize control identity',
+    );
+  });
+});
+
+function replayEvents() {
+  const journal = causalJournal(),
+    record = (name: string, data: unknown) =>
+      journal.record('reference', name, data);
+  const registration = {
+    id: 'owned-replay',
+    origin: causalReplayOrigin,
+    navigationUrl: causalReplayOrigin + '/?kind=experience',
+    method: 'GET',
+    bodySha256: 'a'.repeat(64),
+  };
+  const receipt = { ...registration, url: registration.navigationUrl };
+  record('replay-registration', registration);
+  record('Network.requestWillBeSent', {
+    requestId: 'document',
+    loaderId: 'document',
+    frameId: 'main',
+    documentURL: registration.navigationUrl,
+    type: 'Document',
+    request: { url: registration.navigationUrl, method: 'GET' },
+  });
+  record('route-entry', receipt);
+  record('route-fulfill-issued', { ...receipt, status: 200 });
+  record('Network.responseReceived', {
+    requestId: 'document',
+    loaderId: 'document',
+    frameId: 'main',
+    type: 'Document',
+    response: {
+      url: registration.navigationUrl,
+      status: 200,
+      headers: { 'x-allrice-causal-replay': registration.id },
+    },
+  });
+  record('Network.loadingFinished', { requestId: 'document' });
+  record('route-fulfilled', { ...receipt, status: 200 });
+  record('replay-navigation-complete', {
+    ...receipt,
+    status: 200,
+    mainFrame: true,
+  });
+  record('Network.requestWillBeSent', {
+    requestId: 'icon',
+    loaderId: 'document',
+    frameId: 'main',
+    documentURL: registration.navigationUrl,
+    type: 'Other',
+    request: {
+      url: causalReplayOrigin + '/favicon.ico',
+      method: 'GET',
+      headers: { Referer: registration.navigationUrl },
+    },
+    initiator: { type: 'other' },
+    timestamp: 2,
+  });
+  record('Network.loadingFailed', {
+    requestId: 'icon',
+    type: 'Other',
+    errorText: 'net::ERR_ABORTED',
+    canceled: true,
+    timestamp: 3,
+  });
+  return journal.events;
+}
+describe('diagnostic-only trusted replay classification; raw outcomes remain', () => {
+  it('classifies exactly one raw CDP-only failure by the complete owned navigation chain', () => {
+    const events = replayEvents(),
+      audit = auditCausalToolControl(events, 'reference');
+    expect(audit.issues).toEqual([]);
+    expect(audit.controlledFailures).toEqual([events[9]!.data]);
+    expect(audit.controlledFailures[0]).toBe(events[9]!.data);
+    expect(events).toHaveLength(10);
+    expect(auditCausalToolControl(events, 'native').controlledFailures).toEqual(
+      [],
+    );
+  });
+  it.each([
+    [
+      'untrusted origin',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign(e[0]!.data!, { origin: 'http://elsewhere.invalid' });
+      },
+    ],
+    [
+      'wrong navigation',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign(e[0]!.data!, {
+          navigationUrl: causalReplayOrigin + '/?other',
+        });
+      },
+    ],
+    [
+      'POST icon',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign((e[8]!.data as { request: object }).request, {
+          method: 'POST',
+        });
+      },
+    ],
+    [
+      'different loader',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign(e[8]!.data!, { loaderId: 'another' });
+      },
+    ],
+    [
+      'different frame',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign(e[8]!.data!, { frameId: 'child' });
+      },
+    ],
+    [
+      'different initiator',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign(e[8]!.data!, { initiator: { type: 'script' } });
+      },
+    ],
+    [
+      'different referrer',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign((e[8]!.data as { request: object }).request, {
+          headers: { Referer: 'http://elsewhere.invalid/' },
+        });
+      },
+    ],
+    [
+      'wrong abort',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign(e[9]!.data!, { errorText: 'net::ERR_FAILED' });
+      },
+    ],
+    [
+      'not cancelled',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign(e[9]!.data!, { canceled: false });
+      },
+    ],
+    [
+      'blocked reason',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign(e[9]!.data!, { blockedReason: 'other' });
+      },
+    ],
+    [
+      '403 document',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign((e[4]!.data as { response: object }).response, {
+          status: 403,
+        });
+      },
+    ],
+    [
+      'missing response payload',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign(e[4]!.data!, { response: undefined });
+      },
+    ],
+    [
+      'foreign response token',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign((e[4]!.data as { response: object }).response, {
+          headers: { 'x-allrice-causal-replay': 'foreign' },
+        });
+      },
+    ],
+    [
+      'body mismatch receipt',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign(e[6]!.data!, { bodySha256: 'b'.repeat(64) });
+      },
+    ],
+    [
+      'subframe navigation',
+      (e: ReturnType<typeof replayEvents>) => {
+        Object.assign(e[7]!.data!, { mainFrame: false });
+      },
+    ],
+    [
+      'missing completion',
+      (e: ReturnType<typeof replayEvents>) => {
+        e.splice(6, 1);
+      },
+    ],
+    [
+      'same-URL concurrent request',
+      (e: ReturnType<typeof replayEvents>) => {
+        e.splice(9, 0, structuredClone(e[8]!));
+      },
+    ],
+    [
+      'extra response',
+      (e: ReturnType<typeof replayEvents>) => {
+        e.push({
+          seq: 10,
+          receivedAt: 10,
+          side: 'reference',
+          name: 'Network.responseReceived',
+          data: { requestId: 'icon', response: { status: 403 } },
+        });
+      },
+    ],
+    [
+      'public favicon counterpart',
+      (e: ReturnType<typeof replayEvents>) => {
+        e.push({
+          seq: 10,
+          receivedAt: 10,
+          side: 'reference',
+          name: 'Page.requestfailed',
+          data: { url: causalReplayOrigin + '/favicon.ico' },
+        });
+      },
+    ],
+    [
+      'reordered terminal',
+      (e: ReturnType<typeof replayEvents>) => {
+        e.splice(4, 0, e.pop()!);
+      },
+    ],
+    [
+      'missing registration',
+      (e: ReturnType<typeof replayEvents>) => {
+        e.shift();
+      },
+    ],
+  ])('keeps %s unclassified', (_label, mutate) => {
+    const events = replayEvents();
+    mutate(events);
+    events.forEach((event, index) => {
+      event.seq = index;
+    });
+    expect(
+      auditCausalToolControl(events, 'reference').controlledFailures,
+    ).toEqual([]);
   });
 });
 
@@ -171,6 +636,97 @@ describe('passive public event ownership (synthetic CDP doubles only)', () => {
     });
     return { session, page, publicPage: page as unknown as Page };
   };
+  const emitReplay = (
+    value: ReturnType<typeof fake>,
+    journal: ReturnType<typeof causalJournal>,
+  ) => {
+    for (const event of replayEvents()) {
+      if (event.name.startsWith('Network.'))
+        value.session.emit(event.name, event.data);
+      else journal.record('reference', event.name, event.data);
+    }
+  };
+  it('keeps the classified raw failure and receipts while allowing only the registered diagnostic chain', async () => {
+    const value = fake(),
+      journal = causalJournal(),
+      trace = await observeCausalPage(value.publicPage, 'reference', journal);
+    emitReplay(value, journal);
+    expect(trace.cdpFailures).toHaveLength(1);
+    expect(trace.audit().controlledFailures[0]).toBe(trace.cdpFailures[0]);
+    expect(trace.audit().unknownCdpFailures).toEqual([]);
+    expect(() => trace.assertClean()).not.toThrow();
+    await trace.close();
+    expect(trace.cdpFailures).toHaveLength(1);
+    expect(
+      journal.events.some((event) => event.name === 'Network.loadingFailed'),
+    ).toBe(true);
+  });
+  it.each([
+    'pageerror',
+    'console-error',
+    'network-log-error',
+    'nonfixture403',
+    'unplanned-abort',
+  ])('still blocks %s beside the trusted diagnostic chain', async (kind) => {
+    const value = fake(),
+      journal = causalJournal(),
+      trace = await observeCausalPage(value.publicPage, 'reference', journal);
+    emitReplay(value, journal);
+    if (kind === 'pageerror')
+      value.page.emit(
+        'pageerror',
+        new Error(
+          causalReplayOrigin +
+            '/favicon.ico net::ERR_ABORTED JavaScript exception',
+        ),
+      );
+    if (kind === 'console-error')
+      value.page.emit('console', {
+        type: () => 'error',
+        text: () => 'Failed to load resource: net::ERR_ABORTED',
+        location: () => ({
+          url: causalReplayOrigin + '/favicon.ico',
+          lineNumber: 0,
+          columnNumber: 0,
+        }),
+        timestamp: () => 1,
+      });
+    if (kind === 'network-log-error')
+      value.session.emit('Log.entryAdded', {
+        entry: {
+          level: 'error',
+          source: 'network',
+          networkRequestId: 'icon',
+          text: 'net::ERR_ABORTED',
+        },
+      });
+    if (kind === 'nonfixture403' || kind === 'unplanned-abort') {
+      value.session.emit('Network.requestWillBeSent', {
+        requestId: 'unplanned',
+        request: { url: 'http://untrusted.invalid/favicon.ico', method: 'GET' },
+      });
+      if (kind === 'nonfixture403')
+        value.session.emit('Network.responseReceived', {
+          requestId: 'unplanned',
+          response: { status: 403 },
+        });
+      else
+        value.session.emit('Network.loadingFailed', {
+          requestId: 'unplanned',
+          type: 'Other',
+          errorText: 'net::ERR_ABORTED',
+          canceled: true,
+          timestamp: 4,
+        });
+    }
+    const count = journal.events.length;
+    expect(() => trace.assertClean()).toThrow('Unclassified');
+    expect(journal.events).toHaveLength(count);
+    expect(trace.cdpFailures).toHaveLength(kind === 'unplanned-abort' ? 2 : 1);
+    if (kind !== 'unplanned-abort') expect(trace.errors).toHaveLength(1);
+    await trace.close();
+    expect(trace.cdpFailures).toHaveLength(kind === 'unplanned-abort' ? 2 : 1);
+  });
   it('clears its event deadline and rejects when its own CDP session closes', async () => {
     vi.useFakeTimers();
     try {
