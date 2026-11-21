@@ -1,0 +1,10 @@
+/* Approved rev2 owner composition; fixture only, not a product style override. */
+.rev2-capability-sections {
+  display: grid;
+  gap: 28px;
+}
+@media (max-width: 700px) {
+  .rev2-capability-sections {
+    gap: 24px;
+  }
+}

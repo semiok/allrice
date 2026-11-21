@@ -38,6 +38,31 @@ business owner/account. That suite installs the real product and native Host,
 Renderer and SettingsRoot; it does not establish migration of the old 3.x business
 surfaces or production preferences. Browser execution remains pending.
 
+M1-15 also composes the four original AllRice panels through the native
+`conversation.session.header.actions` and `sidebar.right.pane.tab` registries.
+The module-table facade exports `bindEmployeePanels(ctx, port)`; dispose the
+returned Cordis fork with the authenticated owner's lifetime. Native
+Conversation and right-sidebar modules are explicit client dependencies. There
+is no default business owner, replacement Dock, or management-main fallback.
+Files use the existing owner-provided unread count; the other three badges keep
+their existing zero values. An unknown files count hides the entries.
+
+Panels props are derived from actual app `ComponentProps` in
+`src/employee-panels-port.ts`. That is a **monorepo source type boundary**, not a
+standalone packed DTO/SDK. The tarball exposes the runtime binder, and deliberately
+does not advertise a `panels-types` export whose app-source imports would be
+unresolvable outside this repository. The authenticated owner must supply the
+actual BFF/resource-version/reference/main bindings described in
+`docs/development/allrice-employee-panels.md` in the repository.
+
+`employee-panels.browser.test.ts` is a separately installed synthetic owner
+fixture for the real public binder and native registry/input/main. It compares
+real panel content against fixed rev2 source at 1440/390 in both themes and
+normal/empty/loading/denied/long-name states. The synthetic route responses and
+native input acceptance are not authenticated BFF/MCP, submit-time codec, model,
+or production business evidence. Browser execution and visual review remain
+pending; the settings teardown issue remains a separate blocking gate.
+
 The employee profile excludes the native manager UI packages for model,
 agent-loop, plugin inventory/management, shell, subagent, web search and supplier
 account settings. Three inserted `allrice-*-host` Loader entries use the package's
@@ -225,9 +250,10 @@ candidate; it is not evidence of formal SSO or complete employee migration.
 
 The build uses the fixed rc.2 Web shell's public module-table baseline for
 `@deepseek-ai/dsh-client-ui-primitives` and `zod`, as native chat/conversation do.
-It does not inline another Shiki/KaTeX/font copy. The client artifact is about
-523 KB uncompressed (450 KB sidebar JS + 60 KB CSS + 8.6 KB settings JS and
-0.5 KB settings CSS, plus wrapper); build guards
+It does not inline another Shiki/KaTeX/font copy. With the real four panels, the
+client artifact is about 1.30 MB uncompressed (450 KB sidebar JS + 61 KB CSS,
+8.6 KB settings JS + 0.5 KB CSS, and 711 KB panels JS + 62 KB CSS, plus wrapper).
+`dist/build-stats.json` records exact current sizes; build guards
 reject accidental markdown/font inputs. The earlier 6.24 MB candidate duplicated
 these shared modules. Startup/transfer impact remains unmeasured, and native
 chatting/menus/theme regression still awaits the resource-approved browser run.

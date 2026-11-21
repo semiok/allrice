@@ -172,6 +172,7 @@ it('assembles the independent profile with native question/document/catalog and 
     'session-log-download',
     'ui-deliverables',
     'ui-conversation',
+    'ui-sidebar-right',
   ]) {
     expect(entry(id), id).toBeDefined();
     expect(entry(id)?.disabled, id).not.toBe(true);

@@ -51,6 +51,7 @@ async function contribution(entry) {
 }
 const sidebar = await contribution('./src/employee-sidebar.tsx');
 const settings = await contribution('./src/employee-settings.tsx');
+const panels = await contribution('./src/employee-panels.tsx');
 const source = await readFile(
   new URL('./src/client.cjs', import.meta.url),
   'utf8',
@@ -75,13 +76,19 @@ ${sidebar.js}
 ${settings.js}
       return module.exports;
     })();
+    const panels = (() => {
+      const module = { exports: {} };
+      const exports = module.exports;
+${panels.js}
+      return module.exports;
+    })();
     const baseApply = exports.apply;
     exports.apply = (ctx) => {
       baseApply(ctx);
       ctx.effect(() => {
         const style = document.createElement('style');
         style.dataset.allriceEmployeeSidebar = '';
-        style.textContent = ${JSON.stringify(sidebar.css + '\n' + settings.css)};
+        style.textContent = ${JSON.stringify(sidebar.css + '\n' + settings.css + '\n' + panels.css)};
         document.head.append(style);
         return () => style.remove();
       });
@@ -90,12 +97,14 @@ ${settings.js}
         notifications: false,
         renderLauncher: sidebar.AllRiceSettingsLauncher,
       });
+      panels.apply(ctx);
     };
     exports.ChatSidebarFrame = sidebar.ChatSidebarFrame;
     exports.EmployeeSidebarView = sidebar.EmployeeSidebarView;
     exports.SidebarSettingsTrigger = sidebar.SidebarSettingsTrigger;
     exports.bindEmployeeSidebar = sidebar.bindEmployeeSidebar;
     exports.bindEmployeeSettings = settings.bindEmployeeSettings;
+    exports.bindEmployeePanels = panels.bindEmployeePanels;
     exports.EmployeeClientNavigation = sidebar.EmployeeClientNavigation;
     return exports;
   },
@@ -112,6 +121,8 @@ await writeFile(
       sidebarCssBytes: Buffer.byteLength(sidebar.css),
       settingsJavaScriptBytes: Buffer.byteLength(settings.js),
       settingsCssBytes: Buffer.byteLength(settings.css),
+      panelsJavaScriptBytes: Buffer.byteLength(panels.js),
+      panelsCssBytes: Buffer.byteLength(panels.css),
       compression: 'none',
     },
     null,

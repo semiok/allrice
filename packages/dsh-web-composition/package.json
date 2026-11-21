@@ -46,7 +46,9 @@
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-theme",
         "@deepseek-ai/dsh-client-ui-layout",
-        "@deepseek-ai/dsh-client-ui-workspace"
+        "@deepseek-ai/dsh-client-ui-workspace",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
       ]
     }
   },
@@ -55,7 +57,7 @@
     "prepack": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint build.mjs index.mjs host src",
-    "test": "node build.mjs && pnpm --dir ../.. exec vitest run packages/dsh-web-composition/tests/composition.test.ts packages/dsh-web-composition/tests/employee-client.test.ts packages/dsh-web-composition/tests/browser-artifacts.test.ts packages/dsh-web-composition/tests/employee-settings.test.ts packages/dsh-web-composition/tests/cold-profile.test.ts packages/dsh-web-composition/tests/public-client.test.ts"
+    "test": "node build.mjs && pnpm --dir ../.. exec vitest run packages/dsh-web-composition/tests/composition.test.ts packages/dsh-web-composition/tests/employee-client.test.ts packages/dsh-web-composition/tests/browser-artifacts.test.ts packages/dsh-web-composition/tests/employee-settings.test.ts packages/dsh-web-composition/tests/cold-profile.test.ts packages/dsh-web-composition/tests/public-client.test.ts packages/dsh-web-composition/tests/employee-panels.test.tsx packages/dsh-web-composition/tests/employee-panels-fixture.test.ts packages/dsh-web-composition/tests/settings-integration-fixture.test.ts"
   },
   "dependencies": {
     "@deepseek-ai/dsh-client-ui-plugin-manager": "0.2.1-rc.2",
@@ -76,6 +78,7 @@
     "@deepseek-ai/dsh-client-ui-settings": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-settings-general": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-sidebar": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-theme": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-workspace": "0.2.1-rc.2",

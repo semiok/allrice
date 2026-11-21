@@ -181,6 +181,10 @@ async function coldProfile() {
   // An explicit CSS-resource sink, not a DOM renderer or a native Client mount.
   const document = {
     createElement: (tag: string) => {
+      // The real panel reader imports the browser HTML-entity decoder, whose
+      // module initializer allocates one detached <i>. This registration proof
+      // never calls that decoder; this inert probe makes no parsing/DOM claim.
+      if (tag === 'i') return { innerHTML: '', textContent: '' };
       expect(tag).toBe('style');
       const style = {
         dataset: {},

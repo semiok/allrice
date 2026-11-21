@@ -50,10 +50,14 @@ native tab `signal` 只在 tab 删除/unload 时 abort，hide/session switch 不
 
 ## 整合、验证与待做
 
-主线统一添加 contribution bundle、CSS、runtime bind 导出、依赖与 CI 测试收集；精确清单在 `qa/codex/met277-panels-20261121/implementation/INTEGRATION-HANDOFF.md`。当前 port 类型直接引用真实 app props，workspace 类型检查不等于离树 packed DTS 已闭合，不能只发布该 TS 文件假称独立 SDK 完成。
+固定组合已按 `qa/codex/met277-panels-20261121/implementation/INTEGRATION-HANDOFF.md` 接入 contribution bundle、同一 CSS 生命周期、公开 `bindEmployeePanels` runtime 导出、rc.2 sidebar-right 类型依赖和测试收集。client manifest 明确依赖 native Conversation/right sidebar；没有默认 owner。当前 port 类型直接引用真实 app props，是 monorepo source 边界；包不发布离树不能解析的 `panels-types`，不手抄另一套 DTO。
 
 本轮完整 `employee-panels.test.tsx` 是无 Host/浏览器/DB/模型/VM 的单文件单测：真实 published SlotRegistry 的离线注册/卸载、synthetic owner/navigation faces、真实组件 identity/SSR、旧 toggle 默认字节相同、scope/Session/lifetime/unknown/refusal 与 late main guards。synthetic callback 调用不等于后台写入，SSR 不执行组件 effects，不证明真实请求取消、native Frame/docking、视觉或 SSO。
 
-主线须按最终组合 SHA 做原生安装 browser cases、公开 bind unload/rebind、真实授权“＋”与 submit-time codec、同 owner BFF 最小读写、交付真实 bytes/hash/授权复制、能力实际 main、1440/390 亮暗及适用状态对照；保持 ±0.5 与既有更严断言，失败前完整保存截图/geometry。MET-276 的附件 runtime owner 缺口不因本提交消失。
+独立 `employee-panels.browser.test.ts` 经真实 tarball/公开 binder，使用显式 synthetic owner 和 Playwright route 的合成业务响应；未复制 ChatflowClient 或改产品 fetch。它覆盖四入口/切换/关闭、未知计数、Session/scope、卸载重绑、保留“＋”及 native 输入实际接受/旧 span 拒绝、可信 resolver 的实际 registered main/未知 key/晚到拒绝。合成引用 source 未连接真实 submit-time codec，测试不发送消息或模型请求。
+
+该文件以固定 `4c2e1069e087e645365100850756afe742c35e3d` 的真实四组件及其传递 app/UI/contracts/global styles 回放 rev2；同数据/主题/内容预算，在 1440/390 亮暗各检查常规/空/加载/拒绝/长名，截图、细项 geometry 先保存再执行 ±0.5 和精确 RGBA 断言，软断言继续收完整组。native chrome 不重画，420px 是设计比较宽度而非产品固定宽度。此轮只写夹具并做静态/Node 检查，尚未启动 Host/browser，未声称已实际看图或 native docking/视觉通过。
+
+主线须按最终组合 SHA 跑此完整浏览器文件及既有受影响侧栏/入口文件，另接真实授权“＋”与 submit-time codec、同 owner BFF 最小读写、交付真实 bytes/hash/授权复制和真实能力 main。settings teardown 的 native slot 生命周期门禁仍阻塞；本组合未绕过或修复它。MET-276 的附件 runtime owner 缺口不因本提交消失。
 
 MET-225 待主线登记：AllRice rev2 四业务面板经公开 native 右栏/header 装入，真实 owner 显式绑定；原生分屏/关闭/窄屏不改，无私有复制；升级核 registry、槽名、标准 props/useTabInfo、native main/引用公开合同。MET-222：正式装配后按 owner/BFF 实际失败做健康收件，本票不新增虚假运行巡检。

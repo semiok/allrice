@@ -99,6 +99,15 @@ it('exports the settings binder from the built module-table artifact and shares 
     false,
   );
   runInNewContext(artifact, {
+    AbortController,
+    document: {
+      // Browser markdown's detached entity-decoder probe, never used to render
+      // or decode in this module-export proof. Unknown DOM access still fails.
+      createElement: (tag: string) => {
+        expect(tag).toBe('i');
+        return { innerHTML: '', textContent: '' };
+      },
+    },
     window: {
       __ModuleLoader__: {
         load(entry: { factory: typeof factory }) {
@@ -121,7 +130,12 @@ it('exports the settings binder from the built module-table artifact and shares 
       throw new Error('Unpublished client external: ' + name);
     return baseline[name as keyof typeof baseline];
   });
-  for (const name of ['apply', 'bindEmployeeSidebar', 'bindEmployeeSettings'])
+  for (const name of [
+    'apply',
+    'bindEmployeeSidebar',
+    'bindEmployeeSettings',
+    'bindEmployeePanels',
+  ])
     expect(typeof exports[name], name).toBe('function');
   expect(requested).toContain('@deepseek-ai/dsh-client-ui-primitives');
   const ctx = { provide: vi.fn() },
@@ -134,6 +148,34 @@ it('exports the settings binder from the built module-table artifact and shares 
     'allriceEmployeeSettings',
     port,
   );
+  let install: { apply: (ctx: object) => void } | undefined;
+  const fork = {},
+    disposers: (() => void)[] = [];
+  const owner = {
+    provide: vi.fn(),
+    effect: (effect: () => () => void) => disposers.push(effect()),
+  };
+  const scope = {
+    plugin: (plugin: typeof install) => {
+      install = plugin;
+      return fork;
+    },
+  };
+  expect(
+    (exports.bindEmployeePanels as (ctx: object, port: object) => object)(
+      scope,
+      port,
+    ),
+  ).toBe(fork);
+  install!.apply(owner);
+  expect(owner.provide).toHaveBeenCalledWith('allriceEmployeePanels', {
+    port,
+    signal: expect.any(AbortSignal),
+  });
+  const binding = owner.provide.mock.calls[0]![1] as { signal: AbortSignal };
+  expect(binding.signal.aborted).toBe(false);
+  for (const dispose of disposers) dispose();
+  expect(binding.signal.aborted).toBe(true);
 });
 
 it('preserves the existing 3.x settings row and uses only its button inside a native row', () => {
