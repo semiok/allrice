@@ -420,3 +420,134 @@ it('freezes the host operation label for human review along with the actual targ
     (await f.gateway.view(f.context, view.ref, signal())).actionLabel,
   ).toBe(view.actionLabel);
 });
+
+it.each(['digest', 'receipt-store', 'diagnostic-store'] as const)(
+  'preserves durable intent and controlled failure facts for %s failures',
+  async (failure) => {
+    const f = fixture();
+    const gateway = createApprovalGateway({
+      ...f.options,
+      store: {
+        ...f.store,
+        receive:
+          failure === 'digest'
+            ? f.store.receive
+            : async () => {
+                throw Error('private SQL detail must not escape');
+              },
+        noteFailure:
+          failure === 'diagnostic-store'
+            ? async () => {
+                throw Error('db unavailable');
+              }
+            : f.store.noteFailure,
+      },
+      destinations: {
+        inbox: {
+          ...f.options.destinations.inbox,
+          dispatch: async (binding, ref, payload) => {
+            const receipt = await f.options.destinations.inbox.dispatch(
+              binding,
+              ref,
+              payload,
+            );
+            return failure === 'digest'
+              ? { ...receipt, digest: '0'.repeat(64) }
+              : receipt;
+          },
+        },
+      },
+    });
+    const view = await gateway.stage(f.binding, f.input, signal());
+    await gateway.decide(
+      f.context,
+      { ...view.ref, decision: 'approved' },
+      signal(),
+    );
+    if (failure === 'diagnostic-store') {
+      await expect(
+        gateway.execute(f.binding, view.ref, signal()),
+      ).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+    } else {
+      const result = await gateway.execute(f.binding, view.ref, signal());
+      expect(result.effect).toBe('unknown');
+      expect(result.failure?.kind).toBe(
+        failure === 'digest' ? 'RECEIPT_INTEGRITY' : 'RECEIPT_PERSIST_FAILED',
+      );
+      expect(result.failure?.at).toBeTruthy();
+      expect(JSON.stringify(result)).not.toContain('private SQL');
+      await f.store.noteFailure(view.ref, { kind: 'CANCELLED', code: null });
+      expect((await f.store.get(view.ref.requestId))!.failure).toEqual(
+        result.failure,
+      );
+    }
+    expect((await f.store.get(view.ref.requestId))!.intentAt).toBeTruthy();
+    expect((await gateway.execute(f.binding, view.ref, signal())).effect).toBe(
+      'unknown',
+    );
+    expect(f.dispatches).toBe(1);
+  },
+);
+
+it('keeps the sender identity separate for concurrent people with the same receiver, including reconciliation', async () => {
+  const one = fixture(),
+    two = fixture();
+  const seen: string[] = [];
+  const destination = {
+    ...one.options.destinations.inbox,
+    dispatch: async (
+      binding: typeof one.binding,
+      ref: Parameters<typeof one.options.destinations.inbox.dispatch>[1],
+    ) => {
+      seen.push('send:' + binding.vm.personId);
+      throw Error('ACK lost ' + ref.requestId);
+    },
+    lookup: async (
+      binding: typeof one.binding,
+      ref: Parameters<typeof one.options.destinations.inbox.lookup>[1],
+    ) => {
+      seen.push('lookup:' + binding.vm.personId);
+      return {
+        id: binding.vm.personId + ':' + ref.requestId,
+        digest: ref.digest,
+      };
+    },
+  };
+  const gateways = [one, two].map((f) =>
+    createApprovalGateway({
+      ...f.options,
+      destinations: { inbox: destination },
+    }),
+  );
+  const views = await Promise.all(
+    [one, two].map((f, i) => gateways[i]!.stage(f.binding, f.input, signal())),
+  );
+  await Promise.all(
+    [one, two].map(async (f, i) => {
+      await gateways[i]!.decide(
+        f.context,
+        { ...views[i]!.ref, decision: 'approved' },
+        signal(),
+      );
+      expect(
+        (await gateways[i]!.execute(f.binding, views[i]!.ref, signal())).effect,
+      ).toBe('unknown');
+      const restarted = createApprovalGateway({
+        ...f.options,
+        destinations: { inbox: destination },
+      });
+      expect(
+        (await restarted.reconcile(f.context, views[i]!.ref, signal())).receipt!
+          .id,
+      ).toContain(f.binding.vm.personId);
+    }),
+  );
+  expect(seen.sort()).toEqual(
+    [one, two]
+      .flatMap((f) => [
+        'send:' + f.binding.vm.personId,
+        'lookup:' + f.binding.vm.personId,
+      ])
+      .sort(),
+  );
+});

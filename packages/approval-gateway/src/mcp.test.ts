@@ -9,7 +9,8 @@ describe('native MCP approval tool boundary', () => {
   it('uses an authenticated host call binding and never exports human decision tools', async () => {
     const f = fixture();
     const calls: (string | number)[] = [];
-    const server = createApprovalMcpServer({
+    const { server } = createApprovalMcpServer({
+      enabled: true,
       gateway: f.gateway,
       async resolveCall(requestId) {
         calls.push(requestId);
@@ -75,4 +76,50 @@ describe('native MCP approval tool boundary', () => {
       await server.close();
     }
   });
+});
+
+it('uses native list_changed and disabled handles when the host turns the capability off', async () => {
+  const f = fixture();
+  const { server, setEnabled } = createApprovalMcpServer({
+    enabled: false,
+    gateway: f.gateway,
+    resolveCall: async () => f.binding,
+  });
+  const client = new Client({ name: 'catalog-test', version: '1' });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  try {
+    await server.connect(b);
+    await client.connect(a);
+    expect((await client.listTools()).tools).toHaveLength(0);
+    const { ToolListChangedNotificationSchema } =
+      await import('@modelcontextprotocol/sdk/types.js');
+    let notify!: () => void;
+    let changed = new Promise<void>((resolve) => {
+      notify = resolve;
+    });
+    client.setNotificationHandler(
+      ToolListChangedNotificationSchema,
+      async () => {
+        notify();
+      },
+    );
+    setEnabled(true);
+    await changed;
+    expect((await client.listTools()).tools).toHaveLength(3);
+    changed = new Promise<void>((resolve) => {
+      notify = resolve;
+    });
+    f.setPermitted(false);
+    setEnabled(false);
+    await changed;
+    expect((await client.listTools()).tools).toHaveLength(0);
+    expect(
+      (await client.callTool({ name: 'outbound.stage', arguments: f.input }))
+        .isError,
+    ).toBe(true);
+    expect(f.dispatches).toBe(0);
+  } finally {
+    await client.close();
+    await server.close();
+  }
 });

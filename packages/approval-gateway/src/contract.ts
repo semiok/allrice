@@ -86,8 +86,18 @@ export type ApprovalRecord = Readonly<{
   /** Once intent is durable, neither crash nor timeout may authorize another dispatch. */
   intentAt: string | null;
   receipt: ExternalReceipt | null;
+  failure: ApprovalFailure | null;
 }>;
 export type ExternalReceipt = Readonly<{ id: string; digest: string }>;
+export type ApprovalFailure = Readonly<{
+  kind:
+    | 'CANCELLED'
+    | 'DISPATCH_FAILED'
+    | 'RECEIPT_INTEGRITY'
+    | 'RECEIPT_PERSIST_FAILED';
+  code: ApprovalError['code'] | null;
+  at: string;
+}>;
 export type ApprovalView = Readonly<{
   ref: ApprovalRef;
   adapterId: string;
@@ -99,6 +109,7 @@ export type ApprovalView = Readonly<{
   revoked: boolean;
   effect: 'not-dispatched' | 'unknown' | 'received';
   receipt: ExternalReceipt | null;
+  failure: ApprovalFailure | null;
 }>;
 export class ApprovalError extends Error {
   constructor(
@@ -129,6 +140,10 @@ export interface ApprovalStore {
     ref: ApprovalRef,
   ): Promise<{ claimed: boolean; record: ApprovalRecord }>;
   receive(ref: ApprovalRef, receipt: ExternalReceipt): Promise<ApprovalRecord>;
+  noteFailure(
+    ref: ApprovalRef,
+    failure: Omit<ApprovalFailure, 'at'>,
+  ): Promise<ApprovalRecord>;
 }
 export interface ApprovalAuthority {
   assertCall(binding: ApprovalBinding, signal: AbortSignal): Promise<void>;
@@ -137,7 +152,7 @@ export interface ApprovalAuthority {
     binding: ApprovalBinding,
     signal: AbortSignal,
   ): Promise<void>;
-  /** Must serialize current revocation with admission and abort/drain admitted effects.
+  /** Must serialize identity/resource/destination revocation with admission and abort/drain admitted effects.
    * callback spans claim AND real dispatch. No guest or fixture implementation in production. */
   admit<T>(
     binding: ApprovalBinding,
