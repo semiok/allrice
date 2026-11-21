@@ -49,9 +49,8 @@ export type PersonVmAdmissionObservation = Readonly<{
   (
     | Readonly<{
         state: 'known';
-        /** Nonnegative integers. Gateway includes model/refresh transports,
-         * managed read I/O and actual delivery/drain. Entry includes admitted
-         * connections/typing/prewarm. Each operation has one permit owner. */
+        /** Nonnegative integers. Gateway includes model/refresh transports and
+         * actual drain. Entry includes admitted connections/typing/prewarm. */
         active: number;
         /** Admitted BEFORE freeze, including memory/8-slot/other host waits.
          * Never move these requests into deferred to manufacture zero. */

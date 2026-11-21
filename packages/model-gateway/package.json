@@ -1,0 +1,29 @@
+{
+  "name": "@allrice/model-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@allrice/contracts": "workspace:*",
+    "@allrice/person-vm": "workspace:*",
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "postgres": "^3.4.7"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-compaction-image-offload": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-credentials-local": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-llm-pi-ai": "0.2.1-rc.2",
+    "@earendil-works/pi-ai": "1.1.0"
+  }
+}

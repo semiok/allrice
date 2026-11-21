@@ -8,6 +8,9 @@ MET-210 第四道防回退门禁。用户 2026-10-27 同意加入，原则是“
 
 - `table`：执行全部迁移后，查询 PostgreSQL catalog 的当前 schema。`TABLE_PREFIXES` 是 `allrice_native_`、`allrice_assistant_`、`allrice_dsh_`；`EXACT_TABLE_NAMES` 列两个既有品牌提醒表、MET-224 批准的 `allrice_employee_module_bindings` 门卫及 PR2b 后移销毁的八个确切 `allrice_development_*` 表名；后者是旧执行器已删、待销毁的被动历史。九张助手表也仍按实际存在登记。不扩成品牌/开发协作宽前缀，不做全库闭世界。
 - `patch`：`apps/worker/dsh/patch-ledger.json` 的全部 `patches[].id`。
+
+MET-268在用户授权及写前四类核定内新增三个精确表名：`allrice_model_gateway_calls`/`attempts`属于宿主幂等关联及单向上游账本，`allrice_model_gateway_slots`属于全局每人8路租约；本片同时登记精确名和基线。`allrice-host-model-gateway-v1`只接公开原生LLM端口，没有Agent生命周期表或新的扣费/账户路由权威。
+
 - `private-interface`：`apps/worker/dsh/compatibility.json` 的全部 `privateInterfaces`，以 `id: upstreamInterface` 标识；同 id 换成另一个私有入口也算新增。清单内重复 id 直接报错，即使 adapter 或上游入口不同。
 
 MET-266 同 PR 将 `person_virtual_machines`（本人加密盘与宿主所有权租约）和 `person_vm_audit`（单向开停/显式删盘审计）加入精确表名与基线；批准依据及 DSH 对照见 `docs/architecture/person-vm.md`。不新增 DSH patch 或 private interface，不扩大为全库扫描。
