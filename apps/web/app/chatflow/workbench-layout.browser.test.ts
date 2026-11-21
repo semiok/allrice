@@ -6812,20 +6812,26 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     evidence.observePage(f.page);
     let probe: ReturnType<typeof observeCdpExceptions> | undefined = undefined;
     onTestFinished(async () => {
-      mark('test-finished', { state: task.result?.state });
-      // One final write retains successful diagnostic runs as well as failures.
-      console.log('HISTORY_RESTORE_DIAGNOSTIC', JSON.stringify(observation()));
-      if (task.result?.state === 'fail')
-        await evidence.capture(task.result.errors);
-      const pending = probe?.stop();
-      // Closing the context also detaches CDP, even after a test timeout.
       try {
-        await f.close();
+        mark('test-finished', { state: task.result?.state });
+        // One final write retains successful diagnostic runs as well as failures.
+        console.log(
+          'HISTORY_RESTORE_DIAGNOSTIC',
+          JSON.stringify(observation()),
+        );
+        if (task.result?.state === 'fail')
+          await evidence.capture(task.result.errors);
       } finally {
+        const pending = probe?.stop();
+        // Capture failures must still close the context and detach CDP.
         try {
-          await pending;
+          await f.close();
         } finally {
-          evidence.dispose();
+          try {
+            await pending;
+          } finally {
+            evidence.dispose();
+          }
         }
       }
     });
@@ -6834,11 +6840,6 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
       mark('cdp-paused', {
         reason: event.reason,
         description: event.data?.description,
-        frames: event.callFrames.slice(0, 3).map((frame) => ({
-          function: frame.functionName,
-          url: frame.url,
-          location: frame.location,
-        })),
       }),
     );
     cdp.on('Debugger.resumed', () => mark('cdp-resumed'));
