@@ -94,6 +94,8 @@ const suite =
     ? describe
     : describe.skip;
 // Wrap only measured pixel geometry; retain array/object shape and exact nonnumeric values.
+function pixelGeometry(expected: object): object;
+function pixelGeometry(expected: unknown): unknown;
 function pixelGeometry(expected: unknown): unknown {
   if (typeof expected === 'number') {
     return {
