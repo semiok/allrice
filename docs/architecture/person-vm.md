@@ -39,6 +39,8 @@ ownedData为迁移0247的`person_virtual_machines`与`person_vm_audit`、私有�
 
 首次创建空 MSB_HOME 先用公开 `msb pull <固定digest> --materialize flat --quiet` 预置，再 create `--pull never`。镜像来源是可信 host 固定配置，guest 不参与选择；host 工件下载控制与 guest 出口验证分开。
 
+M1 的 `socketRoot` 必须由可信 host 提供独占短目录，保持显式 `/tmp` 拼写，不把 socket 别名 realpath 成更长的 `/private/tmp`。v0.7.16 没有单独的 `run`/socket 路径配置，`run_dir=home/run`；canonical control 路径为 `home/run/sandboxes/<24hex>/control.sock`，其中24hex来自原生SHA256(name)前12字节。prepare在任何目录/配置/命令副作用前按这条衍生路径的UTF8字节数检查Darwin `sun_path[104]`（严格小于104），不再用无原生依据的home≤70；不生成短person/VM ID或新映射。完整UUID的home最多51字节，因此socketRoot最多14字节；例如host `mkdtemp('/tmp/a-')` 得到13字节独占0700目录，home50/control102。长数据/加密盘路径仍只作为软链target，完整vmId别名的不同target冲突仍拒绝，不覆盖已有别名。此预算绑定固定原生版及Darwin ABI，升级须核[run_dir](https://github.com/superradcompany/microsandbox/blob/0fefb8f2fed3da964819afd222227dc1c5b0e78f/sdk/rust/lib/config/mod.rs#L574)、[canonical端点及pair校验](https://github.com/superradcompany/microsandbox/blob/0fefb8f2fed3da964819afd222227dc1c5b0e78f/crates/runtime/lib/client/ipc.rs#L175)。
+
 每次开停/hold持有PG advisory锁与持久owner租约。`recoverExpired` 只在过期且旧操作已可靠fence时运行：先撤旧出口→确认旧native停止→卸载→CAS清owner。默认实现能证明同进程原callback及子进程promise已settled后的数据库断线恢复；普通业务/原生错误不会因类型未知永久留owner。跨进程/跨host没有可靠fence时拒绝，`PersonVmLeaseFencePort` 留给MET-274接线；TTL或PID存在性不证明旧操作不能再执行。活动hold不会靠TTL自动变成0，异常hold的可信对账同属后续恢复边界。
 
 恢复在调用物理provider前先CAS登记新的唯一recovery owner、消费前代settled证明，guard/save/清owner只认新token。即使恢复自身PG连接被终止、advisory锁已释放，也不能拿前代证明再做物理清理；本地active recovery拒绝重入，其他host须fence新owner。只有恢复callback及其失败清理/命令真正settled、client销毁后才登记新owner的本地证明。claim提交回执未知时，可分别保留尚未消费的前代证明与新token收敛证明，但任何新物理工作都须核当前持久owner；onclose或TTL不是收敛证明。

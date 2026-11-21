@@ -9,6 +9,11 @@ import {
 import { privateDirectory } from './encrypted-disk.ts';
 import { hostEnvironment, runCommand, type CommandRunner } from './process.ts';
 
+// v0.7.16 client/ipc.rs uses 12 SHA-256 bytes (24 hex chars) for the
+// canonical directory; Darwin sys/un.h has sun_path[104], including NUL.
+const CANONICAL_SOCKET_HASH_BYTES = 12;
+const DARWIN_SOCKET_PATH_CAPACITY = 104;
+
 export interface PersonVmNativePort {
   prepare(
     binding: PersonVmBinding,
@@ -83,14 +88,21 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
     });
   }
   async prepare(binding: PersonVmBinding, mount: string, signal: AbortSignal) {
+    const home = join(this.options.socketRoot, binding.vmId);
+    const controlSocket = join(
+      home,
+      'run',
+      'sandboxes',
+      '0'.repeat(CANONICAL_SOCKET_HASH_BYTES * 2),
+      'control.sock',
+    );
+    if (Buffer.byteLength(controlSocket) >= DARWIN_SOCKET_PATH_CAPACITY)
+      throw new PersonVmError('PROVIDER_FAILED');
     await privateDirectory(this.options.socketRoot);
     const target = join(mount, 'microsandbox');
     await privateDirectory(target);
     const userHome = join(mount, 'host-home');
     await privateDirectory(userHome);
-    const home = join(this.options.socketRoot, binding.vmId);
-    if (Buffer.byteLength(home) > 70)
-      throw new PersonVmError('PROVIDER_FAILED');
     try {
       const stat = await lstat(home);
       if (!stat.isSymbolicLink() || (await readlink(home)) !== target)

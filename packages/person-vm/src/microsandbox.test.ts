@@ -1,4 +1,12 @@
-import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
+import {
+  lstat,
+  mkdtemp,
+  readFile,
+  readlink,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -13,8 +21,14 @@ afterEach(async () => {
     await rm(path, { recursive: true, force: true });
 });
 async function directory() {
-  // Realpath resolves macOS /tmp aliases while keeping the native socket prefix short.
   const path = await realpath(await mkdtemp('/tmp/ar-vm-'));
+  temporary.push(path);
+  return path;
+}
+async function socketDirectory() {
+  // Keep the explicit /tmp spelling: realpath's /private prefix is too long
+  // for the pinned native control endpoint, even when artifacts live deeper.
+  const path = await mkdtemp('/tmp/a-');
   temporary.push(path);
   return path;
 }
@@ -23,6 +37,7 @@ describe('Microsandbox public CLI protocol through real child processes (no actu
   it('空MSB_HOME公开pull预置、2G硬帽、默认deny、固定host端口、真正stop/start命令', async () => {
     vi.stubEnv('ALLRICE_PERSON_VM_SYNTHETIC_HOST_SECRET', 'must-not-inherit');
     const root = await directory();
+    const socketRoot = await socketDirectory();
     const binary = join(root, 'msb-fixture');
     await writeFile(
       binary,
@@ -49,7 +64,7 @@ fs.writeFileSync(f,JSON.stringify(v));
       agentd: join(root, 'agentd'),
       image: 'registry.example/node@sha256:' + 'a'.repeat(64),
       rootDiskGiB: 20,
-      socketRoot: join(root, 's'),
+      socketRoot,
     });
     const binding = {
       vmId: randomUUID(),
@@ -116,7 +131,7 @@ fs.writeFileSync(f,JSON.stringify(v));
     );
     expect(config.allowed_backends).toEqual(['local']);
     expect(config.paths.sandboxes).toBe(
-      join(root, 's', binding.vmId, 'sandboxes'),
+      join(socketRoot, binding.vmId, 'sandboxes'),
     );
   });
   it('不接可变镜像tag或不固定的运行版本', async () => {
@@ -138,7 +153,7 @@ fs.writeFileSync(f,JSON.stringify(v));
       agentd: '/a',
       image: 'registry/node@sha256:' + 'a'.repeat(64),
       rootDiskGiB: 20,
-      socketRoot: join(root, 's'),
+      socketRoot: await socketDirectory(),
       runner: async () => 'microsandbox 0.7.15',
     });
     await expect(
@@ -154,6 +169,69 @@ fs.writeFileSync(f,JSON.stringify(v));
         signal(),
       ),
     ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
+  });
+  it('按原生control端点的103/104字节边界和UTF8校验，完整vmId别名不覆盖其他target', async () => {
+    const root = await mkdtemp('/tmp/aa-'); // 14 bytes: control endpoint is 103.
+    temporary.push(root);
+    const runner = vi.fn(async () => 'microsandbox 0.7.16');
+    const make = (socketRoot: string) =>
+      new MicrosandboxPersonVm({
+        binary: '/b',
+        libkrunfw: '/fw',
+        agentd: '/a',
+        image: 'registry/node@sha256:' + 'a'.repeat(64),
+        rootDiskGiB: 20,
+        socketRoot,
+        runner,
+      });
+    const binding = {
+      vmId: randomUUID(),
+      personId: randomUUID(),
+      organizationId: randomUUID(),
+      instanceId: randomUUID(),
+      leaseEpoch: 1,
+    };
+    const native = make(root),
+      mount = join(root, 'mount'),
+      alias = join(root, binding.vmId);
+    expect(
+      Buffer.byteLength(
+        join(alias, 'run/sandboxes', '0'.repeat(24), 'control.sock'),
+      ),
+    ).toBe(103);
+    await native.prepare(binding, mount, signal());
+    expect((await lstat(root)).mode & 0o777).toBe(0o700);
+    expect(await readlink(alias)).toBe(join(mount, 'microsandbox'));
+    const config = JSON.parse(
+      await readFile(join(mount, 'msb-config.json'), 'utf8'),
+    );
+    expect(config.home).toBe(alias);
+    for (const [index, rejectedRoot] of [
+      root + 'x',
+      root.slice(0, -1) + 'é',
+    ].entries()) {
+      expect(
+        Buffer.byteLength(
+          join(
+            rejectedRoot,
+            binding.vmId,
+            'run/sandboxes',
+            '0'.repeat(24),
+            'control.sock',
+          ),
+        ),
+      ).toBe(104);
+      const untouched = join(root, 'not-created-' + index);
+      await expect(
+        make(rejectedRoot).prepare(binding, untouched, signal()),
+      ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
+      await expect(lstat(untouched)).rejects.toMatchObject({ code: 'ENOENT' });
+    }
+    await expect(
+      native.prepare(binding, join(root, 'different'), signal()),
+    ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
+    expect(await readlink(alias)).toBe(join(mount, 'microsandbox'));
+    expect(runner).toHaveBeenCalledTimes(1);
   });
   it('取消真实子进程等待退出，不把仍跑的promise丢给回收器', async () => {
     const root = await directory(),
