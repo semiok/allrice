@@ -257,4 +257,86 @@ describe('gateway admission request ownership (synthetic host protocol)', () => 
     expect(admission.records.size).toBe(1);
     expect([...admission.records.values()][0]!.pending.size).toBe(0);
   });
+
+  it.each(['queued-only', 'queued-and-active'] as const)(
+    '%s listener cleanup failures retain every error after the real work fulfilled',
+    async (phase) => {
+      const admission = new FixtureAdmission();
+      const original = new Error('first joined business error');
+      const queuedFailure = new Error('queued listener cleanup failed');
+      const activeFailure = new Error('active listener cleanup failed');
+      const queued = admission.queued.bind(admission);
+      admission.queued = async (permit, operation, signal) => {
+        await queued(permit, operation, signal);
+        admission.records.get(permit)!.unsafe = true;
+        throw queuedFailure;
+      };
+      if (phase === 'queued-and-active') {
+        const activate = admission.activate.bind(admission);
+        admission.activate = async (permit, operation, signal) => {
+          await activate(permit, operation, signal);
+          admission.records.get(permit)!.unsafe = true;
+          throw activeFailure;
+        };
+      }
+      const failure = (await runGatewayAdmission(
+        admission.injection,
+        modelBinding(),
+        phase,
+        new AbortController().signal,
+        async (_signal, enter) => {
+          await enter();
+          return { ok: false, error: original };
+        },
+      ).catch((error: unknown) => error)) as ModelGatewayError;
+      expect(failure.code).toBe('LEDGER_UNAVAILABLE');
+      expect((failure.cause as AggregateError).errors).toEqual([
+        original,
+        ...(phase === 'queued-and-active' ? [activeFailure] : []),
+        queuedFailure,
+        expect.objectContaining({ code: 'CLEANUP_INCOMPLETE' }),
+      ]);
+      expect(admission.finishCalls).toHaveLength(1);
+      expect(admission.finished).toHaveLength(0);
+      expect(admission.records.size).toBe(1);
+      expect([...admission.records.values()][0]!).toMatchObject({
+        unsafe: true,
+      });
+      expect([...admission.records.values()][0]!.pending.size).toBe(0);
+    },
+  );
+
+  it('cancel after entering deferred wait and one thaw joins demand without marking business work unsafe', async () => {
+    const admission = new FixtureAdmission();
+    const binding = modelBinding();
+    const controller = new AbortController();
+    const lease = leaseFor(binding);
+    const signal = new AbortController().signal;
+    await admission.participant.freeze(lease, signal);
+    const canceled = new Error('caller canceled an entered deferred wait');
+    let dispatches = 0;
+    const request = runGatewayAdmission(
+      admission.injection,
+      binding,
+      'entered-deferred-cancel',
+      controller.signal,
+      async () => {
+        dispatches++;
+        return { ok: true, value: undefined };
+      },
+    );
+    const rejected = expect(request).rejects.toBe(canceled);
+    await admission.waiting.promise;
+    await admission.participant.thaw(lease, signal);
+    expect([...admission.records.values()][0]!.pending.size).toBe(1);
+    controller.abort(canceled);
+    await rejected;
+    expect(admission.finishCalls).toHaveLength(1);
+    expect(admission.finished).toHaveLength(1);
+    expect(admission.records.size).toBe(0);
+    admission.entryReleased = true;
+    admission.release();
+    expect(admission.wakeCount).toBe(0);
+    expect(dispatches).toBe(0);
+  });
 });

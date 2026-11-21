@@ -168,28 +168,32 @@ export class FixtureAdmission implements PersonVmAdmissionBoundary {
     permit: PersonVmAdmissionPermit,
     signal: AbortSignal,
   ) {
-    this.waiting.resolve();
-    return this.track(
-      permit,
-      async (current) => {
-        await new Promise<void>((resolve, reject) => {
-          const abort = () => {
-            current.removeEventListener('abort', abort);
-            reject(current.reason);
-          };
-          current.addEventListener('abort', abort, { once: true });
-          void this.ready.promise.then(() => {
-            current.removeEventListener('abort', abort);
-            resolve();
-          });
-          if (current.aborted) abort();
+    const record = this.records.get(permit)!;
+    // Like the producer's deferred subscription, this owns only a cancelable
+    // wait. No native business callback entered, so cancellation is not unsafe.
+    const pending = (async () => {
+      const current = AbortSignal.any([signal, permit.signal]);
+      current.throwIfAborted();
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => {
+          current.removeEventListener('abort', abort);
+          reject(current.reason);
+        };
+        current.addEventListener('abort', abort, { once: true });
+        void this.ready.promise.then(() => {
+          current.removeEventListener('abort', abort);
+          resolve();
         });
-        current.throwIfAborted();
-        this.wakeCount++;
-        return this.ready.promise;
-      },
-      signal,
-    );
+        this.waiting.resolve();
+        if (current.aborted) abort();
+      });
+      current.throwIfAborted();
+      this.wakeCount++;
+      return this.ready.promise;
+    })();
+    record.pending.add(pending);
+    void pending.finally(() => record.pending.delete(pending)).catch(() => {});
+    return pending;
   }
   private track<T>(
     permit: PersonVmAdmissionPermit,

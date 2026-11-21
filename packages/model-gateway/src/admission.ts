@@ -27,6 +27,7 @@ export async function runGatewayAdmission<T>(
   let work: Promise<Outcome<T>> | undefined;
   let activation: Promise<Outcome<T>> | undefined;
   let outcome: Outcome<T> | undefined;
+  const callbackFailures: unknown[] = [];
   let failed = false;
   let failure: unknown;
   let cleanupFailed = false;
@@ -40,7 +41,7 @@ export async function runGatewayAdmission<T>(
       signal.throwIfAborted();
       throw new ModelGatewayError('EXECUTION_REBIND_REQUIRED');
     }
-    outcome = await boundary.queued(
+    await boundary.queued(
       permit,
       (queuedSignal) => {
         const activeCancellation = new AbortController();
@@ -93,7 +94,17 @@ export async function runGatewayAdmission<T>(
     failed = true;
     failure = error;
   } finally {
-    await Promise.allSettled([work, activation]);
+    const [workResult, activeResult] = await Promise.allSettled([
+      work,
+      activation,
+    ]);
+    // The host can reject its listener cleanup after work has fulfilled.
+    // Read the outcome from that SAME real work, independent of either host
+    // callback's cleanup; retaining evidence never converts rejection to join.
+    if (workResult.status === 'fulfilled') outcome = workResult.value;
+    else callbackFailures.push(workResult.reason);
+    if (activeResult.status === 'rejected')
+      callbackFailures.push(activeResult.reason);
     // c041d94c finish still cancels/joins its own resources after an entered
     // callback rejects. Its sticky unsafe proof retains the durable permit.
     try {
@@ -107,7 +118,8 @@ export async function runGatewayAdmission<T>(
   // confirmed-join business failure. Keep that earlier outcome as well as both
   // callback/finish errors; never replace the original evidence in finally.
   const errors: unknown[] = outcome && !outcome.ok ? [outcome.error] : [];
-  if (failed && !errors.includes(failure)) errors.push(failure);
+  for (const error of [...callbackFailures, ...(failed ? [failure] : [])])
+    if (!errors.includes(error)) errors.push(error);
   if (cleanupFailed) errors.push(cleanupFailure);
   if (cleanupFailed || (failed && errors.length > 1))
     throw new ModelGatewayError('LEDGER_UNAVAILABLE', {
