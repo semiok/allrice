@@ -40,8 +40,11 @@ it.each(['drain', 'cancel'] as const)(
     hook.response = (res) => {
       response = res;
       const native = res.end.bind(res);
+      let released = false;
       res.end = ((...args: Parameters<typeof res.end>) => {
         release = () => {
+          if (released || res.destroyed) return;
+          released = true;
           native(...args);
         };
         entered();
