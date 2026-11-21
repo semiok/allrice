@@ -6914,17 +6914,27 @@ suite('MET-147 UX01-A full tenant workbench (synthetic HTTP, no model)', () => {
     await expect
       .poll(
         async () => {
-          const loading = await f.page
-            .getByText('加载过程…', { exact: true })
-            .count();
-          mark('restore-poll', {
+          let loading: number | null = null;
+          mark('restore-poll-start', {
             traces: traces.size,
             loading,
             errors: internalErrors.length,
           });
-          return (
-            internalErrors.length > 0 || (traces.size === 100 && loading === 0)
-          );
+          // Preserve the original short-circuit order: do not read the DOM
+          // while errors are present or the 100 trace requests are unfinished.
+          const restored =
+            internalErrors.length > 0 ||
+            (traces.size === 100 &&
+              (loading = await f.page
+                .getByText('加载过程…', { exact: true })
+                .count()) === 0);
+          mark('restore-poll-end', {
+            traces: traces.size,
+            loading,
+            errors: internalErrors.length,
+            restored,
+          });
+          return restored;
         },
         { timeout: 5000 },
       )
