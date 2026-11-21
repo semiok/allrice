@@ -365,6 +365,15 @@ export const baseline: readonly BaselineEntry[] = [
   },
   {
     kind: 'patch',
+    id: 'allrice-person-vm-entry-admission-v1',
+    category: '租约',
+    basis:
+      'MET-271 F4：入口只消费同一模型宿主公开 boundary/participant，当前身份及原生根门卫不变；真实 owner 关闭全部子操作后才返回业务 outcome，未知 close 直接拒绝，旧执行不换标签重放。DSH 不持有 AllRice 多租户/双宿主准入权威；本片不建 SQL、VM 或 Agent 状态机，最终 producer/实际 owner 仍未绑定。',
+    approvedBy:
+      '2026-11-21 用户批准 MET-271 F4 consumer 及最新 join 语义准备；本片不接生产、不运行真实 VM/模型/SQL，沿既有门卫/租约范围。',
+  },
+  {
+    kind: 'patch',
     id: 'allrice-reference-read-v1',
     category: '业务工具',
     basis:

@@ -110,6 +110,8 @@ export async function claimConversationSteer(input: {
     const live =
       await transaction`select cr.session_id,cr.active_turn_id,j.id as job_id from allrice_conversation_runtimes cr
       join allrice_jobs j on j.run_id=cr.active_run_id and j.worker_id=cr.worker_id
+      join allrice_chat_sessions s on s.id=cr.session_id and s.organization_id=cr.organization_id
+        and s.workspace_id=cr.workspace_id and s.owner_id=cr.owner_id and s.execution_generation='3.x'
       where cr.organization_id=${values.organizationId} and cr.workspace_id=${values.workspaceId}
       and cr.session_id=${values.sessionId} and cr.worker_id=${values.workerId} and cr.state='running'
       and cr.thread_generation=${values.generation}
@@ -187,6 +189,8 @@ export async function consumeConversationSteer(input: {
       await transaction`select cr.session_id,cr.active_run_id,j.id as job_id from allrice_conversation_runtimes cr
       join allrice_conversation_commands c on c.session_id=cr.session_id
       join allrice_jobs j on j.run_id=cr.active_run_id and j.worker_id=cr.worker_id
+      join allrice_chat_sessions s on s.id=cr.session_id and s.organization_id=cr.organization_id
+        and s.workspace_id=cr.workspace_id and s.owner_id=cr.owner_id and s.execution_generation='3.x'
       where c.id=${values.commandId} and c.command_type='steer' and cr.worker_id=${values.workerId} and cr.state='running'
       and cr.thread_generation=c.expected_generation
       and (cr.active_turn_id=c.expected_turn_id or ((c.input_kind='steer_current'

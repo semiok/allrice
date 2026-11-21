@@ -86,6 +86,7 @@ async function lockOwner(tx: TransactionSql, { context, worker }: Owner) {
     join allrice_employees e on e.id=a.employee_id and e.status='active'
     join allrice_chat_sessions s on s.id=er.session_id and s.owner_id=r.owner_id and s.organization_id=r.organization_id
       and s.workspace_id=r.workspace_id and s.archived_at is null
+      and s.execution_generation='3.x'
     where r.id=${context.runId} and r.policy_snapshot_id=${context.policySnapshot.id}
       and exists(select 1 from allrice_memberships m where m.user_id=r.owner_id and m.organization_id=r.organization_id
         and (m.workspace_id is null or m.workspace_id=r.workspace_id) and m.active and m.role in ('admin','member'))`;

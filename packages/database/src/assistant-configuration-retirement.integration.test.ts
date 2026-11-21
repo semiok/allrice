@@ -281,6 +281,19 @@ suite('executor-first retirement: passive legacy history', () => {
     const before = await legacySnapshot(db);
     expect(before.every((table) => table.length > 0)).toBe(true);
     await db.begin(async (tx) => tx.unsafe(await migration()));
+    // Current archive APIs require the real writer pin. Keep the other two
+    // migration preservation/rollback cases at their original 0228→0229 scope.
+    await db.begin(async (tx) =>
+      tx.unsafe(
+        await readFile(
+          new URL(
+            '../migrations/0249_d_entry_execution_generation.sql',
+            import.meta.url,
+          ),
+          'utf8',
+        ),
+      ),
+    );
     const history = await getChatSessionHistory(
       f.context,
       f.workspace,

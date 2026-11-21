@@ -2,6 +2,14 @@
   "schemaVersion": 2,
   "patches": [
     {
+      "id": "allrice-person-vm-entry-admission-v1",
+      "issue": "MET-271",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/web/lib/d-entry/admission-participant.ts",
+      "reason": "Host-injected entry consumer preparation at the public person VM admission boundary. Preserve original native call identity and current SaaS authority; fulfil business outcomes only after the real operation owner joins all children. Unknown acquisition/close rejects the callback for the final producer to retain. No VM/SQL/Agent lifecycle implementation or production binding; full execution owner, joined-close producer and final sticky-unsafe producer remain unbound."
+    },
+    {
       "id": "allrice-reference-read-v1",
       "issue": "MET-247",
       "upstreamVersion": "0.2.1-rc.2",

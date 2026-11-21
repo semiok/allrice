@@ -209,3 +209,4 @@ export * from './employee-modules.ts';
 export * from './brand-media-module.ts';
 
 export * from './brand-media-tools.ts';
+export * from './d-entry.ts';

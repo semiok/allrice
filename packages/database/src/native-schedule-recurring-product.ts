@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { assertChatExecutionGeneration } from './conversation/execution-generation.ts';
 import {
   publicModelFailureMessage,
   readModelFailureCategory,
@@ -560,6 +561,7 @@ async function enrollRecurringTask(
   digest: string,
   validateNew?: () => void,
 ) {
+  await assertChatExecutionGeneration(tx, { ...scope, sessionId }, '3.x');
   await tx`select pg_advisory_xact_lock(hashtextextended(${`recurring-create:${scope.organizationId}:${scope.ownerId}:${input.clientRequestId}`},0))`;
   const [existing] = await tx<
     Plan[]
@@ -914,6 +916,13 @@ export async function changeRecurringTask(
     >`select * from allrice_automations where id=${taskId} and organization_id=${scope.organizationId}
       and workspace_id=${scope.workspaceId} and owner_id=${scope.ownerId} and session_id=${sessionId} and clock_owner='native_recurring' for update`;
     if (!p) throw new DataAccessError('not_found');
+    // Catalog stop retains its archived/withdrawn 3.x cleanup semantics, while
+    // remaining a legacy write rather than authority over a 4.0 source.
+    await assertChatExecutionGeneration(
+      tx,
+      { ...scope, sessionId: p.session_id },
+      '3.x',
+    );
     const [existing] = await tx<
       OperationRow[]
     >`select * from allrice_native_recurring_operations where organization_id=${scope.organizationId}
@@ -1113,7 +1122,8 @@ export async function lockNativeRecurringAdmissions(
         join allrice_chat_sessions s on s.id=${c.dispatch.businessSessionId} and s.employee_assignment_id=a.id
           and coalesce(s.employee_instance_id,s.employee_assignment_id)=i.id and s.organization_id=a.organization_id and s.workspace_id=a.workspace_id and s.owner_id=a.user_id
         where a.id=${c.dispatch.employeeAssignmentId} and a.organization_id=${scope.organizationId} and a.workspace_id=${scope.workspaceId} and a.user_id=${scope.ownerId}
-          and a.active and e.status='active' and e.employee_key not like 'platform-%' and i.archived_at is null and s.archived_at is null for share of a,e,i,s`;
+          and a.active and e.status='active' and e.employee_key not like 'platform-%' and i.archived_at is null and s.archived_at is null
+          and s.execution_generation='3.x' for share of a,e,i,s`;
       allowed =
         !!target &&
         p.session_id === c.dispatch.businessSessionId &&
