@@ -2,7 +2,7 @@
 
 当前交付是原生 SDK server、host 现权/代际/调用绑定和三模块 M1 公开子集。4.0 的 execution/receipt、issued memory pin/预算及 publisher carrier 尚待所属 owner 公开绑定；这不表示模块已迁入或 4.0 生产业务全通。没有启动入口、默认配置或企业/员工开关变更。
 
-n3 接收基点为 `6eab934e51721a13f9b2537eca670ccffe0cb31d`，只重放本卡两个提交，未携带旧 #899 入口权威。下面具名 host API 的产品 sourceAtSha=`197399232bde39bde40180728854808f38ffa7b7`；公开源级入口为 `apps/worker/src/mcp/allrice-server.ts`。Worker 是 private 工作区，本片没有新增 package exports，不能把该文件虚构成 `@allrice/worker` 的子路径导出。业务 owner 的宿主适配器消费这些签名，数据库模块不反向导入 Worker 或跨 owner SQL。
+n3 接收基点为 `6eab934e51721a13f9b2537eca670ccffe0cb31d`，只重放本卡两个提交，未携带旧 #899 入口权威。下面具名 host API 含正式代际依赖的组合 sourceAtSha=`885a5e0391f9d878383f9fb5fdbf85fdb91c3fb8`（server 本体与首片 `197399232bde39bde40180728854808f38ffa7b7` 相同）；公开源级入口为 `apps/worker/src/mcp/allrice-server.ts`。Worker 是 private 工作区，本片没有新增 package exports，不能把该文件虚构成 `@allrice/worker` 的子路径导出。业务 owner 的宿主适配器消费这些签名，数据库模块不反向导入 Worker 或跨 owner SQL。
 
 ## 具名 host API v1
 
@@ -80,6 +80,6 @@ owner 配置/撤权变更调用原生 notifyCatalogChanged；即使客户端刷�
 
 DB suite 由 ALLRICE_RUN_DB_INTEGRATION 开启，CI 文件责任登记为 db；现有 fixture 初始化/每项 timeout 保持 120000ms，清理 30000ms。直接影响既有回归：native-client.test.ts、employees/reference-tools.integration.test.ts、run-memory-index.integration.test.ts、artifact-publication-concurrency.integration.test.ts；未改下载/版本读取链。重门禁和独审由 root 绑定最终 SHA 执行，不能把 skip/fixture 当生产通过。
 
-仍待 271 受管 MCP 连接到可信当前身份、native call/root/撤权的公开映射，以及当前代际合同；273 currentScope/currentModuleQualification/currentContentAuthority 与 builtin release/binding；281/283 所属业务的 4.0 receipt/memory issued pins+budget/publisher carrier。274 历史快照不是这些业务账本 owner，本卡不扩其表。旧文档的 gateway executionBinding/nativeCallContext 是 proposed 名称，不是本片已实现的 model gateway 导出。四段 instructions、逐实际父/子 request token/schema/Skill 证据属于 MET-273/285 装配，本卡没有实际模型请求，不能声称已验 ≤2048 token。
+仍待 271 受管 MCP 连接到可信当前身份、native call/root/撤权的公开映射；273 currentScope/currentModuleQualification/currentContentAuthority 与 builtin release/binding；281/283 所属业务的 4.0 receipt/memory issued pins+budget/publisher carrier。代际类型回交不关闭这些生产映射缺口。274 历史快照不是这些业务账本 owner，本卡不扩其表。旧文档的 gateway executionBinding/nativeCallContext 是 proposed 名称，不是本片已实现的 model gateway 导出。四段 instructions、逐实际父/子 request token/schema/Skill 证据属于 MET-273/285 装配，本卡没有实际模型请求，不能声称已验 ≤2048 token。
 
 MET-225 拟登记：VM 外 AllRice 业务 MCP server，DSH 保持原生发现/命名/调用/取消/result；AllRice 仅 host 现权与 owner 业务事实，4.0 carrier 未绑拒绝。由发布主会话同步。新功能错误可由 native MCP isError/协议失败与现有 owner receipt 对账发现；没有安装新巡检，根线同步 MET-222 待联合验收项。
