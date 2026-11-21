@@ -29,11 +29,15 @@
   "dependencies": {
     "@allrice/contracts": "workspace:*",
     "@allrice/file-archives": "workspace:*",
+    "@allrice/person-vm": "workspace:*",
     "@allrice/storage": "workspace:*",
     "fflate": "0.8.3",
     "mdast-util-from-markdown": "^2.0.3",
+    "pg": "8.23.1",
     "postgres": "^3.4.7",
-    "zod": "^4.4.3",
-    "@allrice/person-vm": "workspace:*"
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/pg": "8.23.1"
   }
 }

@@ -59,6 +59,11 @@ export function createDEntryMuxHandler(
       socket.once('close', disconnected);
       socket.on('error', socketError);
       let peer: WebSocket | undefined;
+      let authority:
+        Awaited<ReturnType<DEntryHttpDependencies['watch']>> | undefined;
+      const revoke = () => abort.abort(authority?.revoked.reason);
+      let failed = false;
+      let failure: unknown;
       try {
         if (stopping) throw new DEntryNativeUnavailable();
         if (
@@ -92,6 +97,14 @@ export function createDEntryMuxHandler(
           throw new DataAccessError('authorization_denied');
         const token = dEntryBearer(request);
         const auth = await currentDEntryRequest(deps, token, input, signal);
+        authority = await deps.watch(
+          auth.context,
+          input.selection,
+          auth.identity,
+          signal,
+        );
+        authority.revoked.addEventListener('abort', revoke, { once: true });
+        if (authority.revoked.aborted) revoke();
         const current = await currentDEntryNativeOwner(
           deps.owners,
           auth.context,
@@ -99,7 +112,8 @@ export function createDEntryMuxHandler(
           signal,
         );
         const data = deps.data();
-        if (!data) throw new DEntryNativeUnavailable();
+        if (!data || !current.owner.controlReady())
+          throw new DEntryNativeUnavailable();
         const assertCurrent = async (active: AbortSignal) => {
           const next = await currentDEntryRequest(deps, token, input, active);
           if (!sameDEntryIdentity(auth.identity, next.identity))
@@ -107,10 +121,14 @@ export function createDEntryMuxHandler(
           await current.owner.assertCurrent(next.context, active);
           if (current.owner.bindingRef !== current.view.bindingRef)
             throw new DataAccessError('authorization_denied');
+          if (!current.owner.controlReady())
+            throw new DEntryNativeUnavailable();
           active.throwIfAborted();
         };
         // Establish the real business root before any native connection opens.
         const pin = await deps.root(auth.context, input.selection);
+        if (pin.vmId !== current.view.receipt.binding.vmId)
+          throw new DataAccessError('authorization_denied');
         const operationId = randomUUID();
         const owner = await data.resolveAdmissionOwner({
           ...auth,
@@ -139,7 +157,8 @@ export function createDEntryMuxHandler(
                 if (
                   next.rootNativeSessionId !== pin.rootNativeSessionId ||
                   next.rootOriginDigest !== pin.rootOriginDigest ||
-                  next.threadGeneration !== pin.threadGeneration ||
+                  next.rootBindingRef !== pin.rootBindingRef ||
+                  next.vmId !== pin.vmId ||
                   !sameDEntryIdentity(next.identity, auth.identity)
                 )
                   throw new DataAccessError('authorization_denied');
@@ -207,7 +226,7 @@ export function createDEntryMuxHandler(
                           transferRoot,
                         );
                         transferRoot.throwIfAborted();
-                        await channel.send(JSON.stringify(frame));
+                        if (frame) await channel.send(JSON.stringify(frame));
                       }
                     };
                     const downlink = async () => {
@@ -342,14 +361,31 @@ export function createDEntryMuxHandler(
             browserClosed,
           ]);
         if (peer) peer.terminate();
-        throw error;
+        failed = true;
+        failure = error;
       } finally {
-        socket.destroy();
-        await browserClosed;
-        socket.off('close', disconnected);
-        socket.off('error', socketError);
-        aborters.delete(abort);
+        authority?.revoked.removeEventListener('abort', revoke);
+        try {
+          await authority?.close();
+        } catch (error) {
+          cleanupErrors.push(error);
+          failure = failed
+            ? new AggregateError(
+                [failure, error],
+                'Mux authority close unknown',
+                { cause: failure },
+              )
+            : error;
+          failed = true;
+        } finally {
+          socket.destroy();
+          await browserClosed;
+          socket.off('close', disconnected);
+          socket.off('error', socketError);
+          aborters.delete(abort);
+        }
       }
+      if (failed) throw failure;
     })();
     pending.add(operation);
     // The request caller observes rejection; shutdown joins active operations.

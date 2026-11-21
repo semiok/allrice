@@ -62,6 +62,69 @@ const follow = {
 };
 
 describe('server-side browser Mux gate and owned request closure', () => {
+  it('refuses direct internal Upgrade when data/control readiness or the complete admission resolver is absent', async () => {
+    const f = await fixture(),
+      control = vi.spyOn(f.owner, 'controlReady');
+    for (const missing of ['data', 'control', 'envelope'] as const) {
+      f.deps.data.mockReturnValue(missing === 'data' ? undefined : f.data);
+      control.mockReturnValue(missing !== 'control');
+      if (missing === 'envelope')
+        vi.mocked(f.data.resolveAdmissionOwner).mockRejectedValueOnce(
+          Error('real complete envelope unavailable'),
+        );
+      const peer = f.connect();
+      const [request, response] = await once(peer, 'unexpected-response');
+      expect(response.statusCode).toBe(503);
+      response.resume();
+      request.destroy();
+    }
+    expect(f.data.acquireMux).not.toHaveBeenCalled();
+    expect(f.admission.boundary.admit).not.toHaveBeenCalled();
+    expect(f.sent).not.toHaveBeenCalled();
+  });
+
+  it('keeps another logical stream alive when a native terminal crosses late browser cancel/end', async () => {
+    const f = await fixture();
+    const peer = f.connect();
+    await once(peer, 'open');
+    for (const streamId of ['finished', 'live'])
+      peer.send(JSON.stringify({ ...follow, streamId }));
+    await vi.waitFor(() => expect(f.sent).toHaveBeenCalledTimes(2));
+    const terminal = once(peer, 'message');
+    f.muxFrames.push(JSON.stringify({ type: 'end', streamId: 'finished' }));
+    expect(JSON.parse(String((await terminal)[0]))).toMatchObject({
+      type: 'end',
+      streamId: 'finished',
+    });
+    peer.send(JSON.stringify({ type: 'cancel', streamId: 'finished' }));
+    peer.send(JSON.stringify({ type: 'end', streamId: 'finished' }));
+    const live = once(peer, 'message');
+    f.muxFrames.push(
+      JSON.stringify({
+        type: 'item',
+        streamId: 'live',
+        value: { event: 'still-live' },
+      }),
+    );
+    expect(JSON.parse(String((await live)[0]))).toMatchObject({
+      streamId: 'live',
+      value: { event: 'still-live' },
+    });
+    peer.send(JSON.stringify({ type: 'cancel', streamId: 'live' }));
+    await vi.waitFor(() => expect(f.sent).toHaveBeenCalledTimes(3));
+    expect(JSON.parse(f.sent.mock.calls[2]![0])).toEqual({
+      type: 'cancel',
+      streamId: 'live',
+    });
+    expect(peer.readyState).toBe(WebSocket.OPEN);
+    const closed = once(peer, 'close');
+    f.identityRevoked.abort(
+      new Error('identity changefeed revoked idle connection'),
+    );
+    await closed;
+    await f.muxClosed.promise;
+    await vi.waitFor(() => expect(f.authorityClose).toHaveBeenCalledTimes(1));
+  });
   it('forwards only a generated/authorized child read, then aborts and joins an idle connection on real owner revocation', async () => {
     const f = await fixture(),
       sent = deferred<void>(),

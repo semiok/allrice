@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type postgres from 'postgres';
 import {
   DEntryRolloutPolicySchema,
   type RequestContext,
@@ -19,9 +20,13 @@ const disabledPolicy = {
 /** Internal host read; callers establish current session/employee authority.
  * Missing configuration is the explicitly approved default-off policy. Invalid
  * stored configuration fails closed rather than silently changing a thread. */
-export async function readDEntryReleasePolicy() {
-  const [row] = await getDatabase()`select value from allrice_settings
-    where scope_type='system' and scope_id is null and key=${dEntryReleasePolicyKey}`;
+export async function readDEntryReleasePolicy(
+  sql: ReturnType<typeof getDatabase> | postgres.TransactionSql = getDatabase(),
+  lock = false,
+) {
+  const [row] = await sql`select value from allrice_settings
+    where scope_type='system' and scope_id is null and key=${dEntryReleasePolicyKey}
+    ${lock ? sql`for share` : sql``}`;
   const parsed = DEntryRolloutPolicySchema.safeParse(
     row?.value ?? disabledPolicy,
   );

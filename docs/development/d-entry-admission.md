@@ -1,6 +1,6 @@
 # D 入口公开合同（MET-271）
 
-离当前目标还差什么：cookie身份HTTP入口、线程不可变产品代际pin和3.x写入门卫已实现；批准发布配置来源、4.0 HTTP/WS/profile受管目标尚未绑定。4.0 admission返回503，不能当已挂客户端或已开启Dev开关。UI接线由打野3完成，本文不改变可见界面。
+离当前目标还差什么：cookie身份HTTP入口、不可变产品代际、共享发布配置、4.0 root claim/pin 与跨进程现权通知已接入；真实4.0 HTTP/WS/profile受管目标和完整执行owner仍未绑定。4.0 admission返回503，不能当已挂客户端或已开启Dev开关。UI接线由打野3完成，本文不改变可见界面。
 
 本合同复用API v1、`ContractVersion=1`，与冻结的M1-01 v1.0一致。DSH包保持单代`0.2.1-rc.2`；`ExecutionGenerationSchema`的3.x/4.0是产品writer归属，与DSH的distributionGeneration、原生thread_generation无关。
 
@@ -73,17 +73,23 @@ Web/Worker共用 `@allrice/database#resolveDEntryIdentity`；Web旧文件保留�
 | `/api/v1/d-entry/native-rpc`      | `{selection:含threadId,endpoint,payload:{args:原生生成参数}}`           | 原生RPC body/content-type；不转发Set-Cookie/Location。不是任意URL代理。                                                                  |
 | `/api/v1/d-entry/native-mux`      | GET WS，query只有organizationId/workspaceId/employeeInstanceId/threadId | 同listener的具名Upgrade；先经原Web cookie/portal现权探测，再把原Bearer只送固定Worker，禁止redirect。                                     |
 
-Worker同listener对应 `/internal/d-entry/native-owner`、`native-resource`、`native-rpc` 的POST和 `native-mux` Upgrade；前三者加宿主当前organizationId，其他字段同上。Worker内部HTTP拒绝浏览器Origin，重新authenticateSession原Bearer，核当前员工/可写资格/发布/代际后才调用owner。RPC先验证登录，再缓冲native body；不把浏览器身份JSON或AllRice Cookie送guest。错误沿ApiError：401未登录、404不可见/失权、400请求非法、503依赖未装配；Web自身当前现权沿原403。所有结果no-store。
+Worker同listener对应 `/internal/d-entry/native-owner`、`native-resource`、`native-rpc`、`native-root` 的POST和 `native-mux` Upgrade；POST加宿主当前organizationId，其他字段同上。Worker内部HTTP拒绝浏览器Origin，重新authenticateSession原Bearer，核当前员工/可写资格/发布/代际后才调用owner。RPC先验证登录，再缓冲native body；不把浏览器身份JSON或AllRice Cookie送guest。错误沿ApiError：401未登录、404不可见/失权、400请求非法、503依赖未装配；Web自身当前现权沿原403。所有结果no-store。
 
 `DEntryNativeOwnerPort` 是271对冻结v1的消费接口；`dEntryOwnerViewSchema`只解析该宿主投影，**不是273新receipt发行器或同名替身package**。273正式receipt导出/生产装配由其owner提供。`installDEntryNativeOwnerPort` 仅进程内组合注册，无person/lease Map或权威；默认未注册503。`readSessions`直接使用rc.2公开 `RemoteResult<SessionListValue>` 与真实生成result codec，原生失败保留code/message/details。
 
-资源组合只读现有 `getSessionNativeSubagentTarget` 的不可变业务pin，经 `getDEntryNativeRootPin` 安全投影，与native catalog完整parent链核对；拒绝跨root、循环、重复ID、缺parent、换pin及失权。该读取不创建/修复pin。现有4.0创建origin为NULL，旧binder只准3.x，故**新的4.0 root producer仍缺失**，不会挑列表第一项、改旧origin或用浏览器root。
+资源组合只读0251既有chat行的不可变4.0业务pin，经 `getDEntryNativeRootPin` 安全投影，与native catalog完整parent链核对；拒绝跨root、跨持久VM/profile、循环、重复ID、缺parent、换pin及失权。该读取不创建/修复pin。显式根创建另走下述可信宿主producer；4.0旧origin仍为NULL，旧binder只准3.x，不会挑列表第一项、改旧origin或用浏览器root。
 
 数据面另需真实host注入 `DEntryNativeDataPort`：同一c041 boundary/entry participant、完整原业务envelope resolver，以及同步取得的每请求owned RPC/Mux handle。run内开始I/O，close主动取消并join部分初始化和全部子操作；不能用长期native job.close代替每请求close。失败未拿到handle保持callback rejection；业务/合作取消在实际join后fulfiloutcome，最外层finally finish后保原错。catalog的实际readSessions Promise仅在admitted callback的owned scope内启动；scope主动取消并join所有真实读取，raw reject没有单独joined-close事实时保持unknown。HTTP/Mux shutdown等待实际请求/reader/transport和finish，不用socket.destroyed或单个iterator.return宣称全域完成。
 
 Mux逐逻辑open消费rc.2公开frame parser与 `TYPERT_REMOTE.input({strict:true})`，再按源码逐项登记effect；每次native下行也核当前资源。prompt/queue edit/cancel/rename/selectModel仅root；child无论continuable与否都不可网页写。当前无uplink方法被接纳，未知/global/plugin/`$events/result`全部拒绝，不能通过opaque WS或事件答复绕child门卫。父会话在原生内部的工具指挥不经过此网页adapter，3.x入口保持原断言。
 
-公开descriptor没有effect，`$events/result`只给opaque event关联；v1没有agent/event→SaaS root归属、全局control/list安全投影或native数据面借用。不能因此声称原生页面已完整可发。生产transport/full-envelope/current-revocation producer、4.0 root writer、cold/first-prewarm及physical fence均未组合；当前默认503。测试替身只核consumer调用/真实JS关闭Promise，不证明PG sticky unsafe或VM物理fence。
+公开descriptor没有effect，`$events/result`只给opaque event关联；v1没有agent/event→SaaS root归属、全局control/list安全投影或native数据面借用。不能因此声称原生页面已完整可发。生产transport/full-envelope、cold/first-prewarm及physical fence未组合；未安装owner/data时503。测试替身只核consumer调用/真实JS关闭Promise，不证明PG sticky unsafe或VM物理fence。
+
+`POST /api/v1/d-entry/native-root` 只接受 `{selection:{workspaceId,employeeInstanceId,threadId}}`；同源原cookie到固定Worker的原Bearer，Worker同listener `/internal/d-entry/native-root` 重新认证。只对已批准4.0线程显式创建，history/discovery不创建或开机。成功返回同 `DEntryNativeResourceFacts` 的普通根（nativeSessionId=rootNativeSessionId，parentNativeSessionId=null），没有端口/native auth；资格/依赖错误沿既有401/404/503。Web/Worker不接收native id、preset、path、receipt或root为创建权威。
+
+271在同一admitted callback调用可信data port新增 `acquireRoot({owner,request},signal)`；构造handle不启动I/O，run才调用rc.2生成codec构造的create，真实handle覆盖partial init、native reply和close/join。`ensureDEntryNativeRoot` 用专用PG连接的并发门卫，在短事务锁定当前身份/员工/Session/发布配置并确认完整scope的不可变claim已提交后才允许原始callback唯一dispatch；第二短事务同claim及完整现权下落真实回执pin。提交ACK不明、create结果未知或最终落盘失败时保留claim，后续同键/换键都不再次create；claim不等于创建成功、pin不可读，沿既有503依赖未就绪合同，无TTL/自动恢复/重放。pin实际提交但回复丢失时只读既有pin，不再create。保完整出生scope/release/host provenance；持久vmId+employee instance/profile关联不因临时instance/epoch/bindingRef变化重写，不生成Run/Job或legacy origin。实际owner须将selected endpoint映射到同一持久员工profile。
+
+`watchDEntryNativeAuthority` 使用新增精确锁定pg 8.23.1的Client公开事件订阅0251同事务提交通知，先LISTEN再重核全部当前资格；通知只触发SQL复核。session/user/membership/org/workspace/员工分配/instance/发布及rollout来源变化均覆盖；自然过期按真实expires_at关闭，通知error/end保守abort，关闭等待已经开始的复核。HTTP/WS默认真实接入此source，273的owner revoked仍独立合并。pg仅持通知及根创建并发门卫连接，业务SQL保留既有postgres.js，不新增共享权威或轮询。管理员发布名单不能安装owner/data或绕过完整admission resolver；数据面还核controlReady作为必要前提，该值true仍不授editorReady/canSend。真实PG测试与受影响完整文件由主线M5执行，本实施阶段未跑。
 
 ## F4 生命周期共用服务
 

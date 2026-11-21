@@ -314,11 +314,18 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 以下条目的复核日期/版本统一继承“本轮复核”。测试路径以仓库根目录为起点。退役必须在同一 PR 删除相应旧实现、更新机器清单并留下验证结果；一项适配中的少量机制可退役，不代表它承担的整项治理责任可以删除。
 
+### `allrice-d-entry-native-root-v1`
+
+- MET-271，用户 2026-11-21 已批准可信本人/员工、线程单代入口，主线续派 271 自有 root producer；四类为存储后端。DSH rc.2 `session/create` 返回真实普通根，可能与请求 id 不同；直接消费生成 input/result codec，不从 catalog 列表或 guest JSON 任选根。
+- 0251 在既有 chat Session 增不可变 JSONB claim 与真实结果 pin 两个事实，保完整 org/workspace/person/employee instance/revision/version/release 和原 host receipt；唯一性按持久 VM/员工 profile/native id scope。临时 instance/epoch/bindingRef 只作创建出处，正常重启不重建根。旧 native origin、3.x binder 和 Run/Job 不改，不造 Agent 状态。
+- 完整 scope/可信 operationId 的 claim 事务成功 ACK 后，才允许原始宿主 callback 唯一 create；同 claim 真实返回与最终现权复核后落 pin。提交/结果未知时保留 claim、不算创建成功，后续同键或换键均不重放，无 TTL 或自动恢复；pin 已提交而回复丢失只读原 pin。同线程竞争 try-lock 忙时沿既有依赖错误退出，零 native dispatch、不自动重试。真实原生认证/数据面和完整 envelope owner 仍由正式273宿主提供，替身不证明原生创建/VM验收。退役须由原生正式提供同等 SaaS immutable business pin 时删除本适配及登记。
+
 ### `allrice-native-web-entry-guard-v1`
 
 - MET-271，用户 2026-11-21 授权，四类为门卫。复用 rc.2 `TYPERT_REMOTE` strict codec、公开 Mux frame parser 和实际 session catalog；精确 endpoint/effect 对照源码，非 HTTP method/关键词推断。DSH Gateway 的 owner principal 绕过 remoteAccess，因此不透明转发 owner Cookie 无法提供 SaaS 子会话门卫。
 - Web/Worker 原监听器上具名 HTTP/WS 重新认证原 session Bearer、当前员工/发布名单、永久代际及宿主 root；网页 child 只读，native parent 控制不变。配置复用 allrice_settings/system 的平台管理源，默认3.x、仅精确人/员工条目开启4.0，无新表/env/UI。
-- 数据面必须注入真实每请求 owner handle、完整原 envelope 和真实撤权 signal；未知 acquire/close 仍 finally finish，不能把 iterator.return/AbortSignal 当物理 fence。现树无273 transport/full resolver/root writer/跨进程撤权 producer，未装配时503；controlReady 不是 editorReady/canSend。
+- 271 自有跨进程现权 producer 复用原 identity/employee/settings 权威表，0251事务内 PG 通知仅提示当前 SQL 重核，先订阅后重核，真实 session expiry/通知断线 abort，close 等已排队复核。新增精确锁定 pg driver 的公开 notification/error/end 接缝；原 postgres.js listen 只公开重连回调，无法在断线时保守取消。无轮询/进程Map权威。
+- 数据面必须注入真实每请求 owner handle、完整原 envelope 和真实撤权 signal；未知 acquire/close 仍 finally finish，不能把 iterator.return/AbortSignal 当物理 fence。原生已结束/未知流的无效果 cancel/end 尾帧丢弃，不拆其他流；所有写 open 与非法 uplink 仍严格门卫。现树无273 transport/full resolver正式组合，未装配时503；controlReady 不是 editorReady/canSend。
 - 验证为原 cookie/共享 DB、同 listener HTTP/WS、严格 codec、跨 root、子会话写入、空闲取消及真实 close Promise 的受影响完整文件。替身只证明 consumer 调用，生产 PG/物理 fence、原生页面可发送与联合验收仍待真实组合，不声称通过。
 
 ### `allrice-person-vm-entry-admission-v1`

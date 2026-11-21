@@ -17,7 +17,6 @@ import {
 } from './employees/employee-instances.ts';
 import { requireCurrentWorkspaceWriteAuthority } from './identity.ts';
 import { readDEntryReleasePolicy } from './d-entry-release-policy.ts';
-import { getSessionNativeSubagentTarget } from './conversation/native-subagent-query.ts';
 
 const identityServices = {
   authorizeSessionHistoryOwner,
@@ -105,26 +104,4 @@ export async function requireDEntryNativeIdentity(
   )
     throw new DataAccessError('authorization_denied');
   return identity;
-}
-
-/** Reuses the immutable host business pin. This read cannot repair/create a
- * pin, change a 3.x origin, select a catalog root or wake a VM. The current
- * 4.0 binder is an external dependency; an unbound thread fails closed. */
-export async function getDEntryNativeRootPin(
-  context: RequestContext,
-  input: unknown,
-) {
-  const identity = await requireDEntryNativeIdentity(context, input);
-  if (!identity.threadId) throw new DataAccessError('authorization_denied');
-  const target = await getSessionNativeSubagentTarget(
-    context,
-    identity.workspaceId,
-    identity.threadId,
-  );
-  return {
-    identity,
-    rootNativeSessionId: target.descriptor.nativeSessionId,
-    rootOriginDigest: target.rootOriginDigest,
-    threadGeneration: target.generation,
-  };
 }

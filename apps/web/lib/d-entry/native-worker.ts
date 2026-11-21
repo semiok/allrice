@@ -23,7 +23,7 @@ export async function requestDEntryWorker(
     selection: DEntrySelectionInput;
     signal: AbortSignal;
   },
-  path: 'native-owner' | 'native-resource' | 'native-rpc',
+  path: 'native-owner' | 'native-resource' | 'native-rpc' | 'native-root',
   fields: Record<string, unknown> = {},
 ) {
   input.signal.throwIfAborted();

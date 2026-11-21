@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   afterAll,
   beforeAll,
@@ -47,6 +50,7 @@ import { enqueueNativeSubagentControl } from '../../../../packages/database/src/
 import { updateQueuedMessage } from '../../../../packages/database/src/conversation/queued-messages.ts';
 import { GET } from '../../app/api/v1/d-entry/identity/route';
 import { POST } from '../../app/api/v1/d-entry/admission/route';
+import { POST as createNativeRoot } from '../../app/api/v1/d-entry/native-root/route';
 import { PATCH } from '../../app/api/v1/sessions/[id]/route';
 import {
   POST as uploadAttachment,
@@ -62,8 +66,19 @@ import {
   readDEntryReleasePolicy,
   updateDEntryReleasePolicy,
   getDEntryNativeRootPin,
+  ensureDEntryNativeRoot,
+  requireDEntryNativeIdentity,
+  createDEntryAuthorityFeed,
+  watchDEntryNativeAuthority,
 } from '@allrice/database';
 import { authorizeFixturePlatformAdministrator } from '../../../../packages/database/src/platform-authority.fixture.ts';
+import {
+  WebSocket,
+  deferred,
+  nativeEntryFixture,
+  nativeEntryServer,
+} from '../../../worker/src/d-entry/native-entry.fixture';
+import { dEntryHttpDefaults } from '../../../worker/src/d-entry/http';
 
 const cookie = vi.hoisted(() => ({
   token: '',
@@ -90,6 +105,7 @@ suite(
     let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
     let runtimePackage: EmployeeRuntimePackage;
     beforeAll(async () => {
+      vi.stubEnv('DATABASE_URL', process.env.ALLRICE_TEST_DATABASE_URL!);
       vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '0');
       vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
       vi.stubEnv('ALLRICE_DSH_NATIVE_ARTIFACT_ID', 'sha256:' + 'a'.repeat(64));
@@ -220,8 +236,25 @@ suite(
         },
       );
     }
+    function rootRequest(
+      f: Pick<Fixture, 'org' | 'workspace'>,
+      selection: Awaited<ReturnType<typeof enabledFour>>['selection'],
+    ) {
+      return new Request('https://allrice.test/api/v1/d-entry/native-root', {
+        method: 'POST',
+        headers: {
+          host: 'allrice.test',
+          origin: 'https://allrice.test',
+          'x-allrice-organization-id': f.org,
+          'x-allrice-workspace-id': f.workspace,
+        },
+        body: JSON.stringify({ selection }),
+      });
+    }
     const route = (id: string) => ({ params: Promise.resolve({ id }) });
-    async function four(f: Fixture) {
+    async function four(
+      f: Pick<Fixture, 'context' | 'workspace' | 'assignment'>,
+    ) {
       return createChatSession(
         f.context,
         {
@@ -232,6 +265,743 @@ suite(
         { executionGeneration: '4.0' },
       );
     }
+    async function enabledFour() {
+      const f = await setup(),
+        thread = await four(f);
+      const selection = { ...f.selection, threadId: thread.id };
+      await authorizeFixturePlatformAdministrator(fixture.db, f.user);
+      const policy = await updateDEntryReleasePolicy(f.context, {
+        revision: 'not-a-published-revision',
+        defaultGeneration: '3.x',
+        selections: [
+          {
+            organizationId: f.org,
+            personId: f.user,
+            employeeInstanceId: f.assignment,
+            generation: '4.0',
+          },
+        ],
+      });
+      const identity = await requireDEntryNativeIdentity(f.context, selection);
+      return { ...f, thread, selection, identity, policy };
+    }
+    const clearPublished =
+      () => fixture.db`delete from allrice_settings where scope_type='system'
+      and scope_id is null and key=${dEntryReleasePolicyKey}`;
+    function creation(
+      f: Awaited<ReturnType<typeof enabledFour>>,
+      nativeSessionId = 'dsh-host-created-root',
+    ) {
+      return {
+        nativeSessionId,
+        host: {
+          binding: {
+            organizationId: f.org,
+            personId: f.user,
+            vmId: randomUUID(),
+            instanceId: randomUUID(),
+            leaseEpoch: 1,
+          },
+          bindingRef: randomUUID(),
+          rosterDigest: 'sql-host-receipt-double',
+        },
+      };
+    }
+
+    async function probeRootFromOtherProcess(
+      f: Awaited<ReturnType<typeof enabledFour>>,
+      host: ReturnType<typeof creation>['host'],
+    ) {
+      const [scope] = await fixture.db`select current_schema() schema`;
+      const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
+      url.searchParams.set('options', `-csearch_path=${scope!.schema}`);
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        [
+          '--import',
+          'tsx',
+          '--input-type=module',
+          '--eval',
+          `
+        const { ensureDEntryNativeRoot } = await import(process.env.MET271_ROOT_MODULE);
+        const { closeDatabase } = await import(process.env.MET271_CLIENT_MODULE);
+        const { context, selection, identity, host, operationId } = JSON.parse(process.env.MET271_ROOT_INPUT);
+        let calls = 0;
+        try {
+          const pin = await ensureDEntryNativeRoot(context, selection, identity, {
+            operationId, host, signal: new AbortController().signal,
+            async create() { calls++; throw Error('unexpected native replay'); },
+          });
+          console.log(JSON.stringify({ calls, root: pin.rootNativeSessionId }));
+        } catch (error) { console.log(JSON.stringify({ calls, error: error.message })); }
+        finally { await closeDatabase(); }
+      `,
+        ],
+        {
+          env: {
+            ...process.env,
+            DATABASE_URL: url.toString(),
+            MET271_ROOT_MODULE: new URL(
+              '../../../../packages/database/src/d-entry-native-root.ts',
+              import.meta.url,
+            ).href,
+            MET271_CLIENT_MODULE: new URL(
+              '../../../../packages/database/src/core/client.ts',
+              import.meta.url,
+            ).href,
+            MET271_ROOT_INPUT: JSON.stringify({
+              context: f.context,
+              selection: f.selection,
+              identity: f.identity,
+              host,
+              operationId: randomUUID(),
+            }),
+          },
+        },
+      );
+      return JSON.parse(stdout.trim()) as {
+        calls: number;
+        error?: string;
+        root?: string;
+      };
+    }
+
+    it('persists only host creation provenance, scopes duplicate ids, and keeps the root stable across ordinary lease restarts', async () => {
+      const f = await enabledFour(),
+        fact = creation(f),
+        create = vi.fn(async () => fact),
+        signal = new AbortController().signal;
+      try {
+        const pin = await ensureDEntryNativeRoot(
+          f.context,
+          f.selection,
+          f.identity,
+          { operationId: randomUUID(), host: fact.host, signal, create },
+        );
+        const read = await getDEntryNativeRootPin(f.context, f.selection);
+        expect(read).toEqual(pin);
+        const restartedHost = {
+          ...fact.host,
+          binding: {
+            ...fact.host.binding,
+            instanceId: randomUUID(),
+            leaseEpoch: 2,
+          },
+          bindingRef: randomUUID(),
+        };
+        const afterRestart = vi.fn(async () => ({
+          ...fact,
+          host: restartedHost,
+        }));
+        expect(
+          await ensureDEntryNativeRoot(f.context, f.selection, f.identity, {
+            operationId: randomUUID(),
+            host: restartedHost,
+            signal,
+            create: afterRestart,
+          }),
+        ).toEqual(pin);
+        expect(afterRestart).not.toHaveBeenCalled();
+        const [row] =
+          await fixture.db`select native_root_origin,d_entry_native_root from allrice_chat_sessions where id=${f.thread.id}`;
+        expect(row!.native_root_origin).toBeNull();
+        expect(row!.d_entry_native_root).toMatchObject({
+          identity: f.identity,
+          host: fact.host,
+          releaseRevision: f.policy.revision,
+        });
+        await expect(
+          fixture.db`update allrice_chat_sessions set d_entry_native_root=null where id=${f.thread.id}`,
+        ).rejects.toThrow('D entry native root is immutable');
+        const second = await four(f),
+          secondSelection = { ...f.selection, threadId: second.id };
+        const secondIdentity = await requireDEntryNativeIdentity(
+          f.context,
+          secondSelection,
+        );
+        await expect(
+          ensureDEntryNativeRoot(f.context, secondSelection, secondIdentity, {
+            operationId: randomUUID(),
+            host: fact.host,
+            signal,
+            create: async () => fact,
+          }),
+        ).rejects.toMatchObject({ code: '23505' });
+        const neverReplay = vi.fn(async () => fact);
+        await expect(
+          ensureDEntryNativeRoot(f.context, secondSelection, secondIdentity, {
+            operationId: randomUUID(),
+            host: fact.host,
+            signal,
+            create: neverReplay,
+          }),
+        ).rejects.toThrow('D_ENTRY_ROOT_CREATION_UNCONFIRMED');
+        expect(neverReplay).not.toHaveBeenCalled();
+        // Same native id in a different persistent VM namespace is legal; it
+        // never changes the original thread's root or temporary owner lease.
+        const third = await four(f),
+          thirdSelection = { ...f.selection, threadId: third.id },
+          thirdIdentity = await requireDEntryNativeIdentity(
+            f.context,
+            thirdSelection,
+          );
+        const otherVm = {
+          ...fact,
+          host: {
+            ...fact.host,
+            binding: { ...fact.host.binding, vmId: randomUUID() },
+          },
+        };
+        await ensureDEntryNativeRoot(f.context, thirdSelection, thirdIdentity, {
+          operationId: randomUUID(),
+          host: otherVm.host,
+          signal,
+          create: async () => otherVm,
+        });
+        const [legacy] =
+          await fixture.db`select count(*)::int n from allrice_native_session_bindings where context_id in (${f.thread.id},${second.id})`;
+        const [runs] =
+          await fixture.db`select count(*)::int n from allrice_employee_runs where session_id in (${f.thread.id},${second.id})`;
+        expect(legacy!.n).toBe(0);
+        expect(runs!.n).toBe(0);
+        expect(create).toHaveBeenCalledTimes(1);
+      } finally {
+        await clearPublished();
+      }
+    });
+
+    // Fault injection is ONLY at the caller's transaction-ACK boundary. The
+    // transactions/claims/pins below are real PG facts, not an in-memory store.
+    for (const lostAt of ['claim-ack', 'native-reply', 'pin-ack'] as const)
+      it(`retains durable at-most-once facts after ${lostAt}, without creating again on a second connection/request`, async () => {
+        const f = await enabledFour(),
+          fact = creation(f),
+          operationId = randomUUID(),
+          signal = new AbortController().signal,
+          unknown = Error(`injected ${lostAt} lost`);
+        let commits = 0;
+        const lostCommit =
+          lostAt === 'claim-ack' ? 1 : lostAt === 'pin-ack' ? 2 : 0;
+        const actual = fixture.db;
+        const withLostAck = new Proxy(actual, {
+          get(target, key, receiver) {
+            if (key !== 'begin') return Reflect.get(target, key, receiver);
+            return async (...args: unknown[]) => {
+              const result = await Reflect.apply(target.begin, target, args);
+              if (++commits === lostCommit) throw unknown;
+              return result;
+            };
+          },
+        });
+        const create = vi.fn(async () => {
+          if (lostAt === 'native-reply') throw unknown;
+          return fact;
+        });
+        try {
+          vi.mocked(client.getDatabase).mockReturnValue(withLostAck);
+          await expect(
+            ensureDEntryNativeRoot(f.context, f.selection, f.identity, {
+              operationId,
+              host: fact.host,
+              signal,
+              create,
+            }),
+          ).rejects.toBe(unknown);
+          vi.mocked(client.getDatabase).mockReturnValue(actual);
+          const [row] =
+            await actual`select d_entry_native_root_claim,d_entry_native_root
+            from allrice_chat_sessions where id=${f.thread.id}`;
+          expect(row!.d_entry_native_root_claim).toMatchObject({
+            operationId,
+            identity: f.identity,
+            host: fact.host,
+          });
+          expect(create).toHaveBeenCalledTimes(lostAt === 'claim-ack' ? 0 : 1);
+          const again = vi.fn(async () => fact);
+          for (const nextOperation of [operationId, randomUUID()]) {
+            const next = ensureDEntryNativeRoot(
+              f.context,
+              f.selection,
+              f.identity,
+              {
+                operationId: nextOperation,
+                host: fact.host,
+                signal,
+                create: again,
+              },
+            );
+            if (lostAt === 'pin-ack') {
+              expect(row!.d_entry_native_root).not.toBeNull();
+              expect(await next).toEqual(
+                await getDEntryNativeRootPin(f.context, f.selection),
+              );
+            } else {
+              expect(row!.d_entry_native_root).toBeNull();
+              await expect(next).rejects.toThrow(
+                'D_ENTRY_ROOT_CREATION_UNCONFIRMED',
+              );
+              await expect(
+                getDEntryNativeRootPin(f.context, f.selection),
+              ).rejects.toThrow('NATIVE_QUERY_BINDING_UNAVAILABLE');
+            }
+          }
+          expect(again).not.toHaveBeenCalled();
+          const otherProcess = await probeRootFromOtherProcess(f, fact.host);
+          expect(otherProcess.calls).toBe(0);
+          expect(otherProcess).toMatchObject(
+            lostAt === 'pin-ack'
+              ? { root: fact.nativeSessionId }
+              : { error: 'D_ENTRY_ROOT_CREATION_UNCONFIRMED' },
+          );
+          await expect(actual`update allrice_chat_sessions set d_entry_native_root_claim=
+            jsonb_set(d_entry_native_root_claim,'{operationId}',${actual.json(randomUUID())}) where id=${f.thread.id}`).rejects.toThrow(
+            'D entry native creation claim is immutable',
+          );
+        } finally {
+          vi.mocked(client.getDatabase).mockReturnValue(actual);
+          await clearPublished();
+        }
+      });
+
+    it('serializes real root creators without duplicate dispatch and rechecks a committed member downgrade before the final pin', async () => {
+      const f = await enabledFour(),
+        fact = creation(f),
+        signal = new AbortController().signal;
+      const entered = deferred<void>(),
+        release = deferred<void>();
+      let pending: Promise<unknown> | undefined;
+      try {
+        pending = ensureDEntryNativeRoot(f.context, f.selection, f.identity, {
+          operationId: randomUUID(),
+          host: fact.host,
+          signal,
+          create: async () => {
+            entered.resolve();
+            await release.promise;
+            return fact;
+          },
+        });
+        void pending.catch(() => {});
+        await entered.promise;
+        const competing = vi.fn(async () => fact);
+        await expect(
+          ensureDEntryNativeRoot(f.context, f.selection, f.identity, {
+            operationId: randomUUID(),
+            host: fact.host,
+            signal,
+            create: competing,
+          }),
+        ).rejects.toThrow('D_ENTRY_ROOT_CREATION_BUSY');
+        expect(competing).not.toHaveBeenCalled();
+        await fixture.db`update allrice_memberships set role='viewer' where user_id=${f.user} and organization_id=${f.org}`;
+        release.resolve();
+        await expect(pending).rejects.toMatchObject({
+          code: 'authorization_denied',
+        });
+        const [row] =
+          await fixture.db`select d_entry_native_root,native_root_origin from allrice_chat_sessions where id=${f.thread.id}`;
+        expect(row).toMatchObject({
+          d_entry_native_root: null,
+          native_root_origin: null,
+        });
+        // The create really ran, but current authority denied the final write.
+        // Its immutable dispatch fact survives the released connection gate.
+        await fixture.db`update allrice_memberships set role='member' where user_id=${f.user} and organization_id=${f.org}`;
+        const replay = vi.fn(async () => fact);
+        await expect(
+          ensureDEntryNativeRoot(f.context, f.selection, f.identity, {
+            operationId: randomUUID(),
+            host: fact.host,
+            signal,
+            create: replay,
+          }),
+        ).rejects.toThrow('D_ENTRY_ROOT_CREATION_UNCONFIRMED');
+        expect(replay).not.toHaveBeenCalled();
+        await fixture.db`update allrice_memberships set role='viewer' where user_id=${f.user} and organization_id=${f.org}`;
+        expect(
+          await resolveDEntryIdentity(f.context, f.selection, 'history'),
+        ).toMatchObject({ threadId: f.thread.id });
+      } finally {
+        release.resolve();
+        await pending?.catch(() => {});
+        await clearPublished();
+      }
+    });
+
+    it('uses the real PG commit notification, discards rolled-back revocation, and closes the subscribe-before-recheck gap', async () => {
+      const f = await enabledFour(),
+        feed = createDEntryAuthorityFeed(
+          process.env.ALLRICE_TEST_DATABASE_URL!,
+        );
+      let watcher:
+        Awaited<ReturnType<typeof watchDEntryNativeAuthority>> | undefined;
+      try {
+        watcher = await watchDEntryNativeAuthority(
+          f.context,
+          f.selection,
+          f.identity,
+          new AbortController().signal,
+          feed,
+        );
+        await expect(
+          fixture.db.begin(async (tx) => {
+            await tx`update allrice_memberships set role='viewer' where user_id=${f.user} and organization_id=${f.org}`;
+            expect(watcher!.revoked.aborted).toBe(false);
+            throw Error('rollback-revocation');
+          }),
+        ).rejects.toThrow('rollback-revocation');
+        expect(watcher.revoked.aborted).toBe(false);
+        const revoked = new Promise<void>((resolve) =>
+          watcher!.revoked.addEventListener('abort', () => resolve(), {
+            once: true,
+          }),
+        );
+        await fixture.db.begin(async (tx) => {
+          await tx`update allrice_memberships set role='viewer' where user_id=${f.user} and organization_id=${f.org}`;
+          expect(watcher!.revoked.aborted).toBe(false); // No pre-commit invalidation.
+        });
+        await revoked;
+        expect(watcher.revoked.reason).toMatchObject({
+          code: 'authorization_denied',
+        });
+        await watcher.close();
+        watcher = undefined;
+        await fixture.db`update allrice_memberships set role='member' where user_id=${f.user} and organization_id=${f.org}`;
+        const duringSubscribe = {
+          ...feed,
+          async subscribe(...args: Parameters<typeof feed.subscribe>) {
+            const detach = await feed.subscribe(...args);
+            await fixture.db`update allrice_memberships set role='viewer' where user_id=${f.user} and organization_id=${f.org}`;
+            return detach;
+          },
+        };
+        await expect(
+          watchDEntryNativeAuthority(
+            f.context,
+            f.selection,
+            f.identity,
+            new AbortController().signal,
+            duringSubscribe,
+          ),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+      } finally {
+        await watcher?.close();
+        await feed.close();
+        await clearPublished();
+      }
+    });
+
+    it('rechecks release/employee changes and expires at the real login deadline; notification disconnect aborts idle consumers', async () => {
+      const f = await enabledFour(),
+        feed = createDEntryAuthorityFeed(
+          process.env.ALLRICE_TEST_DATABASE_URL!,
+        );
+      let watcher:
+        Awaited<ReturnType<typeof watchDEntryNativeAuthority>> | undefined;
+      const open = () =>
+        watchDEntryNativeAuthority(
+          f.context,
+          f.selection,
+          f.identity,
+          new AbortController().signal,
+          feed,
+        );
+      const abortOf = (watch: NonNullable<typeof watcher>) =>
+        new Promise<void>((resolve) => {
+          if (watch.revoked.aborted) resolve();
+          else
+            watch.revoked.addEventListener('abort', () => resolve(), {
+              once: true,
+            });
+        });
+      try {
+        watcher = await open();
+        const releaseRevoked = abortOf(watcher);
+        await updateDEntryReleasePolicy(f.context, {
+          ...f.policy,
+          selections: [],
+        });
+        await releaseRevoked;
+        await watcher.close();
+        await updateDEntryReleasePolicy(f.context, f.policy);
+        watcher = await open();
+        const employeeRevoked = abortOf(watcher);
+        await fixture.db`update allrice_employee_instances set archived_at=clock_timestamp() where id=${f.assignment}`;
+        await employeeRevoked;
+        await watcher.close();
+        await fixture.db`update allrice_employee_instances set archived_at=null where id=${f.assignment}`;
+        // A real expires_at update (not a fabricated authenticatedAt/TTL) must
+        // move the deadline of an already open subscription.
+        watcher = await open();
+        const expired = abortOf(watcher);
+        await fixture.db`update allrice_sessions set expires_at=clock_timestamp()+interval '1 second' where id=${f.login.id}`;
+        await expired;
+        expect(watcher.revoked.reason).toMatchObject({
+          code: 'authentication_required',
+        });
+        await watcher.close();
+        const login = await createSession(f.user),
+          context = (await authenticateSession(login.token, {
+            organizationId: f.org,
+            workspaceId: f.workspace,
+          }))!;
+        watcher = await watchDEntryNativeAuthority(
+          context,
+          f.selection,
+          f.identity,
+          new AbortController().signal,
+          feed,
+        );
+        await feed.close();
+        expect(watcher.revoked.aborted).toBe(true);
+        expect(
+          await resolveDEntryIdentity(context, f.selection, 'history'),
+        ).toMatchObject({ threadId: f.thread.id });
+      } finally {
+        await watcher?.close();
+        await feed.close();
+        await clearPublished();
+      }
+    });
+
+    it('drives the real original-Bearer HTTP root producer and current PG revocation with only native/admission ports doubled', async () => {
+      const f = await enabledFour(),
+        feed = createDEntryAuthorityFeed(
+          process.env.ALLRICE_TEST_DATABASE_URL!,
+        );
+      const native = nativeEntryFixture({
+        context: f.context,
+        identity: f.identity,
+      });
+      native.rootCreate.mockResolvedValue({
+        ok: true,
+        value: { sessionId: native.catalog.items[0]!.sessionId },
+      });
+      const pinCommitted = deferred<void>(),
+        letReply = deferred<void>();
+      let rootReplies = 0;
+      const server = await nativeEntryServer(native, {
+        ...dEntryHttpDefaults,
+        owners: native.deps.owners,
+        data: native.deps.data,
+        async ensureRoot(...args) {
+          const pin = await ensureDEntryNativeRoot(...args);
+          if (++rootReplies === 1) {
+            pinCommitted.resolve();
+            await letReply.promise;
+          }
+          return pin;
+        },
+        watch: (context, selection, identity, signal) =>
+          watchDEntryNativeAuthority(
+            context,
+            selection,
+            identity,
+            signal,
+            feed,
+          ),
+      });
+      const headers = { authorization: `Bearer ${f.login.token}` };
+      const previousWorkerUrl = process.env.ALLRICE_WORKER_INTERNAL_URL;
+      vi.stubEnv('ALLRICE_WORKER_INTERNAL_URL', server.origin);
+      try {
+        const loseReply = new AbortController();
+        const lostResponse = fetch(
+          `${server.origin}/internal/d-entry/native-root`,
+          {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(server.body),
+            signal: loseReply.signal,
+          },
+        );
+        void lostResponse.catch(() => {});
+        await pinCommitted.promise;
+        // Durable SQL success and a browser receiving its ACK are distinct.
+        loseReply.abort();
+        letReply.resolve();
+        await expect(lostResponse).rejects.toThrow();
+        // Real Web cookie/BFF -> original Bearer -> real Worker auth/SQL.
+        const created = await createNativeRoot(rootRequest(f, f.selection));
+        expect(created.status).toBe(200);
+        expect(await created.json()).toMatchObject({
+          rootNativeSessionId: 'dsh-root',
+        });
+        expect(
+          (await getDEntryNativeRootPin(f.context, f.selection)).vmId,
+        ).toBe(native.binding.vmId);
+        expect(native.rootCreate).toHaveBeenCalledTimes(1);
+        expect(
+          (await server.request('native-root', server.body, headers)).status,
+        ).toBe(200);
+        expect(native.rootCreate).toHaveBeenCalledTimes(1); // Existing pin never redispatches create.
+        const response = await server.request(
+          'native-resource',
+          { ...server.body, nativeSessionId: 'dsh-grandchild' },
+          headers,
+        );
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({
+          rootNativeSessionId: 'dsh-root',
+          parentNativeSessionId: 'dsh-child',
+        });
+        const peer = new WebSocket(
+          server.origin.replace('http:', 'ws:') +
+            '/internal/d-entry/native-mux?' +
+            new URLSearchParams({ organizationId: f.org, ...f.selection }),
+          { headers },
+        );
+        peer.on('error', () => {});
+        try {
+          await once(peer, 'open');
+          const closed = once(peer, 'close');
+          await revokeSession(f.login.token); // Real cross-connection PG commit, no fake AbortController.
+          await closed;
+          await native.muxClosed.promise;
+          expect(peer.readyState).toBe(WebSocket.CLOSED);
+        } finally {
+          peer.terminate();
+        }
+        expect(
+          (await server.request('native-owner', server.body, headers)).status,
+        ).toBe(401);
+      } finally {
+        letReply.resolve();
+        await server.close();
+        await feed.close();
+        await clearPublished();
+        if (previousWorkerUrl === undefined)
+          delete process.env.ALLRICE_WORKER_INTERNAL_URL;
+        else process.env.ALLRICE_WORKER_INTERNAL_URL = previousWorkerUrl;
+      }
+    });
+
+    it('keeps published 4.0 policy from bypassing missing production owners on direct HTTP/internal/WS entry', async () => {
+      const f = await enabledFour(),
+        feed = createDEntryAuthorityFeed(
+          process.env.ALLRICE_TEST_DATABASE_URL!,
+        );
+      const native = nativeEntryFixture({
+        context: f.context,
+        identity: f.identity,
+      });
+      const server = await nativeEntryServer(native, {
+        ...dEntryHttpDefaults,
+        watch: (context, selection, identity, signal) =>
+          watchDEntryNativeAuthority(
+            context,
+            selection,
+            identity,
+            signal,
+            feed,
+          ),
+      });
+      const headers = { authorization: `Bearer ${f.login.token}` };
+      const previousWorkerUrl = process.env.ALLRICE_WORKER_INTERNAL_URL;
+      vi.stubEnv('ALLRICE_WORKER_INTERNAL_URL', server.origin);
+      let peer: WebSocket | undefined;
+      try {
+        expect(
+          (await createNativeRoot(rootRequest(f, f.selection))).status,
+        ).toBe(503);
+        expect((await readDEntryReleasePolicy()).selections).toContainEqual(
+          expect.objectContaining({ personId: f.user, generation: '4.0' }),
+        );
+        for (const [path, body] of [
+          ['native-owner', server.body],
+          ['native-root', server.body],
+          [
+            'native-resource',
+            { ...server.body, nativeSessionId: 'guest-root' },
+          ],
+          [
+            'native-rpc',
+            {
+              ...server.body,
+              endpoint: 'session/cancel',
+              payload: { args: { request: { sessionId: 'guest-root' } } },
+            },
+          ],
+        ] as const)
+          expect((await server.request(path, body, headers)).status).toBe(503);
+        peer = new WebSocket(
+          server.origin.replace('http:', 'ws:') +
+            '/internal/d-entry/native-mux?' +
+            new URLSearchParams({ organizationId: f.org, ...f.selection }),
+          { headers },
+        );
+        peer.on('error', () => {});
+        const [upgrade, rejected] = await once(peer, 'unexpected-response');
+        expect(rejected.statusCode).toBe(503);
+        rejected.resume();
+        upgrade.destroy();
+        const [row] =
+          await fixture.db`select d_entry_native_root_claim,d_entry_native_root from allrice_chat_sessions where id=${f.thread.id}`;
+        expect(row).toMatchObject({
+          d_entry_native_root_claim: null,
+          d_entry_native_root: null,
+        });
+        expect(native.rootCreate).not.toHaveBeenCalled();
+        expect(native.data.acquireRpc).not.toHaveBeenCalled();
+        expect(native.data.acquireMux).not.toHaveBeenCalled();
+      } finally {
+        peer?.terminate();
+        await server.close();
+        await feed.close();
+        await clearPublished();
+        if (previousWorkerUrl === undefined)
+          delete process.env.ALLRICE_WORKER_INTERNAL_URL;
+        else process.env.ALLRICE_WORKER_INTERNAL_URL = previousWorkerUrl;
+      }
+    });
+
+    it('uses the administrator email acquired under the publication locks, with zero setting/audit after a concurrent email revocation', async () => {
+      const f = await setup();
+      await authorizeFixturePlatformAdministrator(fixture.db, f.user);
+      const held = deferred<number>(),
+        release = deferred<void>();
+      let publish: Promise<unknown> | undefined;
+      const revoke = fixture.db.begin(async (tx) => {
+        await tx`select id from allrice_users where id=${f.user} for update`;
+        const [backend] = await tx`select pg_backend_pid() pid`;
+        held.resolve(backend!.pid);
+        await release.promise;
+        await tx`update allrice_users set email=${`revoked-${randomUUID()}@example.invalid`} where id=${f.user}`;
+      });
+      try {
+        const blocker = await held.promise;
+        publish = updateDEntryReleasePolicy(f.context, {
+          revision: 'not-authority',
+          defaultGeneration: '3.x',
+          selections: [],
+        });
+        void publish.catch(() => {});
+        await expect
+          .poll(async () => {
+            const [wait] =
+              await fixture.db`select exists(select 1 from pg_stat_activity a
+            where ${blocker}::integer=any(pg_blocking_pids(a.pid))
+              and a.query like '%for share of s,u%') blocked`;
+            return wait!.blocked;
+          })
+          .toBe(true);
+        release.resolve();
+        await revoke;
+        await expect(publish).rejects.toMatchObject({
+          code: 'authorization_denied',
+        });
+        const [settings] =
+          await fixture.db`select count(*)::int n from allrice_settings where key=${dEntryReleasePolicyKey}`;
+        const [audit] =
+          await fixture.db`select count(*)::int n from allrice_audit_events
+          where actor_id=${f.user} and action='d_entry_release.update'`;
+        expect(settings!.n).toBe(0);
+        expect(audit!.n).toBe(0);
+      } finally {
+        release.resolve();
+        await Promise.allSettled([revoke, publish]);
+      }
+    });
     it('maps the real login cookie to current person/employee/root without starting a VM', async () => {
       const f = await setup();
       const req = request(f);

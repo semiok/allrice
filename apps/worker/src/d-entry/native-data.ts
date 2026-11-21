@@ -1,4 +1,9 @@
 import type { DEntryIdentity, RequestContext } from '@allrice/contracts';
+import type { RemoteResult } from '@deepseek-ai/dsh-typert-protocol';
+import type {
+  SessionCreateRequest,
+  SessionCreateValue,
+} from '@deepseek-ai/dsh-api-session-controller/types';
 import type {
   DEntryAdmissionOwner,
   DEntryAdmissionPorts,
@@ -49,6 +54,17 @@ export interface DEntryNativeDataPort {
     },
     signal: AbortSignal,
   ): DEntryOwnedActivity<void>;
+  /** Host-only generated session/create, never a browser-provided native id,
+   * path, preset or generic RPC. Actual profile authentication and partial-init
+   * cancellation/join remain owned by this same real transport handle. Like
+   * acquireRpc, constructing the handle must not start I/O; only run may. */
+  acquireRoot(
+    input: {
+      owner: ResolvedDEntryNativeOwner;
+      request: Readonly<SessionCreateRequest>;
+    },
+    signal: AbortSignal,
+  ): DEntryOwnedActivity<RemoteResult<SessionCreateValue>>;
 }
 
 let installed: DEntryNativeDataPort | undefined;

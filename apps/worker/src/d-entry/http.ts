@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { once } from 'node:events';
 import { z } from 'zod';
+import { TYPERT_REMOTE } from '@deepseek-ai/dsh-api-session-controller/remote';
+import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
 import {
   DEntryNativeOwnerRequestSchema,
   DEntryNativeResourceRequestSchema,
@@ -13,7 +15,11 @@ import {
   requireDEntryNativeIdentity,
   getDEntryNativeRootPin,
   runDEntryAdmittedActivity,
+  watchDEntryNativeAuthority,
+  ensureDEntryNativeRoot,
+  DEntryNativeRootStorageCloseError,
   type DEntryOwnedActivity,
+  type DEntryNativeRootCreation,
 } from '@allrice/database';
 import {
   currentDEntryNativeOwner,
@@ -45,6 +51,8 @@ export type DEntryHttpDependencies = {
   root: typeof getDEntryNativeRootPin;
   owners: DEntryNativeOwnerPort;
   data: typeof currentDEntryNativeDataPort;
+  watch: typeof watchDEntryNativeAuthority;
+  ensureRoot: typeof ensureDEntryNativeRoot;
 };
 export const dEntryHttpDefaults: DEntryHttpDependencies = {
   authenticate: authenticateSession,
@@ -52,6 +60,8 @@ export const dEntryHttpDefaults: DEntryHttpDependencies = {
   root: getDEntryNativeRootPin,
   owners: dEntryNativeOwnerPort,
   data: currentDEntryNativeDataPort,
+  watch: watchDEntryNativeAuthority,
+  ensureRoot: ensureDEntryNativeRoot,
 };
 export function dEntryBearer(request: IncomingMessage) {
   const value = request.headers.authorization;
@@ -144,6 +154,7 @@ export function createDEntryHttpHandler(
         '/internal/d-entry/native-owner',
         '/internal/d-entry/native-resource',
         '/internal/d-entry/native-rpc',
+        '/internal/d-entry/native-root',
       ].includes(path ?? '')
     )
       return false;
@@ -164,6 +175,9 @@ export function createDEntryHttpHandler(
     response.once('error', responseError);
     signal.addEventListener('abort', cancelBody, { once: true });
     let parsedInput = false;
+    let authority:
+      Awaited<ReturnType<typeof watchDEntryNativeAuthority>> | undefined;
+    const revoke = () => abort.abort(authority?.revoked.reason);
     try {
       signal.throwIfAborted();
       if (request.method !== 'POST' || request.headers.origin)
@@ -199,11 +213,22 @@ export function createDEntryHttpHandler(
           : undefined;
       const input =
         rpc ?? resourceRequest ?? DEntryNativeOwnerRequestSchema.parse(decoded);
+      const creatingRoot = path === '/internal/d-entry/native-root';
+      if (creatingRoot && !input.selection.threadId)
+        throw new DataAccessError('authorization_denied');
       const parsedRpc = rpc
         ? parseDEntryNativeInvocation(rpc.endpoint, rpc.payload, 'http', signal)
         : undefined;
       parsedInput = true;
       const auth = await currentDEntryRequest(deps, token, input, signal);
+      authority = await deps.watch(
+        auth.context,
+        input.selection,
+        auth.identity,
+        signal,
+      );
+      authority.revoked.addEventListener('abort', revoke, { once: true });
+      if (authority.revoked.aborted) revoke();
       const current = await currentDEntryNativeOwner(
         deps.owners,
         auth.context,
@@ -217,20 +242,35 @@ export function createDEntryHttpHandler(
         await current.owner.assertCurrent(next.context, active);
         if (current.owner.bindingRef !== current.view.bindingRef)
           throw new DataAccessError('authorization_denied');
+        if (
+          (rpc || resourceRequest || creatingRoot) &&
+          !current.owner.controlReady()
+        )
+          throw new DEntryNativeUnavailable();
         active.throwIfAborted();
       };
-      if (rpc || resourceRequest) {
+      if (rpc || resourceRequest || creatingRoot) {
         const data = deps.data();
-        if (!data) throw new DEntryNativeUnavailable();
+        // Control readiness is only a necessary transport prerequisite. It
+        // never grants editor/send readiness or substitutes for the real
+        // complete-envelope resolver/admission owner below.
+        if (!data || !current.owner.controlReady())
+          throw new DEntryNativeUnavailable();
         const parsed = parsedRpc;
-        const pin = await deps.root(auth.context, input.selection);
+        const pin = creatingRoot
+          ? undefined
+          : await deps.root(auth.context, input.selection);
+        if (pin && pin.vmId !== current.view.receipt.binding.vmId)
+          throw new DataAccessError('authorization_denied');
         const assertPinned = async (active: AbortSignal) => {
           await assertCurrent(active);
+          if (!pin) return;
           const next = await deps.root(auth.context, input.selection);
           if (
             next.rootNativeSessionId !== pin.rootNativeSessionId ||
             next.rootOriginDigest !== pin.rootOriginDigest ||
-            next.threadGeneration !== pin.threadGeneration ||
+            next.rootBindingRef !== pin.rootBindingRef ||
+            next.vmId !== pin.vmId ||
             !sameDEntryIdentity(next.identity, auth.identity)
           )
             throw new DataAccessError('authorization_denied');
@@ -268,7 +308,142 @@ export function createDEntryHttpHandler(
           (active) => {
             const catalog = ownDEntryCatalog(current.owner, active);
             let activity: DEntryOwnedActivity<void> | undefined;
-            if (parsed) {
+            let bodyClose: Promise<void> | undefined;
+            if (creatingRoot) {
+              const method = TYPERT_REMOTE.methods['session/create'];
+              const args = method
+                .input({ strict: true })
+                .create()
+                .parse({ request: {} });
+              // A real owned handle exists before any native initialization.
+              // Failure to acquire it continues to reject the entered callback.
+              let native: ReturnType<typeof data.acquireRoot>;
+              try {
+                native = data.acquireRoot(
+                  { owner: current.owner, request: args.request },
+                  active,
+                );
+              } catch (error) {
+                void catalog.close().catch(() => {});
+                cleanupErrors.push(error);
+                throw error;
+              }
+              let nativeTask: Promise<void> | undefined;
+              let nativeClosing: Promise<void> | undefined;
+              let storageClose: DEntryNativeRootStorageCloseError | undefined;
+              const closeNative = () =>
+                (nativeClosing ??= Promise.resolve().then(() =>
+                  native.close(),
+                ));
+              activity = {
+                run(running) {
+                  return (nativeTask = (async () => {
+                    const bound = await deps
+                      .ensureRoot(
+                        auth.context,
+                        input.selection,
+                        auth.identity,
+                        {
+                          operationId,
+                          host: {
+                            binding: { ...current.view.receipt.binding },
+                            bindingRef: current.view.bindingRef,
+                            rosterDigest: current.view.receipt.rosterDigest,
+                          },
+                          signal: running,
+                          async create(creating) {
+                            const cancel = () => {
+                              void closeNative().catch(() => {});
+                            };
+                            creating.addEventListener('abort', cancel, {
+                              once: true,
+                            });
+                            if (creating.aborted) cancel();
+                            let failed = false,
+                              failure: unknown;
+                            let created: DEntryNativeRootCreation | undefined;
+                            try {
+                              await assertCurrent(creating);
+                              creating.throwIfAborted();
+                              const result = await native.run(creating);
+                              if (!result.ok)
+                                throw new RemoteError(
+                                  result.error.code,
+                                  result.error.message,
+                                  result.error.details,
+                                );
+                              const receipt = method.result
+                                .create()
+                                .parse(result.value);
+                              await assertCurrent(creating);
+                              creating.throwIfAborted();
+                              created = {
+                                nativeSessionId: String(receipt.sessionId),
+                                host: {
+                                  binding: { ...current.view.receipt.binding },
+                                  bindingRef: current.view.bindingRef,
+                                  rosterDigest:
+                                    current.view.receipt.rosterDigest,
+                                },
+                              };
+                            } catch (error) {
+                              failed = true;
+                              failure = error;
+                            }
+                            creating.removeEventListener('abort', cancel);
+                            try {
+                              await closeNative();
+                            } catch (error) {
+                              if (failed)
+                                throw new AggregateError(
+                                  [failure, error],
+                                  'Root creation cleanup is unknown',
+                                  { cause: failure },
+                                );
+                              throw error;
+                            }
+                            if (failed) throw failure;
+                            return created!;
+                          },
+                        },
+                      )
+                      .catch((error: unknown) => {
+                        if (error instanceof DEntryNativeRootStorageCloseError)
+                          storageClose = error;
+                        throw error;
+                      });
+                    if (bound.vmId !== current.view.receipt.binding.vmId)
+                      throw new DataAccessError('authorization_denied');
+                    value = {
+                      organizationId: auth.identity.organizationId,
+                      personId: auth.identity.personId,
+                      employeeInstanceId: auth.identity.employeeInstanceId,
+                      threadId: auth.identity.threadId,
+                      nativeSessionId: bound.rootNativeSessionId,
+                      rootNativeSessionId: bound.rootNativeSessionId,
+                      parentNativeSessionId: null,
+                      bindingRef: current.view.bindingRef,
+                    };
+                  })());
+                },
+                async close() {
+                  const settled = await Promise.allSettled([
+                    closeNative(),
+                    nativeTask?.catch(() => {}),
+                  ]);
+                  const errors = settled.flatMap((r) =>
+                    r.status === 'rejected' ? [r.reason] : [],
+                  );
+                  if (storageClose) errors.push(storageClose);
+                  if (errors.length)
+                    throw new AggregateError(
+                      errors,
+                      'Native root creation close is unknown',
+                      { cause: errors[0] },
+                    );
+                },
+              };
+            } else if (parsed) {
               try {
                 activity = data.acquireRpc(
                   {
@@ -287,12 +462,18 @@ export function createDEntryHttpHandler(
                       });
                       if (upstream.body) {
                         const reader = upstream.body.getReader();
+                        const closeBody = () =>
+                          (bodyClose ??= Promise.resolve().then(() =>
+                            reader.cancel(reading.reason),
+                          ));
                         const cancel = () => {
-                          void reader.cancel(reading.reason).catch(() => {});
+                          void closeBody().catch(() => {});
                         };
                         reading.addEventListener('abort', cancel, {
                           once: true,
                         });
+                        let failed = false;
+                        let failure: unknown;
                         try {
                           while (true) {
                             const part = await reader.read();
@@ -303,11 +484,25 @@ export function createDEntryHttpHandler(
                                 signal: reading,
                               });
                           }
+                        } catch (error) {
+                          failed = true;
+                          failure = error;
+                        }
+                        reading.removeEventListener('abort', cancel);
+                        try {
+                          await closeBody();
+                        } catch (error) {
+                          if (failed || reading.aborted)
+                            throw new AggregateError(
+                              [failed ? failure : reading.reason, error],
+                              'Native response body cleanup is unknown',
+                              { cause: failed ? failure : reading.reason },
+                            );
+                          throw error;
                         } finally {
-                          reading.removeEventListener('abort', cancel);
-                          await reader.cancel();
                           reader.releaseLock();
                         }
+                        if (failed) throw failure;
                       }
                     },
                   },
@@ -339,15 +534,17 @@ export function createDEntryHttpHandler(
                     });
                     if (
                       resource.rootNativeSessionId !==
-                        pin.rootNativeSessionId ||
+                        pin!.rootNativeSessionId ||
                       (effect === 'write' &&
-                        (resource.nativeSessionId !== pin.rootNativeSessionId ||
+                        (resource.nativeSessionId !==
+                          pin!.rootNativeSessionId ||
                           resource.parentNativeSessionId !== null))
                     )
                       throw new DataAccessError('authorization_denied');
                     return resource;
                   };
-                  if (parsed && rpc) {
+                  if (creatingRoot) await activity!.run(running);
+                  else if (parsed && rpc) {
                     await authorizeDEntryNativeInvocation(
                       authorize,
                       rpc.endpoint,
@@ -373,6 +570,7 @@ export function createDEntryHttpHandler(
                       : undefined,
                     catalog.close(),
                     task?.catch(() => {}), // Join the controlled run; close failures stay rejected below.
+                    bodyClose,
                   ]);
                   const errors = results.flatMap((result) =>
                     result.status === 'rejected' ? [result.reason] : [],
@@ -418,6 +616,13 @@ export function createDEntryHttpHandler(
           : error,
       );
     } finally {
+      authority?.revoked.removeEventListener('abort', revoke);
+      try {
+        await authority?.close();
+      } catch (error) {
+        cleanupErrors.push(error);
+        sendDEntryHttpProblem(response, error);
+      }
       response.off('close', disconnect);
       response.off('error', responseError);
       signal.removeEventListener('abort', cancelBody);

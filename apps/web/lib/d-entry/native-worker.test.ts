@@ -6,6 +6,7 @@ import type { DEntryIdentity, RequestContext } from '@allrice/contracts';
 import { POST as owner } from '../../app/api/v1/d-entry/native-owner/route';
 import { POST as resource } from '../../app/api/v1/d-entry/native-resource/route';
 import { POST as rpc } from '../../app/api/v1/d-entry/native-rpc/route';
+import { POST as root } from '../../app/api/v1/d-entry/native-root/route';
 
 const ports = vi.hoisted(() => ({
   context: vi.fn(),
@@ -74,6 +75,39 @@ afterEach(() => {
 });
 
 describe('Web original-cookie to fixed Worker adapters', () => {
+  it('forwards only selectors for explicit native root creation and validates the returned root', async () => {
+    const native = {
+      organizationId: identity.organizationId,
+      personId: identity.personId,
+      employeeInstanceId: identity.employeeInstanceId,
+      threadId: identity.threadId,
+      nativeSessionId: 'actual-created-root',
+      rootNativeSessionId: 'actual-created-root',
+      parentNativeSessionId: null,
+      bindingRef: 'exact-native-owner',
+    };
+    const fetch = vi.fn(async () => Response.json(native));
+    vi.stubGlobal('fetch', fetch);
+    expect(
+      (await root(request({ selection, nativeSessionId: 'guest-root' })))
+        .status,
+    ).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await (await root(request({ selection }))).json()).toEqual(native);
+    const [url, options] = fetch.mock.calls[0]! as unknown as [
+      URL,
+      RequestInit,
+    ];
+    expect(url.pathname).toBe('/internal/d-entry/native-root');
+    expect(JSON.parse(String(options.body))).toEqual({
+      organizationId: context.organizationId,
+      selection,
+    });
+    fetch.mockResolvedValueOnce(
+      Response.json({ ...native, parentNativeSessionId: 'other-root' }),
+    );
+    expect((await root(request({ selection }))).status).toBe(403);
+  });
   it('authenticates current selection, forwards only original Bearer, and hides endpoint/native auth/editor readiness', async () => {
     const fetch = vi.fn(async () => Response.json(discovery()));
     vi.stubGlobal('fetch', fetch);

@@ -161,7 +161,7 @@ export function createDEntryMuxGate(authorize: Authorize) {
     async accept(
       text: string,
       signal: AbortSignal,
-    ): Promise<RemoteStreamClientMessage> {
+    ): Promise<RemoteStreamClientMessage | null> {
       signal.throwIfAborted();
       const frame = parseRemoteStreamClientMessage(text);
       if (frame.type === 'open') {
@@ -188,6 +188,11 @@ export function createDEntryMuxGate(authorize: Authorize) {
         }
       }
       const invocation = streams.get(frame.streamId);
+      // rc.2 RemoteStreamMuxConnection drops harmless terminal/cancel tails
+      // after a native terminal has crossed an in-flight browser cancellation.
+      // These frames cannot introduce a resource or dispatch any operation.
+      if (!invocation && (frame.type === 'cancel' || frame.type === 'end'))
+        return null;
       if (!invocation || frame.type === 'item') return deny();
       // Even an idle stream must stop on real revocation; this check is also
       // used by the carrier before forwarding each server frame.

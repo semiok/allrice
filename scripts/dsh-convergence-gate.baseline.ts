@@ -374,10 +374,19 @@ export const baseline: readonly BaselineEntry[] = [
   },
   {
     kind: 'patch',
+    id: 'allrice-d-entry-native-root-v1',
+    category: '存储后端',
+    basis:
+      'MET-271：DSH 原生 session/create 持有根身份，AllRice 只在现有业务 Session 保存完整 scope/员工发布的不可变 at-most-once claim 与真实创建回执；claim 成功 ACK 前不 dispatch、未知结果不换键重放；0251 不造 Run/Job/Agent 状态，不改 legacy origin/binder，临时 lease/job 换代不重建 root。',
+    approvedBy:
+      '2026-11-21 用户已批准线程唯一 executionGeneration/可信本人员工入口；主线明确续做271自有4.0 root producer，0251由主线评论3e74a856协调。',
+  },
+  {
+    kind: 'patch',
     id: 'allrice-native-web-entry-guard-v1',
     category: '门卫',
     basis:
-      'MET-271：原会话 Bearer 在现有 Worker listener 重新鉴权，复用平台 settings 的默认关闭发布名单、不可变宿主 root pin、rc.2 生成 codec/Mux frame parser。逐方法/资源现权限制网页子会话只读，原生父指挥不变；原生 owner Cookie 没有 SaaS 线程权限，不能透明转发。缺真实绑定/transport/envelope/revocation producer 时拒绝，不新增身份权威、监听器、PG 状态或 Agent 生命周期。',
+      'MET-271：原会话 Bearer 在现有 Worker listener 重新鉴权，复用平台 settings 默认关闭发布名单、不可变宿主 root pin、rc.2 生成 codec/Mux frame parser。逐方法/资源现权限制网页子会话只读，原生父指挥不变；0251事务内通知只提示现权SQL复核，先订阅后重核，真实session期限/断线取消并join，非Map/轮询权威。原生尾帧无效果丢弃；缺真实transport/envelope时拒绝，不新增监听器、VM权威或Agent生命周期。',
     approvedBy:
       '2026-11-21 用户正式授权 MET-271 剩余 release-policy、原会话 Web/Worker HTTP/WS adapters、可信 root 组合与服务端 Mux 子会话只读；冻结 NATIVE-WEB-OWNER-SEAM-v1。',
   },

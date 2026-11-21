@@ -5,11 +5,18 @@ import type { AddressInfo } from 'node:net';
 import { vi } from 'vitest';
 import { TYPERT_REMOTE } from '@deepseek-ai/dsh-api-session-controller/remote';
 import type { RequestContext, DEntryIdentity } from '@allrice/contracts';
-import type { DEntryAdmissionPorts } from '@allrice/database';
-import { createDEntryHttpHandler } from './http.js';
+import type {
+  DEntryAdmissionPorts,
+  ensureDEntryNativeRoot,
+} from '@allrice/database';
+import {
+  createDEntryHttpHandler,
+  type DEntryHttpDependencies,
+} from './http.js';
 import { createDEntryMuxHandler } from './mux.js';
 import type { DEntryNativeDataPort } from './native-data.js';
 import type { ResolvedDEntryNativeOwner } from './native-owner.js';
+export { WebSocket } from 'ws';
 
 export function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -45,8 +52,11 @@ export function frameQueue() {
     },
   };
 }
-export function nativeEntryFixture() {
-  const context: RequestContext = {
+export function nativeEntryFixture(preset?: {
+  context: RequestContext;
+  identity: DEntryIdentity;
+}) {
+  const context: RequestContext = preset?.context ?? {
     requestId: randomUUID(),
     sessionId: randomUUID(),
     actor: { type: 'user', id: randomUUID() },
@@ -55,7 +65,7 @@ export function nativeEntryFixture() {
     memberships: [],
     authenticatedAt: new Date().toISOString(),
   };
-  const identity: DEntryIdentity = {
+  const identity: DEntryIdentity = preset?.identity ?? {
     organizationId: context.organizationId,
     workspaceId: context.workspaceId!,
     personId: context.actor.id,
@@ -162,6 +172,15 @@ export function nativeEntryFixture() {
       .fn<(frame: string) => Promise<void>>()
       .mockResolvedValue(undefined);
   const muxClosed = deferred<void>();
+  const identityRevoked = new AbortController();
+  const authorityClose = vi.fn(async () => {});
+  const rootClose = vi.fn(async () => {});
+  const rootCreate = vi.fn(async () => ({
+    ok: true as const,
+    value: TYPERT_REMOTE.methods['session/create'].result
+      .create()
+      .parse({ sessionId: 'dsh-created-by-host' }),
+  }));
   const data: DEntryNativeDataPort = {
     admission,
     resolveAdmissionOwner: vi.fn(async (input) => ({
@@ -203,12 +222,14 @@ export function nativeEntryFixture() {
         },
       };
     }),
+    acquireRoot: vi.fn(() => ({ run: rootCreate, close: rootClose })),
   };
   const root = vi.fn(async () => ({
     identity,
     rootNativeSessionId: 'dsh-root',
     rootOriginDigest: 'fixture-immutable-business-pin',
-    threadGeneration: 1,
+    rootBindingRef: 'fixture-create-operation',
+    vmId: binding.vmId,
   }));
   const deps = {
     authenticate: vi.fn(async () => context as RequestContext | null),
@@ -216,6 +237,23 @@ export function nativeEntryFixture() {
     root,
     owners: { resolve: vi.fn(async () => owner) },
     data: vi.fn(() => data as DEntryNativeDataPort | undefined),
+    watch: vi.fn(async () => ({
+      revoked: identityRevoked.signal,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      close: authorityClose,
+    })),
+    ensureRoot: vi.fn<typeof ensureDEntryNativeRoot>(
+      async (_context, _selection, _identity, creation) => {
+        const receipt = await creation.create(creation.signal);
+        return {
+          identity,
+          rootNativeSessionId: receipt.nativeSessionId,
+          rootOriginDigest: 'fixture-native-creation-provenance',
+          rootBindingRef: creation.operationId,
+          vmId: receipt.host.binding.vmId,
+        };
+      },
+    ),
   };
   return {
     context,
@@ -237,13 +275,20 @@ export function nativeEntryFixture() {
     sent,
     deps,
     root,
+    identityRevoked,
+    authorityClose,
+    rootCreate,
+    rootClose,
     body: { organizationId: identity.organizationId, selection },
   };
 }
-export async function nativeEntryServer(f = nativeEntryFixture()) {
+export async function nativeEntryServer(
+  f = nativeEntryFixture(),
+  deps: DEntryHttpDependencies = f.deps,
+) {
   const stop = new AbortController();
-  const http = createDEntryHttpHandler(f.deps, stop.signal),
-    mux = createDEntryMuxHandler(f.deps, stop.signal);
+  const http = createDEntryHttpHandler(deps, stop.signal),
+    mux = createDEntryMuxHandler(deps, stop.signal);
   const server = createServer(async (request, response) => {
     if (!(await http(request, response))) response.writeHead(404).end();
   });

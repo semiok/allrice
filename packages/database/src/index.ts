@@ -15,6 +15,8 @@ export * from './identity.ts';
 export * from './d-entry.ts';
 export * from './d-entry-release-policy.ts';
 export * from './d-entry-admission.ts';
+export * from './d-entry-native-root.ts';
+export * from './d-entry-authority.ts';
 export { requireCurrentPlatformAdmin } from './platform-authority.ts';
 export * from './user-preferences.ts';
 export * from './tenant-administration.ts';

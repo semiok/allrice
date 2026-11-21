@@ -187,11 +187,44 @@ describe('rc.2 generated Remote gate for browser invocations', () => {
         JSON.stringify({ type: 'cancel', streamId: 'unknown' }),
         signal,
       ),
-    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    ).resolves.toBeNull();
     await gate.accept(
       JSON.stringify({ type: 'cancel', streamId: 'b' }),
       signal,
     );
+  });
+
+  it('drops terminal/cancel tails without authorizing or disturbing another stream', async () => {
+    const authorize = source(),
+      gate = createDEntryMuxGate(authorize);
+    for (const streamId of ['finished', 'live'])
+      await gate.accept(
+        JSON.stringify({
+          type: 'open',
+          streamId,
+          endpoint: 'session/follow',
+          payload: follow(child),
+        }),
+        signal,
+      );
+    gate.ended('finished');
+    authorize.mockClear();
+    for (const type of ['cancel', 'end'])
+      expect(
+        await gate.accept(
+          JSON.stringify({ type, streamId: 'finished' }),
+          signal,
+        ),
+      ).toBeNull();
+    expect(authorize).not.toHaveBeenCalled();
+    await gate.authorizeFrame('live', signal);
+    expect(authorize).toHaveBeenCalledWith(child, 'read', signal);
+    await expect(
+      gate.accept(
+        JSON.stringify({ type: 'item', streamId: 'finished', value: {} }),
+        signal,
+      ),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
   });
 
   it('rechecks current authority before each server frame and never swallows revocation', async () => {

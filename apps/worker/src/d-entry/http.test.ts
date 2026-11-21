@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DataAccessError } from '@allrice/database';
+import {
+  DataAccessError,
+  DEntryNativeRootStorageCloseError,
+} from '@allrice/database';
 import { nativeEntryServer, deferred } from './native-entry.fixture.js';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -36,6 +39,185 @@ const prompt = (sessionId = 'dsh-root') => ({
 });
 
 describe('same-listener original-session native HTTP adapters', () => {
+  it('keeps direct internal root/RPC/resource entry closed without the real data provider or control readiness', async () => {
+    const f = await fixture(),
+      control = vi.spyOn(f.owner, 'controlReady');
+    for (const missing of ['data', 'control', 'envelope'] as const) {
+      f.deps.data.mockReturnValue(missing === 'data' ? undefined : f.data);
+      control.mockReturnValue(missing !== 'control');
+      if (missing === 'envelope')
+        vi.mocked(f.data.resolveAdmissionOwner).mockRejectedValue(
+          Error('real complete envelope unavailable'),
+        );
+      for (const [path, body] of [
+        ['native-root', f.body],
+        ['native-rpc', { ...f.body, ...prompt() }],
+        ['native-resource', { ...f.body, nativeSessionId: 'dsh-child' }],
+      ] as const)
+        expect((await f.request(path, body)).status).toBe(503);
+    }
+    expect(f.data.acquireRoot).not.toHaveBeenCalled();
+    expect(f.data.acquireRpc).not.toHaveBeenCalled();
+    expect(f.owner.readSessions).not.toHaveBeenCalled();
+    expect(f.deps.ensureRoot).not.toHaveBeenCalled();
+    expect(f.admission.boundary.admit).not.toHaveBeenCalled();
+    control.mockReturnValue(false);
+    const discovery = await f.request();
+    expect(await discovery.json()).toMatchObject({ controlReady: false });
+  });
+
+  it('creates a root only from the trusted generated native reply and never accepts a browser root/preset', async () => {
+    const f = await fixture();
+    for (const field of [
+      { nativeSessionId: 'guest-root' },
+      { agentPreset: 'guest-preset' },
+      { receipt: {} },
+    ])
+      expect(
+        (await f.request('native-root', { ...f.body, ...field })).status,
+      ).toBe(400);
+    expect(f.data.acquireRoot).not.toHaveBeenCalled();
+    const response = await f.request('native-root');
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      rootNativeSessionId: 'dsh-created-by-host',
+      nativeSessionId: 'dsh-created-by-host',
+      parentNativeSessionId: null,
+    });
+    expect(f.data.acquireRoot).toHaveBeenCalledWith(
+      { owner: f.owner, request: {} },
+      expect.any(AbortSignal),
+    );
+    expect(f.rootCreate).toHaveBeenCalledTimes(1);
+    expect(f.rootClose).toHaveBeenCalledTimes(1);
+    expect(f.admission.boundary.finish).toHaveBeenCalledTimes(1);
+    expect(f.owner.readSessions).not.toHaveBeenCalled();
+    expect(f.deps.ensureRoot).toHaveBeenCalledWith(
+      f.context,
+      f.selection,
+      f.identity,
+      expect.objectContaining({
+        create: expect.any(Function),
+        operationId: expect.any(String),
+      }),
+    );
+  });
+
+  it('rechecks authority before acquiring a root handle and finishes unknown root acquisition without claiming it joined', async () => {
+    const f = await fixture();
+    f.expectUnknownClose();
+    vi.mocked(f.admission.boundary.admit).mockImplementationOnce(async () => {
+      f.deps.identity.mockResolvedValue({ ...f.identity, employeeRevision: 2 });
+      return f.permit;
+    });
+    expect((await f.request('native-root')).status).toBe(404);
+    expect(f.data.acquireRoot).not.toHaveBeenCalled();
+    f.deps.identity.mockResolvedValue(f.identity);
+    vi.mocked(f.data.acquireRoot).mockImplementationOnce(() => {
+      throw Error('root partial init unknown');
+    });
+    expect((await f.request('native-root')).status).toBe(503);
+    expect(f.rootCreate).not.toHaveBeenCalled();
+    expect(f.admission.boundary.finish).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a failed storage-gate close as entered-callback rejection even after the native handle joined', async () => {
+    const f = await fixture();
+    f.expectUnknownClose();
+    const unknown = new DEntryNativeRootStorageCloseError(
+      [Error('gate end unknown')],
+      'storage cleanup unknown',
+    );
+    f.deps.ensureRoot.mockRejectedValueOnce(unknown);
+    let rejection: unknown;
+    f.admission.boundary.activate = async (_permit, callback, signal) => {
+      try {
+        return await callback(signal);
+      } catch (error) {
+        rejection = error;
+        throw error;
+      }
+    };
+    expect((await f.request('native-root')).status).toBe(503);
+    expect(rejection).toBeInstanceOf(AggregateError);
+    expect((rejection as AggregateError).errors).toContain(unknown);
+    expect(f.rootClose).toHaveBeenCalledTimes(1);
+    expect(f.admission.boundary.finish).toHaveBeenCalledTimes(1);
+  });
+
+  for (const rejects of [false, true])
+    it(`joins the FIRST body cancel promise before finish, preserving cancellation and unknown cleanup (reject=${rejects})`, async () => {
+      const f = await fixture(),
+        started = deferred<void>(),
+        cleanup = deferred<void>(),
+        nativeClosed = deferred<void>(),
+        finished = deferred<void>();
+      const cancelled = new Error('session membership revoked'),
+        closeError = new Error('underlying body cancel unknown');
+      if (rejects) f.expectUnknownClose();
+      let callbackError: unknown;
+      f.admission.boundary.activate = async (_permit, callback, signal) => {
+        try {
+          return await callback(signal);
+        } catch (error) {
+          callbackError = error;
+          throw error;
+        }
+      };
+      const cancel = vi.fn(() => {
+        started.resolve();
+        return cleanup.promise;
+      });
+      vi.mocked(f.data.acquireRpc).mockImplementationOnce((input) => ({
+        run: (signal) =>
+          input.consume(
+            new Response(
+              new ReadableStream({
+                start(controller) {
+                  controller.enqueue(new TextEncoder().encode('opening'));
+                },
+                cancel,
+              }),
+            ),
+            signal,
+          ),
+        close: async () => {
+          nativeClosed.resolve();
+        },
+      }));
+      vi.mocked(f.admission.boundary.finish).mockImplementationOnce(async () =>
+        finished.resolve(),
+      );
+      const response = await f.request('native-rpc', {
+        ...f.body,
+        ...prompt(),
+      });
+      f.identityRevoked.abort(cancelled);
+      await started.promise;
+      await nativeClosed.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(f.admission.boundary.finish).not.toHaveBeenCalled();
+      expect(cancel).toHaveBeenCalledTimes(1);
+      if (rejects) cleanup.reject(closeError);
+      else cleanup.resolve();
+      await expect(response.text()).rejects.toThrow();
+      await finished.promise;
+      expect(cancel).toHaveBeenCalledTimes(1);
+      if (rejects) {
+        const errors: unknown[] = [];
+        const collect = (error: unknown) => {
+          if (errors.includes(error)) return;
+          errors.push(error);
+          if (error instanceof AggregateError) error.errors.forEach(collect);
+          if (error instanceof Error && error.cause) collect(error.cause);
+        };
+        collect(callbackError);
+        expect(errors).toContain(cancelled);
+        expect(errors).toContain(closeError);
+      } else expect(callbackError).toBeUndefined();
+      await vi.waitFor(() => expect(f.authorityClose).toHaveBeenCalledTimes(1));
+      // No fixture assertion here establishes the real producer's PG retention.
+    });
   it('reauthenticates the original Bearer and emits only host discovery, not editor/send readiness', async () => {
     const f = await fixture();
     const response = await f.request();

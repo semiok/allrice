@@ -163,6 +163,7 @@ export async function resolveDEntryNativeResource(input: {
   };
   const pin = await (input.root ?? getDEntryNativeRootPin)(context, selection);
   if (!sameDEntryIdentity(pin.identity, identity)) return deny();
+  if (pin.vmId !== owner.receipt.binding.vmId) return deny();
   await owner.assertCurrent(context, signal);
   signal.throwIfAborted();
   const result = await owner.readSessions(signal);
@@ -204,7 +205,8 @@ export async function resolveDEntryNativeResource(input: {
     !sameDEntryIdentity(after.identity, identity) ||
     after.rootNativeSessionId !== pin.rootNativeSessionId ||
     after.rootOriginDigest !== pin.rootOriginDigest ||
-    after.threadGeneration !== pin.threadGeneration
+    after.rootBindingRef !== pin.rootBindingRef ||
+    after.vmId !== pin.vmId
   )
     return deny();
   await owner.assertCurrent(context, signal);
