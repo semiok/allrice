@@ -674,6 +674,24 @@ importers:
         specifier: 0.8.3
         version: 0.8.3
 
+  packages/approval-gateway:
+    dependencies:
+      '@allrice/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@allrice/person-vm':
+        specifier: workspace:*
+        version: link:../person-vm
+      '@modelcontextprotocol/sdk':
+        specifier: 1.30.0
+        version: 1.30.0(zod@4.4.3)
+      postgres:
+        specifier: ^3.4.7
+        version: 3.4.9
+      zod:
+        specifier: ^4.4.3
+        version: 4.4.3
+
   packages/browser-control:
     dependencies:
       '@allrice/contracts':
@@ -713,6 +731,25 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
+  packages/egress-gateway:
+    dependencies:
+      '@allrice/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@allrice/person-vm':
+        specifier: workspace:*
+        version: link:../person-vm
+      '@allrice/project-runtime':
+        specifier: workspace:*
+        version: link:../project-runtime
+    devDependencies:
+      '@allrice/model-gateway':
+        specifier: workspace:*
+        version: link:../model-gateway
+      postgres:
+        specifier: 3.4.9
+        version: 3.4.9
+
   packages/file-archives:
     dependencies:
       crc-32:
@@ -728,6 +765,40 @@ importers:
       '@types/yauzl':
         specifier: 2.10.3
         version: 2.10.3
+
+  packages/model-gateway:
+    dependencies:
+      '@allrice/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@allrice/person-vm':
+        specifier: workspace:*
+        version: link:../person-vm
+      '@deepseek-ai/dsh-llm':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      postgres:
+        specifier: ^3.4.7
+        version: 3.4.9
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: 4.0.5
+        version: 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
+      '@deepseek-ai/dsh-compaction-image-offload':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(039c2842f706927822cb80e77eb503fa)
+      '@deepseek-ai/dsh-credentials-local':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)(@deepseek-ai/dsh-atomic-write@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-credentials@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-home-paths@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5))(@deepseek-ai/dsh-launch-environment@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5))
+      '@deepseek-ai/dsh-llm-pi-ai':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(aa825bdbee2f0c8d5725b5d45347409c)
+      '@earendil-works/pi-ai':
+        specifier: 1.1.0
+        version: 1.1.0(@aws-sdk/credential-provider-node@3.972.86)(@modelcontextprotocol/sdk@1.30.0(zod@4.4.3))(@smithy/signature-v4@5.7.4)(undici@8.11.2)(ws@8.21.3)(zod@4.4.3)
+      undici-native-proof:
+        specifier: npm:undici@7.29.0
+        version: undici@7.29.0
 
   packages/office-runtime:
     dependencies:
@@ -749,6 +820,15 @@ importers:
       pdf-parse:
         specifier: 2.4.5
         version: 2.4.5
+
+  packages/person-vm:
+    dependencies:
+      '@allrice/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      postgres:
+        specifier: 3.4.9
+        version: 3.4.9
 
   packages/project-runtime:
     dependencies:
