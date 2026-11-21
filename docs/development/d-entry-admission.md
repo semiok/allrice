@@ -89,11 +89,24 @@ Mux逐逻辑open消费rc.2公开frame parser与 `TYPERT_REMOTE.input({strict:tru
 
 271在同一admitted callback调用可信data port新增 `acquireRoot({owner,request},signal)`；构造handle不启动I/O，run才调用rc.2生成codec构造的create，真实handle覆盖partial init、native reply和close/join。`ensureDEntryNativeRoot` 在短事务锁定当前身份/员工/Session/发布配置，以同一chat行锁串行领取完整scope的不可变claim，确认提交ACK后才允许原始callback唯一dispatch；第二短事务同claim及完整现权下落真实回执pin，不再持独立advisory连接锁。最终政策按本人/员工当前资格核验，整份名单的无关revision更新不使其失权，出生revision仍保留。提交ACK不明、create结果未知或最终落盘失败时保留claim，后续同键/换键都不再次create；claim不等于创建成功、pin不可读，沿既有503依赖未就绪合同，无TTL/自动恢复/重放。pin实际提交但回复丢失时只读既有pin，不再create。保完整出生scope/release/host provenance；持久vmId+employee instance/profile关联不因临时instance/epoch/bindingRef变化重写，不生成Run/Job或legacy origin。实际owner须将selected endpoint映射到同一持久员工profile。
 
-`watchDEntryNativeAuthority` 使用新增精确锁定pg 8.23.1的Client公开事件订阅0251同事务提交通知，先LISTEN再重核全部当前资格；通知只触发SQL复核。session/user/membership/org/workspace/员工分配/instance/发布及rollout来源变化均覆盖；自然过期按真实expires_at关闭，通知error/end保守abort，关闭等待已经开始的复核。HTTP/WS默认真实接入此source，273的owner revoked仍独立合并。pg仅持通知及根创建并发门卫连接，业务SQL保留既有postgres.js，不新增共享权威或轮询。管理员发布名单不能安装owner/data或绕过完整admission resolver；数据面还核controlReady作为必要前提，该值true仍不授editorReady/canSend。真实PG测试与受影响完整文件由主线M5执行，本实施阶段未跑。
+`watchDEntryNativeAuthority` 使用新增精确锁定pg 8.23.1的Client公开事件订阅0251同事务提交通知，先LISTEN再重核全部当前资格；通知只触发SQL复核。session/user/membership/org/workspace/员工分配/instance/发布及rollout来源变化均覆盖；自然过期按真实expires_at关闭，通知error/end保守abort，关闭等待已经开始的复核。HTTP/WS默认真实接入此source，273的owner revoked仍独立合并。pg仅持通知连接，业务SQL保留既有postgres.js，不新增共享权威或轮询。管理员发布名单不能安装owner/data或绕过完整admission resolver；数据面还核controlReady作为必要前提，该值true仍不授editorReady/canSend。真实PG测试与受影响完整文件由主线M5执行，本实施阶段未跑。
+
+## 冷历史数据库公口
+
+```ts
+getDEntryHistoryRootPin(context, input): Promise<DEntryHistoryRootPin | null>
+watchDEntryHistoryAuthority(context, input, expected, signal, feed?): Promise<DEntryAuthoritySubscription>
+```
+
+两口由 `@allrice/database` 现有 root/authority 模块导出，input 必须是带 threadId 的严格 selection，仅限已有 4.0 owner thread。先按当前 history 身份核本人/租户/工作区/员工 source；viewer、归档 thread/instance、撤回 assignment 与关闭发布名单沿既有 history 语义可读，不授执行权。当前账号/session/member/org/workspace 失权仍拒绝；revision/version 改变使持旧完整 identity 的订阅失效。
+
+root 返回当前 `identity` 和持久的 `rootNativeSessionId/rootOriginDigest/rootBindingRef/vmId`；后四项是出生出处/命名空间，不是 live lease、VM ready、对象 ACL 或 physical fence。没有 pin 或只有 claim 返回 null，绝不 create、修复、回退3.x或唤醒。出生版本不能代替当前资格。
+
+history watcher 共用同一私有 watch/feed、0251提交提示、先 LISTEN 再重核与真实 session deadline；通知仅触发 SQL 重核，断线保守 abort。`subscription.close()` 只 detach 本订阅、清 timer 并 await 已排队查询链，不关共享 feed 或长期 native job。调用方必须在正常完成/cancel/失败/partial-init 收尾中实际 await；274 的资源 close 类型与工厂接线尚未纳入本片，不能报冷历史已装配。附件对象 ACL/close 仍归对象 owner。
 
 ## F4 生命周期共用服务
 
-`@allrice/person-vm` 在本树仅携带 #905 `c041d94c6984463c9ff9a068cba0db58ebc91e16` 的公开合同与构建基座；barrel 不导出 host/service/store/provider。模型 owner 已回交该中间 producer 的独审及 PG 测试结果，本树仍未组合真实 Host。`admission-contract.ts` 仅作显式格式派生，QA 保留源/派生 blob、diff 及原 8115 首检。不能用这份切片或 consumer 测试替身声称本树 PG 准入、停机或恢复已通过。
+固定 n3 `6eab934e51721a13f9b2537eca670ccffe0cb31d` 已提供完整 `@allrice/person-vm` producer/kernel 与公开 barrel，原 c041 合同切片的来源/派生 blob、diff 及 8115 首检仍保存在 QA。公开 boundary 与 c041 同 blob；entry 仍未实际组合真实 Host。源码已纳入或 consumer 测试替身不证明本树 PG 准入、停机、恢复或生产装配通过。
 
 `runDEntryAdmittedActivity({ports,owner,signal,queued?},acquire)` 只消费同一 model composition 注入的 `PersonVmAdmissionBoundary` 与 `participant('entry')`，不构造 SQL/Host。owner 持有原完整业务 binding，并提供当前身份、员工 release、Run/execution/thread/native instance/profile/root/parent/session/call、代际与模型 route 的实际校验；deferred 续行还须真实 owner 证明原调用从未 dispatch。没有默认 checker 或从 guest JSON 建立的 owner。
 

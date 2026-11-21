@@ -2,13 +2,18 @@ import { Client } from 'pg';
 import { z } from 'zod';
 import {
   DEntrySelectionInputSchema,
+  UuidSchema,
   sameDEntryIdentity,
   type DEntryIdentity,
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase, registerDatabaseCloseHook } from './core/client.ts';
 import { DataAccessError } from './data.ts';
-import { requireDEntryNativeIdentity } from './d-entry.ts';
+import {
+  requireDEntryNativeIdentity,
+  resolveDEntryIdentity,
+} from './d-entry.ts';
+import { getSessionExecutionGeneration } from './workspace/service.ts';
 
 export const dEntryAuthorityChannel = 'allrice_d_entry_authority';
 const changeSchema = z.object({
@@ -143,17 +148,28 @@ function affects(
   return true;
 }
 
+export type DEntryAuthoritySubscription = Readonly<{
+  revoked: AbortSignal;
+  readonly expiresAt: string;
+  close(): Promise<void>;
+}>;
+
 /** LISTEN is ready and the callback registered BEFORE this authoritative read.
  * A commit during setup either aborts the registered subscription or is seen
  * by the recheck. Never uses RequestContext's old membership/createdAt as TTL. */
-export async function watchDEntryNativeAuthority(
+async function watchDEntryAuthority(
   context: RequestContext,
   input: unknown,
   expected: DEntryIdentity,
   signal: AbortSignal,
+  access: 'native' | 'history',
   feed?: Feed,
-) {
-  const selection = DEntrySelectionInputSchema.parse(input);
+): Promise<DEntryAuthoritySubscription> {
+  const selection = (
+    access === 'history'
+      ? DEntrySelectionInputSchema.extend({ threadId: UuidSchema })
+      : DEntrySelectionInputSchema
+  ).parse(input);
   signal.throwIfAborted();
   const source = feed ?? defaultFeed();
   const abort = new AbortController();
@@ -168,7 +184,20 @@ export async function watchDEntryNativeAuthority(
   const recheck = async () => {
     if (stopped) return;
     revoked.throwIfAborted();
-    const identity = await requireDEntryNativeIdentity(context, selection);
+    const identity =
+      access === 'history'
+        ? await resolveDEntryIdentity(context, selection, 'history')
+        : await requireDEntryNativeIdentity(context, selection);
+    if (
+      access === 'history' &&
+      (!identity.threadId ||
+        (await getSessionExecutionGeneration(
+          context,
+          identity.workspaceId,
+          identity.threadId,
+        )) !== '4.0')
+    )
+      throw new DataAccessError('authorization_denied');
     const [session] = await getDatabase()<
       {
         schema: string;
@@ -246,4 +275,34 @@ export async function watchDEntryNativeAuthority(
     await close();
     throw error;
   }
+}
+
+/** VM-live eligibility retains the execute and published-4.0 verifier. */
+export function watchDEntryNativeAuthority(
+  context: RequestContext,
+  input: unknown,
+  expected: DEntryIdentity,
+  signal: AbortSignal,
+  feed?: Feed,
+): Promise<DEntryAuthoritySubscription> {
+  return watchDEntryAuthority(context, input, expected, signal, 'native', feed);
+}
+
+/** History-only current identity; close joins this subscription's reads, not
+ * the shared feed, attachment ACL owner or any long-lived native job. */
+export function watchDEntryHistoryAuthority(
+  context: RequestContext,
+  input: unknown,
+  expected: DEntryIdentity,
+  signal: AbortSignal,
+  feed?: Feed,
+): Promise<DEntryAuthoritySubscription> {
+  return watchDEntryAuthority(
+    context,
+    input,
+    expected,
+    signal,
+    'history',
+    feed,
+  );
 }

@@ -67,10 +67,12 @@ import {
   readDEntryReleasePolicy,
   updateDEntryReleasePolicy,
   getDEntryNativeRootPin,
+  getDEntryHistoryRootPin,
   ensureDEntryNativeRoot,
   requireDEntryNativeIdentity,
   createDEntryAuthorityFeed,
   watchDEntryNativeAuthority,
+  watchDEntryHistoryAuthority,
 } from '@allrice/database';
 import { authorizeFixturePlatformAdministrator } from '../../../../packages/database/src/platform-authority.fixture.ts';
 import {
@@ -495,6 +497,153 @@ suite(
       }
     });
 
+    it('reads only the persistent root for archived/withdrawn viewer history and rechecks the current employee revision', async () => {
+      const f = await enabledFour(),
+        fact = creation(f),
+        signal = new AbortController().signal,
+        feed = createDEntryAuthorityFeed(
+          process.env.ALLRICE_TEST_DATABASE_URL!,
+        );
+      let watcher:
+        Awaited<ReturnType<typeof watchDEntryHistoryAuthority>> | undefined;
+      try {
+        const pin = await ensureDEntryNativeRoot(
+          f.context,
+          f.selection,
+          f.identity,
+          {
+            operationId: randomUUID(),
+            host: fact.host,
+            signal,
+            create: async () => fact,
+          },
+        );
+        await clearPublished();
+        await fixture.db`update allrice_employee_assignments set active=false where id=${f.assignment}`;
+        await fixture.db`update allrice_employee_instances set archived_at=clock_timestamp() where id=${f.assignment}`;
+        await fixture.db`update allrice_chat_sessions set archived_at=clock_timestamp() where id=${f.thread.id}`;
+        await fixture.db`update allrice_memberships set role='viewer' where id=${f.membership}`;
+        expect(await getDEntryHistoryRootPin(f.context, f.selection)).toEqual(
+          pin,
+        );
+        await expect(
+          getDEntryNativeRootPin(f.context, f.selection),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        watcher = await watchDEntryHistoryAuthority(
+          f.context,
+          f.selection,
+          f.identity,
+          signal,
+          feed,
+        );
+        const revoked = once(watcher.revoked, 'abort');
+        await fixture.db`update allrice_employee_instances set revision=revision+1 where id=${f.assignment}`;
+        await revoked;
+        expect(watcher.revoked.reason).toMatchObject({
+          code: 'authorization_denied',
+        });
+        expect(await getDEntryHistoryRootPin(f.context, f.selection)).toEqual({
+          ...pin,
+          identity: {
+            ...f.identity,
+            employeeRevision: f.identity.employeeRevision + 1,
+          },
+        });
+      } finally {
+        await watcher?.close();
+        await feed.close();
+        await clearPublished();
+      }
+    });
+
+    it('returns null for absent or claim-only history without creating, rewriting or falling back to a legacy root', async () => {
+      const f = await enabledFour(),
+        fact = creation(f),
+        create = vi.fn(async () => {
+          throw Error('unknown-native-reply');
+        });
+      try {
+        expect(
+          await getDEntryHistoryRootPin(f.context, f.selection),
+        ).toBeNull();
+        await expect(
+          getDEntryHistoryRootPin(f.context, {
+            ...f.selection,
+            threadId: f.session,
+          }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        await expect(
+          ensureDEntryNativeRoot(f.context, f.selection, f.identity, {
+            operationId: randomUUID(),
+            host: fact.host,
+            signal: new AbortController().signal,
+            create,
+          }),
+        ).rejects.toThrow('unknown-native-reply');
+        const snapshot = () =>
+          fixture.db`select d_entry_native_root_claim,d_entry_native_root,native_root_origin from allrice_chat_sessions where id=${f.thread.id}`;
+        const before = await snapshot();
+        expect(before[0]!.d_entry_native_root_claim).not.toBeNull();
+        expect(
+          await getDEntryHistoryRootPin(f.context, f.selection),
+        ).toBeNull();
+        expect(await snapshot()).toEqual(before);
+        expect(before[0]!.d_entry_native_root).toBeNull();
+        expect(before[0]!.native_root_origin).toBeNull();
+        expect(create).toHaveBeenCalledTimes(1);
+        const [runs] =
+          await fixture.db`select count(*)::int n from allrice_employee_runs where session_id=${f.thread.id}`;
+        expect(runs!.n).toBe(0);
+      } finally {
+        await clearPublished();
+      }
+    });
+
+    for (const loss of [
+      'user',
+      'session',
+      'membership',
+      'organization',
+      'workspace',
+    ] as const)
+      it(`revokes cold history from the actual current ${loss} authority, despite an old authenticated context`, async () => {
+        const f = await enabledFour(),
+          feed = createDEntryAuthorityFeed(
+            process.env.ALLRICE_TEST_DATABASE_URL!,
+          );
+        let watcher:
+          Awaited<ReturnType<typeof watchDEntryHistoryAuthority>> | undefined;
+        try {
+          watcher = await watchDEntryHistoryAuthority(
+            f.context,
+            f.selection,
+            f.identity,
+            new AbortController().signal,
+            feed,
+          );
+          const revoked = once(watcher.revoked, 'abort');
+          await {
+            user: () =>
+              fixture.db`update allrice_users set status='disabled' where id=${f.user}`,
+            session: () => revokeSession(f.login.token),
+            membership: () =>
+              fixture.db`update allrice_memberships set active=false where id=${f.membership}`,
+            organization: () =>
+              fixture.db`update allrice_organizations set archived_at=clock_timestamp() where id=${f.org}`,
+            workspace: () =>
+              fixture.db`update allrice_workspaces set archived_at=clock_timestamp() where id=${f.workspace}`,
+          }[loss]();
+          await revoked;
+          await expect(
+            getDEntryHistoryRootPin(f.context, f.selection),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
+        } finally {
+          await watcher?.close();
+          await feed.close();
+          await clearPublished();
+        }
+      });
+
     // Fault injection is ONLY at the caller's transaction-ACK boundary. The
     // transactions/claims/pins below are real PG facts, not an in-memory store.
     for (const lostAt of ['claim-ack', 'native-reply', 'pin-ack'] as const)
@@ -740,74 +889,83 @@ suite(
         }
       });
 
-    it('uses the real PG commit notification, discards rolled-back revocation, and closes the subscribe-before-recheck gap', async () => {
-      const f = await enabledFour(),
-        feed = createDEntryAuthorityFeed(
-          process.env.ALLRICE_TEST_DATABASE_URL!,
-        );
-      let watcher:
-        Awaited<ReturnType<typeof watchDEntryNativeAuthority>> | undefined;
-      try {
-        watcher = await watchDEntryNativeAuthority(
-          f.context,
-          f.selection,
-          f.identity,
-          new AbortController().signal,
-          feed,
-        );
-        await expect(
-          fixture.db.begin(async (tx) => {
-            await tx`update allrice_memberships set role='viewer' where user_id=${f.user} and organization_id=${f.org}`;
-            expect(watcher!.revoked.aborted).toBe(false);
-            throw Error('rollback-revocation');
-          }),
-        ).rejects.toThrow('rollback-revocation');
-        expect(watcher.revoked.aborted).toBe(false);
-        const revoked = new Promise<void>((resolve) =>
-          watcher!.revoked.addEventListener('abort', () => resolve(), {
-            once: true,
-          }),
-        );
-        await fixture.db.begin(async (tx) => {
-          await tx`update allrice_memberships set role='viewer' where user_id=${f.user} and organization_id=${f.org}`;
-          expect(watcher!.revoked.aborted).toBe(false); // No pre-commit invalidation.
-        });
-        await revoked;
-        expect(watcher.revoked.reason).toMatchObject({
-          code: 'authorization_denied',
-        });
-        await watcher.close();
-        watcher = undefined;
-        await fixture.db`update allrice_memberships set role='member' where user_id=${f.user} and organization_id=${f.org}`;
-        const duringSubscribe = {
-          ...feed,
-          async subscribe(...args: Parameters<typeof feed.subscribe>) {
-            const detach = await feed.subscribe(...args);
-            await fixture.db`update allrice_memberships set role='viewer' where user_id=${f.user} and organization_id=${f.org}`;
-            return detach;
-          },
-        };
-        await expect(
-          watchDEntryNativeAuthority(
+    it.each(['native', 'history'] as const)(
+      'uses the real PG commit notification, discards rolled-back revocation, and closes the subscribe-before-recheck gap (%s)',
+      async (access) => {
+        const watchAuthority =
+          access === 'history'
+            ? watchDEntryHistoryAuthority
+            : watchDEntryNativeAuthority;
+        const f = await enabledFour(),
+          feed = createDEntryAuthorityFeed(
+            process.env.ALLRICE_TEST_DATABASE_URL!,
+          );
+        let watcher:
+          Awaited<ReturnType<typeof watchDEntryNativeAuthority>> | undefined;
+        try {
+          watcher = await watchAuthority(
             f.context,
             f.selection,
             f.identity,
             new AbortController().signal,
-            duringSubscribe,
-          ),
-        ).rejects.toMatchObject({ code: 'authorization_denied' });
-      } finally {
-        await watcher?.close();
-        await feed.close();
-        await clearPublished();
-      }
-    });
+            feed,
+          );
+          await expect(
+            fixture.db.begin(async (tx) => {
+              await tx`update allrice_memberships set role='viewer',active=${access !== 'history'} where user_id=${f.user} and organization_id=${f.org}`;
+              expect(watcher!.revoked.aborted).toBe(false);
+              throw Error('rollback-revocation');
+            }),
+          ).rejects.toThrow('rollback-revocation');
+          expect(watcher.revoked.aborted).toBe(false);
+          const revoked = new Promise<void>((resolve) =>
+            watcher!.revoked.addEventListener('abort', () => resolve(), {
+              once: true,
+            }),
+          );
+          await fixture.db.begin(async (tx) => {
+            await tx`update allrice_memberships set role='viewer',active=${access !== 'history'} where user_id=${f.user} and organization_id=${f.org}`;
+            expect(watcher!.revoked.aborted).toBe(false); // No pre-commit invalidation.
+          });
+          await revoked;
+          expect(watcher.revoked.reason).toMatchObject({
+            code: 'authorization_denied',
+          });
+          await watcher.close();
+          watcher = undefined;
+          await fixture.db`update allrice_memberships set role='member',active=true where user_id=${f.user} and organization_id=${f.org}`;
+          const duringSubscribe = {
+            ...feed,
+            async subscribe(...args: Parameters<typeof feed.subscribe>) {
+              const detach = await feed.subscribe(...args);
+              await fixture.db`update allrice_memberships set role='viewer',active=${access !== 'history'} where user_id=${f.user} and organization_id=${f.org}`;
+              return detach;
+            },
+          };
+          await expect(
+            watchAuthority(
+              f.context,
+              f.selection,
+              f.identity,
+              new AbortController().signal,
+              duringSubscribe,
+            ),
+          ).rejects.toMatchObject({ code: 'authorization_denied' });
+        } finally {
+          await watcher?.close();
+          await feed.close();
+          await clearPublished();
+        }
+      },
+    );
 
     it('rechecks release/employee changes and expires at the real login deadline; notification disconnect aborts idle consumers', async () => {
       const f = await enabledFour(),
         feed = createDEntryAuthorityFeed(
           process.env.ALLRICE_TEST_DATABASE_URL!,
         );
+      let history:
+        Awaited<ReturnType<typeof watchDEntryHistoryAuthority>> | undefined;
       let watcher:
         Awaited<ReturnType<typeof watchDEntryNativeAuthority>> | undefined;
       const open = () =>
@@ -827,6 +985,13 @@ suite(
             });
         });
       try {
+        history = await watchDEntryHistoryAuthority(
+          f.context,
+          f.selection,
+          f.identity,
+          new AbortController().signal,
+          feed,
+        );
         watcher = await open();
         const releaseRevoked = abortOf(watcher);
         await updateDEntryReleasePolicy(f.context, {
@@ -845,9 +1010,13 @@ suite(
         // A real expires_at update (not a fabricated authenticatedAt/TTL) must
         // move the deadline of an already open subscription.
         watcher = await open();
-        const expired = abortOf(watcher);
+        const expired = abortOf(watcher),
+          historyExpired = abortOf(history);
         await fixture.db`update allrice_sessions set expires_at=clock_timestamp()+interval '1 second' where id=${f.login.id}`;
-        await expired;
+        await Promise.all([expired, historyExpired]);
+        expect(history.revoked.reason).toMatchObject({
+          code: 'authentication_required',
+        });
         expect(watcher.revoked.reason).toMatchObject({
           code: 'authentication_required',
         });
@@ -870,6 +1039,7 @@ suite(
           await resolveDEntryIdentity(context, f.selection, 'history'),
         ).toMatchObject({ threadId: f.thread.id });
       } finally {
+        await history?.close();
         await watcher?.close();
         await feed.close();
         await clearPublished();

@@ -12,7 +12,10 @@ import {
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { DataAccessError } from './data.ts';
-import { requireDEntryNativeIdentity } from './d-entry.ts';
+import {
+  requireDEntryNativeIdentity,
+  resolveDEntryIdentity,
+} from './d-entry.ts';
 import { readDEntryReleasePolicy } from './d-entry-release-policy.ts';
 import { resolveEmployeeSessionInstance } from './employees/employee-instances.ts';
 
@@ -47,6 +50,14 @@ const pinSchema = claimSchema.extend({ nativeSessionId: z.string().min(1) });
 export type DEntryNativeRootCreation = Readonly<{
   nativeSessionId: string;
   host: z.infer<typeof hostSchema>;
+}>;
+/** Current history authority with persistent birth provenance, not a live lease. */
+export type DEntryHistoryRootPin = Readonly<{
+  identity: DEntryIdentity;
+  rootNativeSessionId: string;
+  rootOriginDigest: string;
+  rootBindingRef: string;
+  vmId: string;
 }>;
 const deny = (): never => {
   throw new DataAccessError('authorization_denied');
@@ -83,16 +94,32 @@ function projectPin(raw: unknown, identity: DEntryIdentity) {
     vmId: pin.host.binding.vmId,
   };
 }
-async function readPin(sql: Sql | TransactionSql, identity: DEntryIdentity) {
+async function readPin(
+  sql: Sql | TransactionSql,
+  identity: DEntryIdentity,
+  history = false,
+) {
   const [row] = await sql`select d_entry_native_root from allrice_chat_sessions
     where id=${identity.threadId} and organization_id=${identity.organizationId}
       and workspace_id=${identity.workspaceId} and owner_id=${identity.personId}
       and coalesce(employee_instance_id,employee_assignment_id)=${identity.employeeInstanceId}
-      and execution_generation='4.0' and archived_at is null`;
+      and execution_generation='4.0' and (${history} or archived_at is null)`;
   if (!row) return deny();
   return row.d_entry_native_root == null
     ? null
     : projectPin(row.d_entry_native_root, identity);
+}
+
+/** Cold, owner-only persistent read. Missing/claim-only never creates or wakes. */
+export async function getDEntryHistoryRootPin(
+  context: RequestContext,
+  input: unknown,
+): Promise<DEntryHistoryRootPin | null> {
+  const selection = DEntrySelectionInputSchema.extend({
+    threadId: UuidSchema,
+  }).parse(input);
+  const identity = await resolveDEntryIdentity(context, selection, 'history');
+  return readPin(getDatabase(), identity, true);
 }
 
 /** Pure current-authority read; no catalog root selection, boot or repair. */
