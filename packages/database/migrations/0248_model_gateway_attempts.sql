@@ -21,13 +21,15 @@ create table allrice_model_gateway_attempts (
   protocol text not null check (protocol in ('openai-chat-completions', 'openai-responses', 'opaque')),
   intent_at timestamptz not null default clock_timestamp(),
   receipt jsonb,
+  -- Finalized receipt timestamp, including unknown transport closure. It is
+  -- never evidence that a retained slot's transport has stopped.
   closed_at timestamptz,
   recovery_evidence_ref text,
   check ((receipt is null) = (closed_at is null))
 );
 create index allrice_model_gateway_attempts_call on allrice_model_gateway_attempts(call_id, intent_at);
 create index allrice_model_gateway_attempts_owner on allrice_model_gateway_attempts(owner_id)
-  where closed_at is null;
+  where closed_at is null or (receipt->>'outcome'='unknown' and recovery_evidence_ref is null);
 
 -- person_id is GLOBAL, deliberately without organization_id in the key.
 -- No TTL: an unknown/crashed transport must not release an active stream slot.
@@ -47,8 +49,13 @@ begin
   end if;
   if row(new.id, new.call_id, new.person_id, new.owner_id, new.kind, new.protocol, new.intent_at)
     is distinct from row(old.id, old.call_id, old.person_id, old.owner_id, old.kind, old.protocol, old.intent_at)
-    or (old.receipt is not null and row(new.receipt, new.closed_at, new.recovery_evidence_ref)
-      is distinct from row(old.receipt, old.closed_at, old.recovery_evidence_ref)) then
+    or (old.receipt is not null and (
+      row(new.receipt, new.closed_at) is distinct from row(old.receipt, old.closed_at)
+      or (new.recovery_evidence_ref is distinct from old.recovery_evidence_ref
+        and not (old.recovery_evidence_ref is null
+          and length(btrim(coalesce(new.recovery_evidence_ref,''))) > 0
+          and coalesce(old.receipt->>'outcome','') = 'unknown'))
+    )) then
     raise exception 'model gateway attempt facts are immutable';
   end if;
   return new;

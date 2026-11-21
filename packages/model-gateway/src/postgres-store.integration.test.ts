@@ -1,6 +1,8 @@
 /** Real isolated PostgreSQL, no model/VM/service/credentials. */
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { createServer, createConnection } from 'node:net';
+import type { Socket } from 'node:net';
 import postgres from 'postgres';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type {
@@ -233,6 +235,95 @@ integration(
       expect(remaining?.count).toBe(0);
     });
 
+    it('真实初次连接失败后同一LISTEN owner恢复；取消等待者不新注册driver callback', async () => {
+      const target = new URL(databaseUrl);
+      let accepting = false;
+      let rejectedConnections = 0;
+      const sockets = new Set<Socket>();
+      const proxy = createServer((socket) => {
+        sockets.add(socket);
+        socket.once('close', () => sockets.delete(socket));
+        socket.on('error', () => {});
+        if (!accepting) {
+          rejectedConnections++;
+          socket.destroy();
+          return;
+        }
+        const upstream = createConnection({
+          host: target.hostname,
+          port: Number(target.port || 5432),
+        });
+        sockets.add(upstream);
+        upstream.once('close', () => {
+          sockets.delete(upstream);
+          socket.destroy();
+        });
+        upstream.on('error', () => socket.destroy());
+        socket.once('close', () => upstream.destroy());
+        socket.pipe(upstream).pipe(socket);
+      });
+      await new Promise<void>((resolve) =>
+        proxy.listen(0, '127.0.0.1', resolve),
+      );
+      const address = proxy.address();
+      if (!address || typeof address === 'string')
+        throw Error('fixture proxy missing');
+      const routed = new URL(databaseUrl);
+      routed.port = String(address.port);
+      const applicationName = 'met268-initial-listen-' + randomUUID();
+      const db = postgres(routed.toString(), {
+        max: 1,
+        connection: { search_path: schema, application_name: applicationName },
+      });
+      let registrations = 0;
+      const observed = new Proxy(db, {
+        get(target, key, receiver) {
+          if (key !== 'listen') return Reflect.get(target, key, receiver);
+          return (...args: Parameters<typeof db.listen>) => {
+            registrations++;
+            return db.listen(...args);
+          };
+        },
+      }) as postgres.Sql;
+      const store = createPostgresModelGatewayStore(observed);
+      const person = randomUUID();
+      let watch: Awaited<ReturnType<typeof store.watchCapacity>> | undefined;
+      try {
+        await expect(
+          store.watchCapacity(person, new AbortController().signal),
+        ).rejects.toBeInstanceOf(Error);
+        expect(rejectedConnections).toBeGreaterThan(0);
+        const controller = new AbortController();
+        const canceled = store.watchCapacity(person, controller.signal);
+        controller.abort(
+          new Error('synthetic disconnected queue cancellation'),
+        );
+        await expect(canceled).rejects.toThrow(
+          'synthetic disconnected queue cancellation',
+        );
+        accepting = true;
+        watch = await store.watchCapacity(person, new AbortController().signal);
+        await watch.wait();
+        const notified = watch.wait();
+        await firstDb.notify('allrice_model_gateway_capacity', person);
+        await notified;
+        expect(registrations).toBe(1);
+        await watch.close();
+        await expect(watch.wait()).rejects.toMatchObject({
+          code: 'ADMISSION_CLOSED',
+        });
+      } finally {
+        await watch?.close();
+        await db.end({ timeout: 5 });
+        for (const socket of sockets) socket.destroy();
+        await new Promise<void>((resolve) => proxy.close(() => resolve()));
+      }
+      const [remaining] = await admin<
+        { count: number }[]
+      >`select count(*)::int as count from pg_stat_activity where application_name=${applicationName}`;
+      expect(remaining?.count).toBe(0);
+    });
+
     it('重启只读未知intent保留null；时间流逝不释放slot，可信死进程恢复才释放', async () => {
       const binding = modelBinding();
       const owner = randomUUID();
@@ -306,6 +397,72 @@ integration(
       ).rejects.toMatchObject({ code: 'LEDGER_UNAVAILABLE' });
       await expect(
         firstDb`update allrice_model_gateway_calls set request_digest='changed' where id=${start.callId}`,
+      ).rejects.toThrow('immutable');
+    });
+
+    it('unknown关闭保留已观察事实与slot，可信owner恢复只补一次旁证且不改raw receipt', async () => {
+      const binding = modelBinding();
+      const start = await attempt(binding);
+      await first.tryStartAttempt(start);
+      const receipt: ModelAttemptReceipt = {
+        ...closed(start),
+        terminal: 'failed',
+        outcome: 'unknown',
+      };
+      await first.finishAttempt(receipt);
+      await second.finishAttempt(receipt);
+      expect(await second.attempts(start.callId)).toEqual([receipt]);
+      const [before] =
+        await firstDb`select receipt,closed_at,recovery_evidence_ref from allrice_model_gateway_attempts where id=${start.id}`;
+      const [held] =
+        await firstDb`select attempt_id from allrice_model_gateway_slots where attempt_id=${start.id}`;
+      expect(held?.attempt_id).toBe(start.id);
+      expect(
+        await first.usage(binding.vm.personId, binding.vm.organizationId),
+      ).toMatchObject({
+        inputTokens: 12,
+        outputTokens: 3,
+        totalTokens: 15,
+        usageComplete: false,
+        attemptCount: 1,
+        receiptCount: 0,
+      });
+      await expect(
+        second.finishAttempt({ ...receipt, outcome: 'closed' }),
+      ).rejects.toMatchObject({ code: 'LEDGER_UNAVAILABLE' });
+      await expect(
+        firstDb`update allrice_model_gateway_attempts set recovery_evidence_ref='' where id=${start.id}`,
+      ).rejects.toThrow('immutable');
+      expect(
+        await second.reconcileOwner(
+          start.ownerId,
+          'host-proof:exact-stopped-transport',
+        ),
+      ).toBe(1);
+      expect(
+        await first.reconcileOwner(
+          start.ownerId,
+          'host-proof:exact-stopped-transport',
+        ),
+      ).toBe(0);
+      const [after] =
+        await firstDb`select receipt,closed_at,recovery_evidence_ref from allrice_model_gateway_attempts where id=${start.id}`;
+      expect(after?.receipt).toEqual(before?.receipt);
+      expect(after?.closed_at).toEqual(before?.closed_at);
+      expect(after?.recovery_evidence_ref).toBe(
+        'host-proof:exact-stopped-transport',
+      );
+      expect(
+        await firstDb`select attempt_id from allrice_model_gateway_slots where attempt_id=${start.id}`,
+      ).toHaveLength(0);
+      await expect(
+        firstDb`update allrice_model_gateway_attempts set recovery_evidence_ref='different-proof' where id=${start.id}`,
+      ).rejects.toThrow('immutable');
+      const finished = await attempt(binding);
+      await first.tryStartAttempt(finished);
+      await first.finishAttempt(closed(finished));
+      await expect(
+        firstDb`update allrice_model_gateway_attempts set recovery_evidence_ref='unrelated-proof' where id=${finished.id}`,
       ).rejects.toThrow('immutable');
     });
 

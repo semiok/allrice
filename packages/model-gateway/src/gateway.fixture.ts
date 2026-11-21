@@ -92,6 +92,7 @@ export class FixtureStore implements ModelGatewayStore {
   rows = new Map<string, ModelAttemptReceipt>();
   slots = new Map<string, Set<string>>();
   listeners = new Map<string, Set<() => void>>();
+  recovered = new Set<string>();
   queued = deferred();
   failFinish = false;
   beforeStart?: () => Promise<void>;
@@ -150,6 +151,7 @@ export class FixtureStore implements ModelGatewayStore {
   async finishAttempt(receipt: ModelAttemptReceipt) {
     if (this.failFinish) throw new ModelGatewayError('LEDGER_UNAVAILABLE');
     this.rows.set(receipt.id, receipt);
+    if (receipt.outcome === 'unknown') return;
     this.slots.get(receipt.personId)?.delete(receipt.id);
     for (const listener of this.listeners.get(receipt.personId) ?? [])
       listener();
@@ -175,7 +177,12 @@ export class FixtureStore implements ModelGatewayStore {
     if (!evidenceRef) throw new ModelGatewayError('AUTHORIZATION_DENIED');
     let count = 0;
     for (const row of this.rows.values())
-      if (row.ownerId === ownerId && row.outcome === 'unknown') {
+      if (
+        row.ownerId === ownerId &&
+        row.outcome === 'unknown' &&
+        !this.recovered.has(row.id)
+      ) {
+        this.recovered.add(row.id);
         this.slots.get(row.personId)?.delete(row.id);
         for (const listener of this.listeners.get(row.personId) ?? [])
           listener();

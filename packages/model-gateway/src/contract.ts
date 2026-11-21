@@ -116,6 +116,7 @@ export type ModelAttemptReceipt = ModelAttemptStart &
     terminal: 'completed' | 'failed' | 'incomplete' | null;
     /** Explicit wire reason only. Older/unknown receipts omit this fact. */
     terminalReason?: 'max_output_tokens' | null;
+    /** unknown closure does not erase independently observed wire facts. */
     outcome: 'closed' | 'failed' | 'canceled' | 'unknown';
     usage: ModelUsage;
   }>;
@@ -133,7 +134,9 @@ export interface ModelGatewayStore {
   ): Promise<CapacitySubscription>;
   /** Atomically persist intent + global person slot. False means queue. */
   tryStartAttempt(attempt: ModelAttemptStart): Promise<boolean>;
-  /** Commit receipt before releasing its exact slot; failure keeps it occupied. */
+  /** Commit receipt before releasing its exact slot; failure keeps it occupied.
+   * outcome=unknown preserves observed facts but retains the lease until the
+   * authority confirms the exact owner's transport has stopped. */
   finishAttempt(receipt: ModelAttemptReceipt): Promise<void>;
   attempts(callId: string): Promise<readonly ModelAttemptReceipt[]>;
   usage(personId: string, organizationId: string): Promise<RuntimeRunUsage>;

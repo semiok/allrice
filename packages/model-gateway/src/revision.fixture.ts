@@ -184,13 +184,23 @@ export async function responsesFixture(
       | 'failed'
       | 'missing';
     tools?: boolean;
+    holdFailedBody?: boolean;
+    failuresBeforeSuccess?: number;
   } = {},
 ) {
   const requests: string[] = [];
+  const closed = new Map<number, ReturnType<typeof deferred<void>>>();
+  let active = 0;
+  let closedCount = 0;
   const server = createServer((request, response) => {
     void (async () => {
       for await (const part of request) void part;
       requests.push(request.url!);
+      active++;
+      response.once('close', () => {
+        active--;
+        closed.get(++closedCount)?.resolve();
+      });
       response.writeHead(200, { 'content-type': 'text/event-stream' });
       const event = (type: string, value: object) =>
         response.write(
@@ -244,8 +254,14 @@ export async function responsesFixture(
         event('response.output_item.done', { output_index: 1, item: complete });
         output.push(complete);
       }
-      if (options.terminal !== 'missing') {
-        const reason = options.terminal ?? 'completed';
+      const terminal =
+        options.failuresBeforeSuccess === undefined
+          ? options.terminal
+          : requests.length <= options.failuresBeforeSuccess
+            ? 'failed'
+            : 'completed';
+      if (terminal !== 'missing') {
+        const reason = terminal ?? 'completed';
         const status =
           reason === 'completed'
             ? 'completed'
@@ -273,7 +289,7 @@ export async function responsesFixture(
           },
         });
       }
-      response.end();
+      if (!(terminal === 'failed' && options.holdFailedBody)) response.end();
     })().catch((error) => response.destroy(error as Error));
   });
   const url = await listen(server);
@@ -284,6 +300,15 @@ export async function responsesFixture(
     provider: native.provider,
     binding: { ...modelBinding(), ...native.route },
     requests,
+    get active() {
+      return active;
+    },
+    whenClosed(count: number) {
+      if (closedCount >= count) return Promise.resolve();
+      const done = deferred();
+      closed.set(count, done);
+      return done.promise;
+    },
     async close() {
       await native.close();
       await closeServer(server);

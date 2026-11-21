@@ -196,18 +196,132 @@ describe.sequential(
           reason: { kind: 'error' },
         });
         const row = [...f.store.rows.values()][0]!;
-        if (terminal === 'failed') {
-          // Native error unwind can abort fetch before reader.cancel confirms
-          // closure. Preserve that unknown intent/lease rather than inventing
-          // a closed receipt merely because the provider returned an error.
-          expect(['failed', null]).toContain(row.terminal);
-          if (row.terminal === null) expect(row.outcome).toBe('unknown');
-        } else
-          expect(row.terminal).toBe(
-            terminal === 'content_filter' ? 'incomplete' : null,
-          );
+        expect(row.terminal).toBe(
+          terminal === 'content_filter'
+            ? 'incomplete'
+            : terminal === 'failed'
+              ? 'failed'
+              : null,
+        );
+        expect(f.store.slots.get(f.binding.vm.personId)?.size).toBe(0);
       },
     );
+
+    it('失败帧带usage且body保持打开：原生abort真实关闭并保留事实，8次失败后第9路成功', async () => {
+      const native = await responsesFixture({
+        holdFailedBody: true,
+        failuresBeforeSuccess: 8,
+      });
+      cleanup.push(() => native.close());
+      const f = await gatewayFixture({
+        provider: native.provider,
+        binding: native.binding,
+      });
+      cleanup.push(() => f.close());
+      for (let index = 0; index < 8; index++) {
+        expect(finish(await f.collect())).toMatchObject({
+          reason: { kind: 'error' },
+        });
+        await native.whenClosed(index + 1);
+        expect(native.active).toBe(0);
+        expect([...f.store.rows.values()][index]).toMatchObject({
+          dispatchObserved: true,
+          httpStatus: 200,
+          terminal: 'failed',
+          usage: {
+            inputTokens: 12,
+            outputTokens: 3,
+            totalTokens: 15,
+            cachedInputTokens: 4,
+          },
+        });
+        expect(f.store.slots.get(f.binding.vm.personId)?.size).toBe(0);
+      }
+      expect(finish(await f.collect())).toMatchObject({
+        reason: { kind: 'stop' },
+      });
+      await native.whenClosed(9);
+      expect(native.requests).toHaveLength(9);
+      expect(f.store.slots.get(f.binding.vm.personId)?.size).toBe(0);
+    });
+
+    it('真正关闭未知仍保留slot，但不丢已观察的HTTP/failed/usage事实', async () => {
+      const endpoint = 'http://synthetic-unclosed.invalid/v1/stream';
+      const original = globalThis.fetch;
+      let transportActive = true;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              'data: ' +
+                JSON.stringify({
+                  type: 'response.failed',
+                  response: {
+                    status: 'failed',
+                    usage: {
+                      input_tokens: 12,
+                      output_tokens: 3,
+                      total_tokens: 15,
+                      input_tokens_details: { cached_tokens: 4 },
+                    },
+                  },
+                }) +
+                '\n\n',
+            ),
+          );
+        },
+        cancel() {
+          throw new Error('synthetic underlying transport still active');
+        },
+      });
+      // A hostile/unknown transport counterexample, not an actual network call.
+      // Its errored reader cannot prove that the underlying resource stopped.
+      globalThis.fetch = (input, init) => {
+        const url = input instanceof Request ? input.url : String(input);
+        return url === endpoint
+          ? Promise.resolve(new Response(body, { status: 200 }))
+          : original(input, init);
+      };
+      cleanup.push(async () => {
+        transportActive = false;
+        globalThis.fetch = original;
+      });
+      const provider: GatewayProvider = {
+        classify(input) {
+          return String(input) === endpoint
+            ? { kind: 'model', protocol: 'openai-responses' }
+            : null;
+        },
+        async *stream(_binding, _input, signal) {
+          const response = await fetch(endpoint, { signal });
+          const reader = response.body!.getReader();
+          await reader.read();
+          await reader.cancel();
+          yield nativeFailure('UNREACHABLE');
+        },
+      };
+      const f = await gatewayFixture({ provider });
+      cleanup.push(() => f.close());
+      expect(finish(await f.collect())).toMatchObject({
+        reason: { kind: 'error' },
+      });
+      expect(transportActive).toBe(true);
+      expect(f.store.slots.get(f.binding.vm.personId)?.size).toBe(1);
+      expect([...f.store.rows.values()]).toMatchObject([
+        {
+          dispatchObserved: true,
+          httpStatus: 200,
+          terminal: 'failed',
+          outcome: 'unknown',
+          usage: {
+            inputTokens: 12,
+            outputTokens: 3,
+            totalTokens: 15,
+            cachedInputTokens: 4,
+          },
+        },
+      ]);
+    });
 
     it('HTTP错误保留offloadImages，原生compaction-image-offload仍记录卸载并返回retry', async () => {
       const provider: GatewayProvider = {

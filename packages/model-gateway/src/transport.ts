@@ -8,6 +8,10 @@ import type {
   ModelAttemptReceipt,
 } from './contract.ts';
 import { unknownUsage, WireUsageObserver } from './usage.ts';
+import {
+  installNativeCloseObserver,
+  observeNativeClose,
+} from './native-close.ts';
 
 type Fetch = typeof globalThis.fetch;
 type FetchScope = {
@@ -42,9 +46,11 @@ export function installScopedFetch(): () => void {
   if (users++ === 0) {
     original = globalThis.fetch;
     const fallback = original;
+    const disposeCloseObserver = installNativeCloseObserver();
     let enabled = true;
     deactivate = () => {
       enabled = false;
+      disposeCloseObserver();
     };
     wrapper = (input, init) => {
       const scope = enabled ? scopes.getStore() : undefined;
@@ -133,15 +139,15 @@ export function createMeteredTransport(options: {
         ...classification,
       };
       const observer = new WireUsageObserver(classification.protocol);
+      const nativeClose = observeNativeClose();
       let started = false;
       let dispatched = false;
       let status: number | null = null;
       let completed: Promise<void> | undefined;
-      let closeUnconfirmed = false;
       const finish = (outcome: ModelAttemptReceipt['outcome']) =>
         (completed ??= (async () => {
           try {
-            if (started && !closeUnconfirmed)
+            if (started)
               await options.store.finishAttempt({
                 ...attempt,
                 dispatchObserved: dispatched,
@@ -158,6 +164,7 @@ export function createMeteredTransport(options: {
             ledgerFailure ??= error;
             throw error;
           } finally {
+            nativeClose.dispose();
             pending.delete(done);
             resolveDone();
           }
@@ -189,11 +196,13 @@ export function createMeteredTransport(options: {
         dispatched = true;
         // Never follow redirects: fetch otherwise hides additional actual HTTP
         // requests and can forward credentials outside the approved endpoint.
-        const response = await nativeFetch(input, {
-          ...init,
-          redirect: 'manual',
-          signal: requestSignal,
-        });
+        const response = await nativeClose.run(() =>
+          nativeFetch(input, {
+            ...init,
+            redirect: 'manual',
+            signal: requestSignal,
+          }),
+        );
         status = response.status;
         if (!response.body) {
           await finish('closed');
@@ -212,13 +221,18 @@ export function createMeteredTransport(options: {
             try {
               await reader.cancel(requestSignal.reason);
             } catch (error) {
-              // A failed close is unknown. Leave the durable intent/slot for a
-              // trusted dead-transport reconciliation, never count it as free.
+              if (await nativeClose.confirmed()) {
+                cleanup();
+                await finish(
+                  !refreshing && options.signal.aborted ? 'canceled' : 'closed',
+                );
+                return;
+              }
+              // Neither cancel rejection nor an errored reader proves closure.
+              // Preserve observed wire facts, retaining the exact durable slot.
               ledgerFailure ??= error;
-              closeUnconfirmed = true;
               cleanup();
-              pending.delete(done);
-              resolveDone();
+              await finish('unknown');
               throw error;
             }
             // Native pi-ai closes its private consumer signal after it has parsed
@@ -277,9 +291,10 @@ export function createMeteredTransport(options: {
                   value.enqueue(result.value);
                 }
               } catch (error) {
-                cleanup();
                 try {
-                  await finish(requestSignal.aborted ? 'canceled' : 'failed');
+                  // Read failure and signal abort can race. Both must await
+                  // the same actual close confirmation before finalizing facts.
+                  await cancel();
                 } catch {
                   value.error(new ModelGatewayError('LEDGER_UNAVAILABLE'));
                   return;

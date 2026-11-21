@@ -11,34 +11,39 @@ import { summarizeAttempts, unknownUsage } from './usage.ts';
 
 const CHANNEL = 'allrice_model_gateway_capacity';
 type CapacityHub = {
-  subscribers: Map<string, Set<() => void>>;
-  ready: Promise<unknown>;
+  subscribers: Map<string, Set<(error?: unknown) => void>>;
+  ready: boolean;
 };
 const capacityHubs = new WeakMap<postgres.Sql, CapacityHub>();
 
 function capacityHub(db: postgres.Sql): CapacityHub {
   const existing = capacityHubs.get(db);
   if (existing) return existing;
-  const hub: CapacityHub = { subscribers: new Map(), ready: Promise.resolve() };
+  const hub: CapacityHub = { subscribers: new Map(), ready: false };
   capacityHubs.set(db, hub);
   // One long-lived listener belongs to the caller-owned pool, including its
   // reconnect lifecycle. postgres 3.4.9 rebuilds listener identities on reconnect;
   // per-waiter unlisten handles cannot safely remove those rebuilt listeners.
   // Waiters own only these local subscriptions, never driver listener handles.
-  hub.ready = db
+  void db
     .listen(
       CHANNEL,
       (person) => {
         for (const pulse of hub.subscribers.get(person) ?? []) pulse();
       },
       () => {
+        hub.ready = true;
         for (const subscribers of hub.subscribers.values())
           for (const pulse of subscribers) pulse();
       },
     )
     .catch((error: unknown) => {
-      capacityHubs.delete(db);
-      throw error;
+      if (hub.ready) return; // A newer onlisten already recovered this owner.
+      // postgres retains this callback even when the first LISTEN rejects,
+      // and re-registers it after reconnect. Keep the same pool owner; only
+      // current waiters fail. Later waiters can await its onlisten recovery.
+      for (const subscribers of hub.subscribers.values())
+        for (const pulse of subscribers) pulse(error);
     });
   return hub;
 }
@@ -104,11 +109,24 @@ export function createPostgresModelGatewayStore(
       const hub = capacityHub(db);
       let notified = false;
       let closed = false;
+      let listenFailure: unknown;
       let wake: (() => void) | undefined;
-      const pulse = () => {
+      const pulse = (error?: unknown) => {
+        listenFailure ??= error;
         notified = true;
         wake?.();
         wake = undefined;
+      };
+      const onAbort = () => pulse();
+      const waitForPulse = async () => {
+        if (!notified)
+          await new Promise<void>((resolve) => {
+            wake = resolve;
+            if (signal.aborted) pulse();
+          });
+        notified = false;
+        signal.throwIfAborted();
+        if (listenFailure) throw listenFailure;
       };
       const subscribers = hub.subscribers.get(personId) ?? new Set();
       hub.subscribers.set(personId, subscribers);
@@ -116,11 +134,11 @@ export function createPostgresModelGatewayStore(
       const detach = () => {
         subscribers.delete(pulse);
         if (!subscribers.size) hub.subscribers.delete(personId);
-        signal.removeEventListener('abort', pulse);
+        signal.removeEventListener('abort', onAbort);
       };
-      signal.addEventListener('abort', pulse);
+      signal.addEventListener('abort', onAbort);
       try {
-        await hub.ready;
+        while (!hub.ready) await waitForPulse();
         signal.throwIfAborted();
         // A hub may already be listening before this waiter subscribes.
         pulse();
@@ -134,12 +152,7 @@ export function createPostgresModelGatewayStore(
         async wait() {
           if (closed) throw new ModelGatewayError('ADMISSION_CLOSED');
           signal.throwIfAborted();
-          if (!notified)
-            await new Promise<void>((resolve) => {
-              wake = resolve;
-              if (signal.aborted) pulse();
-            });
-          notified = false;
+          await waitForPulse();
           if (closed) throw new ModelGatewayError('ADMISSION_CLOSED');
           signal.throwIfAborted();
         },
@@ -200,6 +213,8 @@ export function createPostgresModelGatewayStore(
           return;
         }
         await tx`update allrice_model_gateway_attempts set receipt=${json(receipt)},closed_at=clock_timestamp() where id=${receipt.id}`;
+        // Observed facts survive an unconfirmed close, but do not free capacity.
+        if (receipt.outcome === 'unknown') return;
         await tx`delete from allrice_model_gateway_slots where attempt_id=${receipt.id} and owner_id=${receipt.ownerId}`;
         await tx`select pg_notify(${CHANNEL},${receipt.personId})`;
       });
@@ -229,11 +244,16 @@ export function createPostgresModelGatewayStore(
         const rows = await tx<
           AttemptRow[]
         >`select * from allrice_model_gateway_attempts
-          where owner_id=${ownerId} and closed_at is null order by id for update`;
+          where owner_id=${ownerId} and (closed_at is null or
+            (receipt->>'outcome'='unknown' and recovery_evidence_ref is null))
+          order by id for update`;
         for (const row of rows) {
           const receipt = fromRow(row);
-          await tx`update allrice_model_gateway_attempts set receipt=${json(receipt)},closed_at=clock_timestamp(),
-            recovery_evidence_ref=${evidenceRef} where id=${row.id}`;
+          if (row.receipt)
+            await tx`update allrice_model_gateway_attempts set recovery_evidence_ref=${evidenceRef} where id=${row.id}`;
+          else
+            await tx`update allrice_model_gateway_attempts set receipt=${json(receipt)},closed_at=clock_timestamp(),
+              recovery_evidence_ref=${evidenceRef} where id=${row.id}`;
           await tx`delete from allrice_model_gateway_slots where attempt_id=${row.id} and owner_id=${ownerId}`;
           await tx`select pg_notify(${CHANNEL},${row.person_id})`;
         }
