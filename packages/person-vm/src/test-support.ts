@@ -50,6 +50,8 @@ export class MemoryStore implements PersonVmStore {
     try {
       return (await work({
         row,
+        signal: new AbortController().signal,
+        assertAdmissionOpen: async () => {},
         guard: async () => {},
         save: async (value) => {
           this.rows.set(personId, {

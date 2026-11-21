@@ -41,6 +41,9 @@ export type VmAudit = {
 };
 export interface VmLease {
   row: VmRecord | null;
+  /** Loss cancels owned work; the holder still MUST join before releasing. */
+  signal: AbortSignal;
+  assertAdmissionOpen(generationChange?: boolean): Promise<void>;
   save(row: VmRecord): Promise<void>;
   guard(): Promise<void>;
   audit(row: VmRecord, event: VmAudit): Promise<void>;
@@ -98,7 +101,11 @@ function lostConnection() {
 // postgres.js 3.4.9 release() unconditionally reopens a reservation, and a fatal
 // close can retain query/errorResponse until the next ReadyForQuery. Never reuse
 // that client. A fresh dedicated client also makes onclose identify this session.
-class VmSqlSession {
+export class VmSqlSession {
+  private readonly abort = new AbortController();
+  get signal() {
+    return this.abort.signal;
+  }
   private failure: unknown;
   private disposing = false;
   private readonly closed: Promise<void>;
@@ -112,6 +119,7 @@ class VmSqlSession {
     });
     this.invalidate = (error) => {
       this.failure ??= error;
+      this.abort.abort(error);
       notifyClosed();
     };
     const previous = client.options.onclose;
@@ -184,6 +192,41 @@ export function bindingOf(row: VmRecord): PersonVmBinding {
   });
 }
 
+async function assertAdmissionOpen(
+  session: VmSqlSession,
+  personId: string,
+  generationChange = false,
+) {
+  const [row] = await session.query(
+    () => session.client`
+    select * from person_virtual_machines where person_id=${personId}`,
+  );
+  // Existing 0247 fixtures remain usable; admission composition requires 0250.
+  const state = row?.admission_state as
+    | {
+        sourceId?: string;
+        revoked?: string;
+        round?: { released: string[]; stop: string };
+      }
+    | undefined;
+  if (row?.admission_version && !state?.sourceId)
+    throw new PersonVmError('LEASE_CONFLICT');
+  if (
+    state?.revoked ||
+    (state?.round &&
+      (state.round.released.length !== 2 ||
+        !['none', 'confirmed'].includes(state.round.stop)))
+  )
+    throw new PersonVmError('LEASE_CONFLICT');
+  if (generationChange && row && 'admission_state' in row) {
+    const [accepted] = await session.query(
+      () => session.client`
+      select count(*)::int as count from person_vm_admission_permits where person_id=${personId} and disposition<>'deferred'`,
+    );
+    if (Number(accepted?.count)) throw new PersonVmError('VM_ACTIVE');
+  }
+}
+
 export class PostgresPersonVmStore implements PersonVmStore {
   // ownerToken -> personId. A claim whose COMMIT acknowledgement was lost may
   // leave either token durable; neither can authorize physical work until its
@@ -194,6 +237,11 @@ export class PostgresPersonVmStore implements PersonVmStore {
     private readonly openSql: PersonVmSqlFactory,
     private readonly fence?: PersonVmLeaseFencePort,
   ) {}
+  /** Admission and physical ownership must use the SAME trusted factory/DB.
+   * Factories must not change database/schema between calls. No DSN is exposed. */
+  assertAdmissionFactory(factory: PersonVmSqlFactory) {
+    if (factory !== this.openSql) throw new PersonVmError('PROVIDER_FAILED');
+  }
   async read(personId: string) {
     const session = new VmSqlSession(this.openSql());
     try {
@@ -241,12 +289,17 @@ export class PostgresPersonVmStore implements PersonVmStore {
       const guard = async () => {
         const [current] = await session.query(
           () => sql`update person_virtual_machines set lease_expires_at=${expires()}
-          where person_id=${personId} and lease_owner=${token} returning vm_id`,
+          where person_id=${personId} and lease_owner=${token} returning *`,
         );
         if (!current) throw new PersonVmError('LEASE_LOST');
+        if (current.admission_state?.revoked)
+          throw new PersonVmError('AUTHORIZATION_DENIED');
       };
       const lease: VmLease = {
         row,
+        signal: session.signal,
+        assertAdmissionOpen: (change) =>
+          assertAdmissionOpen(session, personId, change),
         guard,
         save: async (record) => {
           if (record.personId !== personId)
@@ -386,12 +439,17 @@ export class PostgresPersonVmStore implements PersonVmStore {
       const guard = async () => {
         const [found] = await session.query(
           () =>
-            sql`update person_virtual_machines set lease_expires_at=${new Date(options.now().getTime() + options.ttlMs)} where person_id=${personId} and lease_owner=${token} returning vm_id`,
+            sql`update person_virtual_machines set lease_expires_at=${new Date(options.now().getTime() + options.ttlMs)} where person_id=${personId} and lease_owner=${token} returning *`,
         );
         if (!found) throw new PersonVmError('LEASE_LOST');
+        if (found.admission_state?.revoked)
+          throw new PersonVmError('AUTHORIZATION_DENIED');
       };
       const result = await work({
         row,
+        signal: session.signal,
+        assertAdmissionOpen: (change) =>
+          assertAdmissionOpen(session, personId, change),
         guard,
         save: async (value) => {
           if (

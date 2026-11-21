@@ -10,6 +10,15 @@ import type { BaselineEntry } from './dsh-convergence-gate.ts';
 export const baseline: readonly BaselineEntry[] = [
   {
     kind: 'table',
+    id: 'person_vm_admission_permits',
+    category: '租约',
+    basis:
+      'MET-266：跨host共享普通请求准入与freeze的线性化边界；只记宿主queued/active/deferred范围租约与owner收尾，不复制DSH任务状态。',
+    approvedBy:
+      '2026-11-21 用户批准AllRice共享门卫/版本租约；root已核新增PG与超原2x方案，见ADMISSION-HOST-IMPLEMENTATION-PLAN.md及本片派活。',
+  },
+  {
+    kind: 'table',
     id: 'person_virtual_machines',
     category: '租约',
     basis:
