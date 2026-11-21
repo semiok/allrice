@@ -1,4 +1,10 @@
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import {
+  execFile,
+  spawn,
+  type ChildProcess,
+  type ExecFileException,
+} from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   mkdir,
   mkdtemp,
@@ -11,17 +17,178 @@ import {
 import { createRequire } from 'node:module';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { expect } from 'vitest';
+import { parse, stringify } from 'yaml';
+import { createBrowserArtifacts } from './browser-artifacts';
 import { prepareNativeHistory } from './native-history.mjs';
 
 const run = promisify(execFile);
 const require = createRequire(import.meta.url);
 const packageRoot = fileURLToPath(new URL('../', import.meta.url));
 const repoRoot = resolve(packageRoot, '../..');
+
+/** Reuse the installed repository graph without reading a user's pnpm config. */
+export async function prepareInstalledProfileLock(
+  profile: string,
+  tarball: string,
+  repositoryRoot = repoRoot,
+) {
+  type Snapshot = {
+    dependencies?: Record<string, string>;
+    optionalDependencies?: Record<string, string>;
+  };
+  const lock = parse(
+    await readFile(join(repositoryRoot, 'pnpm-lock.yaml'), 'utf8'),
+  ) as {
+    lockfileVersion: string;
+    settings: object;
+    importers: Record<
+      string,
+      { dependencies?: Record<string, { specifier: string; version: string }> }
+    >;
+    packages: Record<string, unknown>;
+    snapshots: Record<string, Snapshot>;
+  };
+  const product = JSON.parse(
+    await readFile(join(packageRoot, 'package.json'), 'utf8'),
+  );
+  const direct =
+    lock.importers['packages/dsh-web-composition']!.dependencies ?? {};
+  const rejectLocal = (name: string, value: string) => {
+    if (
+      ['workspace:', 'link:', 'file:'].some((prefix) =>
+        value.startsWith(prefix),
+      )
+    )
+      throw new Error(
+        `Unsupported local installed profile dependency: ${name}@${value}`,
+      );
+  };
+  for (const [name, { specifier }] of Object.entries(direct))
+    rejectLocal(name, specifier);
+  expect(
+    Object.fromEntries(
+      Object.entries(direct).map(([name, value]) => [name, value.specifier]),
+    ),
+  ).toEqual(product.dependencies ?? {});
+  const dependencies = Object.fromEntries(
+    Object.entries(direct).map(([name, value]) => [name, value.version]),
+  );
+  const specifier = `file:${tarball}`;
+  const key = `${product.name}@${specifier}`;
+  const packages: Record<string, unknown> = {
+    [key]: {
+      resolution: {
+        integrity:
+          'sha512-' +
+          createHash('sha512')
+            .update(await readFile(tarball))
+            .digest('base64'),
+        tarball: specifier,
+      },
+      version: product.version,
+    },
+  };
+  const snapshots: Record<string, Snapshot> = { [key]: { dependencies } };
+  const include = (name: string, version: string) => {
+    rejectLocal(name, version);
+    const id = `${name}@${version}`;
+    if (snapshots[id]) return;
+    const snapshot = lock.snapshots[id];
+    const packageId = id.split('(')[0]!;
+    if (!snapshot || !lock.packages[packageId])
+      throw new Error(
+        `Repository lock has no installed profile dependency: ${id}`,
+      );
+    const metadata = lock.packages[packageId] as {
+      resolution?: { integrity?: string };
+    };
+    if (!metadata.resolution?.integrity)
+      throw new Error(`Repository lock has no dependency integrity: ${id}`);
+    snapshots[id] = snapshot;
+    packages[packageId] = lock.packages[packageId];
+    for (const [child, selected] of Object.entries({
+      ...snapshot.dependencies,
+      ...snapshot.optionalDependencies,
+    }))
+      include(child, selected);
+  };
+  for (const [name, version] of Object.entries(dependencies))
+    include(name, version);
+  await writeFile(
+    join(profile, 'pnpm-lock.yaml'),
+    stringify({
+      lockfileVersion: lock.lockfileVersion,
+      settings: lock.settings,
+      importers: {
+        '.': {
+          dependencies: { [product.name]: { specifier, version: specifier } },
+        },
+      },
+      packages,
+      snapshots,
+    }),
+  );
+  const modules = parse(
+    await readFile(join(repositoryRoot, 'node_modules/.modules.yaml'), 'utf8'),
+  ) as { storeDir: string };
+  if (typeof modules.storeDir !== 'string' || !isAbsolute(modules.storeDir))
+    throw new Error('Repository install has no absolute pnpm storeDir');
+  return modules.storeDir;
+}
+
+/** Keep install failures readable after the credential-free Host root is removed. */
+export async function runInstalledProfilePnpm(
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  pnpmVersion?: string,
+) {
+  const cli = process.env.npm_execpath;
+  const executable = cli ? process.execPath : 'pnpm';
+  const commandArgs = cli ? [cli, ...args] : args;
+  try {
+    return await run(executable, commandArgs, { cwd, env });
+  } catch (cause) {
+    const error = cause as ExecFileException & {
+      stdout?: string | Buffer;
+      stderr?: string | Buffer;
+    };
+    const failure = {
+      executable,
+      args: commandArgs,
+      cwd,
+      nodeVersion: process.version,
+      expectedPnpmVersion: '10.33.3',
+      pnpmVersion: pnpmVersion ?? null,
+      code: error.code ?? null,
+      signal: error.signal ?? null,
+      killed: error.killed ?? false,
+      message: error.message,
+      stdout: String(error.stdout ?? ''),
+      stderr: String(error.stderr ?? ''),
+    };
+    let evidence: string | undefined;
+    let evidenceError: string | undefined;
+    try {
+      evidence = join(
+        await createBrowserArtifacts(),
+        'installed-profile-pnpm-failure.json',
+      );
+      await writeFile(evidence, JSON.stringify(failure, null, 2) + '\n');
+    } catch (error) {
+      evidenceError = String(error);
+    }
+    throw new Error(
+      `Installed profile pnpm failed: ${JSON.stringify({ ...failure, evidence, evidenceError })}`,
+      { cause },
+    );
+  }
+}
 
 /** Installs a real product tarball into an isolated credential-free native Host. */
 export async function startInstalledProfile(
@@ -63,15 +230,14 @@ export async function startInstalledProfile(
       XDG_DATA_HOME: join(home, '.local/share'),
       LANG: 'zh_CN.UTF-8',
       DO_NOT_TRACK: '1',
+      COREPACK_ENABLE_NETWORK: '0',
     };
-    const pnpm = async (args: string[], cwd: string) => {
-      const cli = process.env.npm_execpath;
-      return run(cli ? process.execPath : 'pnpm', cli ? [cli, ...args] : args, {
-        cwd,
-        env,
-      });
-    };
-    expect((await pnpm(['--version'], repoRoot)).stdout.trim()).toBe('10.33.3');
+    const pnpmVersion = (
+      await runInstalledProfilePnpm(['--version'], repoRoot, env)
+    ).stdout.trim();
+    const pnpm = (args: string[], cwd: string) =>
+      runInstalledProfilePnpm(args, cwd, env, pnpmVersion);
+    expect(pnpmVersion).toBe('10.33.3');
     await pnpm(['pack', '--pack-destination', root], packageRoot);
     const manifest = JSON.parse(
       await readFile(
@@ -79,10 +245,21 @@ export async function startInstalledProfile(
         'utf8',
       ),
     );
-    manifest.dependencies['@allrice/dsh-web-composition'] =
-      `file:${join(root, 'allrice-dsh-web-composition-0.1.0.tgz')}`;
+    const tarball = join(root, 'allrice-dsh-web-composition-0.1.0.tgz');
+    manifest.dependencies['@allrice/dsh-web-composition'] = `file:${tarball}`;
     await writeFile(join(profile, 'package.json'), JSON.stringify(manifest));
-    await pnpm(['install', '--offline', '--ignore-scripts'], profile);
+    const store = await prepareInstalledProfileLock(profile, tarball);
+    await pnpm(
+      [
+        'install',
+        '--offline',
+        '--ignore-scripts',
+        '--frozen-lockfile',
+        '--store-dir',
+        store,
+      ],
+      profile,
+    );
     const installed = join(
       profile,
       'node_modules/@allrice/dsh-web-composition',
