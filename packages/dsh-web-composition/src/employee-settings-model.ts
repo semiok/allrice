@@ -104,19 +104,33 @@ export class EmployeeSettingsModel {
     scope: EmployeeSettingsScope,
     native: SettingsLauncherOwnerProps,
   ) {
-    if (!this.current(scope)) return () => {};
-    let bound = true;
-    const unbind = this.port.bindNativeLauncher({
-      scopeKey: scope.key,
-      settingsOpen: native.settingsOpen,
+    return this.bindLauncherView(scope, native).dispose;
+  }
+
+  bindLauncherView(
+    scope: EmployeeSettingsScope,
+    native: SettingsLauncherOwnerProps,
+  ) {
+    let bound = this.current(scope);
+    const props: SettingsLauncherOwnerProps = {
+      ...native,
       openSettings: () => {
         if (bound && this.current(scope)) native.openSettings();
       },
+      openOnboarding: (id) => {
+        if (bound && this.current(scope)) native.openOnboarding(id);
+      },
+    };
+    if (!bound) return { props, dispose: () => {} };
+    const unbind = this.port.bindNativeLauncher({
+      scopeKey: scope.key,
+      settingsOpen: native.settingsOpen,
+      openSettings: props.openSettings,
     });
     if (!this.current(scope)) {
       bound = false;
       unbind();
-      return () => {};
+      return { props, dispose: () => {} };
     }
     const dispose = () => {
       if (!bound) return;
@@ -125,7 +139,7 @@ export class EmployeeSettingsModel {
       unbind();
     };
     this.launchers.add(dispose);
-    return dispose;
+    return { props, dispose };
   }
 
   private releaseLaunchers() {

@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
+import type { SettingsLauncherOwnerProps } from '@deepseek-ai/dsh-client-ui-settings/client';
 
 export type EmployeeSettingsSection = 'computer' | 'work' | 'apps';
 export type NotificationPreference = 'taskCompleted' | 'needsConfirmation';
@@ -64,6 +65,8 @@ export interface EmployeeSettingsPort {
 export interface EmployeeSettingsOptions {
   /** M1 defaults to hidden. Enabling requires a real named preference port. */
   notifications?: boolean;
+  /** Optional owner UI; actions become active only for the committed binding. */
+  renderLauncher?: (props: SettingsLauncherOwnerProps) => ReactElement | null;
 }
 
 declare module '@deepseek-ai/cordis' {

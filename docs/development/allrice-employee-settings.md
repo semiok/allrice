@@ -15,6 +15,7 @@
 ```ts
 apply(ctx: Context, options?: EmployeeSettingsOptions): void;
 bindEmployeeSettings(ctx: Context, port: EmployeeSettingsPort): void;
+// options.renderLauncher?: (props: SettingsLauncherOwnerProps) => ReactElement | null
 ```
 
 这些是本模块源导出；包级`./client`转发和build模块表尚由组合owner接入，不能把源码路径当已发布SDK。类型完整定义在同前缀 `employee-settings-port.ts`。
@@ -28,7 +29,7 @@ bindEmployeeSettings(ctx: Context, port: EmployeeSettingsPort): void;
 
 ### 原生入口转交
 
-原生`settings.launcher` owner传入`openSettings`与`settingsOpen`。本模块的无DOM桥接组件通过`bindNativeLauncher`把这两项交回owner，形式为：
+原生`settings.launcher` owner传入`openSettings`与`settingsOpen`。本模块通过`bindNativeLauncher`把这两项交回owner，形式为：
 
 ```ts
 bindNativeLauncher({ scopeKey, settingsOpen, openSettings }): () => void;
@@ -36,21 +37,23 @@ bindNativeLauncher({ scopeKey, settingsOpen, openSettings }): () => void;
 
 owner将其绑定到既有`EmployeeSidebarPort.openEmployeeSettings` / snapshot `settingsOpen`；disposer只清掉自己的绑定，避免旧effect释放新binding。组件、scope和Cordis卸载均释放绑定；过期open函数即使被外部保留也不再打开设置。没有`ctx.settings.open()`，不模拟DOM点击，不接管原生开关状态机。
 
-**共享渲染位仍需组合owner解决：** 当前employee-sidebar的shadow注册没有children，rc.2 renderer不会给它`renderSlot`，且会校验child所有权；直接补`renderSlot('sidebar.settings')`无效，重复声明又与原生ui-sidebar冲突。原生settings-general还依赖ui-sidebar模块。因此不能通过私有SettingsRoot、手工拼renderer props或CSS/DOM绕过；需要公开的合成/所有权接法，未绑定前不得报设置入口已迁入。
+可选`renderLauncher`由组合owner传入实际共享SidebarSettingsButton；模块不复制按钮。无option仍返回null。给renderer的openSettings/openOnboarding均为本次binding与scope保护后的回调，不能绕过解绑失效；宽度和settingsOpen沿原生owner。SSR/首次render只给惰性回调，effect建立真实binding后才发布可用props；每次重绑新闭包，StrictMode重放不复活旧引用，render阶段不绑定服务。
+
+**共享渲染位由组合owner交付：** 当前基线旧shadow未声明children，不能直接renderSlot或重复抢原生ui-sidebar child。owner已用真实公开模块证明cold-profile首次声明/原生General child注册与重建可行，见allrice40-settings-integration-20261121/cold-proof/PROOF-RESULT.md；这是源码装配proof，尚非实际Host/native mount/transport验收。renderLauncher扩展只供该公开路线输出实际共享按钮；不复制私有SettingsRoot、不用DOM或手工renderer私参绕过。
 
 ## 槽与DSH十项去向
 
 业务注册只用公开槽，所有注册归注入scope生命周期：
 
-| 槽 / id                                                          | 内容                                                                |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------- |
-| settings.launcher / single priority -100                         | 原生open/state转交，无第二个设置按钮                                |
-| settings.section / allrice-account                               | 已确认账号入口，公开Button调用真实owner                             |
-| settings.section / allrice-computer、allrice-work、allrice-apps  | owner提供的原样现有业务内容；不拷贝组件或在DSH origin发3.x相对fetch |
-| settings.general.item / allrice-streaming-output                 | 保留现有流式偏好，公开Switch与既有文案                              |
-| settings.general.item / allrice-notifications                    | **仅显式notifications=true且具名port存在时注册；M1不注册**          |
-| general.item / permission、developer-tools、session-log-deepseek | priority -100空贡献，仅员工呈现隐藏                                 |
-| settings.action / open-document                                  | priority -100隐藏，仅员工呈现                                       |
+| 槽 / id                                                          | 内容                                                                         |
+| ---------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| settings.launcher / single priority -100                         | 原生open/state转交；可选owner renderLauncher输出实际共享按钮，无option为null |
+| settings.section / allrice-account                               | 已确认账号入口，公开Button调用真实owner                                      |
+| settings.section / allrice-computer、allrice-work、allrice-apps  | owner提供的原样现有业务内容；不拷贝组件或在DSH origin发3.x相对fetch          |
+| settings.general.item / allrice-streaming-output                 | 保留现有流式偏好，公开Switch与既有文案                                       |
+| settings.general.item / allrice-notifications                    | **仅显式notifications=true且具名port存在时注册；M1不注册**                   |
+| general.item / permission、developer-tools、session-log-deepseek | priority -100空贡献，仅员工呈现隐藏                                          |
+| settings.action / open-document                                  | priority -100隐藏，仅员工呈现                                                |
 
 | DSH项      | 员工处理                                                                                                  |
 | ---------- | --------------------------------------------------------------------------------------------------------- |

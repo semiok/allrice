@@ -1,4 +1,10 @@
-import { Fragment, useEffect, useSyncExternalStore } from 'react';
+import {
+  Fragment,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import { Button, Switch } from '@deepseek-ai/dsh-client-ui-primitives';
 import type {
@@ -9,6 +15,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client';
 import { EmployeeSettingsModel } from './employee-settings-model';
 import type {
   EmployeeSettingsOptions,
+  EmployeeSettingsScope,
   EmployeeSettingsSection,
 } from './employee-settings-port';
 import styles from './employee-settings.module.css';
@@ -174,16 +181,40 @@ function BusinessSection({
 
 function NativeLauncher({
   model,
+  renderLauncher,
   ...native
 }: SettingsLauncherOwnerProps & {
   model: EmployeeSettingsModel;
+  renderLauncher: EmployeeSettingsOptions['renderLauncher'];
 }) {
   const { scope } = useSettings(model);
-  useEffect(
-    () => (scope ? model.bindLauncher(scope, native) : undefined),
-    [model, scope, native.openSettings, native.settingsOpen],
+  const owner = useMemo(
+    () => native,
+    [
+      native.wide,
+      native.settingsOpen,
+      native.settingsShortcut,
+      native.openSettings,
+      native.openOnboarding,
+    ],
   );
-  return null;
+  const [committed, setCommitted] = useState<{
+    scope: EmployeeSettingsScope;
+    owner: SettingsLauncherOwnerProps;
+    props: SettingsLauncherOwnerProps;
+  } | null>(null);
+  useEffect(() => {
+    if (!scope) return;
+    const binding = model.bindLauncherView(scope, owner);
+    if (renderLauncher) setCommitted({ scope, owner, props: binding.props });
+    return binding.dispose;
+  }, [model, scope, owner, renderLauncher]);
+  if (!scope || !renderLauncher) return null;
+  const props =
+    committed?.scope === scope && committed.owner === owner
+      ? committed.props
+      : { ...owner, openSettings: () => {}, openOnboarding: () => {} };
+  return renderLauncher(props);
 }
 
 export const inject = ['slots'];
@@ -191,6 +222,7 @@ export const inject = ['slots'];
 /** Public native settings contributions; no API, credentials or default host. */
 export function apply(ctx: Context, options: EmployeeSettingsOptions = {}) {
   const notificationsEnabled = options.notifications === true;
+  const renderLauncher = options.renderLauncher;
   const Hidden = () => null;
   for (const id of ['permission', 'developer-tools', 'session-log-deepseek'])
     ctx.slots.inject('settings.general.item', () =>
@@ -215,7 +247,11 @@ export function apply(ctx: Context, options: EmployeeSettingsOptions = {}) {
       scope.slots.register(
         { name: 'settings.launcher', priority: -100 },
         (props: SettingsLauncherOwnerProps) => (
-          <NativeLauncher {...props} model={model} />
+          <NativeLauncher
+            {...props}
+            model={model}
+            renderLauncher={renderLauncher}
+          />
         ),
       ),
     );

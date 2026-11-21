@@ -1,18 +1,25 @@
-import { createElement, type ComponentType } from 'react';
+import { act, createElement, StrictMode, type ComponentType } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
 import { Context } from '@deepseek-ai/cordis';
 import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots';
 import type { SettingsLauncherOwnerProps } from '@deepseek-ai/dsh-client-ui-settings/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apply, bindEmployeeSettings } from '../src/employee-settings';
 import { EmployeeSettingsModel } from '../src/employee-settings-model';
-import type { EmployeeSettingsScope } from '../src/employee-settings-port';
+import type {
+  EmployeeSettingsOptions,
+  EmployeeSettingsScope,
+} from '../src/employee-settings-port';
 import { nativeClientModule } from './native-client-module.mjs';
 import { createSettingsHost } from './fixtures/employee-settings/host';
+import { createLauncherMount } from './fixtures/employee-settings/launcher-mount';
 
 const contexts: Context[] = [];
 const models: EmployeeSettingsModel[] = [];
+const mounts: Awaited<ReturnType<typeof createLauncherMount>>[] = [];
 afterEach(async () => {
+  for (const mount of mounts.splice(0)) await mount.dispose();
   for (const model of models.splice(0)) model.dispose();
   for (const ctx of contexts.splice(0)) await ctx.fiber.dispose();
 });
@@ -362,7 +369,11 @@ function TestRoot({ renderSlot }: PropsRenderSlots<Seats>) {
   );
 }
 
-async function setupSlots(notifications?: boolean, bind = true) {
+async function setupSlots(
+  notifications?: boolean,
+  bind = true,
+  renderLauncher?: EmployeeSettingsOptions['renderLauncher'],
+) {
   const ctx = new Context();
   contexts.push(ctx);
   const renderer = nativeClientModule(
@@ -371,7 +382,7 @@ async function setupSlots(notifications?: boolean, bind = true) {
   renderer.apply(ctx);
   const host = createSettingsHost();
   if (bind) bindEmployeeSettings(ctx, host.port);
-  const options = { notifications };
+  const options = { notifications, renderLauncher };
   const plugin = ctx.plugin({ inject: ['slots'], apply }, options);
   await plugin;
   const declare = () =>
@@ -406,6 +417,184 @@ async function setupSlots(notifications?: boolean, bind = true) {
       .join('');
   return { ctx, host, plugin, declare, remove, html, options };
 }
+
+function launcherElement(ctx: Context, native: SettingsLauncherOwnerProps) {
+  return createElement(
+    ctx.slots.entriesOfSlot('settings.launcher')[0]!
+      .component as ComponentType<SettingsLauncherOwnerProps>,
+    native,
+  );
+}
+
+describe('optional rendered native launcher', () => {
+  it('renders the owner public Button in SSR without binding or exposing raw actions', async () => {
+    const seen: SettingsLauncherOwnerProps[] = [];
+    const { ctx, host } = await setupSlots(undefined, true, (props) => {
+      seen.push(props);
+      return createElement(Button, { onClick: props.openSettings }, '设置');
+    });
+    const native = nativeLauncher(true);
+    const output = renderToStaticMarkup(launcherElement(ctx, native));
+    expect(output).toContain('设置');
+    expect(output).toContain('<button');
+    expect(host.launchers.size).toBe(0);
+    expect(seen[0]!.settingsOpen).toBe(true);
+    expect(seen[0]!.wide).toBe(true);
+    expect(seen[0]!.openSettings).not.toBe(native.openSettings);
+    seen[0]!.openSettings();
+    seen[0]!.openOnboarding('welcome');
+    expect(native.openSettings).not.toHaveBeenCalled();
+    expect(native.openOnboarding).not.toHaveBeenCalled();
+  });
+
+  it('keeps the default null output and still binds/releases in a real React effect', async () => {
+    const { ctx, host } = await setupSlots();
+    const element = launcherElement(ctx, nativeLauncher());
+    expect(renderToStaticMarkup(element)).toBe('');
+    expect(host.launchers.size).toBe(0);
+    const mount = await createLauncherMount();
+    mounts.push(mount);
+    await mount.render(element);
+    expect(host.launchers.size).toBe(1);
+    await mount.unmount();
+    expect(host.launchers.size).toBe(0);
+  });
+
+  it('replaces same-scope rendered actions without reviving captured old callbacks', async () => {
+    const seen: SettingsLauncherOwnerProps[] = [];
+    const duringRender: number[] = [];
+    const { ctx, host } = await setupSlots(undefined, true, (props) => {
+      seen.push(props);
+      duringRender.push(host.launchers.size);
+      return null;
+    });
+    const mount = await createLauncherMount();
+    mounts.push(mount);
+    const native = nativeLauncher();
+    await mount.render(launcherElement(ctx, native));
+    expect(duringRender[0]).toBe(0);
+    const firstRender = seen[0]!;
+    const old = seen.at(-1)!;
+    firstRender.openSettings();
+    expect(native.openSettings).not.toHaveBeenCalled();
+    old.openSettings();
+    old.openOnboarding('welcome');
+    expect(native.openSettings).toHaveBeenCalledOnce();
+    expect(native.openOnboarding).toHaveBeenCalledOnce();
+    expect(native.openOnboarding).toHaveBeenCalledWith('welcome');
+    const nextNative = {
+      ...nativeLauncher(true),
+      wide: false,
+      settingsShortcut: { keys: ['Ctrl', ','], aria: 'Control+Comma' },
+    };
+    await mount.render(launcherElement(ctx, nextNative));
+    const next = seen.at(-1)!;
+    old.openSettings();
+    old.openOnboarding('welcome');
+    expect(native.openSettings).toHaveBeenCalledOnce();
+    expect(native.openOnboarding).toHaveBeenCalledOnce();
+    expect(next.settingsOpen).toBe(true);
+    expect(next.wide).toBe(false);
+    expect(next.settingsShortcut).toBe(nextNative.settingsShortcut);
+    next.openSettings();
+    expect(nextNative.openSettings).toHaveBeenCalledOnce();
+    await mount.render(null);
+    next.openSettings();
+    next.openOnboarding('welcome');
+    expect(nextNative.openSettings).toHaveBeenCalledOnce();
+    expect(nextNative.openOnboarding).not.toHaveBeenCalled();
+    expect(host.launchers.size).toBe(0);
+    await mount.render(launcherElement(ctx, nextNative));
+    const remounted = seen.at(-1)!;
+    next.openSettings();
+    remounted.openSettings();
+    expect(nextNative.openSettings).toHaveBeenCalledTimes(2);
+    await mount.unmount();
+    remounted.openSettings();
+    expect(nextNative.openSettings).toHaveBeenCalledTimes(2);
+  });
+
+  it('invalidates rendered callbacks immediately on identity change and revocation', async () => {
+    const seen: SettingsLauncherOwnerProps[] = [];
+    const { ctx, host } = await setupSlots(undefined, true, (props) => {
+      seen.push(props);
+      return null;
+    });
+    const mount = await createLauncherMount();
+    mounts.push(mount);
+    const native = nativeLauncher();
+    await mount.render(launcherElement(ctx, native));
+    const old = seen.at(-1)!;
+    await act(async () => host.update({ scopeKey: 'other/person/binding' }));
+    old.openSettings();
+    expect(native.openSettings).not.toHaveBeenCalled();
+    const next = seen.at(-1)!;
+    next.openSettings();
+    expect(native.openSettings).toHaveBeenCalledOnce();
+    await act(async () => host.set(null));
+    next.openSettings();
+    expect(native.openSettings).toHaveBeenCalledOnce();
+    expect(host.launchers.size).toBe(0);
+  });
+
+  it('keeps StrictMode replay and slot removal from reviving old rendered actions', async () => {
+    const seen: SettingsLauncherOwnerProps[] = [];
+    const { ctx, host, remove } = await setupSlots(undefined, true, (props) => {
+      seen.push(props);
+      return null;
+    });
+    const bound: (() => void)[] = [];
+    const bind = host.port.bindNativeLauncher;
+    host.port.bindNativeLauncher = (launcher) => {
+      bound.push(launcher.openSettings);
+      return bind(launcher);
+    };
+    const mount = await createLauncherMount();
+    mounts.push(mount);
+    const native = nativeLauncher();
+    await mount.render(
+      createElement(StrictMode, {}, launcherElement(ctx, native)),
+    );
+    expect(bound).toHaveLength(2);
+    bound[0]!();
+    expect(native.openSettings).not.toHaveBeenCalled();
+    const live = seen.at(-1)!;
+    live.openSettings();
+    expect(native.openSettings).toHaveBeenCalledOnce();
+    remove();
+    await mount.render(null);
+    live.openSettings();
+    bound[1]!();
+    expect(native.openSettings).toHaveBeenCalledOnce();
+    expect(host.launchers.size).toBe(0);
+  });
+
+  it('invalidates rendered actions before an owner cleanup reenters and throws', async () => {
+    const seen: SettingsLauncherOwnerProps[] = [];
+    const { ctx, host } = await setupSlots(undefined, true, (props) => {
+      seen.push(props);
+      return null;
+    });
+    const bind = host.port.bindNativeLauncher;
+    host.port.bindNativeLauncher = (launcher) => {
+      const off = bind(launcher);
+      return () => {
+        off();
+        seen.at(-1)!.openSettings();
+        throw new Error('owner cleanup failed');
+      };
+    };
+    const mount = await createLauncherMount();
+    mounts.push(mount);
+    const native = nativeLauncher();
+    await mount.render(launcherElement(ctx, native));
+    const live = seen.at(-1)!;
+    await expect(mount.unmount()).rejects.toThrow('owner cleanup failed');
+    live.openSettings();
+    expect(native.openSettings).not.toHaveBeenCalled();
+    expect(host.launchers.size).toBe(0);
+  });
+});
 
 describe('public native settings assembly', () => {
   it('registers real account/business entries only after a trusted owner exists, with hidden notifications by default', async () => {
