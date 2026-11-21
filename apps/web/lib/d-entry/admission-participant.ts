@@ -60,6 +60,9 @@ async function ownedOutcome<T>(
   owner: DEntryAdmissionOwner,
   signal: AbortSignal,
 ): Promise<Outcome<T>> {
+  signal.throwIfAborted();
+  await owner.assertCurrent(signal);
+  signal.throwIfAborted();
   const activity = acquire(signal); // Never classify a missing handle as joined.
   let closing: Promise<void> | undefined;
   const close = () =>
@@ -73,14 +76,25 @@ async function ownedOutcome<T>(
   try {
     try {
       signal.throwIfAborted();
-      await owner.assertCurrent(signal);
       outcome = { ok: true, value: await activity.run(signal) };
       signal.throwIfAborted();
     } catch (error) {
       outcome = { ok: false, error };
     }
     // Outside the business catch: a rejected close must reject the callback.
-    await close();
+    try {
+      await close();
+    } catch (error) {
+      if (!outcome.ok || signal.aborted) {
+        const original = outcome.ok ? signal.reason : outcome.error;
+        throw new AggregateError(
+          [original, error],
+          'D entry owner cleanup unknown',
+          { cause: original },
+        );
+      }
+      throw error;
+    }
     if (outcome.ok && signal.aborted)
       return { ok: false, error: signal.reason };
     return outcome;
@@ -91,7 +105,7 @@ async function ownedOutcome<T>(
 
 /** Own one complete connection/typing/prewarm operation, including its actual
  * children. This is not a transport/resolver implementation or cold boot API.
- * Callback guarantees require the final producer; 8115 is not production-bound. */
+ * Requires the reviewed c041 producer; this contract slice installs no host. */
 export async function runDEntryAdmittedActivity<T>(
   input: {
     ports: DEntryAdmissionPorts;

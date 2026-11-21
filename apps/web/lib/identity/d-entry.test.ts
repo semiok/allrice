@@ -365,7 +365,7 @@ describe('4.0 native browser resource gate', () => {
       await authorizeDEntryNativeResource({ ...child.input, effect: 'read' }),
     ).toBe(child.resource);
   });
-  it('closes an acquired owner and refuses the original native binding after its root/profile changes', async () => {
+  it('refuses acquire before any native initialization after the original root/profile changes', async () => {
     ports.policy.mockResolvedValue(policy);
     const f = fixture(false),
       host = admission();
@@ -374,17 +374,19 @@ describe('4.0 native browser resource gate', () => {
       .mockResolvedValueOnce(f.resource)
       .mockResolvedValue({ ...f.resource, bindingRef: 'replaced-host' });
     const active = {
-      run: vi.fn(async () => 'must not dispatch'),
-      close: vi.fn(async () => {}),
-    };
+        run: vi.fn(async () => 'must not dispatch'),
+        close: vi.fn(async () => {}),
+      },
+      acquire = vi.fn(() => active);
     await expect(
       runDEntryNativeActivity(
         { ...f.input, ...host, effect: 'write' },
-        () => active,
+        acquire,
       ),
     ).rejects.toMatchObject({ code: 'authorization_denied' });
+    expect(acquire).not.toHaveBeenCalled();
     expect(active.run).not.toHaveBeenCalled();
-    expect(active.close).toHaveBeenCalledTimes(1);
+    expect(active.close).not.toHaveBeenCalled();
     expect(host.admission.boundary.finish).toHaveBeenCalledTimes(1);
     expect(host.admission.boundary.admit).toHaveBeenCalledTimes(1);
   });

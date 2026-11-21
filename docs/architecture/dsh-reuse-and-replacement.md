@@ -317,8 +317,8 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 ### allrice-person-vm-entry-admission-v1
 
 - MET-271 F4 consumer 准备，用户 2026-11-21 已批准门卫/租约及 join 语义；当前 DSH `0.2.1-rc.2`，原生 source `687f282e8625c6b8d11ff58211a90524be2e4317`。原生 turn/子会话/等待/重试与 call 身份直接复用，不修改 DSH 或另建 Agent 状态机。
-- AllRice 只消费 model owner 的公开 admission v1/boundary（合同切片来源 #905 `8115ae6124126eb66a4bdd9fd995ce6549bc7140`）；原完整业务 owner 校验和实际连接/typing/prewarm 的 close Promise 由正式宿主注入。DSH 不持有 SaaS 当前权限、双宿主准入与跨 host lease；entry 不构造共享 SQL/权威。
-- 已 join 的业务错误在 callback fulfil 本地 outcome 后由外层 finish 再抛；拿不到 owner handle 或实际 close 未知则 callback reject。最终 producer 的 sticky unsafe、真实全域 close producer、完整 envelope resolver、物理 fence 和正式 transport 尚未绑定，不能以本片 invocation double 声称 PG/生产验收通过。
+- AllRice 只消费 model owner 的公开 admission v1/boundary（合同切片来源 #905 `c041d94c6984463c9ff9a068cba0db58ebc91e16`）；原完整业务 owner 校验和实际连接/typing/prewarm 的 close Promise 由正式宿主注入。DSH 不持有 SaaS 当前权限、双宿主准入与跨 host lease；entry 不构造共享 SQL/权威。
+- callback 内现权/abort 复核先于 acquire；已 join 的业务错误 fulfil 本地 outcome，外层 finally finish 后再抛。拿不到 handle 或实际 close 未知则 callback reject，并保业务/取消和 close/finish 的错误链。模型线已回交 c041 sticky unsafe 的独审/PG 结果；本树仍仅合同切片，真实 Host、全域 close producer、完整 envelope resolver、物理 fence 和正式 transport 尚未绑定，不能以 invocation double 声称 PG/生产验收通过。
 - 退役：正式宿主提供等价、完整公开的 entry operation 生命周期并保留现权/原 call 身份和未知收尾责任时，替换该薄接缝并同步删 ledger/baseline。回滚只退准备 hook，不清旧 claim/permit/历史，不重放旧执行。关键 consumer 完整文件为 `admission-participant.test.ts`、`identity/d-entry.test.ts`；真实 producer/PG 联验由主线在最终组合头安排，当前未跑。
 
 ### allrice-durable-native-question-wait-v1

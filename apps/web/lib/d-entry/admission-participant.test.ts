@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
-import type {
-  PersonVmAdmissionBoundary,
-  PersonVmAdmissionPermit,
-  PersonVmAdmissionPort,
-  PersonVmBinding,
+import {
+  PersonVmError,
+  type PersonVmAdmissionBoundary,
+  type PersonVmAdmissionPermit,
+  type PersonVmAdmissionPort,
+  type PersonVmBinding,
 } from '@allrice/person-vm';
 import {
   runDEntryAdmittedActivity,
@@ -205,7 +206,7 @@ describe('D entry consumer preparation: outcome only after actual owner close', 
     expect(f.events.slice(-2)).toEqual(['activate:fulfilled', 'finish']);
   });
 
-  it('can classify an entered authorization failure only after its actual acquired owner joins', async () => {
+  it('rechecks authority inside the callback before acquiring an actual owner', async () => {
     const f = fixture(),
       denied = new Error('current authority withdrawn');
     f.owner.assertCurrent.mockRejectedValueOnce(denied);
@@ -218,27 +219,71 @@ describe('D entry consumer preparation: outcome only after actual owner close', 
     f.owner.assertCurrent
       .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(denied);
-    const owned = activity(async () => 'never');
-    await expect(runDEntryAdmittedActivity(f.input, () => owned)).rejects.toBe(
+    const owned = activity(async () => 'never'),
+      acquire = vi.fn(() => owned);
+    await expect(runDEntryAdmittedActivity(f.input, acquire)).rejects.toBe(
       denied,
     );
+    expect(acquire).not.toHaveBeenCalled();
     expect(owned.run).not.toHaveBeenCalled();
-    expect(owned.close).toHaveBeenCalledTimes(1);
-    expect(f.events).toContain('activate:fulfilled');
+    expect(owned.close).not.toHaveBeenCalled();
+    expect(f.events).toContain('activate:rejected');
+    expect(f.finish).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects the entered callback when acquisition fails before a handle exists', async () => {
-    const f = fixture(),
-      unknown = new Error('partial open unknown');
-    await expect(
-      runDEntryAdmittedActivity(f.input, () => {
+  it.each(['active', 'queued'] as const)(
+    'rechecks cancellation after awaiting %s current authority and before acquire',
+    async (phase) => {
+      const f = fixture(),
+        checking = deferred<void>(),
+        authorized = deferred<void>(),
+        reason = new Error('revoked while authorizing'),
+        acquire = vi.fn();
+      f.owner.assertCurrent
+        .mockResolvedValueOnce(undefined)
+        .mockImplementationOnce(async () => {
+          checking.resolve();
+          await authorized.promise;
+        });
+      const run = runDEntryAdmittedActivity(
+        { ...f.input, ...(phase === 'queued' ? { queued: acquire } : {}) },
+        acquire,
+      );
+      const rejected = expect(run).rejects.toBe(reason);
+      await checking.promise;
+      f.caller.abort(reason);
+      authorized.resolve();
+      await rejected;
+      expect(acquire).not.toHaveBeenCalled();
+      expect(f.events).toContain(
+        (phase === 'queued' ? 'queued' : 'activate') + ':rejected',
+      );
+      expect(f.finish).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['active', 'queued'] as const)(
+    'rejects an unknown %s acquisition without a handle and still calls finish',
+    async (phase) => {
+      const f = fixture(),
+        unknown = new Error('partial open unknown');
+      const acquire = vi.fn(() => {
         throw unknown;
-      }),
-    ).rejects.toBe(unknown);
-    expect(f.events).toContain('activate:rejected');
-    expect(f.events).not.toContain('activate:fulfilled');
-    // This asserts callback rejection, not durable permit retention by the double.
-  });
+      });
+      await expect(
+        runDEntryAdmittedActivity(
+          { ...f.input, ...(phase === 'queued' ? { queued: acquire } : {}) },
+          acquire,
+        ),
+      ).rejects.toBe(unknown);
+      const callback = phase === 'queued' ? 'queued' : 'activate';
+      expect(acquire).toHaveBeenCalledTimes(1);
+      expect(f.events).toContain(callback + ':rejected');
+      expect(f.events).not.toContain(callback + ':fulfilled');
+      expect(f.finish).toHaveBeenCalledTimes(1);
+      // Invocation assertions do not prove durable retention by the producer.
+    },
+  );
 
   it.each(['active', 'queued'] as const)(
     'does not turn %s close rejection into a safe business outcome',
@@ -266,8 +311,99 @@ describe('D entry consumer preparation: outcome only after actual owner close', 
       expect(f.events).not.toContain(
         (phase === 'queued' ? 'queued' : 'activate') + ':fulfilled',
       );
+      expect(f.finish).toHaveBeenCalledTimes(1);
     },
   );
+
+  it.each(['active', 'queued'] as const)(
+    'finishes when the boundary rejects %s before entering the callback',
+    async (phase) => {
+      const f = fixture(),
+        failure = new Error('authority rejected before callback'),
+        acquire = vi.fn();
+      const callback = phase === 'queued' ? 'queued' : 'activate';
+      f.input.ports.boundary[callback] = vi.fn(async () => {
+        throw failure;
+      });
+      await expect(
+        runDEntryAdmittedActivity(
+          { ...f.input, ...(phase === 'queued' ? { queued: acquire } : {}) },
+          acquire,
+        ),
+      ).rejects.toBe(failure);
+      expect(acquire).not.toHaveBeenCalled();
+      expect(f.finish).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['provider', 'cancellation', 'cancellation during close'] as const)(
+    'preserves %s and close errors in a rejecting callback, including a later finish failure',
+    async (kind) => {
+      for (const finishFails of [false, true]) {
+        const f = fixture(),
+          original = new Error(kind),
+          closeError = new Error('actual close unknown'),
+          finishError = new PersonVmError('CLEANUP_INCOMPLETE');
+        if (finishFails) f.finish.mockRejectedValue(finishError);
+        const owned = activity(
+          async () => {
+            if (kind === 'cancellation during close') return 'not delivered';
+            if (kind === 'cancellation') f.caller.abort(original);
+            throw original;
+          },
+          async () => {
+            if (kind === 'cancellation during close') f.caller.abort(original);
+            throw closeError;
+          },
+        );
+        const joinedFailure = {
+          errors: [original, closeError],
+          cause: original,
+        };
+        await expect(
+          runDEntryAdmittedActivity(f.input, () => owned),
+        ).rejects.toMatchObject(
+          finishFails
+            ? { errors: [joinedFailure, finishError], cause: joinedFailure }
+            : joinedFailure,
+        );
+        expect(f.events).toContain('activate:rejected');
+        expect(f.events).not.toContain('activate:fulfilled');
+        expect(owned.close).toHaveBeenCalledTimes(1);
+        expect(f.finish).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
+
+  it('does not fulfil an outer callback when its caught inner callback still has an unknown owner close', async () => {
+    const f = fixture(),
+      unknown = new Error('nested owner close unknown'),
+      finishError = new PersonVmError('CLEANUP_INCOMPLETE');
+    f.finish.mockRejectedValue(finishError);
+    let actualClose: Promise<void> | undefined;
+    const closeChild = () => (actualClose ??= Promise.reject(unknown));
+    const caught = vi.fn();
+    const owned: DEntryOwnedActivity<void> = {
+      run: async (signal) => {
+        await f.input.ports.boundary
+          .queued(f.permits[0]!.permit, closeChild, signal)
+          .catch(caught);
+      },
+      close: closeChild,
+    };
+    await expect(
+      runDEntryAdmittedActivity(f.input, () => owned),
+    ).rejects.toMatchObject({
+      errors: [unknown, finishError],
+      cause: unknown,
+    });
+    expect(caught).toHaveBeenCalledWith(unknown);
+    expect(f.events).toContain('queued:rejected');
+    expect(f.events).toContain('activate:rejected');
+    expect(f.events).not.toContain('activate:fulfilled');
+    expect(f.finish).toHaveBeenCalledTimes(1);
+    // The configured finish failure proves no PG/sticky-unsafe behavior.
+  });
 
   it('does not activate after a queued business failure whose owner has joined', async () => {
     const f = fixture(),
@@ -316,6 +452,20 @@ describe('D entry consumer preparation: outcome only after actual owner close', 
     expect(f.owner.binding.leaseEpoch).toBe(1);
   });
 
+  it('finishes a deferred permit when its wait rejects without activating or opening anything', async () => {
+    const f = fixture(true),
+      failure = new Error('deferred wait canceled'),
+      acquire = vi.fn();
+    f.waitUntilReady.mockRejectedValue(failure);
+    await expect(runDEntryAdmittedActivity(f.input, acquire)).rejects.toBe(
+      failure,
+    );
+    expect(f.admit).toHaveBeenCalledTimes(1);
+    expect(f.finish).toHaveBeenCalledTimes(1);
+    expect(f.events).not.toContain('activate');
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
   it('requires the real owner to prove the original full binding and undispatched call before re-admit', async () => {
     const f = fixture(true),
       stale = new Error('Run/native/release/route changed'),
@@ -323,6 +473,7 @@ describe('D entry consumer preparation: outcome only after actual owner close', 
     f.owner.assertUndispatched.mockRejectedValue(stale);
     await expect(runDEntryAdmittedActivity(f.input, open)).rejects.toBe(stale);
     expect(f.admit).toHaveBeenCalledTimes(1);
+    expect(f.finish).toHaveBeenCalledTimes(1);
     expect(open).not.toHaveBeenCalled();
   });
 

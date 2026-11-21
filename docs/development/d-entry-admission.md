@@ -62,13 +62,13 @@
 
 ## F4 consumer 准备，未绑定生产
 
-`@allrice/person-vm` 在本树仅携带 #905 `8115ae6124126eb66a4bdd9fd995ce6549bc7140` 的原样公开合同与构建基座；barrel 不导出 host/service/store/provider。最终 producer 的 callback rejection/sticky unsafe 语义仍待修复 SHA，不能用这份切片或 consumer 测试替身声称 PG 准入、停机或恢复已通过。
+`@allrice/person-vm` 在本树仅携带 #905 `c041d94c6984463c9ff9a068cba0db58ebc91e16` 的公开合同与构建基座；barrel 不导出 host/service/store/provider。模型 owner 已回交该中间 producer 的独审及 PG 测试结果，本树仍未组合真实 Host。`admission-contract.ts` 仅作显式格式派生，QA 保留源/派生 blob、diff 及原 8115 首检。不能用这份切片或 consumer 测试替身声称本树 PG 准入、停机或恢复已通过。
 
 `runDEntryAdmittedActivity({ports,owner,signal,queued?},acquire)` 只消费同一 model composition 注入的 `PersonVmAdmissionBoundary` 与 `participant('entry')`，不构造 SQL/Host。owner 持有原完整业务 binding，并提供当前身份、员工 release、Run/execution/thread/native instance/profile/root/parent/session/call、代际与模型 route 的实际校验；deferred 续行还须真实 owner 证明原调用从未 dispatch。没有默认 checker 或从 guest JSON 建立的 owner。
 
 每个连接/typing/prewarm 的完整 owner 在 entered callback 内交 `DEntryOwnedActivity`：`run(signal)` 执行业务，`close()` 触发取消并返回覆盖部分初始化及全部受管子操作的**实际 joined-close Promise**。owner 必须把 signal 传到真实 I/O。consumer 在取消和收尾时只调用一次 close，并等待该 Promise；AbortSignal、单个 iterator.return fulfilled 或无触发的 Promise 都不证明全域 owner 完成。
 
-业务/授权/合作取消错误只有在实际 close 完成后才以本地 outcome fulfil callback，最外层 finish 后重抛原错误。拿到 handle 前的 open/start 拒绝、close/join 未知直接 reject callback，不能被业务 catch 吞掉；最终 producer 必须保留 sticky unsafe，即使外层捕获内层拒绝。finish 也失败时保留原错误为 aggregate 的首项和 cause，不能报释放成功。真实 producer 的该保证不由本片测试模拟验收。
+callback 内先核 abort、完整现权，await 后再次核 abort，才可 acquire/open/start；此阶段失败不伪造 joined handle。拿到 handle 后的业务/合作取消错误只有在实际 close 完成后才以本地 outcome fulfil callback，最外层 finish 后重抛原错误。open/start 拒绝、close/join 未知直接 reject callback；业务或取消 E 后 close C 未知以 aggregate `[E,C]`/cause 保原错。所有路径仍 finally finish，finish 再拒绝继续保原链，不能报释放成功。c041 producer 对 entered callback 拒绝保留 sticky unsafe，即使外层捕获内层拒绝；其真实 PG 保证不由本片测试替身模拟验收。
 
 freeze 前 queued 保留原 permit；freeze 后 deferred 依次 waitUntilReady、finish 旧 permit、重核完整原 binding 和从未 dispatch、重新 admit。新 admit 使用 caller/native owner 的根 signal，不能复用 finish 已 abort 的旧 permit.signal；相同 epoch 也必须换 permit，但不创建新 Run/call/claim。新 VM epoch/owner/业务绑定失效则取消旧执行，不改标签或重放旧 handle/claim。
 
