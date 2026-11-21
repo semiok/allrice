@@ -35,6 +35,8 @@ declare global {
   interface Window {
     __allriceSettingsIntegration?: {
       evidence: () => SettingsEvidence;
+      markStage: (name: string) => void;
+      diagnostics: () => unknown;
       closeAccount: () => void;
       setTheme: (theme: 'light' | 'dark') => void;
       toggleSidebar: () => void;
@@ -70,13 +72,20 @@ suite(
     let host: Awaited<ReturnType<typeof startInstalledProfile>>;
     const errors: string[] = [],
       legacyRequests: string[] = [];
+    const errorEvents: {
+      observedDuringTest: string | null;
+      source: 'pageerror' | 'console';
+      message: string;
+    }[] = [];
+    let currentTest: string | null = null;
     const nativePanel = () => page.locator('[data-shortcut-modal="settings"]');
     const evidence = () =>
       page.evaluate(() => window.__allriceSettingsIntegration!.evidence());
     const openSettings = async () => {
-      await page.evaluate(() =>
-        window.__allriceSettingsIntegration!.closeAccount(),
-      );
+      await page.evaluate(() => {
+        window.__allriceSettingsIntegration!.markStage('openSettings:before');
+        window.__allriceSettingsIntegration!.closeAccount();
+      });
       if (await nativePanel().isVisible()) return;
       await page.waitForFunction(
         () => window.__allriceSettingsIntegration?.evidence().launcherReady,
@@ -144,9 +153,23 @@ suite(
       });
       page = await context.newPage();
       page.setDefaultTimeout(15_000);
-      page.on('pageerror', (error) => errors.push(error.message));
+      page.on('pageerror', (error) => {
+        errors.push(error.message);
+        errorEvents.push({
+          observedDuringTest: currentTest,
+          source: 'pageerror',
+          message: error.message,
+        });
+      });
       page.on('console', (message) => {
-        if (message.type() === 'error') errors.push(message.text());
+        if (message.type() === 'error') {
+          errors.push(message.text());
+          errorEvents.push({
+            observedDuringTest: currentTest,
+            source: 'console',
+            message: message.text(),
+          });
+        }
       });
       page.on('request', (request) => {
         const path = new URL(request.url()).pathname;
@@ -159,7 +182,8 @@ suite(
         .catch(() => undefined);
       if (await proceed.isVisible()) await proceed.click();
     }, 90_000);
-    beforeEach(async () => {
+    beforeEach(async ({ task }) => {
+      currentTest = task.name;
       await page.setViewportSize({ width: 1440, height: 1000 });
       await page.goto(host.origin);
       await page.waitForFunction(
@@ -168,6 +192,14 @@ suite(
       await settle(page);
     });
     afterEach(async ({ task }) => {
+      const nativeDiagnostics =
+        page && !page.isClosed()
+          ? await page
+              .evaluate(() =>
+                window.__allriceSettingsIntegration?.diagnostics(),
+              )
+              .catch((error) => ({ captureError: String(error) }))
+          : null;
       if (artifacts && page && !page.isClosed())
         await writeFile(
           join(artifacts, `owner-state-${task.id}.json`),
@@ -177,6 +209,8 @@ suite(
               state: task.result?.state,
               owner: await evidence().catch(() => null),
               pageErrors: errors,
+              errorEvents,
+              nativeDiagnostics,
               legacyRequests,
             },
             null,
@@ -191,6 +225,8 @@ suite(
               name: task.name,
               errors: task.result.errors,
               pageErrors: errors,
+              errorEvents,
+              nativeDiagnostics,
               legacyRequests,
               owner:
                 page && !page.isClosed()

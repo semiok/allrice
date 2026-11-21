@@ -56,7 +56,7 @@ export function employeeSettingsBrowserCases(
     });
 
     it('keeps native general controls and the existing streaming preference, without M1 notification switches', async () => {
-      await select('通用');
+      await select('通用设置');
       const page = harness.page();
       await page
         .getByRole('switch', { name: '流式输出', exact: true })
@@ -101,7 +101,7 @@ export function employeeSettingsBrowserCases(
     });
 
     it('aborts the previous identity request and ignores its late preference result', async () => {
-      await select('通用');
+      await select('通用设置');
       const page = harness.page();
       await harness.holdPreferenceWrite();
       await page.getByRole('switch', { name: '流式输出', exact: true }).click();

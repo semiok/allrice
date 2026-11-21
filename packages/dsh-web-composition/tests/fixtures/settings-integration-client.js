@@ -10,7 +10,62 @@ window.__ModuleLoader__.load({
       Switch,
     } = require('@deepseek-ai/dsh-client-ui-primitives');
     const product = require('@allrice/dsh-web-composition');
+    function createLifecycleRecorder(slots) {
+      let stage = 'fixture:setup',
+        sequence = 0;
+      const checkpoints = [],
+        entryErrors = [];
+      const snapshot = () => ({
+        slots: Object.fromEntries(
+          [
+            'sidebar',
+            'sidebar.settings',
+            'settings.launcher',
+            'settings.trigger',
+            'settings.section',
+            'settings.general.item',
+          ].map((key) => [
+            key,
+            {
+              declared: slots.spec(key) !== undefined,
+              version: slots.getVersion(key),
+              registrations: slots.entries(key).length,
+            },
+          ]),
+        ),
+        settingsTree:
+          slots.spec('sidebar.settings') === undefined
+            ? []
+            : slots.snapshot('sidebar.settings'),
+      });
+      const markStage = (name) => {
+        stage = name;
+        checkpoints.push({ sequence: ++sequence, stage, ...snapshot() });
+      };
+      const dispose = slots.onEntryError((key, registration, error, info) => {
+        entryErrors.push({
+          sequence: ++sequence,
+          stage,
+          slot: key,
+          registrant: registration.registrant ?? null,
+          message: String(error),
+          abdicated: info.abdicated,
+          ...snapshot(),
+        });
+      });
+      return {
+        markStage,
+        diagnostics: () => ({
+          stage,
+          checkpoints: [...checkpoints],
+          entryErrors: [...entryErrors],
+          ...snapshot(),
+        }),
+        dispose,
+      };
+    }
     return {
+      createLifecycleRecorder,
       inject: [
         'slots',
         'layout',
@@ -20,6 +75,8 @@ window.__ModuleLoader__.load({
         'uiWorkspace',
       ],
       apply(ctx) {
+        const lifecycle = createLifecycleRecorder(ctx.slots);
+        ctx.effect(() => lifecycle.dispose);
         const { employees, sessions } = window.__allriceSidebarFixtureData;
         const sidebarListeners = new Set(),
           settingsListeners = new Set(),
@@ -241,6 +298,8 @@ window.__ModuleLoader__.load({
         const parent = composition.parent;
         let oldOpen;
         const test = {
+          markStage: lifecycle.markStage,
+          diagnostics: lifecycle.diagnostics,
           evidence: () => ({
             ...counters,
             feedback: [...counters.feedback],
@@ -273,17 +332,24 @@ window.__ModuleLoader__.load({
             setAccount(false);
           },
           async unload() {
+            lifecycle.markStage('unload:before');
             oldOpen = launcher?.openSettings;
             await composition.dispose();
+            lifecycle.markStage('unload:after');
           },
           staleOpen() {
+            lifecycle.markStage('staleOpen:before');
             oldOpen?.();
+            lifecycle.markStage('staleOpen:after');
           },
           async rebuild() {
+            lifecycle.markStage('rebuild:before');
             composition = parent.plugin(product);
             await composition;
+            lifecycle.markStage('rebuild:after');
           },
           async pulseNativeShell() {
+            lifecycle.markStage('pulseNativeShell:before');
             for (let index = 0; index < 12; index++) {
               const remove = ctx.slots.register(
                 {
@@ -298,6 +364,7 @@ window.__ModuleLoader__.load({
               remove();
               await new Promise(requestAnimationFrame);
             }
+            lifecycle.markStage('pulseNativeShell:after');
           },
         };
         ctx.effect(() => {
@@ -315,6 +382,7 @@ window.__ModuleLoader__.load({
               'session-00000000-0000-4000-8000-000000000036',
             );
             window.__allriceSettingsIntegration = test;
+            lifecycle.markStage('fixture:ready');
           };
           const sessions = ctx.sessions.list.subscribe(open),
             workspaces = ctx.workspaces.list.subscribe(open);
