@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import type * as FileSystem from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
@@ -30,6 +31,40 @@ const authority = vi.hoisted(() => ({
   identity: vi.fn(),
   generation: vi.fn(),
 }));
+const spoolIO = vi.hoisted(() => ({
+  files: [] as Array<{
+    closed: boolean;
+    closedPromise: Promise<void>;
+    close: ReturnType<typeof vi.fn>;
+  }>,
+}));
+vi.mock('node:fs/promises', async (original) => {
+  const fs = await original<typeof FileSystem>();
+  return {
+    ...fs,
+    async open(...args: Parameters<typeof fs.open>) {
+      const handle = await fs.open(...args);
+      if (String(args[0]).includes('/spool/history-')) {
+        const close = handle.close.bind(handle);
+        let closed!: () => void;
+        const tracked = {
+          closed: false,
+          closedPromise: new Promise<void>((resolve) => {
+            closed = resolve;
+          }),
+          close: vi.fn(async () => {
+            await close();
+            tracked.closed = true;
+            closed();
+          }),
+        };
+        handle.close = tracked.close;
+        spoolIO.files.push(tracked);
+      }
+      return handle;
+    },
+  };
+});
 vi.mock('./identity', () => ({ resolveDEntryIdentity: authority.identity }));
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
@@ -39,6 +74,7 @@ vi.mock('@allrice/database', async (original) => ({
 const directories: string[] = [];
 beforeEach(() => {
   vi.clearAllMocks();
+  spoolIO.files = [];
   authority.generation.mockResolvedValue('4.0');
 });
 afterEach(async () => {
@@ -46,7 +82,9 @@ afterEach(async () => {
     await rm(path, { recursive: true, force: true });
 });
 
-async function fixture() {
+async function fixture(
+  bytes = new TextEncoder().encode('真实宿主附件字节 731'),
+) {
   const root = resolve('.local/met274-history-tests', randomUUID());
   await mkdir(root, { recursive: true });
   directories.push(root);
@@ -229,7 +267,6 @@ async function fixture() {
       throw new Error('Forbidden');
     }),
   };
-  const bytes = new TextEncoder().encode('真实宿主附件字节 731');
   const object: StorageObject = {
     id: randomUUID(),
     organizationId: binding.organizationId,
@@ -275,9 +312,23 @@ async function fixture() {
     });
   const resources = { resolve: vi.fn(async () => resource) };
   const bindingPort = vi.fn(async () => binding);
+  const objectRevoked = new AbortController();
+  const owner = {
+    object,
+    revoked: objectRevoked.signal,
+    reauthorize: vi.fn(async (signal: AbortSignal) => {
+      signal.throwIfAborted();
+      return object;
+    }),
+    open: vi.fn(async (signal: AbortSignal) => {
+      signal.throwIfAborted();
+      return objectStorage.get(object);
+    }),
+    close: vi.fn(async (): Promise<void> => undefined),
+  };
   const files = {
-    authorize: vi.fn(async () => object),
-    open: vi.fn(async (current: StorageObject) => objectStorage.get(current)),
+    spoolDirectory: join(root, 'spool'),
+    acquire: vi.fn(async () => owner),
   };
   const handlers = createDEntryHistoryHandlers({
     resources,
@@ -286,7 +337,10 @@ async function fixture() {
     context: async () => context,
     files,
   });
-  const request = (params: Record<string, string | number> = {}) => {
+  const request = (
+    params: Record<string, string | number> = {},
+    signal?: AbortSignal,
+  ) => {
     const query = new URLSearchParams({
       workspaceId: binding.workspaceId,
       employeeInstanceId: binding.employeeInstanceId,
@@ -295,7 +349,9 @@ async function fixture() {
     });
     for (const [key, value] of Object.entries(params))
       query.set(key, String(value));
-    return new Request(`https://allrice.example/api/history?${query}`);
+    return new Request(`https://allrice.example/api/history?${query}`, {
+      signal,
+    });
   };
   return {
     root,
@@ -315,6 +371,8 @@ async function fixture() {
     resources,
     bindingPort,
     files,
+    owner,
+    objectRevoked,
     handlers,
     request,
     revoked,
@@ -360,6 +418,10 @@ describe('host-only native recovery history BFF', () => {
       'attachment;',
     );
     expect(new Uint8Array(await downloaded.arrayBuffer())).toEqual(f.bytes);
+    expect(f.owner.close).toHaveBeenCalledTimes(1);
+    expect(spoolIO.files).toHaveLength(1);
+    expect(spoolIO.files[0]!.closed).toBe(true);
+    expect(await readdir(f.files.spoolDirectory)).toEqual([]);
     expect(f.native.inspect).toHaveBeenCalledTimes(1);
     expect(f.execution).toEqual({ vmStarts: 0, modelRequests: 0, replays: 0 });
   });
@@ -592,7 +654,7 @@ describe('host-only native recovery history BFF', () => {
     expect((await f.handlers.history(f.request({ limit: 100 }))).status).toBe(
       403,
     );
-    f.files.authorize.mockResolvedValueOnce({
+    f.owner.reauthorize.mockResolvedValueOnce({
       ...f.object,
       checksum: `sha256:${'0'.repeat(64)}`,
     });
@@ -603,7 +665,7 @@ describe('host-only native recovery history BFF', () => {
         )
       ).status,
     ).toBe(404);
-    expect(f.files.open).not.toHaveBeenCalled();
+    expect(f.owner.open).not.toHaveBeenCalled();
     f.revoked.abort();
     expect(
       (await f.handlers.history(f.request({ limit: 100 }))).status,
@@ -637,8 +699,31 @@ describe('host-only native recovery history BFF', () => {
     expect(f.native.resolveAgent).not.toHaveBeenCalled();
   });
 
-  it.each(['revoke', 'cancel'])(
-    'cancels an actual stalled attachment reader on %s without a VM',
+  it('keeps history readable but refuses downloads without a real attachment owner binding', async () => {
+    const f = await fixture();
+    const saved = await f.capture();
+    const handlers = createDEntryHistoryHandlers({
+      resources: f.resources,
+      binding: f.bindingPort,
+      store: f.store,
+      context: async () => f.context,
+    });
+    expect((await handlers.history(f.request({ limit: 100 }))).status).toBe(
+      200,
+    );
+    const response = await handlers.download(
+      f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
+    );
+    expect(response.status).toBe(503);
+    expect(await response.json()).toMatchObject({
+      error: { code: 'DEPENDENCY_UNAVAILABLE' },
+    });
+    expect(f.files.acquire).not.toHaveBeenCalled();
+    expect(spoolIO.files).toEqual([]);
+  });
+
+  it.each(['root-revoke', 'object-revoke', 'request-cancel'])(
+    'cancels an actual stalled source on %s and awaits its cleanup without a VM',
     async (mode) => {
       const f = await fixture();
       const saved = await f.capture();
@@ -647,31 +732,58 @@ describe('host-only native recovery history BFF', () => {
         opened = resolve;
       });
       let cancelled = false;
-      f.files.open.mockImplementation(
+      let finishCancel!: () => void;
+      let cancelling!: () => void;
+      const cancelStarted = new Promise<void>((resolve) => {
+        cancelling = resolve;
+      });
+      const cancelFinished = new Promise<void>((resolve) => {
+        finishCancel = resolve;
+      });
+      f.owner.open.mockImplementation(
         async () =>
-          new ReadableStream<Uint8Array>({
-            pull() {
-              opened();
+          new ReadableStream<Uint8Array>(
+            {
+              start(controller) {
+                controller.enqueue(f.bytes.slice(0, 4));
+              },
+              pull() {
+                opened();
+              },
+              async cancel() {
+                cancelled = true;
+                cancelling();
+                await cancelFinished;
+              },
             },
-            cancel() {
-              cancelled = true;
-            },
-          }),
+            { highWaterMark: 0 },
+          ),
       );
-      const response = await f.handlers.download(
-        f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
+      const requestAbort = new AbortController();
+      let settled = false;
+      const pending = f.handlers.download(
+        f.request(
+          { snapshotDigest: saved.digest, objectId: f.object.id },
+          requestAbort.signal,
+        ),
       );
-      const reader = response.body!.getReader();
-      const pending = reader.read();
+      void pending.then(() => {
+        settled = true;
+      });
       await started;
-      if (mode === 'revoke') {
-        f.revoked.abort();
-        await expect(pending).rejects.toThrow();
-      } else {
-        await reader.cancel();
-        await pending;
-      }
+      const reason = new DataAccessError('authorization_denied');
+      if (mode === 'root-revoke') f.revoked.abort(reason);
+      else if (mode === 'object-revoke') f.objectRevoked.abort(reason);
+      else requestAbort.abort(reason);
+      await cancelStarted;
       expect(cancelled).toBe(true);
+      expect(settled).toBe(false);
+      expect(f.revoked.signal.aborted).toBe(mode === 'root-revoke');
+      finishCancel();
+      expect((await pending).status).toBe(403);
+      expect(f.owner.close).toHaveBeenCalledTimes(1);
+      expect(spoolIO.files.every((file) => file.closed)).toBe(true);
+      expect(await readdir(f.files.spoolDirectory)).toEqual([]);
       expect(f.execution).toEqual({
         vmStarts: 0,
         modelRequests: 0,
@@ -680,71 +792,269 @@ describe('host-only native recovery history BFF', () => {
     },
   );
 
-  it('enforces current attachment authority for each chunk and exact streamed checksum', async () => {
-    const f = await fixture();
-    const saved = await f.capture();
-    f.files.open.mockImplementation(
-      async () =>
-        new ReadableStream<Uint8Array>({
-          start(c) {
-            c.enqueue(new Uint8Array([1, 2, 3]));
-            c.close();
-          },
-        }),
-    );
-    const wrongBytes = await f.handlers.download(
-      f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
-    );
-    await expect(wrongBytes.arrayBuffer()).rejects.toBeInstanceOf(
-      HostHistoryIntegrityError,
-    );
-    f.files.authorize.mockRejectedValueOnce(
-      new DataAccessError('authorization_denied'),
-    );
-    expect(
-      (
-        await f.handlers.download(
-          f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
-        )
-      ).status,
-    ).toBe(403);
-    expect(f.execution.replays).toBe(0);
-  });
-  it('stops the actual download between chunks when object permission is revoked', async () => {
+  it.each(['same-length', 'short'])(
+    'rejects %s wrong single-chunk bytes before the first successful body read',
+    async (mode) => {
+      const f = await fixture();
+      const saved = await f.capture();
+      const wrong =
+        mode === 'short'
+          ? new Uint8Array([1, 2, 3])
+          : f.bytes.map((byte) => byte ^ 1);
+      f.owner.open.mockImplementation(
+        async () =>
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              c.enqueue(wrong);
+              c.close();
+            },
+          }),
+      );
+      const wrongBytes = await f.handlers.download(
+        f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
+      );
+      expect(wrongBytes.status).toBe(409);
+      expect(wrongBytes.headers.get('content-type')).not.toBe(
+        'application/octet-stream',
+      );
+      expect(wrongBytes.headers.get('content-length')).toBeNull();
+      const first = await wrongBytes.body!.getReader().read();
+      expect(first.value).not.toEqual(wrong);
+      expect(f.owner.close).toHaveBeenCalledTimes(1);
+      expect(spoolIO.files.every((file) => file.closed)).toBe(true);
+      expect(await readdir(f.files.spoolDirectory)).toEqual([]);
+      f.owner.reauthorize.mockRejectedValueOnce(
+        new DataAccessError('authorization_denied'),
+      );
+      expect(
+        (
+          await f.handlers.download(
+            f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
+          )
+        ).status,
+      ).toBe(403);
+      expect(f.execution.replays).toBe(0);
+    },
+  );
+  it('retains current object authorization checks between source chunks', async () => {
     const f = await fixture();
     const saved = await f.capture();
     let permitted = true;
     let controller!: ReadableStreamDefaultController<Uint8Array>;
     let cancelled = false;
-    f.files.authorize.mockImplementation(async () => {
+    f.owner.reauthorize.mockImplementation(async () => {
       if (!permitted) throw new DataAccessError('authorization_denied');
       return f.object;
     });
-    f.files.open.mockImplementation(
+    let nextRead!: () => void;
+    const pendingRead = new Promise<void>((resolve) => {
+      nextRead = resolve;
+    });
+    f.owner.open.mockImplementation(
       async () =>
-        new ReadableStream<Uint8Array>({
-          start(c) {
-            controller = c;
-            c.enqueue(f.bytes.slice(0, 4));
+        new ReadableStream<Uint8Array>(
+          {
+            start(c) {
+              controller = c;
+              c.enqueue(f.bytes.slice(0, 4));
+            },
+            pull() {
+              nextRead();
+            },
+            cancel() {
+              cancelled = true;
+            },
           },
-          cancel() {
-            cancelled = true;
+          { highWaterMark: 0 },
+        ),
+    );
+    const response = f.handlers.download(
+      f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
+    );
+    await pendingRead;
+    permitted = false;
+    controller.enqueue(f.bytes.slice(4));
+    expect((await response).status).toBe(403);
+    expect(cancelled).toBe(true);
+    expect(spoolIO.files.every((file) => file.closed)).toBe(true);
+    expect(f.owner.close).toHaveBeenCalledTimes(1);
+    expect(f.execution.modelRequests).toBe(0);
+  });
+
+  it.each(['reject', 'late-stream'])(
+    'awaits object-revoked pending open (%s) and releases late resources',
+    async (mode) => {
+      const f = await fixture();
+      const saved = await f.capture();
+      let opened!: () => void;
+      const opening = new Promise<void>((resolve) => {
+        opened = resolve;
+      });
+      let cancelled!: () => void;
+      const cancelling = new Promise<void>((resolve) => {
+        cancelled = resolve;
+      });
+      let settle!: () => void;
+      const released = new Promise<void>((resolve) => {
+        settle = resolve;
+      });
+      let sourceCancelled = false;
+      f.owner.open.mockImplementation(async (signal) => {
+        signal.addEventListener('abort', cancelled, { once: true });
+        opened();
+        try {
+          await released;
+          if (mode === 'reject') signal.throwIfAborted();
+          return new ReadableStream<Uint8Array>({
+            cancel() {
+              sourceCancelled = true;
+            },
+          });
+        } finally {
+          signal.removeEventListener('abort', cancelled);
+        }
+      });
+      let done = false;
+      const pending = f.handlers.download(
+        f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
+      );
+      void pending.then(() => {
+        done = true;
+      });
+      await opening;
+      f.objectRevoked.abort(new DataAccessError('authorization_denied'));
+      await cancelling;
+      expect(done).toBe(false);
+      expect(f.owner.close).not.toHaveBeenCalled();
+      settle();
+      expect((await pending).status).toBe(403);
+      expect(sourceCancelled).toBe(mode === 'late-stream');
+      expect(f.revoked.signal.aborted).toBe(false);
+      expect(f.owner.close).toHaveBeenCalledTimes(1);
+      expect(spoolIO.files).toHaveLength(1);
+      expect(spoolIO.files[0]!.closed).toBe(true);
+      expect(await readdir(f.files.spoolDirectory)).toEqual([]);
+    },
+  );
+
+  it('releases a verified spool on object revocation before any body read', async () => {
+    const f = await fixture();
+    const saved = await f.capture();
+    const response = await f.handlers.download(
+      f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
+    );
+    expect(response.status).toBe(200);
+    expect(spoolIO.files[0]!.closed).toBe(false);
+    f.objectRevoked.abort(new DataAccessError('authorization_denied'));
+    // No next source chunk or consumer pull is needed to release the spool.
+    await spoolIO.files[0]!.closedPromise;
+    await expect(response.body!.getReader().read()).rejects.toMatchObject({
+      code: 'authorization_denied',
+    });
+    expect(f.revoked.signal.aborted).toBe(false);
+    expect(f.owner.close).toHaveBeenCalledTimes(1);
+    expect(await readdir(f.files.spoolDirectory)).toEqual([]);
+  });
+
+  it('keeps verified bytes pinned when the original source buffer changes', async () => {
+    const f = await fixture();
+    const saved = await f.capture();
+    const source = f.bytes.slice();
+    f.owner.open.mockImplementation(
+      async () =>
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(source);
+            controller.close();
           },
         }),
     );
     const response = await f.handlers.download(
       f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
     );
+    source.fill(0);
     const reader = response.body!.getReader();
-    expect((await reader.read()).value).toEqual(f.bytes.slice(0, 4));
-    permitted = false;
-    controller.enqueue(f.bytes.slice(4));
+    expect((await reader.read()).value).toEqual(f.bytes);
+    await spoolIO.files[0]!.closedPromise;
+    expect(spoolIO.files[0]!.closed).toBe(true);
+    expect(f.owner.close).toHaveBeenCalledTimes(1);
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it('rechecks object authority between verified output blocks', async () => {
+    const f = await fixture(new Uint8Array(65540).fill(7));
+    const saved = await f.capture();
+    const response = await f.handlers.download(
+      f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
+    );
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    expect((await reader.read()).value).toEqual(f.bytes.slice(0, 65536));
+    f.owner.reauthorize.mockRejectedValueOnce(
+      new DataAccessError('authorization_denied'),
+    );
     await expect(reader.read()).rejects.toMatchObject({
       code: 'authorization_denied',
     });
-    expect(cancelled).toBe(true);
-    expect(f.execution.modelRequests).toBe(0);
+    expect(f.revoked.signal.aborted).toBe(false);
+    expect(spoolIO.files[0]!.closed).toBe(true);
+    expect(f.owner.close).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['before-pull', 'pending-pull'])(
+    'awaits consumer cancellation and owner release (%s)',
+    async (mode) => {
+      const f = await fixture();
+      const saved = await f.capture();
+      const response = await f.handlers.download(
+        f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
+      );
+      expect(response.status).toBe(200);
+      let closing!: () => void;
+      const closeStarted = new Promise<void>((resolve) => {
+        closing = resolve;
+      });
+      let release!: () => void;
+      const closeFinished = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      f.owner.close.mockImplementation(async () => {
+        closing();
+        await closeFinished;
+      });
+      const reader = response.body!.getReader();
+      let pendingRead:
+        Promise<ReadableStreamReadResult<Uint8Array>> | undefined;
+      if (mode === 'pending-pull') {
+        let checking!: () => void;
+        const checkStarted = new Promise<void>((resolve) => {
+          checking = resolve;
+        });
+        f.owner.reauthorize.mockImplementationOnce(async (signal) => {
+          checking();
+          await new Promise<void>((resolve) =>
+            signal.addEventListener('abort', () => resolve(), { once: true }),
+          );
+          signal.throwIfAborted();
+          return f.object;
+        });
+        pendingRead = reader.read();
+        await checkStarted;
+      }
+      let cancelled = false;
+      const cancellation = reader.cancel().then(() => {
+        cancelled = true;
+      });
+      await closeStarted;
+      expect(cancelled).toBe(false);
+      release();
+      await cancellation;
+      if (pendingRead) expect((await pendingRead).done).toBe(true);
+      expect(f.owner.close).toHaveBeenCalledTimes(1);
+      expect(spoolIO.files[0]!.closed).toBe(true);
+      expect(await readdir(f.files.spoolDirectory)).toEqual([]);
+    },
+  );
 
   it('refuses concurrent conflicting projections instead of overwriting an original', async () => {
     const f = await fixture();

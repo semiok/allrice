@@ -873,6 +873,13 @@ AllRice只补门卫（既有D-entry现权及root/child准入、精确附件对�
 和宿主不可变投影存储（`HostHistorySnapshotSchema` v1）。源前缀hash、原生游标、
 配置release、instance/profile/root绑定及snapshot digest一起恢复；同内容幂等，分叉、
 倒退和损坏拒绝。附件字节归原对象owner，关机读取每片段复核，下载不以内联HTML返回。
+下载先将实际字节写入私有、已 unlink 的临时文件，大小/hash 完整校验后才生成成功
+正文；只从同一文件句柄输出，每块保持现权检查。请求/root/对象撤权取消 pending
+读取，成功、失败、取消均等待文件 I/O 和 owner 句柄释放，无 TTL/轮询/下载新上限。
+对象 owner 必须通过 host-only `DEntryHistoryAttachmentPort.acquire` 提供真实权限
+变更信号及可取消 open/reauthorize/close。现有 `getStoredFile` 只有单次现权查询，
+不能承担该取消合同；本片未绑定对象通知 owner，缺少 files 装配时仅下载返回 503，
+历史仍可读，不再默认使用 getStoredFile+storage 的不可完整取消 fallback。
 原生 `interrupted`、无终态的未完成、`TOOL_OUTCOME_UNKNOWN` 和
 `TOOL_NOT_STARTED`分别展示；guest工具结果不作为外部批准、计费或送达凭证。
 

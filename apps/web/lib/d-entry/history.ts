@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import {
   ChecksumSchema,
@@ -9,22 +8,27 @@ import {
   type HostHistoryAttachment,
   type HostHistoryBinding,
   type HostHistoryStorePort,
-  type RequestContext,
   type StorageObject,
 } from '@allrice/contracts';
-import { DataAccessError, getStoredFile } from '@allrice/database';
+import { DataAccessError } from '@allrice/database';
 import { HostHistoryIntegrityError, hostHistoryDigest } from '@allrice/storage';
 import { requireRequestContext } from '../identity/session';
-import { getStorageAdapter } from '../storage/runtime';
 import { apiProblem } from '../api-error-response';
 import { resolveDEntryIdentity } from './identity';
 import {
   authorizeDEntryNativeResource,
-  followDEntryNativeResource,
   type DEntryNativeResource,
   type DEntryNativeResourcePort,
 } from './native-resource';
 import { dEntryErrorResponse } from './responses';
+import {
+  prepareHistoryAttachment,
+  type DEntryHistoryAttachmentPort,
+} from './history-download';
+export type {
+  DEntryHistoryAttachmentHandle,
+  DEntryHistoryAttachmentPort,
+} from './history-download';
 
 const selection = DEntrySelectionInputSchema.extend({
   threadId: UuidSchema,
@@ -117,39 +121,15 @@ export interface DEntryHistoryPorts {
   /** Production default authenticates the actual browser cookie. Test/host-only
    * composition may inject a trusted authenticator, never request JSON. */
   context?: typeof requireRequestContext;
-  files?: {
-    authorize(
-      context: RequestContext,
-      objectId: string,
-      signal: AbortSignal,
-    ): Promise<StorageObject>;
-    open(
-      object: StorageObject,
-      signal: AbortSignal,
-    ): Promise<ReadableStream<Uint8Array>>;
-  };
+  /** Requires a real object-permission revocation subscription. Without an
+   * owner binding downloads fail closed with 503; history remains readable. */
+  files?: DEntryHistoryAttachmentPort;
 }
 
 /** Read-only BFF composition. It has no VM, model auth, Agent or execution port.
  * The native-route owner registers these handlers only after binding its real
  * resources/configuration/store. No placeholder route claims availability. */
 export function createDEntryHistoryHandlers(ports: DEntryHistoryPorts) {
-  const files = ports.files ?? {
-    async authorize(
-      context: RequestContext,
-      objectId: string,
-      signal: AbortSignal,
-    ) {
-      signal.throwIfAborted();
-      const file = await getStoredFile(context, objectId);
-      signal.throwIfAborted();
-      return file.object;
-    },
-    async open(object: StorageObject, signal: AbortSignal) {
-      signal.throwIfAborted();
-      return getStorageAdapter().get(object);
-    },
-  };
   async function read(
     request: Request,
     input: z.infer<typeof selection>,
@@ -275,20 +255,29 @@ export function createDEntryHistoryHandlers(ports: DEntryHistoryPorts) {
           (item) => item.objectId === input.objectId,
         );
         if (!attachment) throw new DataAccessError('not_found');
-        const object = await files.authorize(
-          stored.context,
-          attachment.objectId,
-          stored.signal,
-        );
-        exactObject(object, attachment, stored.binding);
-        const transfer = new AbortController();
-        const chunks = followDEntryNativeResource(
-          {
-            ...stored.access,
-            signal: AbortSignal.any([stored.signal, transfer.signal]),
-          },
-          async function* (resource, signal) {
-            if (resource.bindingRef !== stored.resource.bindingRef)
+        if (!ports.files)
+          return apiProblem({
+            status: 503,
+            code: 'DEPENDENCY_UNAVAILABLE',
+            message: 'Attachment permission owner is not bound',
+            retryable: false,
+          });
+        const body = await prepareHistoryAttachment({
+          files: ports.files,
+          context: stored.context,
+          attachment,
+          signal: stored.signal,
+          async authorize(owner, signal) {
+            exactObject(owner.object, attachment, stored.binding);
+            const resource = await authorizeDEntryNativeResource({
+              ...stored.access,
+              signal,
+              effect: 'read',
+            });
+            if (
+              resource.bindingRef !== stored.resource.bindingRef ||
+              !matches(stored.binding, resource, stored.binding.workspaceId)
+            )
               throw new DataAccessError('authorization_denied');
             const currentBinding = await ports.binding(resource, signal);
             if (
@@ -296,68 +285,12 @@ export function createDEntryHistoryHandlers(ports: DEntryHistoryPorts) {
               hostHistoryDigest(stored.binding)
             )
               throw new DataAccessError('authorization_denied');
-            const current = await files.authorize(
-              stored.context,
-              attachment.objectId,
-              signal,
+            exactObject(
+              await owner.reauthorize(signal),
+              attachment,
+              stored.binding,
             );
-            exactObject(current, attachment, stored.binding);
-            const reader = (await files.open(current, signal)).getReader();
-            const abort = () => {
-              void reader.cancel(signal.reason).catch(() => undefined);
-            };
-            signal.addEventListener('abort', abort, { once: true });
-            const hash = createHash('sha256');
-            let size = 0;
-            try {
-              signal.throwIfAborted();
-              while (true) {
-                const next = await reader.read();
-                signal.throwIfAborted();
-                if (next.done) break;
-                const authorized = await files.authorize(
-                  stored.context,
-                  attachment.objectId,
-                  signal,
-                );
-                exactObject(authorized, attachment, stored.binding);
-                const currentBinding = await ports.binding(resource, signal);
-                if (
-                  hostHistoryDigest(currentBinding) !==
-                  hostHistoryDigest(stored.binding)
-                )
-                  throw new DataAccessError('authorization_denied');
-                size += next.value.byteLength;
-                if (size > attachment.sizeBytes)
-                  throw new HostHistoryIntegrityError();
-                hash.update(next.value);
-                yield next.value;
-              }
-              if (
-                size !== attachment.sizeBytes ||
-                `sha256:${hash.digest('hex')}` !== attachment.checksum
-              )
-                throw new HostHistoryIntegrityError();
-            } finally {
-              signal.removeEventListener('abort', abort);
-              await reader.cancel().catch(() => undefined);
-              reader.releaseLock();
-            }
-          },
-        );
-        const body = new ReadableStream<Uint8Array>({
-          async pull(controller) {
-            try {
-              const next = await chunks.next();
-              if (next.done) controller.close();
-              else controller.enqueue(next.value);
-            } catch (error) {
-              controller.error(error);
-            }
-          },
-          async cancel() {
-            transfer.abort();
-            await chunks.return(undefined);
+            signal.throwIfAborted();
           },
         });
         return new Response(body, {
