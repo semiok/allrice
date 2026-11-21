@@ -10,6 +10,8 @@ MET-210 第四道防回退门禁。用户 2026-10-27 同意加入，原则是“
 - `patch`：`apps/worker/dsh/patch-ledger.json` 的全部 `patches[].id`。
 - `private-interface`：`apps/worker/dsh/compatibility.json` 的全部 `privateInterfaces`，以 `id: upstreamInterface` 标识；同 id 换成另一个私有入口也算新增。清单内重复 id 直接报错，即使 adapter 或上游入口不同。
 
+MET-266 同 PR 将 `person_virtual_machines`（本人加密盘与宿主所有权租约）和 `person_vm_audit`（单向开停/显式删盘审计）加入精确表名与基线；批准依据及 DSH 对照见 `docs/architecture/person-vm.md`。不新增 DSH patch 或 private interface，不扩大为全库扫描。
+
 实际出现基线没有的项会失败；实际已删除但基线还留着也会失败，错误会列出类型、名称和更新方式。比较及登记校验是纯函数 `checkBaseline`，两步 CI 共用。
 
 初始存量使用 `approvedBy: 'baseline 2026-10-27'`，本轮从待删改归业务工具的三项另记 `2026-10-28 任务说明：…`。`待删` 表示已有退役计划或尚待核定的存量，不代表本 PR 删除它，也不把初始盘点当成保留或新增批准。

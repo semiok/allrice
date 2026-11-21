@@ -21,6 +21,7 @@ resources:
 rules:
   db:
     - packages/database/
+    - packages/person-vm/
     - apps/worker/test/
     - apps/web/lib/identity/
     - tests/integration/

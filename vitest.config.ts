@@ -21,6 +21,9 @@ export default defineConfig({
   },
   resolve: {
     alias: {
+      '@allrice/person-vm': fileURLToPath(
+        new URL('./packages/person-vm/src/index.ts', import.meta.url),
+      ),
       '@allrice/skill-import/personal-skill-import': fileURLToPath(
         new URL(
           './packages/skill-import/src/personal-skill-import.ts',

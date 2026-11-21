@@ -151,3 +151,29 @@ export interface PersonVmPort {
     signal: AbortSignal,
   ): Promise<void>;
 }
+
+export type PersonVmHoldKind =
+  'turn' | 'job' | 'subtask' | 'approval' | 'host-operation';
+/** Trusted host orchestration only. No hold/fencing handle is granted to the guest. */
+export interface PersonVmHostPort extends PersonVmPort {
+  reconcileIdle(
+    context: RequestContext,
+    signal: AbortSignal,
+  ): Promise<PersonVmView>;
+  recoverExpired(
+    context: RequestContext,
+    signal: AbortSignal,
+  ): Promise<PersonVmView>;
+  acquireHold(
+    context: RequestContext,
+    binding: PersonVmBinding,
+    input: { kind: PersonVmHoldKind; operationId: string },
+    signal: AbortSignal,
+  ): Promise<string>;
+  releaseHold(
+    context: RequestContext,
+    binding: PersonVmBinding,
+    holdId: string,
+    signal: AbortSignal,
+  ): Promise<void>;
+}

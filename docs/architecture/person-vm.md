@@ -21,6 +21,8 @@ v0.7.16 的 `start` 不接受网络覆盖参数，因此 MET-269 必须为每个
 
 MET-268/MET-271 只调用 host-only `resolve(RequestContext, signal)` 与 `assertCurrentBinding(RequestContext, binding, signal)`。两者重新核本人/企业现权、运行阶段、精确 instance/epoch 与出口活性；不返回 ownerToken、不暴露内部表。RequestContext 必须来自各自可信会话/受管连接，不能由 guest header 或 JSON 反序列化生成。resolve 是本次快照，各次实际请求仍须 assert；启动/停止/接管中的租约不发新路由。
 
+可信宿主调度另用`PersonVmHostPort`：`reconcileIdle`、`recoverExpired`、`acquireHold`/`releaseHold`。hold参数只有明确kind/operationId及已解析binding，返回host-only holdId；每次现权与epoch复核，不暴露guest工具。原生活动探针在同一可信调用链重入binding校验时，用AsyncLocalStorage中该请求的租约guard，不误判为外部worker；其他请求仍拒绝开停期间的新路由。出口provider的assertActive只核自己拥有的binding回执，不反向递归调用VM的assertCurrentBinding。
+
 ## 五面与实施边界
 
 后端 present；MCP none（模型不获 VM 管理权）；员工 UI none（本卡只提供页面/输入预开机服务接口，后续由已批界面接线）；后台 none（没有新增管理界面授权）；权限 present（每调用重查当前可信身份，删盘单独授权/审计，不默认删盘）。默认关闭/名单由发布入口控制，本包不新增产品开关。
@@ -29,10 +31,18 @@ MET-268/MET-271 只调用 host-only `resolve(RequestContext, signal)` 与 `asser
 
 20 分钟依据 lastActivityAt；7 天依据已经确认物理停止的 stoppedAt，刚完成 idle-stop 不能因老 lastActivityAt 立即转冷。冷盘为未挂载加密镜像在同一存储根 cold 目录的移动；重启先移回 warm，再以原密钥挂载，原生所有可写MSB_HOME留在盘内。
 
+原生活动接口只提供当前事实时，host从首次已知空闲开始连续计时；活跃、unknown、失联或两次观察间隔超过activityMaxAgeMs时重新开始窗口。启动时间不能当空闲起点。`reconcileIdle`的可信调用者必须持续取得新鲜原生事实；缺少观察不会为了回收而推断0。计数/观察仅作为宿主回收门卫，不反向控制DSH任务状态。
+
+ownedData为迁移0247的`person_virtual_machines`与`person_vm_audit`、私有配置根下的warm/cold加密镜像和分离key store；没有员工外键级联。两表同PR登记收敛基线，归属租约/账本。默认FilePersonVmKeyStore只证明本机分离存放和0600权限，不等于生产离机密钥托管；生产密钥服务与共同备份/恢复集合仍需后续接线并验收。
+
 首次创建空 MSB_HOME 先用公开 `msb pull <固定digest> --materialize flat --quiet` 预置，再 create `--pull never`。镜像来源是可信 host 固定配置，guest 不参与选择；host 工件下载控制与 guest 出口验证分开。
 
 每次开停/hold持有PG advisory锁与持久owner租约。`recoverExpired` 只在过期且旧操作已可靠fence时运行：先撤旧出口→确认旧native停止→卸载→CAS清owner。默认实现能证明同进程原callback及子进程promise已settled后的数据库断线恢复；普通业务/原生错误不会因类型未知永久留owner。跨进程/跨host没有可靠fence时拒绝，`PersonVmLeaseFencePort` 留给MET-274接线；TTL或PID存在性不证明旧操作不能再执行。活动hold不会靠TTL自动变成0，异常hold的可信对账同属后续恢复边界。
 
+PostgresPersonVmStore须使用本模块专用pool。通过postgres.js公开onclose通知把失联reservation作废；不对断开的reserved连接再查询或release，也不把普通业务异常当失联。关闭通知会保守作废此专用pool的在途VM租约，不与Web/其他业务共享pool。
+
 源码依据：[v0.7.16 start](https://github.com/microsandbox/microsandbox/blob/v0.7.16/crates/cli/lib/commands/start.rs)、[create](https://github.com/microsandbox/microsandbox/blob/v0.7.16/crates/cli/lib/commands/create.rs)、[pull](https://github.com/microsandbox/microsandbox/blob/v0.7.16/crates/cli/lib/commands/pull.rs)、[list JSON](https://github.com/microsandbox/microsandbox/blob/v0.7.16/crates/cli/lib/commands/list.rs)。hdiutil的stdinpass按系统man使用NUL结束，不把key放命令参数或环境。
 
 真实前置：固定 v0.7.16 二进制与其公共配置、宿主加密盘密钥托管、MET-269 出口、DSH 装配与活动/就绪公开接缝、MET-271 身份/BFF 页面绑定。未绑定这些前置时不得报可交付或迁入完成。样机证据只作实现参照，不替代产品验收。
+
+故障依据为domain错误、开停/删盘audit、持久phase/租约和真实native/hdiutil检查；`CLEANUP_INCOMPLETE`或未知物理状态不能冒称已释放。自动巡检/告警尚未接入，交主会话在MET-222登记VM失败/残租约/残挂载监测项。运行时装配仍需证明员工/工作区绑定后的实际编辑器可发送，本卡没有用协议fixture替代该证据。

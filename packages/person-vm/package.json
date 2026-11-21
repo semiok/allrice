@@ -4,7 +4,10 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -12,6 +15,6 @@
   },
   "dependencies": {
     "@allrice/contracts": "workspace:*",
-    "postgres": "^3.4.7"
+    "postgres": "3.4.9"
   }
 }
