@@ -106,6 +106,28 @@ suite('durable outbound approval business ledger (isolated PostgreSQL)', () => {
       store.receive(ref, { id: 'wrong', digest: '0'.repeat(64) }),
     ).rejects.toMatchObject({ code: 'CONFLICT' });
   });
+  it('retains the first controlled failure across PostgreSQL store reconstruction', async () => {
+    const store = createPostgresApprovalStore(db),
+      f = fixture(store);
+    const { ref } = await f.gateway.stage(f.binding, f.input, signal());
+    await store.decide(ref, f.context.actor.id, 'approved');
+    await store.claim(ref);
+    const first = await store.noteFailure(ref, {
+      kind: 'RECEIPT_INTEGRITY',
+      code: 'INTEGRITY',
+    });
+    const restarted = createPostgresApprovalStore(db);
+    await restarted.noteFailure(ref, { kind: 'CANCELLED', code: null });
+    const persisted = (await restarted.get(ref.requestId))!;
+    expect(persisted.failure).toEqual(first.failure);
+    expect(persisted.failure?.at).toBeTruthy();
+    expect(persisted.intentAt).toBeTruthy();
+    expect((await restarted.claim(ref)).claimed).toBe(false);
+    await restarted.receive(ref, { id: 'reconciled', digest: ref.digest });
+    expect((await restarted.get(ref.requestId))!.failure).toEqual(
+      first.failure,
+    );
+  });
   it('does not resend after a real gateway process dies following durable receiver commit before ACK', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'approval-receiver-'));
     const f = fixture(createPostgresApprovalStore(db));

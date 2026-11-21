@@ -80,6 +80,14 @@ export function createPostgresApprovalStore(sql: Sql): ApprovalStore {
       });
       return { claimed, record };
     },
+    noteFailure(ref, failure) {
+      return locked(ref, (record, now) => {
+        if (!record.intentAt) throw new ApprovalError('CONFLICT');
+        return record.failure
+          ? record
+          : { ...record, failure: { ...failure, at: now } };
+      });
+    },
     receive(ref: ApprovalRef, receipt: ExternalReceipt) {
       return locked(ref, (record) => {
         if (!record.intentAt || receipt.digest !== record.ref.digest)

@@ -76,6 +76,7 @@ export function approvalView(record: ApprovalRecord): ApprovalView {
         ? 'unknown'
         : 'not-dispatched',
     receipt: record.receipt,
+    failure: record.failure,
   });
 }
 export function assertApprovalRef(record: ApprovalRecord, ref: ApprovalRef) {
@@ -271,6 +272,7 @@ export function createApprovalGateway(options: ApprovalOptions) {
         revoked: false,
         intentAt: null,
         receipt: null,
+        failure: null,
       };
       return approvalView(await store.stage(record));
     },
@@ -321,6 +323,7 @@ export function createApprovalGateway(options: ApprovalOptions) {
           const claim = await store.claim(record.ref);
           if (!claim.claimed) return approvalView(claim.record);
           // Durable intent is never cleared, even if abort happens before bytes leave this process.
+          let phase: 'dispatch' | 'verify' | 'persist' = 'dispatch';
           try {
             effectSignal.throwIfAborted();
             const receipt = await destination(
@@ -331,13 +334,31 @@ export function createApprovalGateway(options: ApprovalOptions) {
               clone(record.payload),
               effectSignal,
             );
+            phase = 'verify';
             validateReceipt(receipt, record.ref);
+            phase = 'persist';
             return approvalView(await store.receive(record.ref, receipt));
-          } catch {
-            // The receiver may already have committed. No retry, second key or invented failure receipt.
-            return approvalView(
-              (await store.get(record.ref.requestId)) ?? claim.record,
-            );
+          } catch (error) {
+            // Keep the first safe failure fact without copying secrets or external error messages.
+            const kind =
+              phase === 'verify'
+                ? 'RECEIPT_INTEGRITY'
+                : phase === 'persist'
+                  ? 'RECEIPT_PERSIST_FAILED'
+                  : effectSignal.aborted
+                    ? 'CANCELLED'
+                    : 'DISPATCH_FAILED';
+            try {
+              return approvalView(
+                await store.noteFailure(record.ref, {
+                  kind,
+                  code: error instanceof ApprovalError ? error.code : null,
+                }),
+              );
+            } catch {
+              // Intent remains durable. A broken ledger is an error, never a manufactured success.
+              throw new ApprovalError('UNAVAILABLE');
+            }
           }
         },
         signal,

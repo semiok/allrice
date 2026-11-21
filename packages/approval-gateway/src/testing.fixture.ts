@@ -67,6 +67,13 @@ export function memoryStore(): ApprovalStore {
         record: set({ ...r, intentAt: new Date().toISOString() }),
       };
     },
+    async noteFailure(ref, failure) {
+      const r = row(ref);
+      if (!r.intentAt) throw new ApprovalError('CONFLICT');
+      return r.failure
+        ? copy(r)
+        : set({ ...r, failure: { ...failure, at: new Date().toISOString() } });
+    },
     async receive(ref, receipt) {
       const r = row(ref);
       if (
