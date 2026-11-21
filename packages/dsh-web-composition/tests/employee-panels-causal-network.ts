@@ -30,6 +30,7 @@ export async function observeCausalPage(
 ) {
   const session = await page.context().newCDPSession(page);
   const errors: unknown[] = [];
+  const cdpFailures: unknown[] = [];
   let layerIds: string[] | undefined;
   const requests = new Map<
     string,
@@ -77,6 +78,7 @@ export async function observeCausalPage(
   });
   session.on('Network.loadingFailed', (event) => {
     record('Network.loadingFailed', event);
+    cdpFailures.push(event);
     const request = requests.get(event.requestId);
     if (request)
       Object.assign(request, {
@@ -132,7 +134,12 @@ export async function observeCausalPage(
     side,
     session,
     errors,
+    cdpFailures,
     requests,
+    assertClean() {
+      if (errors.length || cdpFailures.length)
+        throw Error('Unclassified public runtime/network outcomes remain');
+    },
     async layers() {
       await session.send('Runtime.evaluate', { expression: 'void 0' });
       if (!layerIds)

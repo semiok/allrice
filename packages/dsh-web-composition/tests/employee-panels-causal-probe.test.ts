@@ -194,6 +194,7 @@ describe('passive public event ownership (synthetic CDP doubles only)', () => {
     const value = fake(),
       journal = causalJournal(),
       trace = await observeCausalPage(value.publicPage, 'synthetic', journal);
+    expect(() => trace.assertClean()).not.toThrow();
     value.session.emit('Network.requestWillBeSent', {
       requestId: 'one',
       request: { url: 'http://nonfixture.invalid/denied', method: 'GET' },
@@ -207,9 +208,53 @@ describe('passive public event ownership (synthetic CDP doubles only)', () => {
       new TypeError('same-URL JavaScript exception'),
     );
     expect(trace.errors).toHaveLength(2);
+    expect(() => trace.assertClean()).toThrow('Unclassified');
     expect(journal.events.map((entry) => entry.seq)).toEqual([0, 1, 2]);
     await trace.close();
     expect(journal.events).toHaveLength(4);
     expect(trace.errors).toHaveLength(2);
+  });
+  it.each([
+    { errorText: 'net::ERR_FAILED', canceled: false },
+    { errorText: 'net::ERR_ABORTED', canceled: true },
+    { errorText: 'net::ERR_CONNECTION_RESET', canceled: false },
+  ])('invalidates A for a matched CDP-only failure %#', async (failure) => {
+    const value = fake(),
+      journal = causalJournal(),
+      trace = await observeCausalPage(value.publicPage, 'A', journal);
+    value.session.emit('Network.requestWillBeSent', {
+      requestId: 'matched',
+      request: { url: 'http://synthetic.invalid/favicon.ico', method: 'GET' },
+    });
+    const raw = { requestId: 'matched', ...failure };
+    value.session.emit('Network.loadingFailed', raw);
+    expect(trace.errors).toEqual([]); // No Page/log/console counterpart.
+    expect(trace.cdpFailures).toEqual([raw]);
+    expect(() => trace.assertClean()).toThrow('Unclassified');
+    expect(journal.events.map((entry) => entry.name)).toEqual([
+      'Network.requestWillBeSent',
+      'Network.loadingFailed',
+    ]);
+    await trace.close();
+    expect(trace.cdpFailures).toEqual([raw]);
+  });
+  it('retains and rejects an additional same-URL request failure without promoting B into an exemption', async () => {
+    const value = fake(),
+      trace = await observeCausalPage(value.publicPage, 'A', causalJournal());
+    for (const requestId of ['one', 'extra']) {
+      value.session.emit('Network.requestWillBeSent', {
+        requestId,
+        request: { url: 'http://synthetic.invalid/favicon.ico', method: 'GET' },
+      });
+      value.session.emit('Network.loadingFailed', {
+        requestId,
+        errorText: 'net::ERR_ABORTED',
+        canceled: true,
+      });
+    }
+    expect(trace.cdpFailures).toHaveLength(2);
+    expect(trace.errors).toEqual([]);
+    expect(() => trace.assertClean()).toThrow('Unclassified');
+    await trace.close();
   });
 });

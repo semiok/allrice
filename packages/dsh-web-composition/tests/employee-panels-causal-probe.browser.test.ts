@@ -60,12 +60,145 @@ const phases = [
 const expectedPngs = [
   'original-native.png',
   'original-rev2.png',
+  'N0-pre-protocol-native-frame.png',
   'unwrapped-native-frame.png',
   'restored-native-frame.png',
   'N0-rev2-frame.png',
   'H-rev2-frame.png',
   ...phases.map((name) => name + '-native-frame.png'),
 ].sort();
+
+// Actual DOM coverage is executed only by case A in Chromium, never by the pure
+// snapshot/CDP unit tests. This isolated page is not a panel or visual baseline.
+async function checkDomRestoration(page: Page, script: string) {
+  await page.setContent(
+    '<!doctype html><style>.surface-proof{--dsw-corner-shape:round}</style><body></body>',
+  );
+  await page.addScriptTag({ content: script });
+  return page.evaluate(() => {
+    const checks: { name: string; passed: boolean; evidence: unknown }[] = [];
+    const assertDom = (condition: boolean, message: string) => {
+      if (!condition) throw Error(message);
+    };
+    const fixture = (raw: string | null, nonce: string) => {
+      const app = document.createElement('div'),
+        surface = document.createElement('div'),
+        panel = document.createElement('section'),
+        next = document.createComment('owned-order-control');
+      surface.className = 'surface-proof';
+      if (raw !== null) surface.setAttribute('style', raw);
+      panel.setAttribute('aria-label', 'Rice · 记忆');
+      panel.style.cssText = 'width:20px;height:20px';
+      surface.append(panel);
+      app.append(surface);
+      document.body.replaceChildren(app, next);
+      const helper = window.__allricePanelsCausalDomFactory!();
+      helper.attach(nonce);
+      return { app, surface, next, helper };
+    };
+    let active = '';
+    try {
+      for (const [kind, raw] of [
+        ['absent', null],
+        ['empty', ''],
+        [
+          'important',
+          'color:rgb(4,5,6); --dsw-corner-shape: round !important; padding : 0px; ',
+        ],
+      ] as const)
+        for (const path of ['N-final', 'cleanup'] as const) {
+          active = kind + '-' + path;
+          const { app, surface, next, helper } = fixture(raw, active);
+          helper.corner(true);
+          if (path === 'N-final') {
+            helper.corner(false);
+            assertDom(
+              surface.hasAttribute('style') === (raw !== null) &&
+                surface.getAttribute('style') === raw,
+              'N-final did not restore the exact attribute',
+            );
+          }
+          const result = helper.restore();
+          assertDom(
+            result.restored &&
+              surface.hasAttribute('style') === (raw !== null) &&
+              surface.getAttribute('style') === raw &&
+              app.parentNode === document.body &&
+              app.nextSibling === next &&
+              !document.querySelector('[data-allrice-causal-container]'),
+            'Cleanup did not restore exact style/DOM order',
+          );
+          if (kind === 'important')
+            assertDom(
+              surface.style.getPropertyPriority('--dsw-corner-shape') ===
+                'important',
+              'Important priority was lost',
+            );
+          checks.push({ name: active, passed: true, evidence: result });
+        }
+      for (const revert of [false, true]) {
+        active = revert
+          ? 'external-style-ABA-refusal'
+          : 'external-style-refusal';
+        const { surface, helper } = fixture(null, active);
+        helper.corner(true);
+        const ownedStyle = surface.getAttribute('style');
+        surface.setAttribute('style', 'color: rgb(30,40,50)');
+        if (revert) surface.setAttribute('style', ownedStyle!);
+        const externalStyle = surface.getAttribute('style');
+        let rejection: string | undefined;
+        try {
+          helper.corner(false);
+        } catch (error) {
+          rejection = String(error);
+        }
+        const result = helper.restore();
+        assertDom(
+          rejection ===
+            'Error: External surface style change; refuse overwriting it' &&
+            'refusal' in result &&
+            result.refusal ===
+              'External surface style change; refuse overwriting it' &&
+            'externalStyleChanges' in result &&
+            result.externalStyleChanges.length >= (revert ? 2 : 1) &&
+            !result.restored &&
+            surface.getAttribute('style') === externalStyle &&
+            !!document.querySelector('[data-allrice-causal-container]'),
+          'External style change was overwritten or accepted',
+        );
+        checks.push({ name: active, passed: true, evidence: result });
+      }
+      active = 'surface-replacement-refusal';
+      const { surface, helper } = fixture('', active);
+      helper.corner(true);
+      const originalStyle = surface.getAttribute('style');
+      const replacement = surface.cloneNode(true) as HTMLElement;
+      replacement.setAttribute('style', 'color: rgb(50,40,30)');
+      surface.replaceWith(replacement);
+      const result = helper.restore();
+      assertDom(
+        !result.restored &&
+          'refusal' in result &&
+          result.refusal === 'Wrapper or AllRice surface identity changed' &&
+          surface.getAttribute('style') === originalStyle &&
+          replacement.getAttribute('style') === 'color: rgb(50,40,30)' &&
+          !!document.querySelector('[data-allrice-causal-container]'),
+        'A replaced surface was mutated or accepted',
+      );
+      checks.push({ name: active, passed: true, evidence: result });
+    } catch (error) {
+      checks.push({ name: active, passed: false, evidence: String(error) });
+    }
+    return {
+      actualBrowserDom: true,
+      syntheticDomFixture: true,
+      productAcceptance: false,
+      expectedChecks: 9,
+      checks,
+      valid: checks.length === 9 && checks.every((check) => check.passed),
+    };
+  });
+}
 
 suite('diagnostic-only panels causal probes; no acceptance claim', () => {
   let browser: Browser, artifacts: string;
@@ -91,6 +224,7 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
           cases: 2,
           expectedPaintPhases: phases,
           expectedACompletePngs: expectedPngs,
+          expectedActualDomChecks: 9,
           expectedBCompletePhases: ['OFF', 'ON'],
           browser: browser.version(),
           node: process.version,
@@ -118,6 +252,7 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
     let original: PanelsCausalSnapshot | undefined,
       originalReference: PanelsCausalSnapshot | undefined,
       originalFrame: Buffer | undefined;
+    let script: string | undefined;
     let valid = false;
     const failures: unknown[] = [];
     const records: {
@@ -146,9 +281,10 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
         platform: 'browser',
         metafile: true,
       });
-      const script =
+      script =
         dom.outputFiles[0]!.text +
-        '\nwindow.__allricePanelsCausalDom=AllriceCausalDom.createPanelsCausalDom();';
+        '\nwindow.__allricePanelsCausalDomFactory=AllriceCausalDom.createPanelsCausalDom;' +
+        '\nwindow.__allricePanelsCausalDom=window.__allricePanelsCausalDomFactory();';
       await writeFile(join(out, 'causal-dom-client.js'), script);
       await save('causal-dom-build.json', {
         inputs: dom.metafile.inputs,
@@ -262,8 +398,22 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
         interpretation:
           'Original failure retained; diagnostic case never substitutes for the zero-pixel acceptance gate.',
       });
-      // Unknown capability failures retain the original element evidence. Keep
-      // instrumentation enabled and constant for every full-frame control.
+      const preProtocol = await native.screenshot({
+        path: join(out, 'N0-pre-protocol-native-frame.png'),
+        fullPage: true,
+      });
+      await save('N0-pre-protocol.json', {
+        snapshot: await snapshot(native),
+        pngSha256: sha(preProtocol),
+        instrumentation: {
+          networkAndLogObservation: true,
+          renderingRead: false,
+          layerTreeEnabled: false,
+          domSnapshotRead: false,
+        },
+      });
+      // Unknown capability failures retain element and original full-page PNGs.
+      // Keep rendering/layer diagnostics constant for every formal phase.
       await save(
         'browser-rendering.json',
         await readPanelsRenderingDiagnostics(
@@ -296,9 +446,12 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
         path: join(out, 'unwrapped-native-frame.png'),
         fullPage: true,
       });
-      await native.evaluate(
-        (nonce) => window.__allricePanelsCausalDom!.attach(nonce),
-        randomUUID(),
+      await save(
+        'dom-ownership.json',
+        await native.evaluate(
+          (nonce) => window.__allricePanelsCausalDom!.attach(nonce),
+          randomUUID(),
+        ),
       );
       await settle(native);
       const inspect = async (name: (typeof phases)[number]) => {
@@ -358,8 +511,11 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
       await settle(native);
       const c = await inspect('C');
       assertCausalInvariant(h.value, c.value, { corner: true });
-      await native.evaluate(() =>
-        window.__allricePanelsCausalDom!.corner(false),
+      await save(
+        'surface-style-restoration.json',
+        await native.evaluate(() =>
+          window.__allricePanelsCausalDom!.corner(false),
+        ),
       );
       await settle(native);
       const end = await inspect('N-final');
@@ -375,7 +531,7 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
         ).toBe(0);
       for (const observer of observers) {
         await observer.flush();
-        expect(observer.errors).toEqual([]);
+        observer.assertClean();
       }
       valid = true;
     } catch (error) {
@@ -416,15 +572,41 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
           await settle(reference);
           assertCausalInvariant(originalReference, await snapshot(reference));
         }
-        if (valid)
-          expect(
-            (await readdir(out)).filter((name) => name.endsWith('.png')).sort(),
-          ).toEqual(expectedPngs);
+        const pngs = (await readdir(out))
+          .filter((name) => name.endsWith('.png'))
+          .sort();
+        expect(pngs.every((name) => expectedPngs.includes(name))).toBe(true);
+        expect(pngs.length).toBeLessThanOrEqual(expectedPngs.length);
+        if (valid) expect(pngs).toEqual(expectedPngs);
       } catch (error) {
         valid = false;
         cleanup.push({ error: String(error) });
         failures.push(error);
       } finally {
+        try {
+          expect(
+            script,
+            'Compiled helper required for actual DOM checks',
+          ).toBeDefined();
+          const domContext = await browser.newContext();
+          contexts.push(domContext);
+          const domPage = await domContext.newPage();
+          const domObserver = await observeCausalPage(
+            domPage,
+            'dom-restoration',
+            journal,
+          );
+          observers.push(domObserver);
+          const domChecks = await checkDomRestoration(domPage, script!);
+          await save('dom-restoration-checks.json', domChecks);
+          expect(domChecks.valid).toBe(true);
+          await domObserver.flush();
+          domObserver.assertClean();
+        } catch (error) {
+          valid = false;
+          failures.push(error);
+          cleanup.push({ actualDomCheckError: String(error) });
+        }
         try {
           try {
             for (const observer of observers) await observer.close();
@@ -441,11 +623,12 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
           cleanup.push({ closeError: String(error) });
         } finally {
           for (const observer of observers)
-            if (observer.errors.length) {
+            if (observer.errors.length || observer.cdpFailures.length) {
               valid = false;
               cleanup.push({
                 side: observer.side,
                 publicErrors: observer.errors,
+                cdpFailures: observer.cdpFailures,
               });
               failures.push(
                 new Error(
@@ -598,8 +781,18 @@ suite('diagnostic-only panels causal probes; no acceptance claim', () => {
           requests,
           routeEntriesRaw: routes,
           publicErrors: trace.errors,
+          cdpFailures: trace.cdpFailures,
         });
         assertToolFaviconOutcome(outcome);
+        if (mode === 'OFF') expect(trace.cdpFailures).toEqual([]);
+        else {
+          expect(trace.cdpFailures).toHaveLength(1);
+          expect(trace.cdpFailures[0]).toMatchObject({
+            requestId: found[0]!.id,
+            errorText: 'net::ERR_ABORTED',
+            canceled: true,
+          });
+        }
         expect(requests.map((request) => request.url).sort()).toEqual(
           [origin + '/', origin + '/favicon.ico'].sort(),
         );

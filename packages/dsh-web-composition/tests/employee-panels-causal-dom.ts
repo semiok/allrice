@@ -101,18 +101,87 @@ export function createPanelsCausalDom() {
       })),
     };
   };
+  const styleAttribute = (element: Element) => ({
+    present: element.hasAttribute('style'),
+    text: element.getAttribute('style'),
+  });
+  const sameStyle = (
+    a: ReturnType<typeof styleAttribute>,
+    b: ReturnType<typeof styleAttribute>,
+  ) => a.present === b.present && a.text === b.text;
   let owned:
     | {
         wrapper: HTMLDivElement;
+        wrapperStyle: string | null;
         app: HTMLElement;
         parent: HTMLElement;
         next: ChildNode | null;
+        panel: Element;
         surface: HTMLElement;
         nonce: string;
         corner: string;
         priority: string;
+        originalStyle: ReturnType<typeof styleAttribute>;
+        expectedStyle: ReturnType<typeof styleAttribute>;
+        styleObserver: MutationObserver;
+        externalStyleChanges: (string | null)[];
       }
     | undefined;
+  const ownershipFailure = (
+    state: NonNullable<typeof owned>,
+    partial = false,
+  ) => {
+    const { wrapper, app, parent, next, panel, surface, nonce } = state;
+    state.externalStyleChanges.push(
+      ...state.styleObserver.takeRecords().map((record) => record.oldValue),
+    );
+    if (
+      parent !== document.body ||
+      wrapper.dataset.allriceCausalContainer !== nonce ||
+      wrapper.attributes.length !== 2 ||
+      wrapper.getAttribute('style') !== state.wrapperStyle ||
+      !app.contains(surface) ||
+      panel.parentElement !== surface ||
+      !surface.isConnected
+    )
+      return 'Wrapper or AllRice surface identity changed';
+    if (
+      state.externalStyleChanges.length ||
+      !sameStyle(styleAttribute(surface), state.expectedStyle)
+    )
+      return 'External surface style change; refuse overwriting it';
+    const wrapped =
+      wrapper.parentNode === parent &&
+      app.parentNode === wrapper &&
+      wrapper.childNodes.length === 1 &&
+      wrapper.nextSibling === next;
+    const beforeAttach =
+      app.parentNode === parent &&
+      app.nextSibling === next &&
+      wrapper.childNodes.length === 0 &&
+      (!wrapper.parentNode ||
+        (wrapper.parentNode === parent && wrapper.nextSibling === app));
+    if (!wrapped && !(partial && beforeAttach))
+      return 'Original DOM parent/order changed; refuse destructive rollback';
+    return undefined;
+  };
+  const restoreSurfaceStyle = (state: NonNullable<typeof owned>) => {
+    const { surface, originalStyle } = state;
+    if (originalStyle.present)
+      surface.setAttribute('style', originalStyle.text!);
+    else surface.removeAttribute('style');
+    // Only this synchronous owned mutation is drained. Every mutation between
+    // operations, including change-then-revert, is external and refuses cleanup.
+    state.styleObserver.takeRecords();
+    state.expectedStyle = styleAttribute(surface);
+    if (
+      !sameStyle(state.expectedStyle, originalStyle) ||
+      surface.style.getPropertyValue('--dsw-corner-shape') !== state.corner ||
+      surface.style.getPropertyPriority('--dsw-corner-shape') !== state.priority
+    )
+      throw Error('Surface style attribute was not restored exactly');
+    return { originalStyle, actualStyle: state.expectedStyle };
+  };
   return {
     snapshot() {
       const root = content(),
@@ -181,87 +250,90 @@ export function createPanelsCausalDom() {
       const wrapper = document.createElement('div');
       wrapper.dataset.allriceCausalContainer = nonce;
       wrapper.style.cssText = 'width:100%;height:100%;min-height:0;';
+      const originalStyle = styleAttribute(surface);
+      const externalStyleChanges: (string | null)[] = [];
+      const styleObserver = new MutationObserver((records) => {
+        externalStyleChanges.push(...records.map((record) => record.oldValue));
+      });
       // Capture ownership before the first DOM mutation, including partial setup.
       owned = {
         wrapper,
+        wrapperStyle: wrapper.getAttribute('style'),
         app,
         parent: document.body,
         next: app.nextSibling,
+        panel,
         surface,
         nonce,
         corner: surface.style.getPropertyValue('--dsw-corner-shape'),
         priority: surface.style.getPropertyPriority('--dsw-corner-shape'),
+        originalStyle,
+        expectedStyle: originalStyle,
+        styleObserver,
+        externalStyleChanges,
       };
+      styleObserver.observe(surface, {
+        attributes: true,
+        attributeFilter: ['style'],
+        attributeOldValue: true,
+      });
       document.body.insertBefore(wrapper, app);
       wrapper.append(app);
+      return { originalStyle };
     },
     transform(value: string | null) {
-      if (
-        !owned ||
-        owned.wrapper.dataset.allriceCausalContainer !== owned.nonce
-      )
-        throw Error('Lost own diagnostic wrapper');
+      if (!owned) throw Error('Lost own diagnostic wrapper');
+      const refusal = ownershipFailure(owned);
+      if (refusal) throw Error(refusal);
       if (value === null) owned.wrapper.style.removeProperty('transform');
       else owned.wrapper.style.transform = value;
+      owned.wrapperStyle = owned.wrapper.getAttribute('style');
     },
     corner(initial: boolean) {
-      if (!owned || !owned.app.contains(owned.surface))
-        throw Error('AllRice surface replaced');
-      if (initial)
+      if (!owned) throw Error('Lost own diagnostic wrapper');
+      const refusal = ownershipFailure(owned);
+      if (refusal) throw Error(refusal);
+      if (initial) {
         owned.surface.style.setProperty('--dsw-corner-shape', 'initial');
-      else if (owned.corner)
-        owned.surface.style.setProperty(
-          '--dsw-corner-shape',
-          owned.corner,
-          owned.priority,
-        );
-      else owned.surface.style.removeProperty('--dsw-corner-shape');
+        owned.styleObserver.takeRecords();
+        owned.expectedStyle = styleAttribute(owned.surface);
+        return {
+          originalStyle: owned.originalStyle,
+          actualStyle: owned.expectedStyle,
+        };
+      }
+      return restoreSurfaceStyle(owned);
     },
     restore() {
       if (!owned) return { allocated: false, restored: true };
-      const { wrapper, app, parent, next, surface, nonce, corner, priority } =
-        owned;
-      if (
-        wrapper.dataset.allriceCausalContainer !== nonce ||
-        !app.contains(surface)
-      )
+      const state = owned;
+      const refusal = ownershipFailure(state, true);
+      if (refusal) {
+        state.styleObserver.disconnect();
         return {
           allocated: true,
           restored: false,
-          refusal: 'Wrapper or AllRice surface identity changed',
+          refusal,
+          originalStyle: state.originalStyle,
+          actualStyle: styleAttribute(state.surface),
+          externalStyleChanges: state.externalStyleChanges,
         };
-      if (corner)
-        surface.style.setProperty('--dsw-corner-shape', corner, priority);
-      else surface.style.removeProperty('--dsw-corner-shape');
-      if (
-        wrapper.parentNode === parent &&
-        app.parentNode === wrapper &&
-        wrapper.childNodes.length === 1 &&
-        wrapper.nextSibling === next
-      ) {
-        parent.insertBefore(app, wrapper);
+      }
+      try {
+        const inline = restoreSurfaceStyle(state);
+        const { wrapper, app, parent, next, surface } = state;
+        if (app.parentNode === wrapper) parent.insertBefore(app, wrapper);
         wrapper.remove();
-      } else if (
-        app.parentNode === parent &&
-        wrapper.childNodes.length === 0 &&
-        (!wrapper.parentNode || wrapper.parentNode === parent)
-      ) {
-        wrapper.remove(); // Safe rollback of partial attach before app was moved.
-      } else
-        return {
-          allocated: true,
-          restored: false,
-          refusal:
-            'Original DOM parent/order changed; refuse destructive rollback',
-        };
-      const restored =
-        app.parentNode === parent &&
-        app.nextSibling === next &&
-        !wrapper.isConnected &&
-        surface.style.getPropertyValue('--dsw-corner-shape') === corner &&
-        surface.style.getPropertyPriority('--dsw-corner-shape') === priority;
-      owned = undefined;
-      return { allocated: true, restored };
+        const restored =
+          app.parentNode === parent &&
+          app.nextSibling === next &&
+          !wrapper.isConnected &&
+          sameStyle(styleAttribute(surface), state.originalStyle);
+        if (restored) owned = undefined;
+        return { allocated: true, restored, ...inline };
+      } finally {
+        state.styleObserver.disconnect();
+      }
     },
   };
 }
@@ -272,5 +344,6 @@ export type PanelsCausalSnapshot = ReturnType<
 declare global {
   interface Window {
     __allricePanelsCausalDom?: ReturnType<typeof createPanelsCausalDom>;
+    __allricePanelsCausalDomFactory?: typeof createPanelsCausalDom;
   }
 }
