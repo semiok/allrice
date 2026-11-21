@@ -974,7 +974,7 @@ describe('host-only native recovery history BFF', () => {
     );
     source.fill(0);
     const reader = response.body!.getReader();
-    expect((await reader.read()).value).toEqual(f.bytes);
+    expect(new Uint8Array((await reader.read()).value!)).toEqual(f.bytes);
     await spoolIO.files[0]!.closedPromise;
     expect(spoolIO.files[0]!.closed).toBe(true);
     expect(f.owner.close).toHaveBeenCalledTimes(1);
@@ -989,7 +989,9 @@ describe('host-only native recovery history BFF', () => {
     );
     expect(response.status).toBe(200);
     const reader = response.body!.getReader();
-    expect((await reader.read()).value).toEqual(f.bytes.slice(0, 65536));
+    expect(new Uint8Array((await reader.read()).value!)).toEqual(
+      f.bytes.slice(0, 65536),
+    );
     f.owner.reauthorize.mockRejectedValueOnce(
       new DataAccessError('authorization_denied'),
     );
