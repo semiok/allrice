@@ -345,7 +345,12 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
       gateways.add(gateway);
       expect(gateway.admission).toBe(participant);
       const server = createServer((request, response) => {
-        const call = freshCall({ ...base, ...options.route });
+        const call = freshCall({
+          ...base,
+          ...(options.route
+            ? { provider: options.route.provider, model: options.route.model }
+            : {}),
+        });
         issued.set(call.native.callId, structuredClone(call));
         calls.push(call);
         handled.push(
