@@ -3,6 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ReferenceSelectionErrorSchema } from '@allrice/contracts';
+import { riceToolDefinitions } from '../tool-broker/definitions.js';
 import {
   createAllriceMcpServer,
   type AllriceMcpBinding,
@@ -89,6 +90,18 @@ afterEach(async () => {
 });
 
 describe('AllRice native SDK MCP managed boundary (contract fixtures, no production gateway)', () => {
+  it('advertises the complete existing export input schema through the SDK projection', async () => {
+    const f = fixture();
+    const { client } = await connect(f);
+    const original = riceToolDefinitions.find(
+      (tool) => tool.name === 'workspace.export.create',
+    )!.inputSchema;
+    const advertised = (await client.listTools()).tools.find(
+      (tool) => tool.name === 'deliverable_create',
+    )!.inputSchema;
+    expect(advertised).toEqual(JSON.parse(JSON.stringify(original)));
+  });
+
   it('discovers raw names and passes only business arguments with host identity and the native signal', async () => {
     const f = fixture();
     const { client } = await connect(f);
@@ -237,7 +250,9 @@ describe('AllRice native SDK MCP managed boundary (contract fixtures, no product
       const f = fixture();
       const started = gate(),
         finish = gate();
-      f.services.referenceRead = vi.fn(async () => {
+      f.services.referenceRead = vi.fn<
+        NonNullable<AllriceMcpServices['referenceRead']>
+      >(async () => {
         started.resolve();
         await finish.promise;
         return { content: [{ type: 'text', text: 'sensitive result' }] };
@@ -265,7 +280,9 @@ describe('AllRice native SDK MCP managed boundary (contract fixtures, no product
       cancelled = gate(),
       finish = gate();
     let converged = false;
-    f.services.memoryRead = vi.fn(async (_scope, _input, signal) => {
+    f.services.memoryRead = vi.fn<
+      NonNullable<AllriceMcpServices['memoryRead']>
+    >(async (_scope, _input, signal) => {
       signal.addEventListener('abort', () => cancelled.resolve(), {
         once: true,
       });
@@ -308,7 +325,9 @@ describe('AllRice native SDK MCP managed boundary (contract fixtures, no product
       aborted = gate(),
       finish = gate();
     let committed = 0;
-    f.services.deliverableCreate = vi.fn(async (_scope, _input, signal) => {
+    f.services.deliverableCreate = vi.fn<
+      NonNullable<AllriceMcpServices['deliverableCreate']>
+    >(async (_scope, _input, signal) => {
       committed++;
       signal.addEventListener('abort', () => aborted.resolve(), { once: true });
       started.resolve();

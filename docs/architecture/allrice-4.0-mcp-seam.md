@@ -35,6 +35,8 @@
 
 `createLegacyAllriceMcpServices` 明确声明 3.x，并校验 host person/org/workspace/employee/thread/native instance/profile/session/call 与实际 gateway execution 关联一致。4.0 server 不发布或调用 3.x adapter。默认 inline provider 仅绑定已有 markdown/text/html/json 生成路径；Office/python/转换和 changeset provider 未接时返回既有 DEPENDENCY_UNAVAILABLE，不伪造 Office 质量。模型 input 沿现 workspace.export.create JSON Schema；prepared bytes、host quality stamp、worker 和外发批准不入 guest schema。
 
+成果 owner 从本次 host authority 强制捕获 `expectedExecution` 的 worker/job/leaseToken/attempt，prepared 类型不能携带或覆盖它。既有 publisher 的三个事务检查点在首次 storage.put 前及提交前校验精确租约，保持原 `FOR SHARE` 锁；锁前换租约会拒绝，锁后轮换被串行化，真实时间到期仍会回滚新版本。该参数仅供受管接缝使用，原调用不传时语义不变。既有同 Run+call+requestDigest receipt 分支仍先查当前资源权限、恢复已提交版本，允许原执行取消后对账；异 digest 拒绝，不把恢复权限当成新发布权限。
+
 业务错误保留现有 code/message/retryable，通过原生 isError 返回：DataAccessError 映射既有 ApiErrorSchema 对应码；MemoryContextError、ReferenceRuntimeError、EmployeeRuntimeContentError、ArtifactReviewError 沿现有具名工具错误投影；ReferenceSelectionUnavailableError 沿 ReferenceSelectionErrorSchema，ID 限本次输入。已确认 publication rollback 才映射 TOOL_PUBLICATION_ROLLED_BACK/retryable；未知 SQL/transport 错误不暴露 stack/SQL，也不伪造失败效果或自动重试。
 
 ## 取消、关闭、恢复与占位
@@ -48,6 +50,8 @@ owner 配置/撤权变更调用原生 notifyCatalogChanged；即使客户端刷�
 ## 验证与剩余绑定
 
 新增单文件 SDK 协议测试覆盖缺失 carrier、3.x/4.0 拒绝、身份/路由与 call/config 切换、guest 权限字段、旧目录撤权、原生 cancel/close/drain、原生错误。新增 DB suite 使用明确 3.x gateway fixture，走 SDK → 新公开 owner 适配 → 实际 PG 服务与 storage：资料真实正文/pin/receipt、私有/撤权/改 hash、记忆 issued ordinal/预算/失效 lease、成果 immutable 字节/hash/版本/幂等冲突、实际存储写取消后收敛。没有调用模型、VM 或共享 Dev。
+
+成果租约回归还覆盖同 worker 的 token 轮换、错误 attempt、空/无效 token、worker/job 与 context 不符、真实生成等待期间换租约，以及持锁 storage IO 等待时真实 lease 到期后无新增版本/publication audit 且私有 blob 清理。已提交 receipt 在换租约并取消后可恢复，异内容仍冲突、新 call 仍拒绝，撤销当前成员资格后恢复也拒绝。这些用例由最终 SHA 的根线门禁执行，源码断言本身不是通过证据。
 
 DB suite 由 ALLRICE_RUN_DB_INTEGRATION 开启，CI 文件责任登记为 db；现有 fixture 初始化/每项 timeout 保持 120000ms，清理 30000ms。直接影响既有回归：native-client.test.ts、employees/reference-tools.integration.test.ts、run-memory-index.integration.test.ts、artifact-publication-concurrency.integration.test.ts；未改下载/版本读取链。重门禁和独审由 root 绑定最终 SHA 执行，不能把 skip/fixture 当生产通过。
 
