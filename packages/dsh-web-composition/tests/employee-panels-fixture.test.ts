@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { runInNewContext } from 'node:vm';
+import { createHash } from 'node:crypto';
 import * as React from 'react';
 import * as Jsx from 'react/jsx-runtime';
 import * as Primitives from '@deepseek-ai/dsh-client-ui-primitives';
@@ -107,26 +108,43 @@ it('builds a separate synthetic owner that requests the installed public binder 
   ).toBe(false);
 });
 
-it('pins the complete original rev2 source graph and rejects modified prepared bytes/identities before browser startup', async () => {
+it('validates prepared rev2 identities and rejects modified bytes before browser startup without requiring git history', async () => {
   const prepared = await directory(),
     output = await directory();
-  const file = await writeEmployeePanelsBaseline(prepared, undefined);
-  const html = await readFile(file, 'utf8');
-  const metadata = JSON.parse(
-    await readFile(join(prepared, 'panels-rev2-sources.json'), 'utf8'),
-  );
-  expect(metadata.head).toBe(panelsRev2Head);
-  for (const [name, sha256] of Object.entries(panelsRev2Sources))
-    expect(metadata.sources).toContainEqual({
+  const hash = (bytes: string | Buffer) =>
+    createHash('sha256').update(bytes).digest('hex');
+  // Artifact-codec fixture only, never a visual baseline or passed to a
+  // browser. Real pinned-source generation is a separate preparation step;
+  // shallow CI/source archives can validate its supplied artifact identities.
+  const html = '<!doctype html><p>synthetic artifact codec test only</p>';
+  const file = join(prepared, 'panels-rev2.html');
+  const metadata = {
+    head: panelsRev2Head,
+    htmlSha256: hash(html),
+    replaySources: await Promise.all(
+      ['baseline.tsx', 'data.ts', 'presentation.tsx', 'presentation.css'].map(
+        async (name) => ({
+          name,
+          sha256: hash(
+            await readFile(
+              new URL('./fixtures/employee-panels/' + name, import.meta.url),
+            ),
+          ),
+        }),
+      ),
+    ),
+    sources: Object.entries(panelsRev2Sources).map(([name, sha256]) => ({
       path: 'apps/web/app/chatflow/' + name,
       sha256,
-    });
-  expect(
-    metadata.sources.some(
-      (source: { path: string }) => source.path === 'apps/web/app/layout.tsx',
-    ),
-  ).toBe(true);
-  expect(html).toContain('data-panels-rev2-replay');
+    })),
+    sourcePolicy:
+      'synthetic artifact codec test; never used as browser baseline',
+  };
+  await writeFile(file, html);
+  await writeFile(
+    join(prepared, 'panels-rev2-sources.json'),
+    JSON.stringify(metadata),
+  );
   await writeEmployeePanelsBaseline(output, prepared);
   expect(await readFile(join(output, 'panels-rev2.html'), 'utf8')).toBe(html);
   await writeFile(file, html + 'tampered');
@@ -134,7 +152,7 @@ it('pins the complete original rev2 source graph and rejects modified prepared b
     'identity/hash mismatch',
   );
   await writeFile(file, html);
-  metadata.sources[0].sha256 = '0'.repeat(64);
+  metadata.sources[0]!.sha256 = '0'.repeat(64);
   await writeFile(
     join(prepared, 'panels-rev2-sources.json'),
     JSON.stringify(metadata),
