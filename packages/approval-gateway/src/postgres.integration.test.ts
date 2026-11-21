@@ -115,9 +115,14 @@ suite('durable outbound approval business ledger (isolated PostgreSQL)', () => {
     const first = await store.noteFailure(ref, {
       kind: 'RECEIPT_INTEGRITY',
       code: 'INTEGRITY',
+      publicError: null,
     });
     const restarted = createPostgresApprovalStore(db);
-    await restarted.noteFailure(ref, { kind: 'CANCELLED', code: null });
+    await restarted.noteFailure(ref, {
+      kind: 'CANCELLED',
+      code: null,
+      publicError: null,
+    });
     const persisted = (await restarted.get(ref.requestId))!;
     expect(persisted.failure).toEqual(first.failure);
     expect(persisted.failure?.at).toBeTruthy();

@@ -2,9 +2,8 @@ import {
   McpServer,
   type RegisteredTool,
 } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { ZodError } from 'zod';
+import { approvalPublicError } from './errors.js';
 import {
-  ApprovalError,
   ApprovalRefSchema,
   ApprovalStageSchema,
   type ApprovalBinding,
@@ -35,16 +34,11 @@ export function createApprovalMcpServer(options: {
         structuredContent: { ...view },
       };
     } catch (error) {
-      const code =
-        error instanceof ApprovalError
-          ? error.code
-          : error instanceof ZodError
-            ? 'INVALID_INPUT'
-            : 'UNAVAILABLE';
+      const envelope = approvalPublicError(error);
       return {
         isError: true,
-        content: [{ type: 'text' as const, text: JSON.stringify({ code }) }],
-        structuredContent: { code },
+        content: [{ type: 'text' as const, text: JSON.stringify(envelope) }],
+        structuredContent: envelope,
       };
     }
   }

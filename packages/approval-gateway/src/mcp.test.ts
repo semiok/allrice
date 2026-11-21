@@ -39,7 +39,9 @@ describe('native MCP approval tool boundary', () => {
         arguments: view.ref,
       });
       expect(denied.isError).toBe(true);
-      expect(denied.structuredContent).toEqual({ code: 'NOT_CONFIRMED' });
+      expect(denied.structuredContent).toMatchObject({
+        error: { code: 'APPROVAL_REQUIRED', retryable: false },
+      });
       expect(f.dispatches).toBe(0);
       const forged = await client.callTool({
         name: 'outbound.stage',

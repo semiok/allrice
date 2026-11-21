@@ -1,7 +1,8 @@
 import type { RequestContext } from '@allrice/contracts';
 import { ApprovalError } from './contract.js';
 import type { ApprovalGateway } from './gateway.js';
-import { ZodError } from 'zod';
+import { randomUUID } from 'node:crypto';
+import { approvalPublicError, approvalErrorStatus } from './errors.js';
 
 /** Bound only to trusted AllRice BFF. No guest/MCP route exposes this handler. */
 export function createApprovalBrowserHandler(options: {
@@ -30,6 +31,7 @@ export function createApprovalBrowserHandler(options: {
     'X-Content-Type-Options': 'nosniff',
   };
   return async (request: Request): Promise<Response> => {
+    let requestId: string = randomUUID();
     try {
       const url = new URL(request.url);
       if (
@@ -62,6 +64,7 @@ export function createApprovalBrowserHandler(options: {
       )
         throw new ApprovalError('INVALID_INPUT');
       const context = await options.authenticate(request);
+      requestId = context.requestId;
       await options.assertCsrf(request, context);
       const reader = request.body?.getReader();
       if (!reader) throw new ApprovalError('INVALID_INPUT');
@@ -109,28 +112,11 @@ export function createApprovalBrowserHandler(options: {
         { headers },
       );
     } catch (error) {
-      const code =
-        error instanceof ApprovalError
-          ? error.code
-          : error instanceof ZodError || error instanceof SyntaxError
-            ? 'INVALID_INPUT'
-            : 'UNAVAILABLE';
-      return Response.json(
-        { code },
-        {
-          status:
-            code === 'UNAVAILABLE'
-              ? 503
-              : code === 'LIMIT_EXCEEDED'
-                ? 413
-                : code === 'INVALID_INPUT'
-                  ? 400
-                  : code === 'CONFLICT'
-                    ? 409
-                    : 403,
-          headers,
-        },
-      );
+      const envelope = approvalPublicError(error, requestId);
+      return Response.json(envelope, {
+        status: approvalErrorStatus(error, envelope),
+        headers,
+      });
     }
   };
 }
