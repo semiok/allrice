@@ -27,6 +27,16 @@ export async function nativeCloseSensitivityFixture(owners: {
   const committed = deferred();
   const finished = deferred();
   const sockets: Socket[] = [];
+  const links = new Map<Socket, Record<string, number>>();
+  let target: Socket | undefined;
+  function note(socket: Socket, kind: string) {
+    const row = links.get(socket) ?? {};
+    row.id ??= links.size + 1;
+    row[kind] = (row[kind] ?? 0) + 1;
+    row[kind + 'At'] = mark(kind + '#' + row.id);
+    links.set(socket, row);
+    return row;
+  }
   const peers = new Set<Socket>();
   const requests = new Set<object>();
   const pendingDestroy = new Set<() => void>();
@@ -59,7 +69,7 @@ export async function nativeCloseSensitivityFixture(owners: {
       };
       // Node destroy() entered this documented implementer method. No event,
       // close promise, private handle/state or destroyed flag is replaced.
-      if (!armed || released) destroy();
+      if (this !== target || !armed || released) destroy();
       else {
         pendingDestroy.add(destroy);
         mark('destroy-requested');
@@ -68,19 +78,26 @@ export async function nativeCloseSensitivityFixture(owners: {
     }
   }
   const server = createServer((request) => {
-    peers.add(request.socket);
-    request.socket.once('close', onPeerClose);
+    note(request.socket, 'request');
+    mark('server-request');
     request.once('end', () => {
       mark('upstream-received');
       arrived.resolve();
     });
     request.resume(); // Discard payload; deliberately send no response headers.
   });
+  server.on('connection', (socket) => {
+    peers.add(socket);
+    note(socket, 'accept').port = socket.remotePort!;
+    socket.once('close', onPeerClose);
+  });
   const headers = channel('undici:client:sendHeaders');
   const trailers = channel('undici:request:trailers');
   const onHeaders = (message: unknown) => {
     const { request, socket } = message as { request: object; socket: Socket };
     if (sockets.includes(socket)) {
+      target ??= socket;
+      note(socket, 'headers');
       requests.add(request);
       mark('send-headers');
     }
@@ -118,7 +135,9 @@ export async function nativeCloseSensitivityFixture(owners: {
       }
       for (const operation of [
         () => resources.agent?.destroy(),
+        () => Promise.all(sockets.map(closeAuxiliary)),
         () => (server.listening ? closeServer(server) : undefined),
+        () => Promise.all([...peers].map(closeAuxiliary)),
       ])
         try {
           await operation();
@@ -132,11 +151,23 @@ export async function nativeCloseSensitivityFixture(owners: {
       if (failures.length)
         throw new AggregateError(failures, 'native proof cleanup failed');
     })());
-  function onClose() {
+  async function closeAuxiliary(socket: Socket) {
+    if (socket === target || links.get(socket)?.close) return;
+    await new Promise<void>((resolve) => {
+      socket.once('close', resolve);
+      socket.destroy(
+        peers.has(socket) ? undefined : new Error('auxiliary fixture cleanup'),
+      );
+    });
+  }
+  function onClose(this: Socket) {
+    note(this, 'close');
+    if (this !== target) return void mark('aux-close');
     mark('local-close');
     closed.resolve();
   }
-  function onPeerClose() {
+  function onPeerClose(this: Socket) {
+    note(this, 'close');
     mark('peer-close');
   }
   owners.release(allowPhysicalDestroy); // Registered before any async setup.
@@ -152,10 +183,12 @@ export async function nativeCloseSensitivityFixture(owners: {
     connect(options, callback) {
       const socket = new GatedSocket();
       sockets.push(socket);
+      note(socket, 'connector');
       socket.once('close', onClose);
       const error = (value: Error) => callback(value, null);
       socket.once('error', error);
       const connected = () => {
+        note(socket, 'connect').port = socket.localPort!;
         socket.off('error', error);
         callback(null, socket);
       };
@@ -217,11 +250,25 @@ export async function nativeCloseSensitivityFixture(owners: {
       armed = true;
     },
     snapshot() {
-      const socket = sockets[0];
+      const socket = target;
       const peer = [...peers][0];
       return {
         runtime: process.version + '/' + process.versions.undici,
         events: events.map((event) => ({ ...event })),
+        connections: [...links].map(([link, row]) => ({
+          facts: { ...row },
+          target: link === target,
+          targetPeer: row.accept === 1 && row.port === links.get(target!)?.port,
+          connectObserved: row.connect ?? 0,
+          acceptObserved: row.accept ?? 0,
+          peerMatches: [...links.values()].filter(
+            (other) =>
+              other !== row &&
+              other.connector !== row.connector &&
+              other.port !== undefined &&
+              other.port === row.port,
+          ).length,
+        })),
         calls,
         eof,
         sockets: sockets.length,

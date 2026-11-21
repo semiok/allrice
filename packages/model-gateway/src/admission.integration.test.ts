@@ -1103,6 +1103,8 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
     const [chunks] = await Promise.all([collecting, revoked, mounted.join()]);
     await mounted.gateway.close();
     await proof.dispose();
+    const final = proof.snapshot();
+    console.info('NATIVE_CLOSE_RELEASE_FACTS', JSON.stringify(final));
     expect(terminal(chunks).reason.kind).toBe('error');
     expect(mounted.errors).toEqual([]);
     expect(mounted.starts).toBe(1);
@@ -1132,18 +1134,29 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
         cacheUsageKnown: false,
       },
     });
-    const final = proof.snapshot();
-    expect(final).toMatchObject({ calls: 1, sockets: 1, requests: 1, eof: 0 });
+    expect(final).toMatchObject({ calls: 1, requests: 1, eof: 0 });
+    expect(final.connections.filter((row) => row.target)).toHaveLength(1);
+    expect(final.connections.filter((row) => row.targetPeer)).toHaveLength(1);
+    for (const row of final.connections) {
+      const facts = row.facts;
+      expect((facts.connector ?? 0) + (facts.accept ?? 0)).toBe(1);
+      expect(facts.close).toBe(1);
+      expect(facts.headers ?? 0).toBe(row.target ? 1 : 0);
+      expect(facts.request ?? 0).toBe(row.targetPeer ? 1 : 0);
+      expect(row.connectObserved).toBeLessThanOrEqual(facts.connector ?? 0);
+      expect(row.peerMatches).toBeLessThanOrEqual(1);
+    }
     const at = (kind: string) => {
       const matching = final.events.filter((event) => event.kind === kind);
       expect(matching, `exact real ${kind}`).toHaveLength(1);
       return matching[0]!.at;
     };
+    at('send-headers');
+    at('server-request');
     const close = at('local-close');
     const violations = ['slot-committed', 'permit-finished'].filter(
       (kind) => at(kind) < close,
     );
-    console.info('NATIVE_CLOSE_RELEASE_FACTS', JSON.stringify(final));
     expect(
       violations,
       'NATIVE_CLOSE_RELEASE_ORDER: ' + JSON.stringify(final.events),
