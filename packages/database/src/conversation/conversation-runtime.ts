@@ -8,6 +8,7 @@ import type postgres from 'postgres';
 import { z } from 'zod';
 import { releaseNextConversationFollowup } from './queued-messages.ts';
 import { cancelUnadoptedSteers } from './conversation-input.ts';
+import { assertChatExecutionGeneration } from './execution-generation.ts';
 
 import { getDatabase } from '../core/client.ts';
 import { nativeModelReceiptSource } from '../execution/native-model-receipts.ts';
@@ -749,6 +750,7 @@ export async function acquireConversationRuntime(input: {
   };
   const sql = getDatabase();
   return sql.begin(async (transaction) => {
+    await assertChatExecutionGeneration(transaction, values, '3.x');
     await transaction`
       insert into allrice_conversation_runtimes (
         organization_id, workspace_id, session_id, owner_id, config_checksum,
@@ -847,6 +849,16 @@ async function lockedOwnedRuntime(
   ) {
     throw new ConversationRuntimeError('conversation_ownership_lost');
   }
+  await assertChatExecutionGeneration(
+    transaction,
+    {
+      organizationId: input.organizationId,
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      ownerId: row.owner_id,
+    },
+    '3.x',
+  );
   return row;
 }
 

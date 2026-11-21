@@ -19,6 +19,7 @@ import {
 } from '../run-delivery-authority.ts';
 import { readSessionNativeSubagentTarget } from './native-subagent-query.ts';
 import { getStoredFile } from '../data.ts';
+import { assertChatExecutionGeneration } from './execution-generation.ts';
 
 type Reader = Parameters<typeof assertWorkbenchSession>[0];
 type Principal = Parameters<typeof assertWorkbenchSession>[1];
@@ -168,6 +169,17 @@ export async function enqueueNativeSubagentControl(
       return ticket(row);
     };
     const existing = await readCommand(tx, context, sessionId, input.requestId);
+    // Preserve the existing current-identity/owner failure contract first.
+    await assertChatExecutionGeneration(
+      tx,
+      {
+        organizationId: context.organizationId,
+        workspaceId: context.workspaceId!,
+        ownerId: context.actor.id,
+        sessionId,
+      },
+      '3.x',
+    );
     if (existing) return reuse(existing);
     // Resolve incarnation on the server. The shared predicate subsequently
     // locks runtime root -> Job -> user -> Run/runtime, then checks after waits.

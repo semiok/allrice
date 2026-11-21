@@ -365,6 +365,15 @@ export const baseline: readonly BaselineEntry[] = [
   },
   {
     kind: 'patch',
+    id: 'allrice-host-native-history-v1',
+    category: '存储后端',
+    basis:
+      'MET-274：DSH rc.2 公开 inspect/append-origin 提供原生历史语义，但不提供 VM 停机时的 SaaS 宿主持久读权或精确附件字节服务。宿主不可变投影属存储后端；既有本人/root/子会话与对象现权属门卫，单向文本/工具展示属账本；不新增 Agent 状态机、恢复器或自动重放。',
+    approvedBy:
+      '2026-11-21 用户 MET274 派活；冻结边界合同 v1 §5/7/9；MET274 评论 ef9ce0b2。FIX1 下载完整性、撤权与取消修复沿用同一授权范围。',
+  },
+  {
+    kind: 'patch',
     id: 'allrice-reference-read-v1',
     category: '业务工具',
     basis:

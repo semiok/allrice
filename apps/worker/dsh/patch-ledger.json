@@ -159,6 +159,14 @@
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-employee-documents.mjs",
       "reason": "Supply current V2 memory and identity-only frozen employee documents through public systemPrompt.context and exact-Agent PERSONA_PREFIX_SECTION shadowing on an admitted root. Optional PERSONA has an independent 16384-byte budget and derives only from verified frozen source; admitted descendants read only current PERSONA. Ordinary human USER/MEMORY keep existing owner/instance eligibility; V2 human Runs carry all summary ordinals and complete native text reads metered only by the existing memory Run ledger. Persona-only and scheduled inputs carry empty MEMORY and no memory tools or read ledger; retired V1 documents, source/search tools and budgets are rejected. Native persona, snapshot update/clear/resume/fork and history stay native. No new permission, private interface or alternate lifecycle."
+    },
+    {
+      "id": "allrice-host-native-history-v1",
+      "issue": "MET-274",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/src/harness/host-history.ts",
+      "reason": "Host-only append-origin transcript projection through public SessionController.inspect and dsh-session exports. Current D-entry root admission and exact immutable attachment authorization guard cold reads; version/hash/source-cursor storage never resumes an Agent, starts a VM, refreshes model auth or replays a tool. Native interrupted, unfinished, TOOL_OUTCOME_UNKNOWN and TOOL_NOT_STARTED remain distinct; native tool records do not establish external effects."
     }
   ]
 }

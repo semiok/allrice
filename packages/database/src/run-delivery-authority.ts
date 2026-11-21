@@ -106,6 +106,7 @@ async function assertRunAuthority(
     join allrice_employee_assignments a on a.id=e.employee_assignment_id and a.employee_id=v.employee_id and a.organization_id=e.organization_id and a.workspace_id=e.workspace_id and a.user_id=e.owner_id and a.active
     join allrice_policy_snapshots p on p.id=r.policy_snapshot_id and p.organization_id=r.organization_id and p.subject_id=r.owner_id
     join allrice_chat_sessions s on s.id=e.session_id and s.organization_id=e.organization_id and s.workspace_id=e.workspace_id and s.owner_id=e.owner_id
+      and s.execution_generation='3.x'
     join allrice_conversation_runtimes c on c.session_id=e.session_id and c.organization_id=e.organization_id and c.workspace_id=e.workspace_id and c.owner_id=e.owner_id
       and c.active_run_id=r.id and c.worker_id=j.worker_id and c.state='running' and c.thread_generation=${worker.generation}
     join allrice_native_session_bindings n on n.native_session_id=c.thread_id and n.organization_id=e.organization_id
