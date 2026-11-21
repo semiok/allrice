@@ -286,6 +286,22 @@ suite(
         invalidateIdentity() {
           invalidIdentity = true;
         },
+        async replaceStoppedGeneration(
+          lease: Awaited<ReturnType<typeof host.issue>>,
+        ) {
+          // Runtime provider reports stopped; all PG stop/fence/wake operations
+          // still use the actual public producer, never rewritten DB bindings.
+          ports.states.set(binding.vmId, 'stopped');
+          await host.stopFrozen(rc, lease, cancel.signal);
+          await host.participant('gateway').thaw(lease, cancel.signal);
+          await host.participant('entry').thaw(lease, cancel.signal);
+          const next = await host.wake(rc, binding, cancel.signal);
+          const nextReceipt = await egress.prepare(next, cancel.signal);
+          close.push(() =>
+            egress.revoke(nextReceipt, 'stop', new AbortController().signal),
+          );
+          return next;
+        },
         async collect() {
           const adapter = new GatewayLlmAdapter(
             access.origin + '/v1/stream',
@@ -382,6 +398,27 @@ suite(
         'queued',
       ]);
       expect(f.egressClaims).toBe(0);
+    });
+    it('changed PG generation cancels the old managed request without relabel or replay', async () => {
+      const f = await setup();
+      const lease = await f.freeze();
+      const pending = f.post().then(
+        (value) => ({ value }),
+        (error) => ({ error }),
+      );
+      await f.waiting.promise;
+      const next = await f.replaceStoppedGeneration(lease);
+      await pending; // Client may receive the aborted terminal or transport close.
+      expect(next.vmId).toBe(f.binding.vmId);
+      expect(next.instanceId).not.toBe(f.binding.instanceId);
+      expect(next.leaseEpoch).toBe(f.binding.leaseEpoch + 1);
+      expect(f.waitedSignal?.aborted).toBe(true);
+      expect(f.ended.size).toBe(1);
+      expect(f.calls).toHaveLength(1);
+      expect(f.calls[0]!.vm).toEqual(f.binding);
+      expect(f.native.requests).toHaveLength(0);
+      expect(f.egressClaims).toBe(0);
+      expect(f.permits.map((p) => p.disposition)).toEqual(['deferred']);
     });
     it('user cancellation in frozen managed chain joins without dispatch', async () => {
       const f = await setup();
