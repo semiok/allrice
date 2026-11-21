@@ -30,6 +30,8 @@ factory必须与物理store使用同一个函数、每次new exclusive max1 clie
 
 一个permit覆盖**一个宿主准入请求及其所有实际等待/transport/事务子操作**，不代表整个person、Run或所有DSH子任务。gateway主模型请求在memory/8slot前admit，refresh等独立宿主请求亦在自身副作用前admit；若refresh是该请求仍在等待的子操作，必须由该permit callback真正join，不重复计一个已被其他owner拥有的执行。entry同样按受管连接/typing/prewarm请求范围领取。`operationId`为host唯一业务关联键；重复admit不重放旧工作，活跃重复报租约冲突。queued/activate callback必须返回前join其全部子操作；activate仅一次。finish是相同真实Promise的幂等cancel+join，不以账本terminal、CLI退出或用户取消代替实际收尾。
 
+callback fulfil确认真实子操作已join；已join的业务失败/合作取消应返回consumer本地outcome，由所有queued/activate之外抛原错。callback进入后拒绝是未知join，既有unsafe证明保持到finish/recoverPermit，外层catch不能清；finish仍取消/join监听与所有操作，但保留持久permit并报CLEANUP_INCOMPLETE。不新增markUnknown口或公共outcome类型；仅DB释放写失败可用原同issuer恢复。callback未进入且自身资源已join的授权/取消失败仍可释放。
+
 post-freeze新请求为deferred，同epoch双thaw后 `waitUntilReady` 可返回相同binding继续新的准入，正常冻结不报503/ADMISSION_CLOSED。若停机换epoch，则返回当前真ready的PersonVmBinding；**它不是ModelCallBinding，也不授权把旧信封改vm标签**。完整context/employee release/Run/execution/thread/native root-parent-session-call/generation/route必须由可信模型host、MET273/native/entry owner重新解析，#903 assertCall仅校验不算重解析出口。没有该真实出口时取消旧执行、不自动retry/replay；PersonVM包不实现业务信封解析器。
 
 explicit `issue→participant.freeze→stopFrozen→exact双thaw→wake` 使用真实store owner与私有owned-stop/start，禁止在withLease里调用public start/stop。部分ACK/失败必须同lease对账；pending/unknown stop不自动thaw。deferred引用的旧exact release receipt保留到其finish，跨round/epoch不能以superseded作证。public create/start/prewarm/delete/recover也服从gate/A1；releaseHold仍可释放旧保护。原有physical recovery加上 `recoverStop` 先取既有settled/真实MET274 fence，再持久新owner才清理。`recoverPermit`仅允许本issuer已实际join但finish写失败的handle显式重试；外host未知permit不自动清零，待MET274公共fence。失败admit的真实COMMIT若丢ACK，原issuer仅在确认从未交付handle/启动callback后可按exact operation重试；别的host不得偷取。

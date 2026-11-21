@@ -976,6 +976,203 @@ suite(
       expect(row!.admission_state.round.stop).toBe('unknown');
     });
 
+    it.each([
+      ['queued', 'operation-first'],
+      ['queued', 'finish-first'],
+      ['active', 'operation-first'],
+      ['active', 'finish-first'],
+    ] as const)(
+      'an entered %s callback rejection retains its permit and rejects recovery: %s',
+      async (disposition, order) => {
+        const h = await setup(),
+          item = await permit(h, 'gateway');
+        const entered = latch(),
+          release = latch(),
+          failure = new Error('actual drain unknown');
+        const operation = async () => {
+          entered.resolve();
+          await release.promise;
+          throw failure;
+        };
+        const active = own(
+          disposition === 'active'
+            ? h.host.activate(item, operation, signal())
+            : h.host.queued(item, operation, signal()),
+        );
+        const outcome = active.catch((error: unknown) => error);
+        await entered.promise;
+        if (order === 'operation-first') {
+          release.resolve();
+          expect(await outcome).toBe(failure); // pending has already settled before finish.
+        }
+        const closing = own(h.host.finish(item));
+        const closed = closing.catch((error: unknown) => error);
+        expect(await counts(h.rc.actor.id)).toEqual([
+          { disposition, count: 1 },
+        ]);
+        release.resolve();
+        expect(await outcome).toBe(failure);
+        expect(await closed).toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
+        expect(h.host.finish(item)).toBe(closing);
+        await expect(
+          h.host.recoverPermit(item, signal()),
+        ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
+        expect(await counts(h.rc.actor.id)).toEqual([
+          { disposition, count: 1 },
+        ]);
+      },
+    );
+
+    it('an outer queued callback cannot clear an inner activation unknown join by catching its rejection', async () => {
+      const h = await setup(),
+        item = await permit(h, 'entry');
+      const failure = new Error('inner iterator return failed');
+      const outcome = await h.host.queued(
+        item,
+        async (queuedSignal) => {
+          try {
+            await h.host.activate(
+              item,
+              async () => {
+                throw failure;
+              },
+              queuedSignal,
+            );
+            throw new Error('inner must reject');
+          } catch (error) {
+            return { ok: false as const, error };
+          }
+        },
+        signal(),
+      );
+      expect(outcome.error).toBe(failure);
+      await expect(h.host.finish(item)).rejects.toMatchObject({
+        code: 'CLEANUP_INCOMPLETE',
+      });
+      await expect(h.host.recoverPermit(item, signal())).rejects.toMatchObject({
+        code: 'CLEANUP_INCOMPLETE',
+      });
+      expect(await counts(h.rc.actor.id)).toEqual([
+        { disposition: 'active', count: 1 },
+      ]);
+    });
+
+    it.each(['authorization', 'cancellation'] as const)(
+      'a failure before callback entry releases after its own resources join: %s',
+      async (kind) => {
+        const h = await setup(),
+          item = await permit(h, 'entry');
+        const cancel = new AbortController(),
+          reason = new Error('cancel before callback');
+        let entered = 0;
+        if (kind === 'authorization') h.authorize(false);
+        else cancel.abort(reason);
+        const outcome = await h.host
+          .activate(
+            item,
+            async () => {
+              entered += 1;
+            },
+            AbortSignal.any([signal(), cancel.signal]),
+          )
+          .catch((error: unknown) => error);
+        expect(entered).toBe(0);
+        if (kind === 'authorization')
+          expect(outcome).toMatchObject({ code: 'AUTHORIZATION_DENIED' });
+        else expect(outcome).toBe(reason);
+        await h.host.finish(item);
+        expect(await counts(h.rc.actor.id)).toEqual([]);
+      },
+    );
+
+    it('a business error after actual child join fulfils nested callbacks and is rethrown unchanged outside them', async () => {
+      const h = await setup(),
+        item = await permit(h, 'gateway');
+      const entered = latch(),
+        childJoined = latch(),
+        failure = new Error('provider returned a normal business failure');
+      const consumer = own(
+        (async () => {
+          const outcome = await h.host.queued(
+            item,
+            (queuedSignal) =>
+              h.host.activate(
+                item,
+                async () => {
+                  entered.resolve();
+                  try {
+                    throw failure;
+                  } catch (error) {
+                    await childJoined.promise;
+                    return { ok: false as const, error };
+                  }
+                },
+                queuedSignal,
+              ),
+            signal(),
+          );
+          await h.host.finish(item);
+          if (!outcome.ok) throw outcome.error;
+        })(),
+      );
+      const result = consumer.catch((error: unknown) => error);
+      await entered.promise;
+      expect(await counts(h.rc.actor.id)).toEqual([
+        { disposition: 'active', count: 1 },
+      ]);
+      childJoined.resolve();
+      expect(await result).toBe(failure);
+      expect(await counts(h.rc.actor.id)).toEqual([]);
+    });
+
+    it('cooperative cancellation stays active until its actual child joins, then returns a local outcome and preserves the original cancel', async () => {
+      const h = await setup(),
+        item = await permit(h, 'gateway');
+      const entered = latch(),
+        aborted = latch(),
+        childJoined = latch();
+      const cancel = new AbortController(),
+        reason = new Error('original caller cancellation');
+      const active = own(
+        h.host.activate(
+          item,
+          async (owned) => {
+            entered.resolve();
+            await new Promise<void>((resolve) => {
+              const onAbort = () => {
+                aborted.resolve();
+                resolve();
+              };
+              if (owned.aborted) onAbort();
+              else owned.addEventListener('abort', onAbort, { once: true });
+            });
+            await childJoined.promise;
+            return { ok: false as const, error: owned.reason as unknown };
+          },
+          AbortSignal.any([signal(), cancel.signal]),
+        ),
+      );
+      const consumer = own(
+        (async () => {
+          const outcome = await active;
+          await h.host.finish(item);
+          if (!outcome.ok) throw outcome.error;
+        })(),
+      );
+      const result = consumer.catch((error: unknown) => error);
+      await entered.promise;
+      cancel.abort(reason);
+      await aborted.promise;
+      const closing = own(h.host.finish(item));
+      expect(await counts(h.rc.actor.id)).toEqual([
+        { disposition: 'active', count: 1 },
+      ]);
+      childJoined.resolve();
+      await closing;
+      expect(await result).toBe(reason);
+      expect(await counts(h.rc.actor.id)).toEqual([]);
+    });
+
     it('failed finish write retains an actually joined permit, with explicit same-owner recovery rather than zeroing or TTL steal', async () => {
       const h = await setup(),
         item = await permit(h, 'gateway');

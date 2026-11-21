@@ -677,6 +677,7 @@ export class PersonVmAdmissionHost
           throw error;
         }
       };
+      let entered = false;
       try {
         await this.authorize(owned.context, permit.binding, operationSignal);
         await this.options.shared.transaction(
@@ -697,7 +698,14 @@ export class PersonVmAdmissionHost
           },
         );
         operationSignal.throwIfAborted();
+        entered = true;
         return await operation(operationSignal);
+      } catch (error) {
+        // Rejection after entry is not proof that actual children joined.
+        // Confirmed business failure/cancellation must fulfil a local outcome;
+        // an outer catch (including another queued callback) cannot undo this.
+        if (entered) owned.unsafe = true;
+        throw error;
       } finally {
         closing = true;
         listener.signal.removeEventListener('abort', lost);
