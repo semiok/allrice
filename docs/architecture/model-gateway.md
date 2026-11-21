@@ -8,7 +8,7 @@
 
 moduleId=`host-model-gateway`；owner=MET-268；contractVersion=`MODEL_GATEWAY_CONTRACT_VERSION=1`，包0.1.0。producer/consumer仅支持v1；HTTP header版本不符拒绝，不声称支持未来schema。DSH单代`0.2.1-rc.2`，源码commit`687f282e8625c6b8d11ff58211a90524be2e4317`（`apps/worker/dsh/distribution.json`），Node22.23.2。此服务不是EmployeeModuleRelease，使用宿主gatewayRelease/employeeRelease精确pin。
 
-公开根入口`@allrice/model-gateway`，无deep exports。新增出口sourceAtSha=`02bb4bd3f0a6ccf03d40e6d592dc08348b4c1fc0`，符号清单位于`packages/model-gateway/src/index.ts`，具名合同位于`src/contract.ts`，方法分别在`src/gateway.ts`、`src/dsh-provider.ts`、`src/postgres-store.ts`、`src/transport.ts`（原生关闭观察位于内部`src/native-close.ts`，无新增公开出口）。该提交的产品源码与本记录封版时相同；每个方法与下列具名type一一对应，JSON检查器不建立信任。
+公开根入口`@allrice/model-gateway`，无deep exports。新增出口sourceAtSha=`9934c160951ac493c22e87be51fce09f5122f344`，符号清单位于`packages/model-gateway/src/index.ts`，具名合同位于`src/contract.ts`，方法分别在`src/gateway.ts`、`src/dsh-provider.ts`、`src/postgres-store.ts`、`src/transport.ts`（原生关闭观察位于内部`src/native-close.ts`，无新增公开出口）。该提交的产品源码与本记录封版时相同；每个方法与下列具名type一一对应，JSON检查器不建立信任。
 
 | 允许符号                                                                                                 | 用途/来源                                                                             |
 | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
@@ -57,13 +57,15 @@ ModelCallBinding每次调用必有current RequestContext、PersonVmBinding、员
 
 原生VM侧call选择器仍需可信入口/原生事实owner绑定，不能仅凭guest自报相同call字符串生成此binding。本片不提供能把任意JSON提升为可信context的构造器。登录/会员/VM实例等依赖不可用时拒绝，不跨读其表维持表面成功。
 
+`GatewayProvider`的受管模型/刷新endpoint须接受一次性请求体；固定原生模型与刷新均为POST。GET/HEAD的null body允许内建Fetch隐藏421重发，故以`UNSUPPORTED_UPSTREAM`在dispatch/intent前拒绝；需要这类endpoint的未来provider须先提供可逐次计量的公开transport接缝。独立SDK fetch重试仍逐次准入和记账。
+
 ## 实际HTTP、8路与未知
 
 每个实际上游fetch在其完整不可变async scope中执行，包含prepare与iterator.next/return，父/子调用沿各自可信绑定。classifier不从模型消息选账户。model和auth-refresh分别落attempt；8格只约束活跃模型流，按全局personId跨org/gateway共享。先LISTEN再原子重查；PG NOTIFY重连也唤醒重查，无任意轮询/TTL/队列上限或新增产品超时。每个调用方持有的PG pool仅一个长期LISTEN fan-out，waiter关闭立即删除本地person订阅；postgres 3.4.9重连替换listener对象时不再依赖失效的旧unlisten。首次LISTEN拒绝时driver仍持有callback，故保留同一pool owner；仅当前waiter失败，后续waiter可取消或等待原生onlisten恢复，不再注册第二个owner。该监听随pool.end释放，由pool owner在所有使用者收尾后负责关闭。
 
 每人事务advisory锁保护slot领取和intent写入。intent提交后才调用fetch；DB故障发前fail closed。DB与网络无法原子，所以intent不证明上游收到/收费；崩溃未闭记录保留dispatchObserved=null/usage=null。请求失败也有独立回执，不把最终provider usage复制给所有HTTP retry。auth-refresh无模型usage，不推断余额。已开始原生刷新属于同一原call/person的独立auth attempt；模型取消、撤权、close不打断原生刷新独立超时及锁内凭据保存。close/drain同时等待HTTP回执与完整owner事务Promise；刷新后已取消模型仍被准入拒绝。
 
-fetch明确`redirect:manual`，每次可观测HTTP尝试不隐藏重定向请求。wire observer跟随consumer pull，不tee、不全量缓冲响应，逐行/事件计量捕获各最多65,536字符；超过观察范围仍原字节流过，usage未知，不改变请求/输出容量。chat必须finish_reason和[DONE]；Responses必须明确terminal；仅原生max-tokens且wire明确incomplete/status=incomplete/reason=max_output_tokens时保留合法截断结果，回执仍记incomplete。Codex response.done按明确status识别；content_filter、failed或缺终帧保持失败。provider最后的usage不作为原始请求计量，合成0不转为已知数。公开LlmFailure的offloadImages结构化恢复事实继续透传，让原生图片卸载插件执行记录和retry。
+fetch明确`redirect:manual`，拒绝隐藏重定向。准入及intent提交后才构造公开Request，保持其headers/原始规范化body字节，取Request.body作为一次性stream并设置duplex=half（空POST也传空stream）；不读/tee/复制body或实现SDK retry。Node22.23.2内建Undici6.28.0不能以此body隐藏421重发，首个421如实落失败账，后续显式SDK fetch另记attempt。wire observer跟随consumer pull，不tee、不全量缓冲响应，逐行/事件计量捕获各最多65,536字符；超过观察范围仍原字节流过，usage未知，不改变请求/输出容量。chat必须finish_reason和[DONE]；Responses必须明确terminal；仅原生max-tokens且wire明确incomplete/status=incomplete/reason=max_output_tokens时保留合法截断结果，回执仍记incomplete。Codex response.done按明确status识别；content_filter、failed或缺终帧保持失败。provider最后的usage不作为原始请求计量，合成0不转为已知数。公开LlmFailure的offloadImages结构化恢复事实继续透传，让原生图片卸载插件执行记录和retry。
 
 slot在reader EOF、成功awaited cancel，或原生实际请求关闭被确认后，仍须receipt提交成功才释放。原生SDK异常退出会先abort再清reader，cancel拒绝本身不能推导未关闭。Node22.23.2内建Undici6.28.0的公开diagnostics_channel以request对象关联实际socket close/完整response trailers；不读headers，不把abort/error通知当关闭旁证。真正无法确认关闭时封存已知wire事实为outcome=unknown、保留slot，只有可信死transport恢复可释放；DB提交失败同样保留slot。不因时间流逝或进程心跳消失而提前释放。原生pi-ai在解析terminal后会关闭私有consumer信号，此正常close和真实host/client/revoke取消分开；在持久原始terminal与native成功finish均成立前不输出成功finish。取消不撤销已发生费用/副作用。
 
@@ -71,7 +73,7 @@ slot在reader EOF、成功awaited cancel，或原生实际请求关闭被确认�
 
 ## 验证和未接事项
 
-本地单包loopback检查走真实HTTP fake upstream→固定代际原生DSH provider→host gateway HTTP→公开guest adapter：文本/工具增量/工具结果往返、401/429/5xx、无terminal/usage、取消、9路队列/两人隔离、跨gateway同person、guest伪造/child/跨await归属、重连去重、模型重试/刷新独立回执、redirect拒绝、撤权/epoch及ledger失败。原有20项断言保留。R1新增纯合成OAuth原生锁/刷新/落盘HTTP夹具，覆盖client/revoke/close；Responses/Codex合法与失败终止、图片卸载原生插件恢复，以及本地LISTEN fan-out重连所有权。R2恢复严格失败回执/slot断言，真实失败SSE带usage且body保持打开，连续8次确认关闭后第9路正常成功；另有真正关闭未知/DB提交失败反例与初次LISTEN失败残留callback回归。最终固定SHA结果记主会话证据目录的FIX-R2-CHECKS.json，本文不替代独立复核。
+本地单包loopback检查走真实HTTP fake upstream→固定代际原生DSH provider→host gateway HTTP→公开guest adapter：文本/工具增量/工具结果往返、401/429/5xx、无terminal/usage、取消、9路队列/两人隔离、跨gateway同person、guest伪造/child/跨await归属、重连去重、模型重试/刷新独立回执、redirect拒绝、撤权/epoch及ledger失败。原有20项断言保留。R1新增纯合成OAuth原生锁/刷新/落盘HTTP夹具，覆盖client/revoke/close；Responses/Codex合法与失败终止、图片卸载原生插件恢复，以及本地LISTEN fan-out重连所有权。R2恢复严格失败回执/slot断言，真实失败SSE带usage且body保持打开，连续8次确认关闭后第9路正常成功；另有真正关闭未知/DB提交失败反例与初次LISTEN失败残留callback回归。R3保留全部36项并新增原生SDK maxRetries=0的421→下一显式调用200、空刷新POST 421及GET/HEAD拒绝四项；首败原件与40项结果见主会话证据目录FIX-R3-CHECKS.json，本文不替代独立复核。
 
 `postgres-store.integration.test.ts`声明db资源，默认环境不运行；由主会话m5-test执行跨store真实PG8路、NOTIFY/恢复、无TTL、claim幂等、receipt/slot事务回滚与不可变事实，另含真实LISTEN backend断线重连后100次waiter释放和pool终止清理、初次连接失败→恢复/取消、unknown回执保留事实/租约及一次性可信恢复旁证。新增收敛登记须跑直接受影响的既有`dsh-convergence-gate.test.ts`/`.integration.test.ts`，以及既有`route-usage-unknown.integration.test.ts`，保护unknown语义。本片不声称这些检查已通过。
 
