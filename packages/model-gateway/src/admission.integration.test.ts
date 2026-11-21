@@ -49,6 +49,11 @@ import {
   upstreamFixture,
 } from './gateway.fixture.ts';
 import { nativeRefreshFixture, responsesFixture } from './revision.fixture.ts';
+import {
+  observeAdmissionCalls,
+  observeNativeLifecycle,
+  type NativeLifecycleProof,
+} from './admission-proof.fixture.ts';
 
 type Host = ReturnType<PersonVmService['createAdmissionHost']>;
 type Phase = 'queued' | 'active';
@@ -61,6 +66,7 @@ type BoundaryTrace = {
   finishErrors: unknown[];
   ready: ModelCallBinding['vm'][];
   waiting: ReturnType<typeof deferred<void>>;
+  canceled: ReturnType<typeof deferred<void>>;
 };
 const phase = new AsyncLocalStorage<Phase>();
 const suite =
@@ -149,17 +155,22 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
       return value;
     };
   }
-  function traceBoundary(host: Host): BoundaryTrace {
+  function traceBoundary(
+    host: Host,
+    native?: NativeLifecycleProof,
+  ): BoundaryTrace {
     const permits: PersonVmAdmissionPermit[] = [];
     const finished = new Set<PersonVmAdmissionPermit>();
     const finishCalls: PersonVmAdmissionPermit[] = [];
     const finishErrors: unknown[] = [];
     const ready: ModelCallBinding['vm'][] = [];
-    const waiting = deferred();
+    const observed = observeAdmissionCalls(host);
+    closers.push(async () => observed.dispose());
     const boundary: PersonVmAdmissionBoundary = {
       async admit(...args) {
         const permit = await host.admit(...args);
         permits.push(permit);
+        native?.bind(permit);
         return permit;
       },
       queued(permit, operation, signal) {
@@ -167,8 +178,10 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
           host.queued(
             permit,
             async (current) => {
+              observed.watch(current);
               const outcome = await operation(current);
               faults.fulfilled.add('queued');
+              native?.mark(permit, 'queued-fulfilled');
               return outcome;
             },
             signal,
@@ -180,8 +193,10 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
           host.activate(
             permit,
             async (current) => {
+              observed.watch(current);
               const outcome = await operation(current);
               faults.fulfilled.add('active');
+              native?.mark(permit, 'active-fulfilled');
               return outcome;
             },
             signal,
@@ -189,17 +204,17 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
         );
       },
       async waitUntilReady(...args) {
-        const pending = host.waitUntilReady(...args);
-        waiting.resolve(); // The real public host call has entered and owns it.
-        const binding = await pending;
+        const binding = await observed.wait(...args);
         ready.push(binding);
         return binding;
       },
       async finish(permit) {
         finished.add(permit);
         finishCalls.push(permit);
+        native?.mark(permit, 'finish-enter');
         try {
           await host.finish(permit);
+          native?.mark(permit, 'finish-return');
         } catch (error) {
           finishErrors.push(error);
           throw error;
@@ -213,7 +228,8 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
       finishCalls,
       finishErrors,
       ready,
-      waiting,
+      waiting: observed.waiting,
+      canceled: observed.canceled,
     };
     boundaries.push(trace);
     return trace;
@@ -297,6 +313,7 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
       options: {
         second?: boolean;
         route?: Pick<ModelCallBinding, 'provider' | 'model'>;
+        nativeProof?: NativeLifecycleProof;
       } = {},
     ) {
       const issued = new Map<string, ModelCallBinding>();
@@ -304,7 +321,13 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
       const handled: Promise<void>[] = [];
       const errors: unknown[] = [];
       let starts = 0;
-      const trace = traceBoundary(options.second ? hostB : hostA);
+      let joined = 0;
+      const trace = traceBoundary(
+        options.second ? hostB : hostA,
+        options.nativeProof,
+      );
+      const observedProvider =
+        options.nativeProof?.provider(provider) ?? provider;
       const participant = (options.second ? hostB : hostA).participant(
         'gateway',
       );
@@ -312,10 +335,10 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
         ownerId: randomUUID(),
         store: options.second ? modelB : modelA,
         provider: {
-          ...provider,
+          ...observedProvider,
           stream(...args) {
             starts++;
-            return provider.stream(...args);
+            return observedProvider.stream(...args);
           },
         },
         admission: { boundary: trace.boundary, participant },
@@ -353,13 +376,20 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
         });
         issued.set(call.native.callId, structuredClone(call));
         calls.push(call);
+        const handle = () =>
+          gateway.handle(request, response, call, caller.signal);
+        const pending = options.nativeProof
+          ? options.nativeProof.runCall(call.native.callId, handle)
+          : handle();
         handled.push(
           own(
-            gateway
-              .handle(request, response, call, caller.signal)
+            pending
               .catch((error) => {
                 errors.push(error);
                 response.destroy();
+              })
+              .finally(() => {
+                joined++;
               }),
           ),
         );
@@ -374,6 +404,9 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
         errors,
         get starts() {
           return starts;
+        },
+        get joined() {
+          return handled.length > 0 && joined === handled.length;
         },
         join: () => Promise.all(handled),
         collect(signal = caller.signal) {
@@ -682,7 +715,7 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
     await mounted.gateway.admission.thaw(lease, caller.signal);
     client.abort(new Error('client canceled entered deferred wait'));
     await result;
-    await mounted.gateway.revoke(f.binding);
+    await mounted.trace.canceled.promise;
     await mounted.join();
     expect(await f.peer.observe(f.binding, caller.signal)).toMatchObject({
       active: 0,
@@ -715,20 +748,30 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
       expect(auth.rotated).toBe(true);
       await f.observe((value) => value.active === 1);
       let revoked: Promise<void> | undefined;
+      let revokedSettled = false;
+      let closed = false;
+      let closing: Promise<void> | undefined;
       if (action === 'client') {
         client.abort(new Error('client canceled refresh'));
         await collecting;
       } else if (action === 'revoke')
-        revoked = own(mounted.gateway.revoke(f.binding));
-      let closed = false;
-      const closing = own(
-        mounted.gateway.close().then(() => {
-          closed = true;
-        }),
-      );
+        revoked = own(
+          mounted.gateway.revoke(f.binding).then(() => {
+            revokedSettled = true;
+          }),
+        );
+      else
+        closing = own(
+          mounted.gateway.close().then(() => {
+            closed = true;
+          }),
+        );
+      await mounted.trace.canceled.promise;
       auth.releaseResponse();
       await auth.readyToSave;
       expect(closed).toBe(false);
+      expect(revokedSettled).toBe(false);
+      expect(mounted.joined).toBe(false);
       expect(auth.refreshSignal?.aborted).toBe(false);
       expect(await f.peer.observe(f.binding, caller.signal)).toMatchObject({
         active: 1,
@@ -774,10 +817,16 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
     );
     const native = await nativeProviderFixture(up.url);
     closers.push(() => native.close());
-    const mounted = await f.mount(native.provider, { route: native.route });
+    const proof = observeNativeLifecycle();
+    closers.push(async () => proof.dispose());
+    const mounted = await f.mount(native.provider, {
+      route: native.route,
+      nativeProof: proof,
+    });
     expect(terminal(await mounted.collect()).reason.kind).toBe('error');
     await closed.promise;
     await mounted.join();
+    proof.assertReleased(mounted.calls[0]!.native.callId, 'close');
     await f.observe((value) => value.active + value.queued === 0);
     expect(await f.modelA.attempts(f.claims[0]!)).toMatchObject([
       {
@@ -798,10 +847,16 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
       failuresBeforeSuccess: 1,
     });
     closers.push(() => native.close());
-    const mounted = await f.mount(native.provider, { route: native.binding });
+    const proof = observeNativeLifecycle();
+    closers.push(async () => proof.dispose());
+    const mounted = await f.mount(native.provider, {
+      route: native.binding,
+      nativeProof: proof,
+    });
     expect(terminal(await mounted.collect()).reason.kind).toBe('error');
     await native.whenClosed(1);
     await mounted.join();
+    proof.assertReleased(mounted.calls[0]!.native.callId, 'close');
     await f.observe((value) => value.active + value.queued === 0);
     expect(await f.modelA.attempts(f.claims[0]!)).toMatchObject([
       {
@@ -820,6 +875,7 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
     expect(terminal(await mounted.collect()).reason.kind).toBe('stop');
     await native.whenClosed(2);
     await mounted.join();
+    proof.assertReleased(mounted.calls[1]!.native.callId, 'eof-or-close');
     expect(native.requests).toHaveLength(2);
     expect(native.active).toBe(0);
   });
