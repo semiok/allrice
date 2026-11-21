@@ -138,9 +138,13 @@ export function fixture(store: ApprovalStore = memoryStore()) {
     authority: {
       assertCall: check,
       assertUser: check,
-      admit: async <T>(_b: ApprovalBinding, cb: () => Promise<T>) => {
+      admit: async <T>(
+        _b: ApprovalBinding,
+        cb: (signal: AbortSignal) => Promise<T>,
+        signal: AbortSignal,
+      ) => {
         await check();
-        return cb();
+        return cb(signal);
       },
     },
     resources: {
@@ -158,7 +162,11 @@ export function fixture(store: ApprovalStore = memoryStore()) {
       inbox: {
         resolve: async () => ({ id: 'synthetic:inbox', label: '合成接收器' }),
         assertCurrent: check,
-        dispatch: async (ref: ApprovalRef, payload: FrozenPayload) => {
+        dispatch: async (
+          _binding: ApprovalBinding,
+          ref: ApprovalRef,
+          payload: FrozenPayload,
+        ) => {
           dispatches++;
           const receipt = {
             id: 'receipt:' + ref.requestId,
@@ -171,7 +179,7 @@ export function fixture(store: ApprovalStore = memoryStore()) {
           if (loseAck) throw Error('committed before ACK');
           return receipt;
         },
-        lookup: async (ref: ApprovalRef) =>
+        lookup: async (_binding: ApprovalBinding, ref: ApprovalRef) =>
           lookupKnown ? (accepted.get(ref.requestId)?.receipt ?? null) : null,
       },
     },

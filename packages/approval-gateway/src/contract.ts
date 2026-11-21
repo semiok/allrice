@@ -138,7 +138,7 @@ export interface ApprovalAuthority {
    * callback spans claim AND real dispatch. No guest or fixture implementation in production. */
   admit<T>(
     binding: ApprovalBinding,
-    callback: () => Promise<T>,
+    callback: (admissionSignal: AbortSignal) => Promise<T>,
     signal: AbortSignal,
   ): Promise<T>;
 }
@@ -172,12 +172,14 @@ export interface ApprovalDestination {
     signal: AbortSignal,
   ): Promise<void>;
   dispatch(
+    binding: ApprovalBinding,
     ref: ApprovalRef,
     payload: FrozenPayload,
     signal: AbortSignal,
   ): Promise<ExternalReceipt>;
   /** null means unknown, including unsupported lookup. Never dispatch here. */
   lookup(
+    binding: ApprovalBinding,
     ref: ApprovalRef,
     payload: FrozenPayload,
     signal: AbortSignal,

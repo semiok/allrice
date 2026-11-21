@@ -311,17 +311,23 @@ export function createApprovalGateway(options: ApprovalOptions) {
         record = await forCall(binding, ref, signal);
       return authority.admit(
         binding,
-        async () => {
-          await authority.assertCall(binding, signal);
-          await rights(binding, record.payload, signal);
+        async (admissionSignal) => {
+          const effectSignal = AbortSignal.any([signal, admissionSignal]);
+          await authority.assertCall(binding, effectSignal);
+          await rights(binding, record.payload, effectSignal);
           const claim = await store.claim(record.ref);
           if (!claim.claimed) return approvalView(claim.record);
           // Durable intent is never cleared, even if abort happens before bytes leave this process.
           try {
-            signal.throwIfAborted();
+            effectSignal.throwIfAborted();
             const receipt = await destination(
               record.payload.adapterId,
-            ).dispatch(clone(record.ref), clone(record.payload), signal);
+            ).dispatch(
+              clone(binding),
+              clone(record.ref),
+              clone(record.payload),
+              effectSignal,
+            );
             validateReceipt(receipt, record.ref);
             return approvalView(await store.receive(record.ref, receipt));
           } catch {
@@ -342,6 +348,7 @@ export function createApprovalGateway(options: ApprovalOptions) {
       const record = await forUser(context, ref, signal);
       if (!record.intentAt || record.receipt) return approvalView(record);
       const receipt = await destination(record.payload.adapterId).lookup(
+        clone(record.binding),
         clone(record.ref),
         clone(record.payload),
         signal,
