@@ -6,6 +6,12 @@ import {
 import { resolveDEntryIdentity } from './identity';
 import { resolveDEntryAdmission } from './admission';
 import { readDEntryReleasePolicy } from './release-policy';
+import {
+  runDEntryAdmittedActivity,
+  type DEntryAdmissionOwner,
+  type DEntryAdmissionPorts,
+  type DEntryOwnedActivity,
+} from './admission-participant';
 
 /** Host-verified catalog/descriptor facts. A browser's same-shaped JSON is not
  * an implementation of this port and cannot establish native root membership. */
@@ -146,4 +152,70 @@ export async function* followDEntryNativeResource<T>(
     abort.abort();
     await iterator?.return?.();
   }
+}
+
+/** Preparation hook for a complete VM-live operation, not cold history. The
+ * actual native owner must supply its full-envelope checks and joined-close
+ * handle; no production transport/owner is installed by this module. */
+export async function runDEntryNativeActivity<T>(
+  input: Parameters<typeof authorizeDEntryNativeResource>[0] & {
+    admission: DEntryAdmissionPorts;
+    owner: DEntryAdmissionOwner & {
+      /** Current native/execution owner must bind this exact descriptor to its
+       * original full envelope, not merely authorize the two independently. */
+      assertResource(
+        resource: DEntryNativeResource,
+        signal: AbortSignal,
+      ): Promise<void>;
+    };
+    queued?: (signal: AbortSignal) => DEntryOwnedActivity<void>;
+  },
+  acquire: (
+    resource: DEntryNativeResource,
+    signal: AbortSignal,
+  ) => DEntryOwnedActivity<T>,
+): Promise<T> {
+  if (
+    input.owner.context.sessionId !== input.context.sessionId ||
+    input.owner.context.workspaceId !== input.context.workspaceId ||
+    input.owner.context.organizationId !== input.context.organizationId ||
+    input.owner.context.actor.id !== input.context.actor.id
+  )
+    throw new DataAccessError('authorization_denied');
+  const resource = await authorizeDEntryNativeResource(input);
+  const assertCurrent = async (signal: AbortSignal) => {
+    await input.owner.assertCurrent(signal);
+    const current = await authorizeDEntryNativeResource({ ...input, signal });
+    if (
+      current.bindingRef !== resource.bindingRef ||
+      current.rootNativeSessionId !== resource.rootNativeSessionId ||
+      current.parentNativeSessionId !== resource.parentNativeSessionId
+    )
+      throw new DataAccessError('authorization_denied');
+    await input.owner.assertResource(current, signal);
+    // VM-live reads also need execution permission; cold history uses the
+    // existing read/follow gate and never reaches this wake-capable hook.
+    await resolveDEntryAdmission(
+      input.context,
+      {
+        workspaceId: input.identity.workspaceId,
+        employeeInstanceId: input.identity.employeeInstanceId,
+        threadId: input.identity.threadId,
+      },
+      await readDEntryReleasePolicy(input.context, signal),
+    );
+  };
+  return runDEntryAdmittedActivity(
+    {
+      ports: input.admission,
+      owner: {
+        ...input.owner,
+        revoked: AbortSignal.any([input.owner.revoked, resource.revoked]),
+        assertCurrent,
+      },
+      signal: input.signal,
+      queued: input.queued,
+    },
+    (signal) => acquire(resource, signal),
+  );
 }

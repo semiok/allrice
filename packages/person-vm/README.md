@@ -10,3 +10,5 @@ This slice contains no VM service, admission host, SQL store, provider or
 migration. Production composition must inject the real host from the batch
 combination with #905. Importing these contracts does not make a producer,
 transport, execution resolver or physical owner fence available.
+
+The producer's final callback rejection/join contract is still pending after 8115. Entry consumer preparation must not be installed with that old producer.

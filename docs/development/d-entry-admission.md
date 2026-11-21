@@ -60,6 +60,22 @@
 
 正式依赖：MET-266固定头`abf556870b4454ebbdf1833ad1e35b0fef11a884`的`@allrice/person-vm#PersonVmPort.resolve/assertCurrentBinding`已公开当前本人/租户/VM epoch生命周期绑定；该头仍没有HTTP/WS/profile目标。目标与受管连接、实际撤权signal、原生root关系口还须各owner发布；不从其内部表/代码偷取、不猜端口/secret、不向VM转发AllRice登录cookie。
 
+## F4 consumer 准备，未绑定生产
+
+`@allrice/person-vm` 在本树仅携带 #905 `8115ae6124126eb66a4bdd9fd995ce6549bc7140` 的原样公开合同与构建基座；barrel 不导出 host/service/store/provider。最终 producer 的 callback rejection/sticky unsafe 语义仍待修复 SHA，不能用这份切片或 consumer 测试替身声称 PG 准入、停机或恢复已通过。
+
+`runDEntryAdmittedActivity({ports,owner,signal,queued?},acquire)` 只消费同一 model composition 注入的 `PersonVmAdmissionBoundary` 与 `participant('entry')`，不构造 SQL/Host。owner 持有原完整业务 binding，并提供当前身份、员工 release、Run/execution/thread/native instance/profile/root/parent/session/call、代际与模型 route 的实际校验；deferred 续行还须真实 owner 证明原调用从未 dispatch。没有默认 checker 或从 guest JSON 建立的 owner。
+
+每个连接/typing/prewarm 的完整 owner 在 entered callback 内交 `DEntryOwnedActivity`：`run(signal)` 执行业务，`close()` 触发取消并返回覆盖部分初始化及全部受管子操作的**实际 joined-close Promise**。owner 必须把 signal 传到真实 I/O。consumer 在取消和收尾时只调用一次 close，并等待该 Promise；AbortSignal、单个 iterator.return fulfilled 或无触发的 Promise 都不证明全域 owner 完成。
+
+业务/授权/合作取消错误只有在实际 close 完成后才以本地 outcome fulfil callback，最外层 finish 后重抛原错误。拿到 handle 前的 open/start 拒绝、close/join 未知直接 reject callback，不能被业务 catch 吞掉；最终 producer 必须保留 sticky unsafe，即使外层捕获内层拒绝。finish 也失败时保留原错误为 aggregate 的首项和 cause，不能报释放成功。真实 producer 的该保证不由本片测试模拟验收。
+
+freeze 前 queued 保留原 permit；freeze 后 deferred 依次 waitUntilReady、finish 旧 permit、重核完整原 binding 和从未 dispatch、重新 admit。新 admit 使用 caller/native owner 的根 signal，不能复用 finish 已 abort 的旧 permit.signal；相同 epoch 也必须换 permit，但不创建新 Run/call/claim。新 VM epoch/owner/业务绑定失效则取消旧执行，不改标签或重放旧 handle/claim。
+
+`runDEntryNativeActivity` 是完整 VM-live 操作的宿主准备 hook：保留 root/child 与现权门卫，额外核 4.0 执行准入，并消费上述真实 owner handle。实际 native/execution owner 还须以 `assertResource(resource,signal)` 将准确 descriptor 核回原完整 envelope，不能各自授权两个对象后假定同属一个调用。现有冷 history/read/follow 不调用它，不 wake。实际 transport、全 envelope owner、connection/typing/prewarm close producer、starting owner scope、冷/首次 prewarm 和 exact physical fence 均未提供；正式 HTTP admission 仍明确依赖未绑定，未挂可用 4.0 Client。不能先 prewarm 再补 permit，不能自行 mint 尚 proposed 的 starting binding/signal/assertCurrent。
+
+本片不加组织停用流程、恢复 API 或状态表。MET274 历史/下载的取消 join 不是 whole-owner physical fence；existing recoverExpired 仍先经可信 stop 授权，不能从 guest 暴露 raw store/no-op recovery，也不能伪造 now/TTL 绕 expiry。
+
 ## 给打野3的客户端重挂合同
 
 准备就绪后，宿主`dEntryClientMount(identity,executionGeneration,runtimeBindingRef)`生成`DEntryMountSchema`。runtimeBindingRef由真实受管Host/profile/lease提供；当前尚未生成正式mount响应。`remountKey`的SHA256输入按顺序为organizationId、personId、employeeInstanceId、employeeRevision、employeeVersionId、executionGeneration、runtimeBindingRef。

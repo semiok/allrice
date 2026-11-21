@@ -24,8 +24,14 @@ import type * as ReleasePolicy from '../d-entry/release-policy';
 import {
   authorizeDEntryNativeResource,
   followDEntryNativeResource,
+  runDEntryNativeActivity,
   type DEntryNativeResource,
 } from '../d-entry/native-resource';
+import type {
+  PersonVmAdmissionBoundary,
+  PersonVmAdmissionPort,
+  PersonVmBinding,
+} from '@allrice/person-vm';
 
 const ports = vi.hoisted(() => ({
   context: vi.fn(),
@@ -284,6 +290,121 @@ describe('4.0 native browser resource gate', () => {
       },
     };
   }
+  // Consumer invocation double only; no producer/PG/physical-fence guarantee.
+  function admission() {
+    const binding: PersonVmBinding = {
+      personId,
+      organizationId,
+      vmId: randomUUID(),
+      instanceId: randomUUID(),
+      leaseEpoch: 1,
+    };
+    const permit = {
+      permitId: randomUUID(),
+      binding,
+      participant: 'entry' as const,
+      disposition: 'queued' as const,
+      signal: new AbortController().signal,
+    };
+    const boundary: PersonVmAdmissionBoundary = {
+      admit: vi.fn(async () => permit),
+      queued: async (_permit, operation, signal) => operation(signal),
+      activate: async (_permit, operation, signal) => operation(signal),
+      waitUntilReady: vi.fn(async () => binding),
+      finish: vi.fn(async () => {}),
+    };
+    const participant: PersonVmAdmissionPort = {
+      participant: 'entry',
+      observe: vi.fn(),
+      subscribe: vi.fn(),
+      freeze: vi.fn(),
+      assertFrozen: vi.fn(),
+      thaw: vi.fn(),
+    };
+    return {
+      admission: { boundary, participant },
+      owner: {
+        context,
+        binding,
+        operationId: randomUUID(),
+        revoked: new AbortController().signal,
+        assertCurrent: vi.fn(async () => {}),
+        assertUndispatched: vi.fn(async () => {}),
+        assertResource: vi.fn(async () => {}),
+      },
+    };
+  }
+  it('gates the VM-live hook with actual root authority while preserving cold history without a producer', async () => {
+    ports.policy.mockResolvedValue(policy);
+    const child = fixture(),
+      host = admission(),
+      acquire = vi.fn();
+    await expect(
+      runDEntryNativeActivity(
+        { ...child.input, ...host, effect: 'write' },
+        acquire,
+      ),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    expect(host.admission.boundary.admit).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+    const root = fixture(false),
+      active = {
+        run: vi.fn(async () => 'joined'),
+        close: vi.fn(async () => {}),
+      };
+    await expect(
+      runDEntryNativeActivity(
+        { ...root.input, ...host, effect: 'write' },
+        () => active,
+      ),
+    ).resolves.toBe('joined');
+    expect(active.close).toHaveBeenCalledTimes(1);
+    expect(host.admission.boundary.finish).toHaveBeenCalledTimes(1);
+    // Cold read does not require a boundary or wake/prewarm capability.
+    expect(
+      await authorizeDEntryNativeResource({ ...child.input, effect: 'read' }),
+    ).toBe(child.resource);
+  });
+  it('closes an acquired owner and refuses the original native binding after its root/profile changes', async () => {
+    ports.policy.mockResolvedValue(policy);
+    const f = fixture(false),
+      host = admission();
+    f.resolve
+      .mockResolvedValueOnce(f.resource)
+      .mockResolvedValueOnce(f.resource)
+      .mockResolvedValue({ ...f.resource, bindingRef: 'replaced-host' });
+    const active = {
+      run: vi.fn(async () => 'must not dispatch'),
+      close: vi.fn(async () => {}),
+    };
+    await expect(
+      runDEntryNativeActivity(
+        { ...f.input, ...host, effect: 'write' },
+        () => active,
+      ),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    expect(active.run).not.toHaveBeenCalled();
+    expect(active.close).toHaveBeenCalledTimes(1);
+    expect(host.admission.boundary.finish).toHaveBeenCalledTimes(1);
+    expect(host.admission.boundary.admit).toHaveBeenCalledTimes(1);
+  });
+  it('requires the actual envelope owner to bind this resource to its original native call before admission', async () => {
+    ports.policy.mockResolvedValue(policy);
+    const f = fixture(false),
+      host = admission(),
+      acquire = vi.fn();
+    host.owner.assertResource.mockRejectedValue(
+      new DataAccessError('authorization_denied'),
+    );
+    await expect(
+      runDEntryNativeActivity(
+        { ...f.input, ...host, effect: 'write' },
+        acquire,
+      ),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    expect(host.admission.boundary.admit).not.toHaveBeenCalled();
+    expect(acquire).not.toHaveBeenCalled();
+  });
   it('reads children through their root and blocks all browser write effects', async () => {
     ports.policy.mockResolvedValue(policy);
     const f = fixture();
