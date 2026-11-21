@@ -1,0 +1,333 @@
+[
+  {
+    "type": "session",
+    "version": 4,
+    "id": "session-00000000-0000-4000-8000-000000000038",
+    "createdAt": 1795182360000,
+    "cwd": "__WORKSPACE__",
+    "isSeeded": false,
+    "delegationDepth": 0,
+    "agentPreset": "standard"
+  },
+  {
+    "type": "turn/start",
+    "seq": 0,
+    "time": 1795182360000,
+    "data": {
+      "turn": 1
+    }
+  },
+  {
+    "type": "step/start",
+    "seq": 1,
+    "time": 1795182360200,
+    "data": {
+      "turn": 1,
+      "step": 1
+    }
+  },
+  {
+    "type": "user/message",
+    "seq": 2,
+    "time": 1795182360400,
+    "data": {
+      "role": "user",
+      "id": "question-document-user",
+      "source": {
+        "kind": "user",
+        "rpcId": "question-document-user"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "请确认报告格式，并交付核对说明。"
+        }
+      ]
+    },
+    "surfaceOp": "append"
+  },
+  {
+    "type": "request/header",
+    "seq": 3,
+    "time": 1795182360600,
+    "data": {
+      "header": {
+        "config": {
+          "provider": "fixture",
+          "model": "fixture"
+        }
+      },
+      "reason": "initial"
+    }
+  },
+  {
+    "type": "request/context",
+    "seq": 4,
+    "time": 1795182360800,
+    "data": {
+      "provider": "fixture",
+      "model": "fixture",
+      "contextWindow": 272000
+    }
+  },
+  {
+    "type": "session/title",
+    "seq": 5,
+    "time": 1795182361000,
+    "data": {
+      "title": "问答与文档原生保留验证",
+      "messageSeqs": [2],
+      "source": {
+        "kind": "fallback"
+      }
+    }
+  },
+  {
+    "type": "assistant/message",
+    "seq": 6,
+    "time": 1795182361200,
+    "data": {
+      "turn": 1,
+      "step": 1,
+      "message": {
+        "role": "assistant",
+        "id": "assistant-fixture-question",
+        "source": {
+          "kind": "model",
+          "provider": "fixture",
+          "model": "fixture"
+        },
+        "content": [
+          {
+            "type": "tool-call",
+            "id": "fixture-question",
+            "name": "ask_user_question",
+            "arguments": "{\"questions\":[{\"id\":\"format\",\"header\":\"报告格式\",\"question\":\"核对说明采用哪种格式？\",\"options\":[{\"label\":\"Markdown\",\"description\":\"保留标题与表格\"},{\"label\":\"纯文本\",\"description\":\"仅显示正文\"}]}]}"
+          }
+        ]
+      },
+      "stream": []
+    },
+    "surfaceOp": "append"
+  },
+  {
+    "type": "tool/call",
+    "seq": 7,
+    "time": 1795182361400,
+    "data": {
+      "turn": 1,
+      "step": 1,
+      "callId": "fixture-question",
+      "name": "ask_user_question",
+      "arguments": "{\"questions\":[{\"id\":\"format\",\"header\":\"报告格式\",\"question\":\"核对说明采用哪种格式？\",\"options\":[{\"label\":\"Markdown\",\"description\":\"保留标题与表格\"},{\"label\":\"纯文本\",\"description\":\"仅显示正文\"}]}]}"
+    }
+  },
+  {
+    "type": "tool/result",
+    "seq": 8,
+    "time": 1795182361600,
+    "data": {
+      "turn": 1,
+      "step": 1,
+      "message": {
+        "role": "tool",
+        "id": "result-fixture-question",
+        "source": {
+          "kind": "tool",
+          "callId": "fixture-question"
+        },
+        "toolCallId": "fixture-question",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"answers\":[{\"id\":\"format\",\"selected\":[\"Markdown\"]}]}"
+          }
+        ],
+        "isError": false
+      },
+      "meta": {
+        "cwd": "__WORKSPACE__"
+      }
+    },
+    "surfaceOp": "append",
+    "sourceEventSeqs": [7]
+  },
+  {
+    "type": "step/end",
+    "seq": 9,
+    "time": 1795182361800,
+    "data": {
+      "turn": 1,
+      "step": 1
+    }
+  },
+  {
+    "type": "step/start",
+    "seq": 10,
+    "time": 1795182362000,
+    "data": {
+      "turn": 1,
+      "step": 2
+    }
+  },
+  {
+    "type": "assistant/message",
+    "seq": 11,
+    "time": 1795182362200,
+    "data": {
+      "turn": 1,
+      "step": 2,
+      "message": {
+        "role": "assistant",
+        "id": "assistant-fixture-present",
+        "source": {
+          "kind": "model",
+          "provider": "fixture",
+          "model": "fixture"
+        },
+        "content": [
+          {
+            "type": "tool-call",
+            "id": "fixture-present",
+            "name": "present",
+            "arguments": "{\"files\":[{\"path\":\"__WORKSPACE__/核对说明-长文件名用于验证原生交付文档预览.md\",\"description\":\"三条销售记录的核对说明\"}]}"
+          }
+        ]
+      },
+      "stream": []
+    },
+    "surfaceOp": "append"
+  },
+  {
+    "type": "tool/call",
+    "seq": 12,
+    "time": 1795182362400,
+    "data": {
+      "turn": 1,
+      "step": 2,
+      "callId": "fixture-present",
+      "name": "present",
+      "arguments": "{\"files\":[{\"path\":\"__WORKSPACE__/核对说明-长文件名用于验证原生交付文档预览.md\",\"description\":\"三条销售记录的核对说明\"}]}"
+    }
+  },
+  {
+    "type": "tool/result",
+    "seq": 13,
+    "time": 1795182362600,
+    "data": {
+      "turn": 1,
+      "step": 2,
+      "message": {
+        "role": "tool",
+        "id": "result-fixture-present",
+        "source": {
+          "kind": "tool",
+          "callId": "fixture-present"
+        },
+        "toolCallId": "fixture-present",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"turn\":1,\"files\":[{\"path\":\"__WORKSPACE__/核对说明-长文件名用于验证原生交付文档预览.md\",\"description\":\"三条销售记录的核对说明\"}]}"
+          }
+        ],
+        "isError": false
+      },
+      "meta": {
+        "cwd": "__WORKSPACE__"
+      }
+    },
+    "surfaceOp": "append",
+    "sourceEventSeqs": [12]
+  },
+  {
+    "type": "deliverables/presented",
+    "seq": 14,
+    "time": 1795182362800,
+    "data": {
+      "turn": 1,
+      "callId": "fixture-present",
+      "files": [
+        {
+          "path": "__WORKSPACE__/核对说明-长文件名用于验证原生交付文档预览.md",
+          "description": "三条销售记录的核对说明"
+        }
+      ]
+    }
+  },
+  {
+    "type": "step/end",
+    "seq": 15,
+    "time": 1795182363000,
+    "data": {
+      "turn": 1,
+      "step": 2
+    }
+  },
+  {
+    "type": "step/start",
+    "seq": 16,
+    "time": 1795182363200,
+    "data": {
+      "turn": 1,
+      "step": 3
+    }
+  },
+  {
+    "type": "assistant/message",
+    "seq": 17,
+    "time": 1795182363400,
+    "data": {
+      "turn": 1,
+      "step": 3,
+      "message": {
+        "role": "assistant",
+        "id": "fixture-final",
+        "source": {
+          "kind": "model",
+          "provider": "fixture",
+          "model": "fixture"
+        },
+        "content": [
+          {
+            "type": "text",
+            "text": "已按你选择的 Markdown 格式交付核对说明。"
+          }
+        ]
+      },
+      "stream": [],
+      "usage": {
+        "inputTokens": 100,
+        "outputTokens": 20,
+        "totalTokens": 120
+      }
+    },
+    "surfaceOp": "append"
+  },
+  {
+    "type": "step/end",
+    "seq": 18,
+    "time": 1795182363600,
+    "data": {
+      "turn": 1,
+      "step": 3
+    }
+  },
+  {
+    "type": "turn/end",
+    "seq": 19,
+    "time": 1795182363800,
+    "data": {
+      "turn": 1,
+      "reason": {
+        "kind": "completed"
+      }
+    }
+  },
+  {
+    "type": "session/end-seed",
+    "seq": 20,
+    "time": 1795182364000,
+    "data": {}
+  }
+]

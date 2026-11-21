@@ -1,0 +1,422 @@
+[
+  {
+    "type": "session",
+    "version": 4,
+    "id": "session-00000000-0000-4000-8000-000000000036",
+    "createdAt": 1795182341672,
+    "cwd": "__WORKSPACE__",
+    "isSeeded": false,
+    "delegationDepth": 0,
+    "agentPreset": "standard"
+  },
+  {
+    "type": "permission/preset",
+    "seq": 0,
+    "time": 1795182341675,
+    "data": {
+      "preset": "danger-full-access"
+    }
+  },
+  {
+    "type": "sandbox/mode",
+    "seq": 1,
+    "time": 1795182341676,
+    "data": {
+      "mode": "danger-full-access"
+    }
+  },
+  {
+    "type": "approval/policy",
+    "seq": 2,
+    "time": 1795182341676,
+    "data": {
+      "policy": "never"
+    }
+  },
+  {
+    "type": "agent/inbox/spliced",
+    "seq": 3,
+    "time": 1795182342067,
+    "data": {
+      "target": "next-turn",
+      "start": 0,
+      "inserted": [
+        {
+          "content": [
+            {
+              "type": "text",
+              "text": "P4_PAIR_A：请仅执行下面这一条命令一次：node tasks/pair/action.cjs 。以该命令的实际结果为准，然后一句话结束；不要额外规划、读文件、添加子任务或重试。"
+            }
+          ],
+          "source": {
+            "kind": "user",
+            "rpcId": "76621b92-7b25-47a0-8d6c-c958f957bfd8",
+            "clientTimeZone": "America/Los_Angeles"
+          },
+          "role": "user",
+          "id": "21d24663-0a88-4376-a2a6-5625819789ab"
+        }
+      ]
+    }
+  },
+  {
+    "type": "turn/start",
+    "seq": 4,
+    "time": 1795182342070,
+    "data": {
+      "turn": 1
+    }
+  },
+  {
+    "type": "agent/inbox/spliced",
+    "seq": 5,
+    "time": 1795182342070,
+    "data": {
+      "target": "next-turn",
+      "start": 0,
+      "removedCount": 1,
+      "inserted": []
+    }
+  },
+  {
+    "type": "step/start",
+    "seq": 6,
+    "time": 1795182342103,
+    "data": {
+      "turn": 1,
+      "step": 1
+    }
+  },
+  {
+    "type": "system/message",
+    "seq": 7,
+    "time": 1795182342104,
+    "data": {
+      "turn": 1,
+      "step": 1,
+      "message": {
+        "role": "system",
+        "content": [
+          {
+            "type": "text",
+            "text": "Synthetic native-history replay; no model invocation."
+          }
+        ],
+        "source": {
+          "kind": "system-prompt"
+        },
+        "id": "ba998e4b-9f27-410f-b20f-028a42b0ab7c"
+      }
+    },
+    "surfaceOp": "append"
+  },
+  {
+    "type": "user/message",
+    "seq": 8,
+    "time": 1795182342105,
+    "data": {
+      "content": [
+        {
+          "type": "text",
+          "text": "请核对三条销售记录，计算合计，并简要说明结果。"
+        }
+      ],
+      "source": {
+        "kind": "user",
+        "rpcId": "76621b92-7b25-47a0-8d6c-c958f957bfd8",
+        "clientTimeZone": "America/Los_Angeles"
+      },
+      "role": "user",
+      "id": "21d24663-0a88-4376-a2a6-5625819789ab"
+    },
+    "surfaceOp": "append"
+  },
+  {
+    "type": "user/message",
+    "seq": 9,
+    "time": 1795182342105,
+    "data": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Synthetic runtime context at __WORKSPACE__."
+        }
+      ],
+      "source": {
+        "kind": "runtime-context",
+        "form": "snapshot",
+        "sections": [
+          {
+            "name": "working-directory:current",
+            "text": "__WORKSPACE__"
+          }
+        ]
+      },
+      "role": "user",
+      "id": "1704ee01-6436-45a7-92a3-4e3057504526"
+    },
+    "surfaceOp": "append"
+  },
+  {
+    "type": "user/message",
+    "seq": 10,
+    "time": 1795182342105,
+    "data": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Time sampled while preparing turn 1, step 1: 2026-11-20T05:45:42-08:00[America/Los_Angeles]\nBrowser time zone for this request: America/Los_Angeles. Interpret otherwise-unqualified dates and times in this zone.\nElapsed since the preceding model-visible message: unavailable."
+        }
+      ],
+      "source": {
+        "kind": "time-context",
+        "form": "snapshot",
+        "sections": [
+          {
+            "name": "time-context",
+            "text": "Time sampled while preparing turn 1, step 1: 2026-11-20T05:45:42-08:00[America/Los_Angeles]\nBrowser time zone for this request: America/Los_Angeles. Interpret otherwise-unqualified dates and times in this zone.\nElapsed since the preceding model-visible message: unavailable."
+          }
+        ]
+      },
+      "role": "user",
+      "id": "3b4b698d-d859-4225-a8b5-8aff1c8be1e2"
+    },
+    "surfaceOp": "append"
+  },
+  {
+    "type": "request/header",
+    "seq": 11,
+    "time": 1795182342106,
+    "data": {
+      "header": {
+        "config": {
+          "provider": "fixture",
+          "model": "fixture",
+          "maxTokens": 4096
+        }
+      },
+      "reason": "initial"
+    }
+  },
+  {
+    "type": "request/context",
+    "seq": 12,
+    "time": 1795182342106,
+    "data": {
+      "provider": "fixture",
+      "model": "fixture",
+      "contextWindow": 272000
+    }
+  },
+  {
+    "type": "session/title",
+    "seq": 13,
+    "time": 1795182342109,
+    "data": {
+      "title": "核对销售记录并计算合计",
+      "messageSeqs": [8],
+      "source": {
+        "kind": "fallback"
+      }
+    }
+  },
+  {
+    "type": "assistant/message",
+    "seq": 14,
+    "time": 1795182345759,
+    "data": {
+      "turn": 1,
+      "step": 1,
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "tool-call",
+            "id": "call_edff5bb410664842b87c0714d20769d3|fc_05adaaf82e0ab06f016b004f08658087d29f8de9319b67fb27",
+            "name": "bash",
+            "arguments": "{\"description\":\"执行用户指定的单次 Node 命令\",\"command\":\"node tasks/pair/action.cjs\",\"workdir\":\"__WORKSPACE__\"}"
+          }
+        ],
+        "source": {
+          "kind": "model",
+          "provider": "fixture",
+          "model": "fixture"
+        },
+        "id": "6f87d91f-298f-4178-ace1-5b9f39d61584"
+      },
+      "usage": {
+        "inputTokens": 6055,
+        "outputTokens": 76,
+        "totalTokens": 6131
+      },
+      "stream": []
+    },
+    "surfaceOp": "append"
+  },
+  {
+    "type": "tool/call",
+    "seq": 15,
+    "time": 1795182345761,
+    "data": {
+      "turn": 1,
+      "step": 1,
+      "callId": "call_edff5bb410664842b87c0714d20769d3|fc_05adaaf82e0ab06f016b004f08658087d29f8de9319b67fb27",
+      "name": "bash",
+      "arguments": "{\"description\":\"执行用户指定的单次 Node 命令\",\"command\":\"node tasks/pair/action.cjs\",\"workdir\":\"__WORKSPACE__\"}"
+    }
+  },
+  {
+    "type": "job/registered",
+    "seq": 16,
+    "time": 1795182345780,
+    "data": {
+      "jobId": "bash-3fc89ecba65449ce",
+      "owner": "session-30542c20-2c6c-4599-85ac-1fb432a280ff",
+      "kind": "bash",
+      "label": "node tasks/pair/action.cjs",
+      "startedAt": 1795182345780,
+      "toolCall": {
+        "callId": "call_edff5bb410664842b87c0714d20769d3|fc_05adaaf82e0ab06f016b004f08658087d29f8de9319b67fb27",
+        "rootCallId": "call_edff5bb410664842b87c0714d20769d3|fc_05adaaf82e0ab06f016b004f08658087d29f8de9319b67fb27"
+      }
+    }
+  },
+  {
+    "type": "job/settled",
+    "seq": 17,
+    "time": 1795182345943,
+    "data": {
+      "jobId": "bash-3fc89ecba65449ce",
+      "owner": "session-30542c20-2c6c-4599-85ac-1fb432a280ff",
+      "kind": "bash",
+      "label": "node tasks/pair/action.cjs",
+      "startedAt": 1795182345780,
+      "toolCall": {
+        "callId": "call_edff5bb410664842b87c0714d20769d3|fc_05adaaf82e0ab06f016b004f08658087d29f8de9319b67fb27",
+        "rootCallId": "call_edff5bb410664842b87c0714d20769d3|fc_05adaaf82e0ab06f016b004f08658087d29f8de9319b67fb27"
+      },
+      "finishedAt": 1795182345943,
+      "status": "completed",
+      "cause": "producer",
+      "producerReported": true,
+      "detail": "exit code: 0"
+    }
+  },
+  {
+    "type": "tool/result",
+    "seq": 18,
+    "time": 1795182345944,
+    "data": {
+      "turn": 1,
+      "step": 1,
+      "message": {
+        "role": "tool",
+        "source": {
+          "kind": "tool",
+          "callId": "call_edff5bb410664842b87c0714d20769d3|fc_05adaaf82e0ab06f016b004f08658087d29f8de9319b67fb27"
+        },
+        "toolCallId": "call_edff5bb410664842b87c0714d20769d3|fc_05adaaf82e0ab06f016b004f08658087d29f8de9319b67fb27",
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"P4_ACTION_DONE\":true,\"rows\":3,\"totalCents\":5630,\"started\":1795182345931,\"actionUnixMs\":1795182345931}\n"
+          }
+        ],
+        "isError": false,
+        "id": "2501f081-1398-4e0a-9a3c-3bd462e52ad7"
+      },
+      "meta": {
+        "cwd": "__WORKSPACE__"
+      }
+    },
+    "sourceEventSeqs": [15],
+    "surfaceOp": "append"
+  },
+  {
+    "type": "step/end",
+    "seq": 19,
+    "time": 1795182345945,
+    "data": {
+      "turn": 1,
+      "step": 1
+    }
+  },
+  {
+    "type": "step/start",
+    "seq": 20,
+    "time": 1795182345960,
+    "data": {
+      "turn": 1,
+      "step": 2
+    }
+  },
+  {
+    "type": "assistant/message",
+    "seq": 21,
+    "time": 1795182353029,
+    "data": {
+      "turn": 1,
+      "step": 2,
+      "message": {
+        "role": "assistant",
+        "content": [
+          {
+            "type": "text",
+            "text": "命令已执行一次，结果为 P4_ACTION_DONE=true，共 3 行，合计 5630 分。"
+          }
+        ],
+        "source": {
+          "kind": "model",
+          "provider": "fixture",
+          "model": "fixture"
+        },
+        "id": "2bbaf4a3-2ef0-441a-8a76-67b6647de94e"
+      },
+      "usage": {
+        "inputTokens": 1699,
+        "outputTokens": 58,
+        "totalTokens": 1757
+      },
+      "stream": []
+    },
+    "surfaceOp": "append"
+  },
+  {
+    "type": "step/end",
+    "seq": 22,
+    "time": 1795182353030,
+    "data": {
+      "turn": 1,
+      "step": 2
+    }
+  },
+  {
+    "type": "turn/end",
+    "seq": 23,
+    "time": 1795182353031,
+    "data": {
+      "turn": 1,
+      "reason": {
+        "kind": "completed"
+      }
+    }
+  },
+  {
+    "seq": 24,
+    "time": 1795182353032,
+    "type": "subagent/catalog",
+    "data": {
+      "version": 0,
+      "childId": "session-00000000-0000-4000-8000-000000000037",
+      "childCreatedAt": 1795182341672,
+      "mode": "one-shot",
+      "label": "复核三条销售记录"
+    }
+  },
+  {
+    "type": "session/end-seed",
+    "seq": 25,
+    "time": 1795231607023,
+    "data": {}
+  }
+]

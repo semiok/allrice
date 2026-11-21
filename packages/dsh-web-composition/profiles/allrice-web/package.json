@@ -1,0 +1,17 @@
+{
+  "name": "allrice-web-profile",
+  "private": true,
+  "packageManager": "pnpm@10.33.3",
+  "dependencies": {
+    "@allrice/dsh-web-composition": "0.1.0"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "@allrice/dsh-web-composition"
+      ]
+    }
+  }
+}
