@@ -25,7 +25,7 @@ n3 接收基点为 `6eab934e51721a13f9b2537eca670ccffe0cb31d`，只重放本卡�
 
 恢复只交原业务 owner 对原 call/digest/receipt 核实已发生事实；MCP 不自动重发、换 key 或恢复授权。无需新表、限额、TTL、模型 permit 或 Agent 状态。approval/bridge 继续只保留 namespace，不新增工具或外发权限。
 
-n3 基线的 `@allrice/contracts` 尚没有旧 #899 曾导出的 `ExecutionGenerationSchema`/`ExecutionGeneration`，本卡原 server 仍依赖它；单文件首轮因此在 binding schema 构造处统一失败。该前置须由最新 271 公共合同封版/映射解决，不能复制旧 #899 或把 proposed producer 说成已接入。具名 API 已落源码不等于当前基线已可运行或通过验收。
+代际依赖采用 271 owner 正式回交的 `c1aaee8017e960da1c64a8fa885c16a7bcbe895f:packages/contracts/src/d-entry.ts` 原字节（blob `5a2009a7a37b442e965af579f21f02de81b52897`），本树 contracts barrel 仅增加该文件 export；共同依赖 common.ts 与 n3 base 同 blob。没有合入旧 #899 或 271 身份/监听实现。`ExecutionGenerationSchema`/`ExecutionGeneration` 只校产品写代际，不证明当前身份、native call、VM ready 或生产装配。旧单文件缺导出的首败保留；新组合仍须自身门禁和独立增审，接口仍为 candidate，未正式验收。
 
 ## 原生对照与 SaaS 边界
 

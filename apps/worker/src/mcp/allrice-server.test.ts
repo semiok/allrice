@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ErrorCode,
+  McpError,
+  ToolListChangedNotificationSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import { ReferenceSelectionErrorSchema } from '@allrice/contracts';
 import { riceToolDefinitions } from '../tool-broker/definitions.js';
 import {
@@ -123,21 +127,29 @@ describe('AllRice native SDK MCP managed boundary (contract fixtures, no product
       finish = gate();
     let signal: AbortSignal | undefined;
     let completed = false;
-    f.services.memoryRead = async (_scope, _input, incoming) => {
-      signal = incoming;
-      incoming.addEventListener('abort', () => aborted.resolve(), {
-        once: true,
-      });
-      entered.resolve();
-      // Simulates an owner Promise which cannot finish until its I/O joins.
-      await finish.promise;
-      completed = true;
-      return { content: [{ type: 'text', text: 'late private result' }] };
-    };
+    const read = vi.fn<AllriceMcpMemoryRead>(
+      async (_scope, _input, incoming) => {
+        signal = incoming;
+        incoming.addEventListener('abort', () => aborted.resolve(), {
+          once: true,
+        });
+        entered.resolve();
+        // Simulates an owner Promise which cannot finish until its I/O joins.
+        await finish.promise;
+        completed = true;
+        return { content: [{ type: 'text', text: 'late private result' }] };
+      },
+    );
+    f.services.memoryRead = read;
     const first = await connect(f);
     const second = await connect(fixture());
+    let disclosed = false;
     const pending = first.client
       .callTool({ name: 'memory_read', arguments: { number: 1 } })
+      .then((result) => {
+        disclosed = true;
+        return result;
+      })
       .catch((error: unknown) => error);
     let revoked: Promise<void> | undefined;
     let idle: Promise<void> | undefined;
@@ -152,19 +164,28 @@ describe('AllRice native SDK MCP managed boundary (contract fixtures, no product
       await aborted.promise;
       expect(closed).toBe(false);
       expect(completed).toBe(false);
-      expect((await first.client.listTools()).tools).toEqual([]);
+      expect(signal?.reason).toBeInstanceOf(DOMException);
+      expect(signal?.reason.name).toBe('AbortError');
+      const nativeAbort = {
+        code: signal!.reason.code,
+        message: expect.stringContaining(signal!.reason.message),
+      };
+      // operation rejects with the native abort before list/current can run.
+      await expect(first.client.listTools()).rejects.toMatchObject(nativeAbort);
       await expect(
         first.client.callTool({
           name: 'memory_read',
           arguments: { number: 2 },
         }),
-      ).rejects.toThrow('Managed binding unavailable');
+      ).rejects.toMatchObject(nativeAbort);
+      expect(read).toHaveBeenCalledTimes(1);
       await expect(
         second.client.callTool({
           name: 'memory_read',
           arguments: { number: 1 },
         }),
       ).resolves.toMatchObject({ content: [{ text: 'actual module result' }] });
+      expect(closed).toBe(false);
     } finally {
       finish.resolve();
       await revoked;
@@ -172,6 +193,15 @@ describe('AllRice native SDK MCP managed boundary (contract fixtures, no product
       await pending;
     }
     expect(completed).toBe(true);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(disclosed).toBe(false);
+    const late = await pending;
+    expect(late).toBeInstanceOf(McpError);
+    // SDK response delivery can observe the native abort or joined close;
+    // neither is a successful late disclosure of the owner's result.
+    expect([signal!.reason.code, ErrorCode.ConnectionClosed]).toContain(
+      (late as McpError).code,
+    );
     await first.controller.close(); // Joined shutdown is idempotent with revoke.
   });
 
