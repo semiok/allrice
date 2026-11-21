@@ -18,6 +18,14 @@ import {
 } from './test-support.ts';
 
 describe('host lifecycle service entrypoints (synthetic runtime; not real VM acceptance)', () => {
+  it('admission qualification fails closed without a formally composed shared host', async () => {
+    const h = harness(),
+      { rc, binding } = await running(h);
+    await expect(
+      h.service.assertAdmissionBinding(rc, binding, signal()),
+    ).rejects.toMatchObject({ code: 'RUNTIME_NOT_READY' });
+    await expect(h.service.resolve(rc, signal())).resolves.toEqual(binding);
+  });
   it('callback fulfil即关scope：最终egress检查阻塞期间late launch零派发，已移交job不误kill', async () => {
     const h = harness(),
       rc = context();

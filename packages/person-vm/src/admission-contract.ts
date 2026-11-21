@@ -49,8 +49,9 @@ export type PersonVmAdmissionObservation = Readonly<{
   (
     | Readonly<{
         state: 'known';
-        /** Nonnegative integers. Gateway includes model/refresh transports and
-         * actual drain. Entry includes admitted connections/typing/prewarm. */
+        /** Nonnegative integers. Gateway includes model/refresh transports,
+         * managed read I/O and actual delivery/drain. Entry includes admitted
+         * connections/typing/prewarm. Each operation has one permit owner. */
         active: number;
         /** Admitted BEFORE freeze, including memory/8-slot/other host waits.
          * Never move these requests into deferred to manufacture zero. */
@@ -72,7 +73,10 @@ export type PersonVmAdmissionObservation = Readonly<{
  * read and wait; changed cursor/source or a source gap must wake the waiter.
  * null uses the subscription's initial watermark. No polling interval implied. */
 export interface PersonVmAdmissionSubscription {
-  wait(after: PersonVmActivityCursor | null, signal: AbortSignal): Promise<void>;
+  wait(
+    after: PersonVmActivityCursor | null,
+    signal: AbortSignal,
+  ): Promise<void>;
   /** Idempotently cancel/join this subscription's waits. Does NOT thaw a gate,
    * close its owner, cancel accepted work, or prove remote effects settled. */
   close(): Promise<void>;
@@ -100,7 +104,10 @@ export interface PersonVmAdmissionPort {
   ): Promise<PersonVmAdmissionObservation>;
   /** Recheck the exact authoritative lease and this participant's frozen ACK.
    * A read by itself is not the atomic stop commit; use authority.withLease. */
-  assertFrozen(lease: PersonVmAdmissionLease, signal: AbortSignal): Promise<void>;
+  assertFrozen(
+    lease: PersonVmAdmissionLease,
+    signal: AbortSignal,
+  ): Promise<void>;
   /** Release ONLY the exact holder. A late/stale thaw cannot open a new freeze.
    * One participant's release only records deferred demand. Before actual wake/boot,
    * instance/epoch advance or dispatch, the model host must confirm BOTH
@@ -120,7 +127,10 @@ export interface PersonVmAdmissionPort {
 export interface PersonVmAdmissionAuthorityPort {
   /** Current host owner + complete binding/version, independent of running
    * phase. starting MUST NOT call the running-only assertCurrentBinding. */
-  assertLease(lease: PersonVmAdmissionLease, signal: AbortSignal): Promise<void>;
+  assertLease(
+    lease: PersonVmAdmissionLease,
+    signal: AbortSignal,
+  ): Promise<void>;
   /** Compare AND execute under the same per-person admission/version fence.
    * Used for participant CAS and final recheck + stop/confirmation; freeze/thaw
    * are invoked outside the final callback, assertFrozen inside it. No nested

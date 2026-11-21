@@ -14,6 +14,7 @@ import { assertRuntimeFixtureDatabase } from '../../database/src/runtime-fixture
 import { PersonVmService } from './person-vm.ts';
 import { PostgresPersonVmStore, type PersonVmSqlFactory } from './store.ts';
 import { PERSON_VM_IDLE_MS } from './contract.ts';
+import type { PersonVmAdmissionBindingPort } from './index.ts';
 import type { PersonVmAdmissionPermit } from './admission-boundary.ts';
 import {
   advanceIdleCandidate,
@@ -285,6 +286,188 @@ suite(
         await outcome;
       }
     }
+
+    it('public qualifier passes a committed freeze while its real physical owner is still settling; old resolve refuses', async () => {
+      const committed = latch(),
+        release = latch();
+      let block = false;
+      const sql = factory('qualify', async () => {
+        if (!block) return;
+        block = false;
+        committed.resolve();
+        await release.promise;
+      });
+      const h = await setup(sql.open);
+      const lease = await h.host.issue(h.rc, h.binding, signal());
+      block = true;
+      const freezing = own(
+        h.host.participant('gateway').freeze(lease, signal()),
+      );
+      await committed.promise; // Real COMMIT, before freeze audit/physical release.
+      const port: PersonVmAdmissionBindingPort = h.service;
+      await port.assertAdmissionBinding(h.rc, h.binding, signal());
+      expect((await h.store.read(h.rc.actor.id))!.leaseOwner).not.toBe(null);
+      await expect(h.service.resolve(h.rc, signal())).rejects.toMatchObject({
+        code: 'LEASE_CONFLICT',
+      });
+      const item = await permit(h, 'gateway');
+      expect(item.disposition).toBe('deferred');
+      await expect(
+        h.host.activate(
+          item,
+          async () => {
+            throw new Error('forbidden dispatch');
+          },
+          signal(),
+        ),
+      ).rejects.toMatchObject({ code: 'LEASE_CONFLICT' });
+      expect(await counts(h.rc.actor.id)).toEqual([
+        { disposition: 'deferred', count: 1 },
+      ]);
+      release.resolve();
+      await freezing;
+    });
+    it.each([
+      ['membership', 'AUTHORIZATION_DENIED'],
+      ['identity', 'AUTHORIZATION_DENIED'],
+      ['actor', 'AUTHORIZATION_DENIED'],
+      ['person', 'AUTHORIZATION_DENIED'],
+      ['tenant', 'AUTHORIZATION_DENIED'],
+      ['context-tenant', 'AUTHORIZATION_DENIED'],
+      ['vm', 'LEASE_LOST'],
+      ['instance', 'LEASE_LOST'],
+      ['epoch', 'LEASE_LOST'],
+      ['revoked', 'AUTHORIZATION_DENIED'],
+      ['deleted', 'NOT_FOUND'],
+      ['disk', 'NOT_FOUND'],
+      ['missing-receipt', 'EGRESS_UNAVAILABLE'],
+      ['receipt-binding', 'EGRESS_BINDING_INVALID'],
+      ['receipt-ports', 'EGRESS_BINDING_INVALID'],
+      ['inactive-receipt', 'EGRESS_UNAVAILABLE'],
+    ] as const)(
+      'public qualification rejects %s without admitting work',
+      async (kind, code) => {
+        const h = await setup();
+        let binding = h.binding,
+          rc = h.rc;
+        const record = (await h.store.read(h.rc.actor.id))!;
+        switch (kind) {
+          case 'membership':
+            h.authorize(false);
+            break;
+          case 'identity':
+            h.options.authority.authorize = async () => ({
+              personId: randomUUID(),
+              organizationId: h.rc.organizationId,
+            });
+            break;
+          case 'actor':
+            rc = { ...rc, actor: { type: 'service', id: rc.actor.id } };
+            break;
+          case 'person':
+            binding = { ...binding, personId: randomUUID() };
+            break;
+          case 'tenant':
+            binding = { ...binding, organizationId: randomUUID() };
+            break;
+          case 'context-tenant':
+            rc = { ...rc, organizationId: randomUUID() };
+            break;
+          case 'vm':
+            binding = { ...binding, vmId: randomUUID() };
+            break;
+          case 'instance':
+            binding = { ...binding, instanceId: randomUUID() };
+            break;
+          case 'epoch':
+            binding = { ...binding, leaseEpoch: binding.leaseEpoch + 1 };
+            break;
+          case 'revoked':
+            await db`update person_virtual_machines set admission_state=jsonb_set(admission_state,'{revoked}','"fixture-current-disable"'::jsonb),admission_revision=admission_revision+1 where person_id=${rc.actor.id}`;
+            break;
+          case 'deleted':
+            await db`update person_virtual_machines set phase='deleted' where person_id=${rc.actor.id}`;
+            break;
+          case 'disk':
+            await db`update person_virtual_machines set disk_retained=false where person_id=${rc.actor.id}`;
+            break;
+          case 'missing-receipt':
+            await db`update person_virtual_machines set phase='starting',egress_receipt=null where person_id=${rc.actor.id}`;
+            break;
+          case 'receipt-binding':
+          case 'receipt-ports': {
+            const receipt = {
+              ...record.egressReceipt!,
+              ...(kind === 'receipt-binding'
+                ? { binding: { ...binding, instanceId: randomUUID() } }
+                : { gatewayPorts: [0] }),
+            };
+            await db`update person_virtual_machines set egress_receipt=${db.json(receipt as unknown as postgres.JSONValue)} where person_id=${rc.actor.id}`;
+            break;
+          }
+          case 'inactive-receipt':
+            h.active.clear();
+            break;
+        }
+        await expect(
+          h.service.assertAdmissionBinding(rc, binding, signal()),
+        ).rejects.toMatchObject({ code });
+        expect(await counts(h.rc.actor.id)).toEqual([]);
+      },
+    );
+    it('qualifier requires the original shared host and cannot replace its factory', async () => {
+      const h = await setup();
+      const other = factory('wrong').open;
+      expect(() =>
+        h.service.createAdmissionHost({ openSql: other }),
+      ).toThrowError('LEASE_CONFLICT');
+      const fresh = new PersonVmService(h.options);
+      expect(() => fresh.createAdmissionHost({ openSql: other })).toThrowError(
+        'PROVIDER_FAILED',
+      );
+      await expect(
+        fresh.assertAdmissionBinding(h.rc, h.binding, signal()),
+      ).rejects.toMatchObject({ code: 'RUNTIME_NOT_READY' });
+      await h.service.assertAdmissionBinding(h.rc, h.binding, signal());
+      fresh.createAdmissionHost({ openSql: h.physical.open });
+      await fresh.assertAdmissionBinding(h.rc, h.binding, signal());
+    });
+    it('starting qualification is not ordinary admission, dispatch or runtime readiness', async () => {
+      const h = await setup();
+      const before = [...h.log];
+      await db`update person_virtual_machines set phase='starting' where person_id=${h.rc.actor.id}`;
+      await h.service.assertAdmissionBinding(h.rc, h.binding, signal());
+      await expect(
+        h.host.admit(
+          h.rc,
+          h.binding,
+          { participant: 'gateway', operationId: randomUUID() },
+          signal(),
+        ),
+      ).rejects.toMatchObject({ code: 'RUNTIME_NOT_READY' });
+      expect(await counts(h.rc.actor.id)).toEqual([]);
+      expect(h.log).toEqual(before);
+    });
+    it('qualification preserves current authority errors and cancellation after local egress checking', async () => {
+      const h = await setup();
+      const original = h.options.authority.authorize;
+      const failure = new Error('actual current identity source failed');
+      h.options.authority.authorize = async () => {
+        throw failure;
+      };
+      await expect(
+        h.service.assertAdmissionBinding(h.rc, h.binding, signal()),
+      ).rejects.toBe(failure);
+      h.options.authority.authorize = original;
+      const abort = new AbortController();
+      h.egress.assertActive = async () => {
+        abort.abort(failure);
+      };
+      await expect(
+        h.service.assertAdmissionBinding(h.rc, h.binding, abort.signal),
+      ).rejects.toBe(failure);
+      expect(await counts(h.rc.actor.id)).toEqual([]);
+    });
 
     it('pre-freeze memory/8-slot wait stays queued; finish waits for actual cancel/join', async () => {
       const h = await setup(),

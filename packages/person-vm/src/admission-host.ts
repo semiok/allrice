@@ -26,6 +26,7 @@ import type {
 } from './admission-contract.ts';
 import {
   type PostgresPersonVmAdmissionStore,
+  checkAdmissionBinding,
   released,
   rowBinding,
   sameBinding,
@@ -181,9 +182,7 @@ export class PersonVmAdmissionHost
       throw new PersonVmError('AUTHORIZATION_DENIED');
   }
   private check(tx: AdmissionTransaction, binding: PersonVmBinding) {
-    if (!sameBinding(rowBinding(tx.row), binding))
-      throw new PersonVmError('LEASE_LOST');
-    if (tx.state.revoked) throw new PersonVmError('AUTHORIZATION_DENIED');
+    checkAdmissionBinding(tx, binding);
   }
   private exact(tx: AdmissionTransaction, lease: PersonVmAdmissionLease) {
     this.check(tx, lease.binding);

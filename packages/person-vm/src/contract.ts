@@ -31,6 +31,8 @@ export interface PersonVmEgressPort {
     binding: PersonVmBinding,
     signal: AbortSignal,
   ): Promise<PersonVmEgressReceipt>;
+  /** Local exact-receipt liveness only. Must not call back into VM binding
+   * verification (including admission qualification), which invokes this port. */
   assertActive(
     receipt: PersonVmEgressReceipt,
     signal: AbortSignal,
@@ -164,6 +166,19 @@ export interface PersonVmPort {
     signal: AbortSignal,
   ): Promise<PersonVmBinding>;
   assertCurrentBinding(
+    context: RequestContext,
+    binding: PersonVmBinding,
+    signal: AbortSignal,
+  ): Promise<void>;
+}
+
+/** Host-only admission ingress qualification, NOT ready/dispatch permission.
+ * Requires this service's existing shared admission host. Recheck current user,
+ * organization, all five binding fields, revocation and exact egress receipt.
+ * A physical lease/freeze does not itself deny qualification; actual work MUST
+ * still enter the same shared boundary before any side effects. Never cache. */
+export interface PersonVmAdmissionBindingPort {
+  assertAdmissionBinding(
     context: RequestContext,
     binding: PersonVmBinding,
     signal: AbortSignal,

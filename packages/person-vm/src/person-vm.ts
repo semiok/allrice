@@ -9,6 +9,7 @@ import {
   PersonVmError,
   PERSON_VM_COLD_MS,
   type PersonVmAction,
+  type PersonVmAdmissionBindingPort,
   type PersonVmActivity,
   type PersonVmAuthority,
   type PersonVmBinding,
@@ -19,7 +20,10 @@ import {
   type PersonVmView,
 } from './contract.ts';
 import { PersonVmAdmissionHost } from './admission-host.ts';
-import { PostgresPersonVmAdmissionStore } from './admission-store.ts';
+import {
+  checkAdmissionBinding,
+  PostgresPersonVmAdmissionStore,
+} from './admission-store.ts';
 import type { PersonVmNativeActivityPort } from './admission-contract.ts';
 import type { PersonVmSqlFactory } from './store.ts';
 import type { PersonVmDiskPort } from './encrypted-disk.ts';
@@ -61,8 +65,11 @@ function safeError(error: unknown) {
     : new PersonVmError('PROVIDER_FAILED', { cause: error });
 }
 
-export class PersonVmService implements PersonVmHostPort {
+export class PersonVmService
+  implements PersonVmHostPort, PersonVmAdmissionBindingPort
+{
   private admissionHost?: PersonVmAdmissionHost;
+  private admissionShared?: PostgresPersonVmAdmissionStore;
   private readonly now: () => Date;
   private readonly currentLease = new AsyncLocalStorage<{
     active: boolean;
@@ -105,9 +112,10 @@ export class PersonVmService implements PersonVmHostPort {
     if (!(this.options.store instanceof PostgresPersonVmStore))
       throw new PersonVmError('PROVIDER_FAILED');
     this.options.store.assertAdmissionFactory(input.openSql);
-    return (this.admissionHost = new PersonVmAdmissionHost({
+    const shared = new PostgresPersonVmAdmissionStore(input.openSql);
+    const host = new PersonVmAdmissionHost({
       ...input,
-      shared: new PostgresPersonVmAdmissionStore(input.openSql),
+      shared,
       store: this.options.store,
       authority: this.options.authority,
       leaseTtlMs: this.options.leaseTtlMs,
@@ -136,7 +144,11 @@ export class PersonVmService implements PersonVmHostPort {
           this.stopOwned(context, lease, signal, true),
         );
       },
-    }));
+    });
+    // Publish together only after factory validation and host construction. This
+    // is the SAME authority, never a replacement or another caller's factory.
+    this.admissionShared = shared;
+    return (this.admissionHost = host);
   }
   private async identity(
     context: RequestContext,
@@ -844,6 +856,42 @@ export class PersonVmService implements PersonVmHostPort {
         return view(row);
       },
     );
+  }
+  async assertAdmissionBinding(
+    context: RequestContext,
+    binding: PersonVmBinding,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const identity = await this.identity(context, 'read', signal);
+    if (
+      context.actor.type !== 'user' ||
+      identity.personId !== binding.personId ||
+      identity.organizationId !== binding.organizationId
+    )
+      throw new PersonVmError('AUTHORIZATION_DENIED');
+    const shared = this.admissionShared;
+    if (!this.admissionHost || !shared)
+      throw new PersonVmError('RUNTIME_NOT_READY');
+    const egress = this.options.egress;
+    if (!egress) throw new PersonVmError('EGRESS_UNAVAILABLE');
+    const receipt = await shared.transaction(
+      identity.personId,
+      signal,
+      async (tx) => {
+        checkAdmissionBinding(tx, binding);
+        if (tx.row.disk_retained !== true) throw new PersonVmError('NOT_FOUND');
+        if (!tx.row.egress_receipt)
+          throw new PersonVmError('EGRESS_UNAVAILABLE');
+        return this.receipt(
+          binding,
+          tx.row.egress_receipt as PersonVmEgressReceipt,
+        );
+      },
+    );
+    // No physical lease/running assertion: admit/activate/wake retain those
+    // responsibilities. Do not hold a PG row lock while checking local egress.
+    await egress.assertActive(receipt, signal);
+    signal.throwIfAborted();
   }
   async resolve(context: RequestContext, signal: AbortSignal) {
     const identity = await this.identity(context, 'read', signal);

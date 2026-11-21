@@ -67,6 +67,16 @@ export function rowBinding(row: Record<string, unknown>): PersonVmBinding {
   };
 }
 
+/** Internal shared check for the producer and its service's ingress qualifier. */
+export function checkAdmissionBinding(
+  tx: AdmissionTransaction,
+  binding: PersonVmBinding,
+) {
+  if (!sameBinding(rowBinding(tx.row), binding))
+    throw new PersonVmError('LEASE_LOST');
+  if (tx.state.revoked) throw new PersonVmError('AUTHORIZATION_DENIED');
+}
+
 /** Only this PG projection owns gate/permit facts. Local handles never count as authority. */
 export class PostgresPersonVmAdmissionStore {
   constructor(private readonly openSql: PersonVmSqlFactory) {}
