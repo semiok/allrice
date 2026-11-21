@@ -1,5 +1,11 @@
 export * from './contract.ts';
 export type {
+  PersonVmWebRoster,
+  PersonVmWebEndpointReceipt,
+  PersonVmWebStartup,
+  PersonVmWebRosterPort,
+} from './web-endpoints.ts';
+export type {
   PersonVmMemoryGuestPlan,
   PersonVmGuestCommand,
   PersonVmJobExit,

@@ -1,5 +1,6 @@
 import type { PersonVmBootstrapScope } from './guest-bootstrap.ts';
 import {
+  chmod,
   lstat,
   mkdtemp,
   readFile,
@@ -11,13 +12,15 @@ import {
 } from 'node:fs/promises';
 import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { createServer } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MicrosandboxPersonVm } from './microsandbox.ts';
 import { runCommand } from './process.ts';
 import { context, harness, signal } from './test-support.ts';
 import { PersonVmService } from './person-vm.ts';
 import type { PersonVmMemoryGuestPlan } from './guest-bootstrap.ts';
+import type { PersonVmWebRoster, PersonVmWebStartup } from './web-endpoints.ts';
 
 const temporary: string[] = [];
 afterEach(async () => {
@@ -54,9 +57,16 @@ function save(){fs.writeFileSync(f,JSON.stringify(v));}
 if(a[0]==='--version')console.log('microsandbox 0.7.16');
 else if(a[0]==='list')console.log(JSON.stringify(v.name?[{name:v.name,status:v.status}]:[]));
 else if(a[0]==='pull'){}
-else if(a[0]==='create'){v.name=a[a.indexOf('--name')+1];v.status='Running';}
+else if(a[0]==='create'){
+ v.name=a[a.indexOf('--name')+1];v.status='Running';
+ v.ports=a.flatMap((arg,i)=>arg==='-p'?[a[i+1].split(':')]:[]).map(([host_bind,h,g])=>({host_bind,host_port:Number(h),guest_port:Number(g),protocol:'tcp'}));
+}
+else if(a[0]==='inspect'){
+ const ports=v.ports??[],active=mode.startsWith('web-inspect')?[]:ports;
+ console.log(JSON.stringify({name:v.name,status:v.status,config:{network:{ports}},active_config:{network:{ports:active}},pending_changes:[]}));
+}
 else if(a[0]==='start')v.status='Running';
-else if(a[0]==='stop'){if(!['lost-id-unknown-stop','auth-unknown-stop'].includes(mode))v.status='Stopped';}
+else if(a[0]==='stop'){if(!['lost-id-unknown-stop','auth-unknown-stop','web-inspect-unknown-stop'].includes(mode))v.status='Stopped';}
 else if(a[0]==='ping'){if(v.status!=='Running')process.exit(41);}
 else if(a[0]==='cp'){
  const meta=fs.statSync(a[1]);(v.copies??=[]).push({target:a[2],mode:meta.mode&511,contents:fs.readFileSync(a[1],'utf8')});
@@ -137,6 +147,7 @@ save();
   const service = new PersonVmService({ ...h.options, native });
   return {
     h,
+    native,
     rc,
     service,
     mount,
@@ -149,6 +160,239 @@ save();
 }
 
 describe('Microsandbox public CLI protocol through real child processes (no actual VM)', () => {
+  function roster(
+    f: Awaited<ReturnType<typeof bootstrapFixture>>,
+    count = 2,
+  ): PersonVmWebRoster {
+    const facts = {
+      personId: f.rc.actor.id,
+      organizationId: f.rc.organizationId,
+      entries: Array.from({ length: count }, () => ({
+        workspaceId: randomUUID(),
+        employeeInstanceId: randomUUID(),
+        employeeRevision: 1,
+        employeeVersionId: randomUUID(),
+      })).sort((a, b) =>
+        a.employeeInstanceId.localeCompare(b.employeeInstanceId),
+      ),
+    };
+    return {
+      ...facts,
+      digest: `sha256:${createHash('sha256').update(JSON.stringify(facts)).digest('hex')}`,
+    };
+  }
+  it('首次真实CLI create仅发布实际员工清单并核active inspect；0600 host manifest与scope receipt对应', async () => {
+    const f = await bootstrapFixture(),
+      assigned = roster(f);
+    let startup: PersonVmWebStartup | undefined;
+    f.h.runtime.start = async (_binding, _signal, _scope, web) => {
+      startup = web;
+    };
+    const service = new PersonVmService({
+      ...f.h.options,
+      native: f.native,
+      nativeWeb: { prepare: async () => assigned },
+    });
+    const view = await service.prewarm(f.rc, { trigger: 'page' }, signal());
+    expect(view.ready).toBe(true); // Fixture runtime readiness, not native editor evidence.
+    expect(startup?.context).toBe(f.rc);
+    expect(startup?.receipt.rosterDigest).toBe(assigned.digest);
+    expect(startup?.receipt.binding).toEqual(
+      await service.resolve(f.rc, signal()),
+    );
+    const calls = await f.calls(),
+      creation = calls.find((args) => args[0] === 'create')!;
+    const mappings = creation.flatMap((arg, index) =>
+      arg === '-p' ? [creation[index + 1]] : [],
+    );
+    expect(mappings).toEqual(
+      startup!.receipt.endpoints.map(
+        (entry) => `127.0.0.1:${entry.hostPort}:${entry.guestPort}`,
+      ),
+    );
+    expect(mappings).toHaveLength(assigned.entries.length);
+    expect(
+      new Set(startup!.receipt.endpoints.map((entry) => entry.hostPort)).size,
+    ).toBe(assigned.entries.length);
+    expect(calls.some((args) => args[0] === 'inspect')).toBe(true);
+    const path = join(
+      f.mount,
+      'microsandbox/allrice-native-web-endpoints.json',
+    );
+    expect((await lstat(path)).mode & 0o777).toBe(0o600);
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    expect(manifest).toMatchObject({
+      vmId: view.vmId,
+      personId: f.rc.actor.id,
+      digest: assigned.digest,
+      endpoints: startup!.receipt.endpoints,
+    });
+    expect(Object.keys(manifest).sort()).toEqual([
+      'digest',
+      'endpoints',
+      'organizationId',
+      'personId',
+      'version',
+      'vmId',
+    ]);
+    expect(JSON.stringify(startup)).not.toMatch(
+      /ownerToken|mount|authenticatedUrl|\?token=/,
+    );
+    const original = await readFile(path);
+    expect(
+      (await service.prewarm(f.rc, { trigger: 'page' }, signal())).ready,
+    ).toBe(true);
+    expect(await readFile(path)).toEqual(original);
+    expect(
+      (await f.calls()).filter((args) => args[0] === 'create'),
+    ).toHaveLength(1);
+  });
+  it('运行中新增员工立即preparing；不hold等待、不改manifest、不modify/stop/restart已有任务', async () => {
+    const f = await bootstrapFixture();
+    let assigned = roster(f);
+    const service = new PersonVmService({
+      ...f.h.options,
+      native: f.native,
+      nativeWeb: { prepare: async () => assigned },
+    });
+    await service.prewarm(f.rc, { trigger: 'page' }, signal());
+    const manifest = join(
+      f.mount,
+      'microsandbox/allrice-native-web-endpoints.json',
+    );
+    const original = await readFile(manifest),
+      before = (await f.calls()).length;
+    const facts = {
+      personId: assigned.personId,
+      organizationId: assigned.organizationId,
+      entries: [...assigned.entries, ...roster(f, 1).entries].sort((a, b) =>
+        a.employeeInstanceId.localeCompare(b.employeeInstanceId),
+      ),
+    };
+    assigned = {
+      ...facts,
+      digest: `sha256:${createHash('sha256').update(JSON.stringify(facts)).digest('hex')}`,
+    };
+    await expect(
+      service.prewarm(f.rc, { trigger: 'input' }, signal()),
+    ).rejects.toMatchObject({ code: 'WEB_ENDPOINTS_PREPARING' });
+    expect(await readFile(manifest)).toEqual(original);
+    expect((await service.read(f.rc, signal()))?.phase).toBe('running');
+    expect(
+      (await f.calls())
+        .slice(before)
+        .some((args) =>
+          ['create', 'start', 'stop', 'modify', 'pull', 'exec', 'cp'].includes(
+            args[0]!,
+          ),
+        ),
+    ).toBe(false);
+  });
+  it.each(['web-inspect-mismatch', 'web-inspect-unknown-stop'])(
+    'active端口缺失即使pending_changes=[]也拒绝，%s清理必须真实off才detach',
+    async (mode) => {
+      const f = await bootstrapFixture(mode),
+        assigned = roster(f, 1);
+      const service = new PersonVmService({
+        ...f.h.options,
+        native: f.native,
+        nativeWeb: { prepare: async () => assigned },
+      });
+      await expect(
+        service.prewarm(f.rc, { trigger: 'page' }, signal()),
+      ).rejects.toMatchObject({
+        code: mode.endsWith('unknown-stop')
+          ? 'CLEANUP_INCOMPLETE'
+          : 'PROVIDER_FAILED',
+      });
+      expect((await f.calls()).some((args) => args[0] === 'stop')).toBe(true);
+      expect(f.h.log.includes('disk:detach')).toBe(
+        !mode.endsWith('unknown-stop'),
+      );
+    },
+  );
+  it('现有native实例的manifest缺失/非0600/含额外字段一律保留拒绝，不创建替代映射', async () => {
+    const f = await bootstrapFixture(),
+      assigned = roster(f, 1);
+    const service = new PersonVmService({
+      ...f.h.options,
+      native: f.native,
+      nativeWeb: { prepare: async () => assigned },
+    });
+    await service.prewarm(f.rc, { trigger: 'page' }, signal());
+    const path = join(
+      f.mount,
+      'microsandbox/allrice-native-web-endpoints.json',
+    );
+    const original = await readFile(path, 'utf8'),
+      before = (await f.calls()).length;
+    const value = JSON.parse(original);
+    value.endpoints[0].unexpected = 'not-an-authority-field';
+    await writeFile(path, JSON.stringify(value));
+    await expect(service.start(f.rc, signal())).rejects.toMatchObject({
+      code: 'PROVIDER_FAILED',
+    });
+    expect(await readFile(path, 'utf8')).toBe(JSON.stringify(value));
+    await writeFile(path, original);
+    await chmod(path, 0o644);
+    await expect(service.start(f.rc, signal())).rejects.toMatchObject({
+      code: 'PROVIDER_FAILED',
+    });
+    expect((await lstat(path)).mode & 0o777).toBe(0o644);
+    await rm(path);
+    await expect(service.start(f.rc, signal())).rejects.toMatchObject({
+      code: 'WEB_ENDPOINTS_PREPARING',
+    });
+    expect(
+      (await f.calls())
+        .slice(before)
+        .some((args) =>
+          ['pull', 'create', 'start', 'stop', 'modify'].includes(args[0]!),
+        ),
+    ).toBe(false);
+  });
+  it('首次create前失败重试仅认原manifest端口；真实OS占用则失败保留，不随机换号', async () => {
+    const f = await bootstrapFixture(),
+      assigned = roster(f, 1);
+    const binding = {
+      vmId: randomUUID(),
+      instanceId: randomUUID(),
+      leaseEpoch: 1,
+      personId: f.rc.actor.id,
+      organizationId: f.rc.organizationId,
+    };
+    await f.native.prepare(binding, f.mount, signal());
+    const receipt = await f.native.prepareWebEndpoints(
+      binding,
+      assigned,
+      signal(),
+    );
+    const path = join(
+        f.mount,
+        'microsandbox/allrice-native-web-endpoints.json',
+      ),
+      original = await readFile(path);
+    const occupied = createServer();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        occupied.once('error', reject);
+        occupied.listen(receipt.endpoints[0]!.hostPort, '127.0.0.1', resolve);
+      });
+      await expect(
+        f.native.prepareWebEndpoints(binding, assigned, signal()),
+      ).rejects.toMatchObject({ code: 'EADDRINUSE' });
+      expect(await readFile(path)).toEqual(original);
+      expect(
+        (await f.calls()).some((args) =>
+          ['create', 'modify', 'start'].includes(args[0]!),
+        ),
+      ).toBe(false);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        occupied.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
   it.each([3000, 3001])(
     '真实service scope把固定nonce reader送入原生exec（%sms）；argv无资格，过期scope拒绝读取',
     async (timeoutMs) => {

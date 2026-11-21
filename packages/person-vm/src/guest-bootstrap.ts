@@ -7,6 +7,7 @@ import type {
   PersonVmNativeWebAuthRequest,
   PersonVmNativeWebAuth,
 } from './native-web-auth.ts';
+import type { PersonVmWebStartup } from './web-endpoints.ts';
 
 /** Host-only structural projection of MET267's public VmMemoryGuestPlan. */
 export type PersonVmMemoryGuestPlan = Readonly<{
@@ -59,6 +60,7 @@ export async function bootstrapPersonVm(input: {
   assertCurrent(): Promise<void>;
   native: PersonVmGuestBootstrapPort;
   runtime: PersonVmRuntimePort;
+  web?: PersonVmWebStartup;
 }) {
   const closed = new AbortController();
   let active = true,
@@ -94,24 +96,30 @@ export async function bootstrapPersonVm(input: {
   }
   try {
     const plan = await track(() =>
-      input.runtime.memoryGuestPlan(scope.binding, scope.signal),
+      input.web
+        ? input.runtime.memoryGuestPlan(scope.binding, scope.signal, input.web)
+        : input.runtime.memoryGuestPlan(scope.binding, scope.signal),
     );
     const launcher = await track(() => input.native.bootstrap(scope, plan));
-    await input.runtime.start(
-      scope.binding,
-      scope.signal,
-      Object.freeze({
-        ...scope,
-        launch: (command: PersonVmGuestCommand) =>
-          track(() => launcher.launch(command)),
-        ...(launcher.readNativeWebAuth
-          ? {
-              readNativeWebAuth: (request: PersonVmNativeWebAuthRequest) =>
-                track(() => launcher.readNativeWebAuth!(request)),
-            }
-          : {}),
-      }),
-    );
+    const bootstrapScope = Object.freeze({
+      ...scope,
+      launch: (command: PersonVmGuestCommand) =>
+        track(() => launcher.launch(command)),
+      ...(launcher.readNativeWebAuth
+        ? {
+            readNativeWebAuth: (request: PersonVmNativeWebAuthRequest) =>
+              track(() => launcher.readNativeWebAuth!(request)),
+          }
+        : {}),
+    });
+    if (input.web)
+      await input.runtime.start(
+        scope.binding,
+        scope.signal,
+        bootstrapScope,
+        input.web,
+      );
+    else await input.runtime.start(scope.binding, scope.signal, bootstrapScope);
   } finally {
     // Final service owner checks run only after this public capability closes.
     active = false;

@@ -14,6 +14,13 @@ import type {
   PersonVmMemoryGuestPlan,
   PersonVmStartingScope,
 } from './guest-bootstrap.ts';
+import {
+  assertWebEndpointInspection,
+  assertPreparedWebEndpoints,
+  prepareWebEndpoints,
+  type PersonVmWebEndpointReceipt,
+  type PersonVmWebRoster,
+} from './web-endpoints.ts';
 
 // v0.7.16 client/ipc.rs uses 12 SHA-256 bytes (24 hex chars) for the
 // canonical directory; Darwin sys/un.h has sun_path[104], including NUL.
@@ -46,6 +53,16 @@ export interface PersonVmNativePort extends PersonVmGuestBootstrapPort {
   create(
     binding: PersonVmBinding,
     receipt: PersonVmEgressReceipt,
+    signal: AbortSignal,
+    web?: PersonVmWebEndpointReceipt,
+  ): Promise<void>;
+  prepareWebEndpoints?(
+    binding: PersonVmBinding,
+    roster: PersonVmWebRoster,
+    signal: AbortSignal,
+  ): Promise<PersonVmWebEndpointReceipt>;
+  assertWebEndpoints?(
+    receipt: PersonVmWebEndpointReceipt,
     signal: AbortSignal,
   ): Promise<void>;
   start(binding: PersonVmBinding, signal: AbortSignal): Promise<void>;
@@ -196,7 +213,13 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
     binding: PersonVmBinding,
     receipt: PersonVmEgressReceipt,
     signal: AbortSignal,
+    web?: PersonVmWebEndpointReceipt,
   ) {
+    if (web) {
+      const paths = this.homes.get(binding.vmId);
+      if (!paths) throw new PersonVmError('PROVIDER_FAILED');
+      await assertPreparedWebEndpoints(paths.home, binding, web);
+    }
     if ((await this.status(binding, signal)) !== 'absent')
       throw new PersonVmError('PROVIDER_FAILED');
     await this.command(
@@ -230,8 +253,62 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
     ];
     for (const port of receipt.gatewayPorts)
       args.push('--net-rule', `allow:egress@host:tcp:${port}`);
+    if (web) {
+      for (const endpoint of web.endpoints)
+        args.push('-p', `127.0.0.1:${endpoint.hostPort}:${endpoint.guestPort}`);
+    }
     // No native idle-timeout: detached DSH jobs may be active without touching it.
     await this.command(binding, args, signal);
+  }
+  async prepareWebEndpoints(
+    binding: PersonVmBinding,
+    roster: PersonVmWebRoster,
+    signal: AbortSignal,
+  ) {
+    const paths = this.homes.get(binding.vmId);
+    if (!paths) throw new PersonVmError('PROVIDER_FAILED');
+    const state = await this.status(binding, signal);
+    const receipt = await prepareWebEndpoints({
+      directory: paths.home,
+      binding,
+      roster,
+      state,
+      signal,
+    });
+    if (state !== 'absent') {
+      const inspection: unknown = JSON.parse(
+        await this.command(
+          binding,
+          ['inspect', this.name(binding), '--format', 'json'],
+          signal,
+        ),
+      );
+      assertWebEndpointInspection(
+        inspection,
+        this.name(binding),
+        receipt,
+        state === 'running',
+      );
+    }
+    return receipt;
+  }
+  async assertWebEndpoints(
+    receipt: PersonVmWebEndpointReceipt,
+    signal: AbortSignal,
+  ) {
+    const inspection: unknown = JSON.parse(
+      await this.command(
+        receipt.binding,
+        ['inspect', this.name(receipt.binding), '--format', 'json'],
+        signal,
+      ),
+    );
+    assertWebEndpointInspection(
+      inspection,
+      this.name(receipt.binding),
+      receipt,
+      true,
+    );
   }
   async start(binding: PersonVmBinding, signal: AbortSignal) {
     await this.command(binding, ['start', this.name(binding)], signal);

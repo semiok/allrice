@@ -73,4 +73,14 @@ postgres.js 3.4.9的`release()`无条件把reserved连接标回可用，FATAL关
 
 ### Native Web local auth（MET273 首片）
 
+首次员工端口以 `preparePersonNativeWebRoster` 的 DB 现权结果为源，跨当前企业本人全部可访问 workspace，仅读真实 active assignment/本人实例并稳定物化 general 实例；不创建分配、Run 或模板实例。`PersonVmService.nativeWeb` 在原 PG owner frame 中调用 provider；未配置的旧启动路径不变。
+
+`prepareWebEndpoints` 将实际实例及版本/端口写入加密 MSB_HOME 内固定0600 host-only manifest。它是派生文件，不能授权身份，须与 DB digest 及公开 `inspect` 的 desired/active `network.ports` 精确对账（`pending_changes` 不覆盖端口）。仅 native absent 才取得 OS 分配端口，真实 `create -p 127.0.0.1:H:G`；端口竞争失败不重分配或杀占用方。
+
+现有 native 映射缺失/清单变化返回 `WEB_ENDPOINTS_PREPARING` 并结束本次准备，不持活动 hold 等 idle，不 hot-add/modify/restart 已运行 VM。后续三方 freeze、完整 native producer 静默和新映射安全 stop/start 不在本片。
+
+host-only `PersonVmWebStartup` 随 bootstrap 回调传递完整 binding/epoch、真实 roster receipt 和可信 context，不序列化到浏览器。Worker `createAssignedNativeWebStartup` 将每实例原生 patch 合入一次 person memory init/staging，再逐个交真实 `openNativeWebOwner`，独立员工 HOME/agentsHome、共享 `/work`；长期 job 不依赖过期 startup signal。
+
+该组件只提供实际 startup/control owner，不提供 editor/send readiness 或 native ancestry catalog。271 的 HTTP/WS/catalog、真实 ingress 配置和发布开关、269/267生产 factory、editor-ready 仍须正式装配；当前 listener 未接新流量，不把 controlReady 转成 canSend。默认关闭和真人禁用保持，shared browser/MCP/instructions 属后续员工装配。
+
 可选 `BootstrapScope.readNativeWebAuth` 仅在 starting callback 内调用，和 launch 一样先后核真实租约、取消并 join；真实 Web owner 缺此能力即拒绝。输入为可信 host 的规范 DSH_HOME、nonce、原已发布 loopback origin 与预算；只读该 nonce 的有界普通文件，返回私有 native authenticatedUrl，不进入 view/argv/日志。Worker 原生 Web owner 保留 exact Job 与独立 lifetime；control baseline 只证明控制链可达，失联即 unknown，不能替代 editor/send、业务准入、全域idle或 guest完成。后续271代理和组织现权失效必须接该独立 lifetime，当前没有生产流量装配。

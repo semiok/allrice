@@ -40,6 +40,7 @@ rules:
     - apps/worker/src/repository-repair/
 files:
   native:
+    - apps/worker/src/native-web/composition.test.ts
     - packages/person-vm/src/native-web-auth.test.ts
     - apps/worker/src/native-web/owner.test.ts
     - apps/worker/src/native-web/transport.test.ts
