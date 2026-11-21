@@ -170,20 +170,21 @@ fs.writeFileSync(f,JSON.stringify(v));
       ),
     ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
   });
-  it('按原生control端点的103/104字节边界和UTF8校验，完整vmId别名不覆盖其他target', async () => {
+  it('构造时按完整UUID预算检查103/104字节和UTF8；prepare仍核实际binding及别名target', async () => {
     const root = await mkdtemp('/tmp/aa-'); // 14 bytes: control endpoint is 103.
     temporary.push(root);
     const runner = vi.fn(async () => 'microsandbox 0.7.16');
+    const options = {
+      binary: '/b',
+      libkrunfw: '/fw',
+      agentd: '/a',
+      image: 'registry/node@sha256:' + 'a'.repeat(64),
+      rootDiskGiB: 20,
+      socketRoot: root,
+      runner,
+    };
     const make = (socketRoot: string) =>
-      new MicrosandboxPersonVm({
-        binary: '/b',
-        libkrunfw: '/fw',
-        agentd: '/a',
-        image: 'registry/node@sha256:' + 'a'.repeat(64),
-        rootDiskGiB: 20,
-        socketRoot,
-        runner,
-      });
+      new MicrosandboxPersonVm({ ...options, socketRoot });
     const binding = {
       vmId: randomUUID(),
       personId: randomUUID(),
@@ -191,9 +192,10 @@ fs.writeFileSync(f,JSON.stringify(v));
       instanceId: randomUUID(),
       leaseEpoch: 1,
     };
-    const native = make(root),
+    const native = new MicrosandboxPersonVm(options),
       mount = join(root, 'mount'),
       alias = join(root, binding.vmId);
+    options.socketRoot = root + 'x'; // Cannot invalidate the qualified snapshot.
     expect(
       Buffer.byteLength(
         join(alias, 'run/sandboxes', '0'.repeat(24), 'control.sock'),
@@ -206,10 +208,7 @@ fs.writeFileSync(f,JSON.stringify(v));
       await readFile(join(mount, 'msb-config.json'), 'utf8'),
     );
     expect(config.home).toBe(alias);
-    for (const [index, rejectedRoot] of [
-      root + 'x',
-      root.slice(0, -1) + 'é',
-    ].entries()) {
+    for (const rejectedRoot of [root + 'x', root.slice(0, -1) + 'é']) {
       expect(
         Buffer.byteLength(
           join(
@@ -221,12 +220,17 @@ fs.writeFileSync(f,JSON.stringify(v));
           ),
         ),
       ).toBe(104);
-      const untouched = join(root, 'not-created-' + index);
-      await expect(
-        make(rejectedRoot).prepare(binding, untouched, signal()),
-      ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
-      await expect(lstat(untouched)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(() => make(rejectedRoot)).toThrowError('PROVIDER_FAILED');
     }
+    const untouched = join(root, 'not-created-invalid-binding');
+    await expect(
+      native.prepare(
+        { ...binding, vmId: binding.vmId + 'x' },
+        untouched,
+        signal(),
+      ),
+    ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
+    await expect(lstat(untouched)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(
       native.prepare(binding, join(root, 'different'), signal()),
     ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });

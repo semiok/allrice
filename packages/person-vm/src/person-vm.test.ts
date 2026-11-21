@@ -6,6 +6,7 @@ import {
   PERSON_VM_IDLE_MS,
 } from './contract.ts';
 import { PersonVmService } from './person-vm.ts';
+import { MicrosandboxPersonVm } from './microsandbox.ts';
 import {
   context,
   harness,
@@ -16,6 +17,48 @@ import {
 } from './test-support.ts';
 
 describe('host lifecycle service entrypoints (synthetic runtime; not real VM acceptance)', () => {
+  it.each(['warm', 'cold'] as const)(
+    '已建%s盘的host装配→start入口：长socketRoot在egress/move/attach/create前拒绝',
+    async (tier) => {
+      const store = new MemoryStore(),
+        h = harness(store),
+        rc = context();
+      await h.service.create(rc, signal());
+      if (tier === 'cold') {
+        h.advance(PERSON_VM_COLD_MS + 1); // Clock fixture, not seven days waited.
+        await h.service.reconcileIdle(rc, signal());
+      }
+      const before = structuredClone(store.rows.get(rc.actor.id)),
+        auditsBefore = structuredClone(store.audits);
+      h.log.length = 0;
+      const runner = vi.fn(async () => 'microsandbox 0.7.16');
+      const startFromHostConfiguration = async () => {
+        const native = new MicrosandboxPersonVm({
+          binary: '/b',
+          libkrunfw: '/fw',
+          agentd: '/a',
+          image: 'registry/node@sha256:' + 'a'.repeat(64),
+          rootDiskGiB: 20,
+          socketRoot: '/tmp/ar266-12345678',
+          runner,
+        });
+        return new PersonVmService({ ...h.options, native }).start(
+          rc,
+          signal(),
+        );
+      };
+      await expect(startFromHostConfiguration()).rejects.toMatchObject({
+        code: 'PROVIDER_FAILED',
+      });
+      expect(h.log).toEqual([]);
+      expect(runner).not.toHaveBeenCalled();
+      expect(h.mounts.size).toBe(0);
+      expect(h.active.size).toBe(0);
+      expect(h.states.size).toBe(0);
+      expect(store.rows.get(rc.actor.id)).toEqual(before);
+      expect(store.audits).toEqual(auditsBefore);
+    },
+  );
   it('建盘前失败后同vmId重试；部分盘不覆写、不以空盘替换', async () => {
     const h = harness(),
       rc = context();

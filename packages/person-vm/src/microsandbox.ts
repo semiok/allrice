@@ -13,6 +13,19 @@ import { hostEnvironment, runCommand, type CommandRunner } from './process.ts';
 // canonical directory; Darwin sys/un.h has sun_path[104], including NUL.
 const CANONICAL_SOCKET_HASH_BYTES = 12;
 const DARWIN_SOCKET_PATH_CAPACITY = 104;
+const VM_ID_PATH_BYTES = 36; // Host-generated canonical UUID, kept in full.
+
+function assertSocketHome(home: string) {
+  const controlSocket = join(
+    home,
+    'run',
+    'sandboxes',
+    '0'.repeat(CANONICAL_SOCKET_HASH_BYTES * 2),
+    'control.sock',
+  );
+  if (Buffer.byteLength(controlSocket) >= DARWIN_SOCKET_PATH_CAPACITY)
+    throw new PersonVmError('PROVIDER_FAILED');
+}
 
 export interface PersonVmNativePort {
   prepare(
@@ -52,6 +65,7 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
       runner?: CommandRunner;
     },
   ) {
+    this.options = { ...options };
     this.run = options.runner ?? runCommand;
     if (
       ![
@@ -65,6 +79,9 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
       options.rootDiskGiB <= 0
     )
       throw new PersonVmError('PROVIDER_FAILED');
+    assertSocketHome(
+      join(this.options.socketRoot, '0'.repeat(VM_ID_PATH_BYTES)),
+    );
   }
   private name(binding: PersonVmBinding) {
     return `allrice-${binding.vmId}`;
@@ -89,15 +106,7 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
   }
   async prepare(binding: PersonVmBinding, mount: string, signal: AbortSignal) {
     const home = join(this.options.socketRoot, binding.vmId);
-    const controlSocket = join(
-      home,
-      'run',
-      'sandboxes',
-      '0'.repeat(CANONICAL_SOCKET_HASH_BYTES * 2),
-      'control.sock',
-    );
-    if (Buffer.byteLength(controlSocket) >= DARWIN_SOCKET_PATH_CAPACITY)
-      throw new PersonVmError('PROVIDER_FAILED');
+    assertSocketHome(home);
     await privateDirectory(this.options.socketRoot);
     const target = join(mount, 'microsandbox');
     await privateDirectory(target);
