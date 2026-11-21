@@ -396,6 +396,7 @@ export async function prepareLeasedNativeSession(
   job: JobRow,
   input: NativeSessionPreparationInput,
 ) {
+  const origin = await readNativeRootOrigin(tx, job, input.subject);
   if (input.subject.kind === 'chat')
     await assertChatExecutionGeneration(
       tx,
@@ -407,7 +408,6 @@ export async function prepareLeasedNativeSession(
       },
       '3.x',
     );
-  const origin = await readNativeRootOrigin(tx, job, input.subject);
   const executionBinding =
     input.subject.kind === 'chat'
       ? await readLeasedChatExecutionBinding(tx, job, origin, input.subject.id)
@@ -477,17 +477,6 @@ export async function bindLeasedNativeSession(
   job: JobRow,
   input: NativeSessionLeaseInput,
 ) {
-  if (input.subject.kind === 'chat')
-    await assertChatExecutionGeneration(
-      tx,
-      {
-        organizationId: job.organization_id,
-        workspaceId: job.workspace_id!,
-        ownerId: job.owner_id,
-        sessionId: input.subject.id,
-      },
-      '3.x',
-    );
   const d = input.descriptor,
     s = input.subject;
   if (
@@ -526,6 +515,17 @@ export async function bindLeasedNativeSession(
   )
     deny();
   const origin = await readNativeRootOrigin(tx, job, s);
+  if (s.kind === 'chat')
+    await assertChatExecutionGeneration(
+      tx,
+      {
+        organizationId: job.organization_id,
+        workspaceId: job.workspace_id!,
+        ownerId: job.owner_id,
+        sessionId: s.id,
+      },
+      '3.x',
+    );
   if (s.kind === 'chat')
     await readLeasedChatExecutionBinding(tx, job, origin, s.id);
   if (s.kind === 'platform_employee_test')

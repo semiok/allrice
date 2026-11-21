@@ -43,6 +43,12 @@ export async function updateQueuedMessage(
   const action = QueuedMessageActionSchema.parse(input);
   const sql = getDatabase();
   await sql.begin(async (tx) => {
+    await assertWorkbenchSession(
+      tx,
+      { ...context, workspaceId },
+      sessionId,
+      true,
+    );
     await assertChatExecutionGeneration(
       tx,
       {
@@ -52,12 +58,6 @@ export async function updateQueuedMessage(
         ownerId: context.actor.id,
       },
       '3.x',
-    );
-    await assertWorkbenchSession(
-      tx,
-      { ...context, workspaceId },
-      sessionId,
-      true,
     );
     // Same runtime → followup → job ordering as turn release; the job lock also
     // fences a concurrent worker claim. A started task cannot be edited away.
