@@ -18,6 +18,67 @@ import {
 } from './test-support.ts';
 
 describe('host lifecycle service entrypoints (synthetic runtime; not real VM acceptance)', () => {
+  it('callback fulfil即关scope：最终egress检查阻塞期间late launch零派发，已移交job不误kill', async () => {
+    const h = harness(),
+      rc = context();
+    let scope!: PersonVmBootstrapScope,
+      callbackSettled = false,
+      blockNext = true;
+    let entered!: () => void, release!: () => void;
+    const finalCheck = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const resume = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const cancel = vi.fn(async () => ({ exitCode: 137, timedOut: false }));
+    const dispatch = vi.fn(async () => ({
+      binding: scope.binding,
+      jobId: 'synthetic-runtime-owned-job',
+      wait: async () => ({ exitCode: 0, timedOut: false }),
+      cancelAndWait: cancel,
+    }));
+    h.native.bootstrap = async () => ({ launch: dispatch });
+    h.runtime.start = async (_binding, _signal, current) => {
+      scope = current;
+      await scope.launch({
+        executable: 'node',
+        args: ['synthetic-owned-runtime'],
+      });
+      callbackSettled = true;
+    };
+    const assertActive = h.egress.assertActive;
+    h.egress.assertActive = async (...args) => {
+      await assertActive(...args);
+      if (callbackSettled && blockNext) {
+        blockNext = false;
+        entered();
+        await resume;
+      }
+    };
+    const opening = h.service.prewarm(rc, { trigger: 'page' }, signal());
+    const completion = opening.then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    let result: Awaited<typeof completion>;
+    try {
+      await finalCheck;
+      expect(callbackSettled).toBe(true);
+      expect(scope.signal.aborted).toBe(true);
+      await expect(
+        scope.launch({ executable: 'node', args: ['late-dispatch'] }),
+      ).rejects.toMatchObject({ code: 'LEASE_LOST' });
+      expect(dispatch).toHaveBeenCalledTimes(1);
+      expect(cancel).not.toHaveBeenCalled();
+      expect(h.mounts.size).toBe(1);
+    } finally {
+      release();
+      result = await completion;
+    }
+    expect(result).toMatchObject({ value: { ready: true } });
+    expect(cancel).not.toHaveBeenCalled();
+  });
   it('starting scope核现权/出口；callback完结后失效，running重复入口不重init', async () => {
     const h = harness(),
       rc = context();

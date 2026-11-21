@@ -98,8 +98,8 @@ export async function bootstrapPersonVm(input: {
           track(() => launcher.launch(command)),
       }),
     );
-    await scope.assertCurrent();
   } finally {
+    // Final service owner checks run only after this public capability closes.
     active = false;
     closed.abort();
     await Promise.allSettled([...pending]);
