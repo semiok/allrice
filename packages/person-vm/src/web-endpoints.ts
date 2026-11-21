@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, rename, rm } from 'node:fs/promises';
-import { createServer, type Server } from 'node:net';
+import { createServer, type Socket } from 'node:net';
 import { join } from 'node:path';
 import { UuidSchema, type RequestContext } from '@allrice/contracts';
 import { PersonVmError, type PersonVmBinding } from './contract.ts';
@@ -187,6 +187,67 @@ export async function assertPreparedWebEndpoints(
     invalid();
 }
 
+/** This listener reserves an OS port only; it never serves an accepted peer. */
+async function reserve(port: number, signal: AbortSignal) {
+  signal.throwIfAborted();
+  const server = createServer(),
+    sockets = new Map<Socket, Promise<void>>();
+  const closed = new Promise<void>((done) => server.once('close', done));
+  server.on('connection', (socket) => {
+    sockets.set(
+      socket,
+      new Promise<void>((done) =>
+        socket.once('close', () => {
+          sockets.delete(socket);
+          done();
+        }),
+      ),
+    );
+    socket.on('error', () => {}); // Always still await its actual close.
+    socket.destroy();
+  });
+  let closing: Promise<void> | undefined;
+  function close() {
+    return (closing ??= (async () => {
+      const listener = new Promise<void>((done, reject) =>
+        server.close((error) =>
+          error &&
+          (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING'
+            ? reject(error)
+            : done(),
+        ),
+      );
+      for (const socket of sockets.keys()) socket.destroy();
+      await Promise.all([listener, closed]); // ERR_NOT_RUNNING alone is not a join.
+      while (sockets.size) await Promise.all(sockets.values());
+    })());
+  }
+  let abort = () => {};
+  try {
+    await new Promise<void>((resolve, reject) => {
+      abort = () => reject(signal.reason);
+      signal.addEventListener('abort', abort, { once: true });
+      server.once('error', reject);
+      server.listen({ host: '127.0.0.1', port, signal }, resolve);
+      if (signal.aborted) abort();
+    });
+    const address = server.address();
+    if (!address || typeof address === 'string') invalid();
+    return { port: address.port, close };
+  } catch (error) {
+    try {
+      await close();
+    } catch (cleanup) {
+      throw new PersonVmError('CLEANUP_INCOMPLETE', {
+        cause: new AggregateError([error, cleanup]),
+      });
+    }
+    throw error;
+  } finally {
+    signal.removeEventListener('abort', abort);
+  }
+}
+
 /** Called only within the service's existing physical owner lease, after prepare.
  * Existing native mappings are immutable in this first-creation slice. */
 export async function prepareWebEndpoints(input: {
@@ -210,7 +271,7 @@ export async function prepareWebEndpoints(input: {
       throw new PersonVmError('WEB_ENDPOINTS_PREPARING');
     return receipt(input.binding, prior);
   }
-  const reserved: Server[] = [];
+  const reserved: Awaited<ReturnType<typeof reserve>>[] = [];
   let prepared: PersonVmWebEndpointReceipt | undefined;
   let failed = false,
     failure: unknown;
@@ -221,36 +282,12 @@ export async function prepareWebEndpoints(input: {
       const previous = prior?.endpoints.find(
         (item) => item.employeeInstanceId === entry.employeeInstanceId,
       );
-      const server = createServer();
-      reserved.push(server);
-      let abort = () => {};
-      try {
-        await new Promise<void>((resolve, reject) => {
-          abort = () => reject(input.signal.reason);
-          input.signal.addEventListener('abort', abort, { once: true });
-          if (input.signal.aborted) {
-            reject(input.signal.reason);
-            return;
-          }
-          server.once('error', reject);
-          server.listen(
-            {
-              host: '127.0.0.1',
-              port: previous?.hostPort ?? 0,
-              signal: input.signal,
-            },
-            resolve,
-          );
-        });
-      } finally {
-        input.signal.removeEventListener('abort', abort);
-      }
-      const address = server.address();
-      if (!address || typeof address === 'string') invalid();
+      const handle = await reserve(previous?.hostPort ?? 0, input.signal);
+      reserved.push(handle);
       endpoints.push({
         ...entry,
-        hostPort: port(address.port),
-        guestPort: previous?.guestPort ?? address.port,
+        hostPort: port(handle.port),
+        guestPort: previous?.guestPort ?? handle.port,
       });
     }
     input.signal.throwIfAborted();
@@ -275,17 +312,7 @@ export async function prepareWebEndpoints(input: {
     failure = error;
   }
   const results = await Promise.allSettled(
-    reserved.map(
-      (server) =>
-        new Promise<void>((resolve, reject) =>
-          server.close((error) =>
-            error &&
-            (error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING'
-              ? reject(error)
-              : resolve(),
-          ),
-        ),
-    ),
+    reserved.map((handle) => handle.close()),
   );
   const closeFailures = results.flatMap((result) =>
     result.status === 'rejected' ? [result.reason] : [],

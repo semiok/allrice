@@ -255,7 +255,12 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
       args.push('--net-rule', `allow:egress@host:tcp:${port}`);
     if (web) {
       for (const endpoint of web.endpoints)
-        args.push('-p', `127.0.0.1:${endpoint.hostPort}:${endpoint.guestPort}`);
+        args.push(
+          '--net-rule',
+          `allow:ingress@127.0.0.1/32:tcp:${endpoint.guestPort}`,
+          '-p',
+          `127.0.0.1:${endpoint.hostPort}:${endpoint.guestPort}`,
+        );
     }
     // No native idle-timeout: detached DSH jobs may be active without touching it.
     await this.command(binding, args, signal);

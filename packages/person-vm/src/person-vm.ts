@@ -459,7 +459,8 @@ export class PersonVmService
     if (
       this.options.nativeWeb &&
       (!this.options.native.prepareWebEndpoints ||
-        !this.options.native.assertWebEndpoints)
+        !this.options.native.assertWebEndpoints ||
+        !this.options.runtime.retireAfterNativeStop)
     )
       throw new PersonVmError('RUNTIME_NOT_READY');
     const roster = await this.webRoster(context, signal);
@@ -763,6 +764,21 @@ export class PersonVmService
     }
     if (stopped) {
       row.stoppedAt ??= this.now().toISOString();
+      if (row.instanceId) {
+        try {
+          if (
+            this.options.nativeWeb &&
+            !this.options.runtime?.retireAfterNativeStop
+          )
+            throw new PersonVmError('RUNTIME_NOT_READY');
+          await this.options.runtime?.retireAfterNativeStop?.(
+            bindingOf(row),
+            AbortSignal.timeout(this.options.cleanupTimeoutMs),
+          );
+        } catch {
+          failed = true;
+        }
+      }
       try {
         await this.options.disk.detach(
           { vmId: row.vmId, tier: row.diskTier },

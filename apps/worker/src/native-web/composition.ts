@@ -50,6 +50,9 @@ export function createAssignedNativeWebStartup(input: {
     {
       binding: PersonVmBinding;
       owners: Map<string, NativeWebOwner>;
+      starting: Promise<void>;
+      retiring?: Promise<void>;
+      unjoinedOpen: boolean;
     }
   >();
   const stopped = new AbortController();
@@ -88,7 +91,10 @@ export function createAssignedNativeWebStartup(input: {
           [...group.owners.values()].map((owner) => owner.close()),
         ),
       );
-      if (results.some((result) => result.status === 'rejected'))
+      if (
+        [...running.values()].some((group) => group.unjoinedOpen) ||
+        results.some((result) => result.status === 'rejected')
+      )
         throw new PersonVmError('CLEANUP_INCOMPLETE');
       running.clear();
     })();
@@ -147,7 +153,7 @@ export function createAssignedNativeWebStartup(input: {
       scope: PersonVmBootstrapScope,
       startup?: PersonVmWebStartup,
     ) {
-      return track(async () => {
+      const operation: Promise<void> = track(async () => {
         const web = current(binding, startup),
           launches = prepared.get(web);
         if (!sameVmBinding(scope.binding, binding))
@@ -156,13 +162,21 @@ export function createAssignedNativeWebStartup(input: {
         if (!launches || running.has(binding.vmId))
           throw new PersonVmError('LEASE_CONFLICT');
         prepared.delete(web);
-        const group = { binding, owners: new Map<string, NativeWebOwner>() };
+        const group = {
+          binding,
+          owners: new Map<string, NativeWebOwner>(),
+          starting: operation,
+          retiring: undefined as Promise<void> | undefined,
+          unjoinedOpen: false,
+        };
         running.set(binding.vmId, group);
         try {
           for (const [index, launch] of launches.entries()) {
+            if (group.retiring) throw new PersonVmError('LEASE_LOST');
             current(binding, web);
             signal.throwIfAborted();
             await scope.assertCurrent();
+            if (group.retiring) throw new PersonVmError('LEASE_LOST');
             const owner = await openNativeWebOwner({
               scope,
               launch,
@@ -177,17 +191,55 @@ export function createAssignedNativeWebStartup(input: {
             );
             current(binding, web);
             signal.throwIfAborted();
+            if (group.retiring) throw new PersonVmError('LEASE_LOST');
           }
         } catch (error) {
+          group.unjoinedOpen =
+            error instanceof PersonVmError &&
+            error.code === 'CLEANUP_INCOMPLETE';
           const joined = await Promise.allSettled(
             [...group.owners.values()].map((owner) => owner.close()),
           );
           if (joined.some((result) => result.status === 'rejected'))
             throw new PersonVmError('CLEANUP_INCOMPLETE', { cause: error });
-          running.delete(binding.vmId);
+          // An open that could not join its own resources cannot be certified
+          // by the successfully returned owners. Keep that unknown group.
+          if (!group.unjoinedOpen && !group.retiring)
+            running.delete(binding.vmId);
           throw error;
         }
       });
+      return operation;
+    },
+    retireAfterNativeStop(binding: PersonVmBinding, signal: AbortSignal) {
+      const group = running.get(binding.vmId);
+      if (!group) return Promise.resolve();
+      if (!sameVmBinding(group.binding, binding))
+        return Promise.reject(new PersonVmError('LEASE_LOST'));
+      if (group.retiring) return group.retiring;
+      const operation = (async () => {
+        signal.throwIfAborted();
+        await Promise.allSettled([group.starting]);
+        const joined = await Promise.allSettled(
+          [...group.owners.values()].map((owner) =>
+            owner.retireAfterNativeStop(binding, signal),
+          ),
+        );
+        if (
+          group.unjoinedOpen ||
+          joined.some((result) => result.status === 'rejected')
+        )
+          throw new PersonVmError('CLEANUP_INCOMPLETE');
+        signal.throwIfAborted();
+        if (running.get(binding.vmId) !== group)
+          throw new PersonVmError('LEASE_LOST');
+        running.delete(binding.vmId);
+      })();
+      group.retiring = operation;
+      void operation.catch(() => {
+        if (group.retiring === operation) group.retiring = undefined;
+      });
+      return operation;
     },
     /** Host catalog resource only. Its read method still rechecks VM authority.
      * It supplies no editor/send proof, native ancestry pin or browser credential. */
@@ -195,7 +247,7 @@ export function createAssignedNativeWebStartup(input: {
       lifetime.throwIfAborted();
       if (closing) throw new PersonVmError('LEASE_LOST');
       const group = running.get(binding.vmId);
-      if (!group || !sameVmBinding(group.binding, binding))
+      if (!group || group.retiring || !sameVmBinding(group.binding, binding))
         throw new PersonVmError('LEASE_LOST');
       return group.owners.get(employeeInstanceId);
     },
@@ -206,7 +258,10 @@ export function createAssignedNativeWebStartup(input: {
         input.lifetime.removeEventListener('abort', abort);
       }
     },
-  } satisfies Pick<PersonVmRuntimePort, 'memoryGuestPlan' | 'start'> & {
+  } satisfies Pick<
+    PersonVmRuntimePort,
+    'memoryGuestPlan' | 'start' | 'retireAfterNativeStop'
+  > & {
     owner(
       binding: PersonVmBinding,
       employeeInstanceId: string,

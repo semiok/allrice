@@ -84,3 +84,9 @@ host-only `PersonVmWebStartup` 随 bootstrap 回调传递完整 binding/epoch、
 该组件只提供实际 startup/control owner，不提供 editor/send readiness 或 native ancestry catalog。271 的 HTTP/WS/catalog、真实 ingress 配置和发布开关、269/267生产 factory、editor-ready 仍须正式装配；当前 listener 未接新流量，不把 controlReady 转成 canSend。默认关闭和真人禁用保持，shared browser/MCP/instructions 属后续员工装配。
 
 可选 `BootstrapScope.readNativeWebAuth` 仅在 starting callback 内调用，和 launch 一样先后核真实租约、取消并 join；真实 Web owner 缺此能力即拒绝。输入为可信 host 的规范 DSH_HOME、nonce、原已发布 loopback origin 与预算；只读该 nonce 的有界普通文件，返回私有 native authenticatedUrl，不进入 view/argv/日志。Worker 原生 Web owner 保留 exact Job 与独立 lifetime；control baseline 只证明控制链可达，失联即 unknown，不能替代 editor/send、业务准入、全域idle或 guest完成。后续271代理和组织现权失效必须接该独立 lifetime，当前没有生产流量装配。
+
+## Confirmed native stop and Web resources
+
+Native Web startup requires the host-only `runtime.retireAfterNativeStop(binding, signal)` hook before side effects. The existing physical owner calls it only after native stop/status proves stopped/absent, then joins the exact binding's host resources before releasing that group. Unknown stop never retires or detaches. A failed retirement remains failed; an explicit retry must obtain actual host joins again. Normal `owner.close()` still cancels/waits the exact guest job; confirmed-stop retirement only omits querying a VM already proven off, never infers job exit, idle, OOM, editor readiness or execution authorization.
+
+Each declared endpoint adds `allow:ingress@127.0.0.1/32:tcp:G` beside `-p 127.0.0.1:H:G`, preserving default deny and gateway-only egress. The temporary reservation immediately destroys and joins accepted sockets and the listener, including cancellation/write failure. CLI argument fixtures do not validate the native policy; real VM ingress/rejection remains a separate acceptance step. Production 271/factory/editor-ready composition remains unavailable.

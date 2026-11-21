@@ -18,6 +18,52 @@ import {
 } from './test-support.ts';
 
 describe('host lifecycle service entrypoints (synthetic runtime; not real VM acceptance)', () => {
+  it('nativeWeb必须事前具备confirmed-stop退役口；无副作用且旧无Web runtime仍可用', async () => {
+    const h = harness(),
+      rc = context(),
+      prepare = vi.fn();
+    h.native.prepareWebEndpoints = vi.fn();
+    h.native.assertWebEndpoints = vi.fn();
+    const web = new PersonVmService({ ...h.options, nativeWeb: { prepare } });
+    await web.create(rc, signal());
+    const before = h.log.length;
+    await expect(web.start(rc, signal())).rejects.toMatchObject({
+      code: 'RUNTIME_NOT_READY',
+    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(h.log.slice(before)).toEqual([]);
+    expect((await h.service.start(rc, signal())).ready).toBe(true);
+  });
+  it.each(['stopped', 'absent', 'unknown'] as const)(
+    'failure cleanup native=%s才可退役；未知不调用/不detach',
+    async (state) => {
+      const h = harness(),
+        rc = context(),
+        retire = vi.fn(async () => {});
+      h.runtime.retireAfterNativeStop = retire;
+      h.setReadiness({
+        authenticated: true,
+        editorReady: false,
+        canSend: false,
+      });
+      h.native.stop = async (binding) => {
+        h.log.push('native:stop');
+        h.states.set(binding.vmId, state);
+      };
+      await h.service.create(rc, signal());
+      await expect(h.service.start(rc, signal())).rejects.toBeInstanceOf(
+        PersonVmError,
+      );
+      if (state === 'unknown') {
+        expect(retire).not.toHaveBeenCalled();
+        expect(h.mounts.size).toBe(1);
+        expect(h.log).not.toContain('disk:detach');
+      } else {
+        expect(retire).toHaveBeenCalledTimes(1);
+        expect(h.mounts.size).toBe(0);
+      }
+    },
+  );
   it('admission qualification fails closed without a formally composed shared host', async () => {
     const h = harness(),
       { rc, binding } = await running(h);

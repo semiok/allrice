@@ -7,6 +7,7 @@ import type { RequestContext } from '@allrice/contracts';
 import {
   PersonVmError,
   sameVmBinding,
+  type PersonVmBinding,
   type PersonVmBootstrapScope,
   type PersonVmPort,
 } from '@allrice/person-vm';
@@ -36,7 +37,8 @@ export async function openNativeWebOwner(input: {
     waitAbort = new AbortController();
   const signal = AbortSignal.any([input.lifetime, stale.signal]);
   let ready = false,
-    closing: Promise<void> | undefined;
+    closing: Promise<void> | undefined,
+    hostClosing: Promise<void> | undefined;
   const root = new Context();
   const operations = new Set<Promise<unknown>>();
   function own<T>(operation: Promise<T>): Promise<T> {
@@ -64,20 +66,39 @@ export async function openNativeWebOwner(input: {
   }
   const nativeWait = Promise.resolve().then(() => job.wait(waitAbort.signal));
   void nativeWait.then(lost, lost);
-  async function close() {
-    if (closing) return closing;
+  function joinHost() {
+    if (hostClosing) return hostClosing;
     ready = false;
-    closing = (async () => {
+    hostClosing = (async () => {
       stale.abort();
       waitAbort.abort();
+      // Managed wait settles only after its host CLI joins. Its rejection is
+      // not guest completion; close/confirmed native stop owns that proof.
+      await Promise.allSettled([nativeWait]);
+      // Join an earlier loss cleanup, then obtain fresh actual I/O join results.
+      // Its rejected memo is neither a success certificate nor a permanent veto.
+      await Promise.allSettled([disconnected]);
       const results = await Promise.allSettled([
         transport.close(),
         root.fiber.dispose(),
-        job.cancelAndWait(AbortSignal.timeout(input.cleanupTimeoutMs)),
-        nativeWait.catch(() => {}),
-        disconnected,
       ]);
       await Promise.allSettled([...operations]);
+      if (results.some((result) => result.status === 'rejected'))
+        throw new PersonVmError('CLEANUP_INCOMPLETE');
+    })();
+    const attempt = hostClosing;
+    void attempt.catch(() => {
+      if (hostClosing === attempt) hostClosing = undefined;
+    });
+    return attempt;
+  }
+  async function close() {
+    if (closing) return closing;
+    closing = (async () => {
+      const results = await Promise.allSettled([
+        joinHost(),
+        job.cancelAndWait(AbortSignal.timeout(input.cleanupTimeoutMs)),
+      ]);
       if (results.some((result) => result.status === 'rejected'))
         throw new PersonVmError('CLEANUP_INCOMPLETE');
     })();
@@ -159,6 +180,21 @@ export async function openNativeWebOwner(input: {
             return result;
           }),
         );
+      },
+      /** Only the trusted runtime's confirmed-native-stop hook may use this.
+       * This does not manufacture a job exit or replace normal exact close. */
+      async retireAfterNativeStop(
+        current: PersonVmBinding,
+        cleanup: AbortSignal,
+      ) {
+        if (!sameVmBinding(binding, current))
+          throw new PersonVmError('LEASE_LOST');
+        cleanup.throwIfAborted();
+        await Promise.allSettled([closing]); // Join any old exact cancellation attempt.
+        await joinHost();
+        input.lifetime.removeEventListener('abort', aborted);
+        cleanup.throwIfAborted();
+        closing = Promise.resolve(); // New native-stop + actual host join supersedes only the old failure memo.
       },
       async close() {
         try {

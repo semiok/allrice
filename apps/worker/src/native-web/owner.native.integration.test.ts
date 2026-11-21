@@ -95,6 +95,7 @@ async function setup() {
   const startup = new AbortController(),
     lifetime = new AbortController();
   let kills = 0,
+    job!: PersonVmManagedJob,
     exited!: Promise<{ exitCode: number; timedOut: boolean }>,
     child!: ReturnType<typeof spawn>;
   const scope: PersonVmBootstrapScope = {
@@ -138,7 +139,7 @@ async function setup() {
           signal.removeEventListener('abort', abort);
         }
       }
-      const job: PersonVmManagedJob = {
+      job = {
         binding,
         jobId: randomUUID(),
         wait,
@@ -185,6 +186,7 @@ async function setup() {
     child,
     current,
     exited,
+    job,
     kills: () => kills,
   };
 }
@@ -205,6 +207,101 @@ it.skipIf(!cli)(
     expect(f.owner.controlReady()).toBe(false);
     expect(f.kills()).toBe(1);
     expect(f.child.exitCode !== null || f.child.signalCode !== null).toBe(true);
+  },
+);
+
+it.skipIf(!cli)(
+  '真实rc.2旧exact kill失败memo不能冒join；确认child停止后实际host退役可重新收束',
+  { tags: [tag], timeout: 30000 },
+  async () => {
+    const f = await setup();
+    const cancel = vi
+      .spyOn(f.job, 'cancelAndWait')
+      .mockRejectedValueOnce(new PersonVmError('PROVIDER_FAILED'));
+    await expect(f.owner.close()).rejects.toMatchObject({
+      code: 'CLEANUP_INCOMPLETE',
+    });
+    expect(f.child.exitCode).toBe(null);
+    await expect(
+      f.owner.retireAfterNativeStop(
+        { ...f.owner.binding, instanceId: randomUUID() },
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'LEASE_LOST' });
+    expect(f.child.exitCode).toBe(null);
+    f.child.kill('SIGKILL');
+    await f.exited; // This leaf's actual Host process, not a VM stop/status proof.
+    await f.owner.retireAfterNativeStop(
+      f.owner.binding,
+      new AbortController().signal,
+    );
+    await f.owner.close();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(f.owner.controlReady()).toBe(false);
+  },
+);
+it.skipIf(!cli)(
+  '真实rc.2停止后退役仍join阻塞read与HTTP/WS；host join失败保留，显式重新核实才成功',
+  { tags: [tag], timeout: 30000 },
+  async () => {
+    const io = latch(),
+      entered = latch(),
+      release = latch(),
+      create = NativeTransport.nativeWebTransport;
+    let unconfirmed = false;
+    vi.spyOn(NativeTransport, 'nativeWebTransport').mockImplementation(
+      (...args) => {
+        const transport = create(...args);
+        return {
+          ...transport,
+          close: async () => {
+            await transport.close();
+            io.resolve();
+            if (unconfirmed)
+              throw Error('synthetic host join acknowledgement failure');
+          },
+        };
+      },
+    );
+    const f = await setup();
+    cleanup.push(async () => {
+      release.resolve();
+      unconfirmed = false;
+    });
+    f.current.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+    });
+    const reading = f.owner
+      .readSessions(new AbortController().signal)
+      .catch((error: unknown) => error);
+    await entered.promise;
+    unconfirmed = true;
+    f.child.kill('SIGKILL');
+    await f.exited;
+    let settled = false;
+    const retiring = f.owner
+      .retireAfterNativeStop(f.owner.binding, new AbortController().signal)
+      .catch((error: unknown) => error)
+      .finally(() => {
+        settled = true;
+      });
+    await io.promise;
+    await new Promise<void>((done) => setImmediate(done));
+    expect(settled).toBe(false);
+    release.resolve();
+    expect(await reading).toBeInstanceOf(Error);
+    expect(await retiring).toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
+    await expect(
+      f.owner.readSessions(new AbortController().signal),
+    ).rejects.toBeDefined();
+    unconfirmed = false;
+    await f.owner.retireAfterNativeStop(
+      f.owner.binding,
+      new AbortController().signal,
+    );
+    await f.owner.close();
+    expect(f.kills()).toBe(0); // Confirmed-stop path never queries an already-dead guest job.
   },
 );
 

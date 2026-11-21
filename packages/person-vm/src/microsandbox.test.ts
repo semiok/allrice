@@ -8,16 +8,19 @@ import {
   readdir,
   realpath,
   rm,
+  open,
+  type FileHandle,
   writeFile,
 } from 'node:fs/promises';
 import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
-import { createServer } from 'node:net';
+import { createConnection, createServer } from 'node:net';
+import { once } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MicrosandboxPersonVm } from './microsandbox.ts';
 import { runCommand } from './process.ts';
-import { context, harness, signal } from './test-support.ts';
+import { context, currentReceipt, harness, signal } from './test-support.ts';
 import { PersonVmService } from './person-vm.ts';
 import type { PersonVmMemoryGuestPlan } from './guest-bootstrap.ts';
 import type { PersonVmWebRoster, PersonVmWebStartup } from './web-endpoints.ts';
@@ -136,6 +139,7 @@ save();
     env: { BASH_ENV: '/work/memory/bash-env' },
   };
   h.runtime.memoryGuestPlan = async () => plan;
+  h.runtime.retireAfterNativeStop = async () => {};
   h.runtime.start = async (_binding, _signal, scope) => {
     const job = await scope.launch({
       executable: 'node',
@@ -212,6 +216,17 @@ describe('Microsandbox public CLI protocol through real child processes (no actu
     );
     expect(mappings).toHaveLength(assigned.entries.length);
     expect(
+      creation.flatMap((arg, index) =>
+        arg === '--net-rule' ? [creation[index + 1]] : [],
+      ),
+    ).toEqual([
+      'allow:egress@host:tcp:38990',
+      ...startup!.receipt.endpoints.map(
+        (entry) => `allow:ingress@127.0.0.1/32:tcp:${entry.guestPort}`,
+      ),
+    ]);
+    expect(creation[creation.indexOf('--net-default') + 1]).toBe('deny');
+    expect(
       new Set(startup!.receipt.endpoints.map((entry) => entry.hostPort)).size,
     ).toBe(assigned.entries.length);
     expect(calls.some((args) => args[0] === 'inspect')).toBe(true);
@@ -247,6 +262,132 @@ describe('Microsandbox public CLI protocol through real child processes (no actu
       (await f.calls()).filter((args) => args[0] === 'create'),
     ).toHaveLength(1);
   });
+  it('原生create规则只按已保存的guest G而非host H；保留/32精确TCP与原出口（非policy运行验收）', async () => {
+    const f = await bootstrapFixture(),
+      assigned = roster(f, 1);
+    const binding = {
+      vmId: randomUUID(),
+      instanceId: randomUUID(),
+      leaseEpoch: 1,
+      personId: f.rc.actor.id,
+      organizationId: f.rc.organizationId,
+    };
+    await f.native.prepare(binding, f.mount, signal());
+    const prior = await f.native.prepareWebEndpoints(
+      binding,
+      assigned,
+      signal(),
+    );
+    const path = join(
+      f.mount,
+      'microsandbox/allrice-native-web-endpoints.json',
+    );
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    const h = prior.endpoints[0]!.hostPort,
+      g = h === 18101 ? 18102 : 18101;
+    manifest.endpoints[0].guestPort = g;
+    await writeFile(path, JSON.stringify(manifest));
+    const web = await f.native.prepareWebEndpoints(binding, assigned, signal());
+    await f.native.create(binding, currentReceipt(binding), signal(), web);
+    const create = (await f.calls()).find((args) => args[0] === 'create')!;
+    expect(
+      create.flatMap((arg, i) => (arg === '--net-rule' ? [create[i + 1]] : [])),
+    ).toEqual([
+      'allow:egress@host:tcp:38990',
+      `allow:ingress@127.0.0.1/32:tcp:${g}`,
+    ]);
+    expect(create).toContain(`127.0.0.1:${h}:${g}`);
+    expect(create).not.toContain(`allow:ingress@127.0.0.1/32:tcp:${h}`);
+    expect(create[create.indexOf('--net-default') + 1]).toBe('deny');
+  });
+  it.each(['success', 'cancel', 'write-failure'] as const)(
+    'reservation真实接入立即关闭，manifest %s后service/lease与原H全部真实join',
+    async (mode) => {
+      const f = await bootstrapFixture(),
+        assigned = roster(f, 1),
+        cancelled = new AbortController();
+      const service = new PersonVmService({
+        ...f.h.options,
+        native: f.native,
+        nativeWeb: { prepare: async () => assigned },
+      });
+      const created = await service.create(f.rc, signal());
+      const binding = {
+        vmId: created.vmId,
+        instanceId: randomUUID(),
+        leaseEpoch: 1,
+        personId: f.rc.actor.id,
+        organizationId: f.rc.organizationId,
+      };
+      await f.native.prepare(binding, f.mount, signal());
+      const prior = await f.native.prepareWebEndpoints(
+        binding,
+        assigned,
+        signal(),
+      );
+      const probe = await open(join(f.mount, 'sync-probe'), 'wx');
+      const prototype = Object.getPrototypeOf(probe) as FileHandle;
+      const sync = prototype.sync;
+      await probe.close();
+      let entered!: () => void, release!: () => void;
+      const inside = new Promise<void>((done) => {
+        entered = done;
+      });
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      const diskError = new Error('synthetic manifest sync failure'),
+        cancelError = new Error('synthetic cancellation');
+      vi.spyOn(prototype, 'sync').mockImplementation(async function (
+        this: FileHandle,
+      ) {
+        entered();
+        await gate;
+        if (mode === 'write-failure') throw diskError;
+        await sync.call(this);
+      });
+      const starting = service.start(f.rc, cancelled.signal).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await inside;
+      const peer = createConnection(prior.endpoints[0]!.hostPort, '127.0.0.1');
+      peer.on('error', () => {});
+      const closed = new Promise<void>((done) => peer.once('close', done));
+      try {
+        await once(peer, 'connect');
+        await closed; // Must happen while fsync is blocked, not just in finally.
+        expect(peer.destroyed).toBe(true);
+        if (mode === 'cancel') cancelled.abort(cancelError);
+      } finally {
+        peer.destroy();
+        release();
+        await closed;
+        await starting;
+      }
+      const outcome = await starting;
+      if (mode === 'success') expect(outcome).toBe(null);
+      else
+        expect(outcome).toMatchObject({
+          code: 'PROVIDER_FAILED',
+          cause: mode === 'cancel' ? cancelError : diskError,
+        });
+      expect((await f.h.store.read(f.rc.actor.id))!.leaseOwner).toBe(null);
+      expect(f.h.mounts.size).toBe(mode === 'success' ? 1 : 0);
+      const rebound = createServer();
+      try {
+        rebound.listen(prior.endpoints[0]!.hostPort, '127.0.0.1');
+        await once(rebound, 'listening');
+      } finally {
+        await new Promise<void>((done, reject) =>
+          rebound.close((error) => (error ? reject(error) : done())),
+        );
+      }
+      expect((await f.calls()).some((args) => args[0] === 'create')).toBe(
+        mode === 'success',
+      );
+    },
+  );
   it('运行中新增员工立即preparing；不hold等待、不改manifest、不modify/stop/restart已有任务', async () => {
     const f = await bootstrapFixture();
     let assigned = roster(f);

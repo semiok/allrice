@@ -90,6 +90,13 @@ export interface PersonVmRuntimePort {
     scope: PersonVmBootstrapScope,
     web?: PersonVmWebStartup,
   ): Promise<void>;
+  /** Host-only: called under the physical owner AFTER native stop/status proves
+   * stopped/absent. Join exact binding's host resources; never infer guest idle.
+   * Required before starting nativeWeb; optional for existing non-Web runtimes. */
+  retireAfterNativeStop?(
+    binding: PersonVmBinding,
+    signal: AbortSignal,
+  ): Promise<void>;
   activity(
     binding: PersonVmBinding,
     signal: AbortSignal,
