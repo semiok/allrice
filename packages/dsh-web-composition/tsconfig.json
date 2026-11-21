@@ -4,7 +4,17 @@
     "allowJs": true,
     "checkJs": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node", "react"],
+    "jsx": "react-jsx",
+    "module": "ESNext",
+    "moduleResolution": "Bundler"
   },
-  "include": ["build.mjs", "index.mjs", "src/**/*.cjs", "src/**/*.d.ts"]
+  "include": [
+    "build.mjs",
+    "index.mjs",
+    "src/**/*.cjs",
+    "src/**/*.mjs",
+    "src/**/*.tsx",
+    "src/**/*.d.ts"
+  ]
 }

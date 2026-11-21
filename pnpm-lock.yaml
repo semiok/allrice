@@ -715,6 +715,9 @@ importers:
 
   packages/dsh-web-composition:
     devDependencies:
+      '@allrice/ui':
+        specifier: workspace:*
+        version: link:../ui
       '@deepseek-ai/cordis':
         specifier: 4.0.5
         version: 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
@@ -727,6 +730,12 @@ importers:
       '@deepseek-ai/dsh-client-ui-conversation':
         specifier: 0.2.1-rc.2
         version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)(@types/react@19.2.18)
+      '@deepseek-ai/dsh-client-ui-layout':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@deepseek-ai/dsh-client-ui-primitives':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)(@types/react@19.2.18)
       '@deepseek-ai/dsh-client-ui-renderer':
         specifier: 0.2.1-rc.2
         version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
@@ -736,9 +745,21 @@ importers:
       '@deepseek-ai/dsh-client-ui-theme':
         specifier: 0.2.1-rc.2
         version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@deepseek-ai/dsh-client-ui-workspace':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@types/react':
+        specifier: 19.2.18
+        version: 19.2.18
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
       playwright-core:
         specifier: 1.62.1
         version: 1.62.1
+      react:
+        specifier: 19.2.0
+        version: 19.2.0
 
   packages/file-archives:
     dependencies:

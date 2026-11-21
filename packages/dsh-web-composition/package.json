@@ -6,6 +6,10 @@
   "exports": {
     ".": "./index.mjs",
     "./client": "./dist/client.js",
+    "./employee-client": {
+      "types": "./src/employee-client.d.mts",
+      "default": "./src/employee-client.mjs"
+    },
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./profile": "./profiles/allrice-web/package.json",
     "./package.json": "./package.json"
@@ -13,6 +17,8 @@
   "files": [
     "index.mjs",
     "dist/client.js",
+    "src/employee-client.mjs",
+    "src/employee-client.d.mts",
     "cordis.patch.yml",
     "profiles",
     "README.md"
@@ -30,7 +36,9 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-ui-renderer",
-        "@deepseek-ai/dsh-client-ui-theme"
+        "@deepseek-ai/dsh-client-ui-theme",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-workspace"
       ]
     }
   },
@@ -39,16 +47,23 @@
     "prepack": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint build.mjs index.mjs src",
-    "test": "pnpm --dir ../.. exec vitest run packages/dsh-web-composition/tests/composition.test.ts"
+    "test": "pnpm --dir ../.. exec vitest run packages/dsh-web-composition/tests/composition.test.ts packages/dsh-web-composition/tests/employee-client.test.ts"
   },
   "devDependencies": {
+    "@allrice/ui": "workspace:*",
     "@deepseek-ai/cordis": "4.0.5",
     "@deepseek-ai/dsh": "0.2.1-rc.2",
     "@deepseek-ai/dsh-app-boot": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-theme": "0.2.1-rc.2",
-    "playwright-core": "1.62.1"
+    "@deepseek-ai/dsh-client-ui-workspace": "0.2.1-rc.2",
+    "@types/react": "19.2.18",
+    "esbuild": "0.28.1",
+    "playwright-core": "1.62.1",
+    "react": "19.2.0"
   }
 }

@@ -1,3 +1,5 @@
+@import './sidebar-palette.css';
+
 :root {
   background: var(--ar-legacy-canvas, #f5f6f2);
   color: var(--ar-legacy-text, #152018);
@@ -44,23 +46,6 @@ input,
 select,
 textarea {
   font: inherit;
-}
-
-/* Shared by the sidebar and dialogs portaled outside the workbench shell. */
-body {
-  --allrice-sidebar-bg: #f8f9fb;
-  --allrice-employee-bg: #f0f2f5;
-  --allrice-sidebar-hover: #e9ecf1;
-  --allrice-session-selected: #e1e6ed;
-  --allrice-session-selected-hover: #d8dfe8;
-}
-
-body[data-ds-dark-theme] {
-  --allrice-sidebar-bg: #191b20;
-  --allrice-employee-bg: #24272d;
-  --allrice-sidebar-hover: #30353d;
-  --allrice-session-selected: #39414c;
-  --allrice-session-selected-hover: #444e5c;
 }
 
 /* Placeholders a component does not colour itself: the browser's grey is

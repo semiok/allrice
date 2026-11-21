@@ -1,32 +1,16 @@
 'use client';
-
-import { useEffect, useRef, type ReactNode } from 'react';
-import {
-  IconArchiveOutlineRegular,
-  IconClockOutlineRegular,
-  IconChevronRightOutlineRegular,
-  IconRefreshOutlineRegular,
-  Tooltip,
-} from '@deepseek-ai/dsh-client-ui-primitives';
-import { AllriceBrand } from '../../components/allrice-brand';
-import { AllriceMark } from '../../components/allrice-mark';
-
+import type { ReactNode } from 'react';
 import { SidebarSettings } from './sidebar-settings';
 import type { useMonthlyQuota } from './use-monthly-quota';
 import type { usePersonalPreferences } from './use-personal-preferences';
 import type { useBridge } from './use-bridge';
 import type { useBridgeReleases } from './bridge-releases';
-
 import type { Session, Workspace } from './chatflow-types';
 import type { useSessionArchive } from './use-session-archive';
-import archiveCss from './session-archive.module.css';
 import { EmployeeSidebar } from './employee-sidebar';
-import employeeSidebarCss from './employee-sidebar.module.css';
 import { employeePreferenceKey } from './employee-navigation';
 import type { NativeSubagentRead } from './use-native-subagents';
-import frameUi from './dsh-upstream/AppFrame.module.css';
-import sidebarUi from './dsh-upstream/SidebarRoot.module.css';
-import styles from './dsh-saas.module.css';
+import { ChatSidebarFrame } from './chat-sidebar-frame';
 
 interface ChatSidebarProps {
   capabilities: (section: 'work' | 'computer') => ReactNode;
@@ -97,250 +81,64 @@ export function ChatSidebar({
   employeeArchiveOpen = false,
   archivedEmployeeInstanceIds,
 }: ChatSidebarProps) {
-  const sidebar = useRef<HTMLElement>(null);
-  const showingArchive = archive?.filter === 'only';
-  useEffect(() => {
-    if (!overlay) return;
-    const previous =
-      document.activeElement instanceof HTMLElement
-        ? document.activeElement
-        : null;
-    sidebar.current?.focus();
-    return () => {
-      if (previous?.isConnected) previous.focus();
-    };
-  }, [overlay]);
-
   return (
-    <aside
-      id="chat-sidebar"
-      ref={sidebar}
-      tabIndex={overlay ? -1 : undefined}
-      role={overlay ? 'dialog' : undefined}
-      aria-label={overlay ? '任务与历史' : undefined}
-      aria-modal={overlay ? true : undefined}
-      className={`${frameUi.sidebarCol} ${overlay ? styles.sidebarOverlay : ''}`}
-      onKeyDown={(event) => {
-        if (!overlay || !event.currentTarget.contains(event.target as Node))
-          return;
-        if (event.key === 'Escape') {
-          event.stopPropagation();
-          onCollapsedChange(true);
-        }
-        if (event.key === 'Tab') {
-          const nodes = [
-            ...sidebar.current!.querySelectorAll<HTMLElement>(
-              'button:not([disabled]),a[href],summary',
-            ),
-          ].filter(
-            (n) =>
-              n.getClientRects().length &&
-              (!n.closest('details:not([open])') || n.tagName === 'SUMMARY'),
-          );
-          const first = nodes[0],
-            last = nodes.at(-1);
-          if (
-            event.shiftKey &&
-            (document.activeElement === first ||
-              document.activeElement === sidebar.current)
-          ) {
-            event.preventDefault();
-            last?.focus();
-          } else if (!event.shiftKey && document.activeElement === last) {
-            event.preventDefault();
-            first?.focus();
+    <ChatSidebarFrame
+      archive={archive}
+      collapsed={collapsed}
+      overlay={overlay}
+      onCollapsedChange={onCollapsedChange}
+      onCreateEmployee={onCreateEmployee}
+      onOpenAutomations={onOpenAutomations}
+      automationsActive={automationsActive}
+      onOpenArchive={onOpenArchive}
+      employeeArchiveOpen={employeeArchiveOpen}
+      employeeTree={
+        <EmployeeSidebar
+          scheduledSessions={scheduledSessions}
+          archive={archive}
+          excludedEmployeeInstanceIds={archivedEmployeeInstanceIds}
+          key={
+            employeePreferenceKey(workspace) ??
+            `${workspace.organizationId}:${workspace.workspaceId}`
           }
-        }
-      }}
-    >
-      {overlay ? (
-        <div
-          className={styles.sidebarBackdrop}
-          aria-hidden="true"
-          onClick={() => onCollapsedChange(true)}
+          workspace={workspace}
+          sessions={sessions}
+          activeId={activeId}
+          pendingEmployeeAssignmentId={pendingEmployeeAssignmentId}
+          onNewSession={(id) => {
+            archive?.setFilter('default');
+            onNewSession(id);
+          }}
+          nativeReadyKey={nativeReadyKey}
+          pendingNativeSessions={pendingNativeSessions}
+          nativeReads={nativeReads}
+          collapsed={collapsed}
+          onSelectSession={onSelectSession}
+          onEmployeeNavigate={onEmployeeNavigate}
+          onPrepareSession={onPrepareSession}
+          onDetails={onOpenEmployeeDetails}
         />
-      ) : null}
-      <div
-        className={`${sidebarUi.root} ${
-          collapsed ? sidebarUi.collapsed : styles.sidebar
-        }`}
-      >
-        <div className={sidebarUi.logoRow}>
-          {!collapsed ? (
-            <div className={sidebarUi.brand}>
-              <AllriceBrand />
-            </div>
-          ) : null}
-          <button
-            aria-label={collapsed ? '展开侧边栏' : '收起侧边栏'}
-            className={`${sidebarUi.iconButton} ${sidebarUi.toggle}`}
-            onClick={() => onCollapsedChange(!collapsed)}
-            type="button"
-          >
-            {collapsed ? (
-              <>
-                <span className={`${sidebarUi.railMark} ${styles.railMark}`}>
-                  <AllriceMark />
-                </span>
-                <span
-                  aria-hidden="true"
-                  className={`${sidebarUi.panelIcon} ${styles.sidebarToggle}`}
-                >
-                  ›
-                </span>
-              </>
-            ) : (
-              <span aria-hidden="true" className={styles.sidebarToggle}>
-                ‹
-              </span>
-            )}
-          </button>
-        </div>
-
-        <div className={!collapsed ? archiveCss.newWorkActions : undefined}>
-          <button
-            className={`${sidebarUi.newSession} ${!collapsed ? archiveCss.newWorkButton : ''}`}
-            onClick={onCreateEmployee}
-            type="button"
-          >
-            <span aria-hidden="true">＋</span>
-            <span className={sidebarUi.newSessionLabel}>创建员工</span>
-          </button>
-          {archive && !collapsed && (
-            <Tooltip label="查看归档" side="bottom" align="end">
-              <button
-                className={archiveCss.archiveButton}
-                type="button"
-                aria-label="查看归档"
-                aria-pressed={employeeArchiveOpen || showingArchive}
-                onClick={() =>
-                  onOpenArchive
-                    ? onOpenArchive()
-                    : archive.setFilter(showingArchive ? 'default' : 'only')
-                }
-              >
-                <IconArchiveOutlineRegular size={18} />
-              </button>
-            </Tooltip>
-          )}
-        </div>
-        {onOpenAutomations && (
-          <button
-            className={styles.automationNavigation}
-            type="button"
-            aria-label="自动化任务"
-            title="自动化任务"
-            aria-current={automationsActive ? 'page' : undefined}
-            onClick={onOpenAutomations}
-          >
-            <IconClockOutlineRegular size={18} />
-            <span className={sidebarUi.newSessionLabel}>自动化任务</span>
-          </button>
-        )}
-        {showingArchive && !collapsed && (
-          <div className={archiveCss.archiveHeader}>
-            <button type="button" onClick={() => archive?.setFilter('default')}>
-              <IconChevronRightOutlineRegular
-                size={14}
-                className={archiveCss.backIcon}
-              />
-              返回当前工作
-            </button>
-            <span>已归档</span>
-          </div>
-        )}
-        {archive?.error && !collapsed && (
-          <p className={archiveCss.error} role="alert">
-            {archive.error}
-            <button
-              type="button"
-              onClick={archive.reload}
-              disabled={archive.loading}
-            >
-              重新加载会话
-            </button>
-          </p>
-        )}
-        {archive?.loadError && !collapsed && (
-          <div
-            className={archiveCss.loadNotice}
-            role="alert"
-            aria-label="会话列表状态"
-            aria-busy={archive.loading}
-          >
-            <div className={archiveCss.loadNoticeContent}>
-              <span className={archiveCss.loadNoticeTitle}>
-                {archive.loading ? '正在更新会话…' : '会话暂未更新'}
-              </span>
-              <span className={archiveCss.loadNoticeDescription}>
-                {archive.sessions.length ? '已保留最近会话' : '请稍后重试'}
-              </span>
-            </div>
-            <button
-              className={archiveCss.loadRetry}
-              type="button"
-              aria-label="重新加载会话列表"
-              onClick={archive.reload}
-              disabled={archive.loading}
-            >
-              <IconRefreshOutlineRegular
-                size={15}
-                className={archive.loading ? archiveCss.retrying : undefined}
-              />
-              <span>{archive.loading ? '更新中' : '重试'}</span>
-            </button>
-          </div>
-        )}
-        <div className={sidebarUi.regionArea}>
-          {!collapsed && <p className={employeeSidebarCss.label}>AI 员工</p>}
-          <EmployeeSidebar
-            scheduledSessions={scheduledSessions}
-            archive={archive}
-            excludedEmployeeInstanceIds={archivedEmployeeInstanceIds}
-            key={
-              employeePreferenceKey(workspace) ??
-              `${workspace.organizationId}:${workspace.workspaceId}`
-            }
-            workspace={workspace}
-            sessions={sessions}
-            activeId={activeId}
-            pendingEmployeeAssignmentId={pendingEmployeeAssignmentId}
-            onNewSession={(id) => {
-              archive?.setFilter('default');
-              onNewSession(id);
-            }}
-            nativeReadyKey={nativeReadyKey}
-            pendingNativeSessions={pendingNativeSessions}
-            nativeReads={nativeReads}
-            collapsed={collapsed}
-            onSelectSession={onSelectSession}
-            onEmployeeNavigate={onEmployeeNavigate}
-            onPrepareSession={onPrepareSession}
-            onDetails={onOpenEmployeeDetails}
-          />
-        </div>
-
-        <div className={sidebarUi.footArea}>
-          <SidebarSettings
-            sessionId={activeId ?? undefined}
-            capabilities={capabilities}
-            key={
-              employeePreferenceKey(workspace) ??
-              `${workspace.organizationId}:${workspace.workspaceId}`
-            }
-            collapsed={collapsed}
-            workspaceId={workspace.workspaceId}
-            monthlyQuota={monthlyQuota}
-            preferences={preferences}
-            section={settingsSection}
-            onSectionChange={onSettingsSectionChange}
-            onBridge={onBridge}
-            bridge={bridge}
-            bridgeReleases={bridgeReleases}
-            onCapabilitiesChange={onCapabilitiesChange}
-          />
-        </div>
-      </div>
-    </aside>
+      }
+      settings={
+        <SidebarSettings
+          sessionId={activeId ?? undefined}
+          capabilities={capabilities}
+          key={
+            employeePreferenceKey(workspace) ??
+            `${workspace.organizationId}:${workspace.workspaceId}`
+          }
+          collapsed={collapsed}
+          workspaceId={workspace.workspaceId}
+          monthlyQuota={monthlyQuota}
+          preferences={preferences}
+          section={settingsSection}
+          onSectionChange={onSettingsSectionChange}
+          onBridge={onBridge}
+          bridge={bridge}
+          bridgeReleases={bridgeReleases}
+          onCapabilitiesChange={onCapabilitiesChange}
+        />
+      }
+    />
   );
 }

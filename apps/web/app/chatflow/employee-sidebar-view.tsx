@@ -1,0 +1,483 @@
+'use client';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  nativeSubagentActivityUnknown,
+  type NativeSubagentRead,
+} from './native-subagent-presentation';
+import {
+  IconChevronDownOutlineRegular,
+  IconChevronRightOutlineRegular,
+  IconClockOutlineRegular,
+  IconPlusOutlineRegular,
+  Tooltip,
+} from '@deepseek-ai/dsh-client-ui-primitives';
+import type { useSessionArchive } from './use-session-archive';
+import type { Session, Workspace } from './chatflow-types';
+import { ProjectRowItem, SessionNodeItem } from './dsh-upstream/workspace/Rows';
+import {
+  employeeAccent,
+  employeeAccentStyle,
+  employeeGroups,
+  employeePreferenceKey,
+  employeeSessionPreview,
+  employeeSessionPreviewLimit,
+  employeeTranslate,
+  readEmployeeExpansion,
+} from './employee-navigation';
+import css from './employee-sidebar.module.css';
+import workspaceCss from './dsh-upstream/archive/WorkspaceBrowser.module.css';
+import {
+  employeeChoice,
+  employeeChoiceProfile,
+  sessionEmployeeKey,
+} from './employee-instances';
+
+export function EmployeeSidebarView({
+  workspace,
+  sessions,
+  activeId,
+  pendingEmployeeAssignmentId,
+  onNewSession,
+  nativeReads = {},
+  onVisibleSessionsChange,
+  collapsed,
+  onSelectSession,
+  onEmployeeNavigate,
+  onPrepareSession,
+  onDetails,
+  archive,
+  scheduledSessions,
+  excludedEmployeeInstanceIds,
+  onlyEmployeeInstanceId,
+}: {
+  archive?: ReturnType<typeof useSessionArchive>;
+  scheduledSessions?: ReadonlySet<string>;
+  workspace: Workspace;
+  sessions: Session[];
+  activeId: string | null;
+  pendingEmployeeAssignmentId?: string | null;
+  onNewSession?: (assignmentId: string) => void;
+  nativeReads?: Record<string, NativeSubagentRead>;
+  onVisibleSessionsChange?: (ids: string[]) => void;
+  collapsed: boolean;
+  onSelectSession: (id: string) => void;
+  onEmployeeNavigate?: (instanceId: string) => void;
+  onPrepareSession: (id: string) => void;
+  onDetails?: (assignmentId: string) => void;
+  excludedEmployeeInstanceIds?: ReadonlySet<string>;
+  onlyEmployeeInstanceId?: string;
+}) {
+  const key = employeePreferenceKey(workspace);
+  const root = useRef<HTMLDivElement>(null);
+  const visibleIds = useRef<string[]>([]);
+  const activeSession = sessions.find((session) => session.id === activeId);
+  const reads = nativeReads;
+  const [expansion, setExpansion] = useState(() => readEmployeeExpansion(key));
+  const [all, setAll] = useState<Record<string, boolean>>({});
+  const [rail, setRail] = useState<string | null>(null);
+  const activeGroup = activeSession
+    ? sessionEmployeeKey(activeSession)
+    : undefined;
+  useEffect(() => {
+    const target =
+      onlyEmployeeInstanceId ?? activeGroup ?? pendingEmployeeAssignmentId;
+    if (target) setExpansion((current) => ({ ...current, [target]: true }));
+  }, [
+    activeId,
+    activeGroup,
+    onlyEmployeeInstanceId,
+    pendingEmployeeAssignmentId,
+  ]);
+  useEffect(() => {
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify(expansion));
+    } catch {
+      /* Optional preference storage. */
+    }
+  }, [key, expansion]);
+  const groups = useMemo(
+    () =>
+      employeeGroups(
+        workspace,
+        sessions,
+        activeId,
+        expansion,
+        archive?.filter,
+        archive?.employeeGroups,
+        reads,
+      ).filter(
+        (group) =>
+          !excludedEmployeeInstanceIds?.has(group.key) &&
+          (!onlyEmployeeInstanceId || group.key === onlyEmployeeInstanceId),
+      ),
+    [
+      workspace,
+      sessions,
+      activeId,
+      expansion,
+      archive?.filter,
+      archive?.employeeGroups,
+      reads,
+      excludedEmployeeInstanceIds,
+      onlyEmployeeInstanceId,
+    ],
+  );
+  useEffect(() => {
+    if (!onVisibleSessionsChange) return;
+    const visible = new Set<string>();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          const id = (entry.target as HTMLElement).dataset.rowKey!.slice(
+            'session:'.length,
+          );
+          if (entry.isIntersecting) visible.add(id);
+          else visible.delete(id);
+        }
+        const ids = [...visible].sort();
+        if (visibleIds.current.join() !== ids.join()) {
+          visibleIds.current = ids;
+          onVisibleSessionsChange?.(ids);
+        }
+      },
+      { root: root.current },
+    );
+    const rows = root.current?.querySelectorAll('[data-row-key^="session:"]');
+    rows?.forEach((row) => observer.observe(row));
+    if (!rows?.length && visibleIds.current.length) {
+      visibleIds.current = [];
+      onVisibleSessionsChange?.([]);
+    }
+    return () => observer.disconnect();
+  }, [groups, collapsed, all, onVisibleSessionsChange]);
+  useEffect(() => {
+    if (collapsed || !archive || archive.loading) return;
+    for (const group of groups) {
+      if (
+        group.expanded &&
+        group.sessions.length <
+          Math.min(employeeSessionPreviewLimit, group.sessionCount) &&
+        !archive.employeePages?.[group.key]
+      )
+        archive.loadPreview(group.key);
+    }
+  }, [archive, collapsed, groups]);
+  if (!groups.length) return <p className={css.empty}>当前没有可用员工</p>;
+  const prepareSession = (target: EventTarget) => {
+    if (!(target instanceof Element)) return;
+    const key = target.closest('[data-row-key]')?.getAttribute('data-row-key');
+    if (key?.startsWith('session:'))
+      onPrepareSession(key.slice('session:'.length));
+  };
+  return (
+    <div
+      ref={root}
+      className={css.root}
+      data-collapsed={collapsed || undefined}
+      role="tree"
+      aria-label="员工与工作"
+      onPointerOver={(event) => prepareSession(event.target)}
+      onFocusCapture={(event) => prepareSession(event.target)}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && rail) {
+          event.stopPropagation();
+          setRail(null);
+        }
+      }}
+    >
+      {groups.map((group) => {
+        const employee = employeeChoice(workspace, group.key);
+        const profile = employeeChoiceProfile(workspace, group.key);
+        const color = employee?.currentVersion.manifest.appearance?.accentColor;
+        const accent = employeeAccent(group.label, color);
+        const history = sessions.filter(
+          (session) =>
+            sessionEmployeeKey(session) === group.key &&
+            (archive?.filter === 'show' ||
+              (archive?.filter === 'only'
+                ? !!session.archivedAt
+                : !session.archivedAt)),
+        );
+        const preview = employeeSessionPreview(group.sessions, activeId);
+        const rows = all[group.key] ? group.sessions : preview.rows;
+        const pagination = archive?.employeePages?.[group.key];
+        const needsPreview =
+          !!archive &&
+          group.sessions.length <
+            Math.min(employeeSessionPreviewLimit, group.sessionCount) &&
+          (!pagination || pagination.loading || !!pagination.error);
+        const hasMore = archive?.hasMore(group.key);
+        const remaining = Math.max(0, group.sessionCount - rows.length);
+        if (collapsed)
+          return (
+            <div
+              className={css.railItem}
+              key={group.key}
+              onMouseEnter={() => setRail(group.key)}
+              onMouseLeave={() => setRail(null)}
+              onBlur={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget))
+                  setRail(null);
+              }}
+            >
+              <button
+                type="button"
+                className={css.avatar}
+                data-accent={accent}
+                style={employeeAccentStyle(group.label, color)}
+                aria-label={group.label}
+                aria-expanded={rail === group.key}
+                onFocus={() => setRail(group.key)}
+                onClick={() => {
+                  onEmployeeNavigate?.(group.key);
+                  setRail(group.key);
+                }}
+              >
+                {Array.from(group.label)[0]}
+              </button>
+              {rail === group.key && (
+                <div
+                  className={css.flyout}
+                  role="group"
+                  aria-label={`${group.label}的工作`}
+                >
+                  <strong>{group.label}</strong>
+                  {onNewSession && employee && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRail(null);
+                        onNewSession(group.key);
+                      }}
+                    >
+                      和 {group.label} 开新会话
+                    </button>
+                  )}
+                  {history.slice(0, 3).map((session) => (
+                    <button
+                      type="button"
+                      key={session.id}
+                      onPointerEnter={() => onPrepareSession(session.id)}
+                      onFocus={() => onPrepareSession(session.id)}
+                      onClick={() => {
+                        setRail(null);
+                        onSelectSession(session.id);
+                      }}
+                    >
+                      {session.title}
+                    </button>
+                  ))}
+                  {onDetails && (profile || group.sessionCount > 0) && (
+                    <button type="button" onClick={() => onDetails(group.key)}>
+                      查看员工详情
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        return (
+          <section
+            key={group.key}
+            className={css.group}
+            aria-label={group.label}
+          >
+            <div
+              className={css.employeeCard}
+              data-accent={accent}
+              style={employeeAccentStyle(group.label, color)}
+              data-active={
+                group.containsCurrent ||
+                (!activeId && pendingEmployeeAssignmentId === group.key) ||
+                undefined
+              }
+            >
+              <div className={css.header}>
+                <ProjectRowItem
+                  group={group}
+                  title={
+                    <span className={css.employeeTitle}>
+                      <span className={css.employeeName}>{group.label}</span>
+                      <IconChevronDownOutlineRegular
+                        className={css.expandIcon}
+                        size={12}
+                      />
+                    </span>
+                  }
+                  description={
+                    <span className={css.meta}>
+                      <span>{group.sessionCount} 个工作</span>
+                    </span>
+                  }
+                  leading={
+                    <span className={css.initial}>
+                      {Array.from(group.label)[0]}
+                    </span>
+                  }
+                  onToggle={() => {
+                    onEmployeeNavigate?.(group.key);
+                    setExpansion((current) => ({
+                      ...current,
+                      [group.key]: !group.expanded,
+                    }));
+                  }}
+                  t={employeeTranslate}
+                />
+                {onNewSession && employee && (
+                  <Tooltip
+                    label={`和 ${group.label} 开新会话`}
+                    side="bottom"
+                    align="end"
+                  >
+                    <button
+                      type="button"
+                      className={css.newChat}
+                      aria-label={`和 ${group.label} 开新会话`}
+                      onClick={() => {
+                        setExpansion((current) => ({
+                          ...current,
+                          [group.key]: true,
+                        }));
+                        onNewSession(group.key);
+                      }}
+                    >
+                      <IconPlusOutlineRegular size={16} />
+                    </button>
+                  </Tooltip>
+                )}
+                {onDetails && (profile || group.sessionCount > 0) && (
+                  <button
+                    type="button"
+                    className={css.info}
+                    aria-label={`查看${group.label}详情`}
+                    title={`${group.label}介绍`}
+                    onClick={() => onDetails(group.key)}
+                  >
+                    <span>详情</span>
+                    <IconChevronRightOutlineRegular size={13} />
+                  </button>
+                )}
+              </div>
+            </div>
+            {group.expanded && (
+              <div
+                role="group"
+                aria-label={`${group.label}的会话`}
+                className={`${workspaceCss.flatList} ${css.sessions}`}
+              >
+                {!activeId && pendingEmployeeAssignmentId === group.key && (
+                  <div
+                    className={css.draftSession}
+                    role="treeitem"
+                    aria-selected="true"
+                  >
+                    <span>新会话</span>
+                    <span className={css.draftTime}>现在</span>
+                  </div>
+                )}
+                {rows.map((node) => (
+                  <SessionNodeItem
+                    key={node.id}
+                    node={node}
+                    leading={
+                      scheduledSessions?.has(node.id) ? (
+                        <span
+                          title="有启用中的自动化任务"
+                          aria-label="有启用中的自动化任务"
+                        >
+                          <IconClockOutlineRegular size={14} />
+                        </span>
+                      ) : undefined
+                    }
+                    currentId={activeId ?? undefined}
+                    now={Date.now()}
+                    onOpen={onSelectSession}
+                    renderSlot={
+                      sessions.some(
+                        (s) =>
+                          s.id === node.id &&
+                          s.ownerId &&
+                          s.ownerId !== workspace.viewerId,
+                      )
+                        ? undefined
+                        : archive?.renderActions
+                    }
+                    t={(key, params) => {
+                      const label = employeeTranslate(key, params);
+                      const read = reads[node.id];
+                      const notice =
+                        read === 'error'
+                          ? '子智能体状态读取失败'
+                          : nativeSubagentActivityUnknown(read)
+                            ? node.runningSubagentCount > 0
+                              ? '部分子智能体当前活动状态未知'
+                              : '子智能体当前活动状态未知'
+                            : '';
+                      return notice &&
+                        ((key.startsWith('status.') &&
+                          !key.startsWith('status.compact.')) ||
+                          key === 'row.archived')
+                        ? `${key.startsWith('status.subagentsRunning.') ? '至少 ' : ''}${label} · ${notice}`
+                        : label;
+                    }}
+                  />
+                ))}
+                {group.sessionCount === 0 &&
+                  (activeId || pendingEmployeeAssignmentId !== group.key) && (
+                    <span className={css.empty}>点卡片上的加号开始</span>
+                  )}
+                {needsPreview && !pagination?.error && (
+                  <span role="status" className={css.empty}>
+                    正在加载会话…
+                  </span>
+                )}
+                {((!needsPreview &&
+                  (group.sessions.length > rows.length || hasMore)) ||
+                  pagination?.error) && (
+                  <button
+                    className={css.more}
+                    type="button"
+                    disabled={archive?.loading || pagination?.loading}
+                    onClick={() => {
+                      if (needsPreview) {
+                        archive?.loadPreview(group.key);
+                        return;
+                      }
+                      setAll((current) => ({ ...current, [group.key]: true }));
+                      if (hasMore) archive?.loadMore(group.key);
+                    }}
+                  >
+                    {pagination?.loading
+                      ? '正在加载会话…'
+                      : pagination?.error
+                        ? '加载失败，点击重试'
+                        : remaining > 0
+                          ? `展开其余 ${remaining} 个会话`
+                          : '展开更多会话'}
+                  </button>
+                )}
+                {pagination?.error && (
+                  <span role="alert" className={css.empty}>
+                    {pagination.error}
+                  </span>
+                )}
+                {all[group.key] && preview.hiddenCount > 0 && (
+                  <button
+                    className={css.more}
+                    type="button"
+                    onClick={() =>
+                      setAll((current) => ({ ...current, [group.key]: false }))
+                    }
+                  >
+                    收起更多会话
+                  </button>
+                )}
+              </div>
+            )}
+          </section>
+        );
+      })}
+    </div>
+  );
+}

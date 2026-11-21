@@ -1,9 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import {
-  NativeSubagentSummarySchema,
-  type NativeSubagentSummary,
-} from '@allrice/contracts';
+import { NativeSubagentSummarySchema } from '@allrice/contracts';
 import { followNativeSubagents } from './native-subagent-follow';
 import type { RunView } from './chatflow-types';
 
@@ -20,17 +17,11 @@ export const nativeSubagentReadyKey = (view?: RunView) =>
     ? view.runId
     : '';
 
-export type NativeSubagentRead = NativeSubagentSummary | null | 'error';
-export const nativeSubagentActivityUnknown = (
-  read: NativeSubagentRead | undefined,
-) =>
-  read === null ||
-  (typeof read === 'object' &&
-    read.descendants.some(
-      (entry) =>
-        entry.parentId === read.rootId &&
-        (entry.kind === 'diagnostic' || entry.running === null),
-    ));
+import type { NativeSubagentRead } from './native-subagent-presentation';
+export {
+  nativeSubagentActivityUnknown,
+  type NativeSubagentRead,
+} from './native-subagent-presentation';
 
 /** Read-only cuts and hot directory replacements share the same request owner. */
 export function useNativeSubagents(

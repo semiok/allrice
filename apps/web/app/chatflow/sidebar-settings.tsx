@@ -13,7 +13,6 @@ import { SubagentPreferencesSchema } from '@allrice/contracts';
 import {
   Button,
   IconPlusOutlineRegular,
-  IconSettingsOutlineMedium,
   Input,
   Switch,
 } from '@deepseek-ai/dsh-client-ui-primitives';
@@ -25,7 +24,7 @@ import {
 } from '../../lib/theme/appearance';
 import { ConnectedApps } from '../workspace/mcp/connected-apps';
 import { SettingsPanel } from './dsh-upstream/settings/SettingsRoot';
-import native from './dsh-upstream/settings/SettingsRoot.module.css';
+import { SidebarSettingsTrigger } from './sidebar-settings-trigger';
 import { MonthlyQuota } from './monthly-quota';
 import { StorageUsage } from './storage-usage';
 import { AccountPasswordSettings } from './account-password-settings';
@@ -483,25 +482,14 @@ export function SidebarSettings({
   const close = () => onSectionChange(null);
   return (
     <>
-      <div
-        className={`${native.triggerRow} ${collapsed ? native.railRow : ''}`}
-      >
-        <button
-          type="button"
-          className={`${native.trigger} ${collapsed ? native.rail : ''}`}
-          aria-label="设置"
-          title="设置"
-          aria-haspopup="dialog"
-          aria-expanded={activeSection !== null}
-          onClick={() => {
-            onSectionChange('preferences');
-            void preferences.reload();
-          }}
-        >
-          <IconSettingsOutlineMedium size={20} />
-          {!collapsed && <span className={native.triggerLabel}>设置</span>}
-        </button>
-      </div>
+      <SidebarSettingsTrigger
+        collapsed={collapsed}
+        expanded={activeSection !== null}
+        onOpen={() => {
+          onSectionChange('preferences');
+          void preferences.reload();
+        }}
+      />
       {activeSection !== null && (
         <SettingsPanel
           rows={rows}
