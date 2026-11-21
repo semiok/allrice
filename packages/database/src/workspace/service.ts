@@ -104,6 +104,14 @@ import {
 } from '@allrice/contracts';
 import { z } from 'zod';
 import { newCurrentEmployeeChatOrigin } from '../conversation/current-execution-binding.ts';
+import {
+  assertChatExecutionGeneration,
+  readChatExecutionGeneration,
+} from '../conversation/execution-generation.ts';
+import {
+  ExecutionGenerationSchema,
+  type ExecutionGeneration,
+} from '@allrice/contracts';
 import type { TransactionSql } from 'postgres';
 
 import { DataAccessError, getStoredFile } from '../data.ts';
@@ -161,6 +169,7 @@ interface SessionRow {
   updated_at: Date;
   archived_at: Date | null;
   pinned_at?: Date | null;
+  execution_generation: ExecutionGeneration;
 }
 
 interface MessageRow {
@@ -522,7 +531,12 @@ async function sessionRow(
 export async function createChatSession(
   context: RequestContext,
   input: unknown,
-  options: { sessionId?: string; freezeAccountCapabilities?: true } = {},
+  options: {
+    sessionId?: string;
+    freezeAccountCapabilities?: true;
+    /** Host-selected birth owner. Never copied from browser JSON. */
+    executionGeneration?: ExecutionGeneration;
+  } = {},
 ) {
   const parsed = CreateChatSessionInputSchema.parse(input);
   if (parsed.employeeInstanceId) {
@@ -558,10 +572,17 @@ export async function createChatSession(
 export async function createAssignedChatSession(
   context: ResourcePrincipal,
   input: unknown,
-  options: { sessionId?: string; freezeAccountCapabilities?: true } = {},
+  options: {
+    sessionId?: string;
+    freezeAccountCapabilities?: true;
+    executionGeneration?: ExecutionGeneration;
+  } = {},
   transaction?: TransactionSql,
 ): Promise<z.infer<typeof ChatSessionSchema>> {
   const parsed = CreateChatSessionInputSchema.parse(input);
+  const executionGeneration = ExecutionGenerationSchema.parse(
+    options.executionGeneration ?? '3.x',
+  );
   if (!transaction) {
     const { employeePersonaAdmission } =
       await import('../employees/employee-instances.ts');
@@ -641,22 +662,23 @@ export async function createAssignedChatSession(
     : randomUUID();
   const [existing] =
     await sql`select id from allrice_chat_sessions where id=${fixedSessionId}`;
-  const origin = !existing
-    ? newCurrentEmployeeChatOrigin(
-        {
-          organizationId: context.organizationId,
-          workspaceId,
-          ownerId: requireUser(context),
-          sessionId: fixedSessionId,
-          source: {
-            employeeVersionId,
-            configChecksum: versions[0].config_checksum,
-            manifest: versions[0].manifest,
+  const origin =
+    !existing && executionGeneration === '3.x'
+      ? newCurrentEmployeeChatOrigin(
+          {
+            organizationId: context.organizationId,
+            workspaceId,
+            ownerId: requireUser(context),
+            sessionId: fixedSessionId,
+            source: {
+              employeeVersionId,
+              configChecksum: versions[0].config_checksum,
+              manifest: versions[0].manifest,
+            },
           },
-        },
-        transaction,
-      )
-    : null;
+          transaction,
+        )
+      : null;
   // Both entrypoints also serve scheduled/platform work; only the ordinary
   // authenticated session route opts in. Idempotent retries do not reread config.
   const accountCapabilities =
@@ -672,11 +694,11 @@ export async function createAssignedChatSession(
     insert into allrice_chat_sessions (
       id, organization_id, workspace_id, owner_id, employee_assignment_id,
       employee_instance_id, employee_version_id, title, visibility, native_root_origin,
-      account_capability_snapshot
+      account_capability_snapshot, execution_generation
     ) values (
       ${fixedSessionId}, ${context.organizationId}, ${workspaceId}, ${requireUser(context)},
       ${assignment.id}, ${instance.id}, ${employeeVersionId}, ${parsed.title}, 'private', ${origin ? sql.json(origin) : null},
-      ${accountCapabilities ? sql.json(accountCapabilities) : null}
+      ${accountCapabilities ? sql.json(accountCapabilities) : null}, ${executionGeneration}
     )
     -- The table also has a composite unique identity used by foreign keys.
     -- Concurrent same-ID creation must handle either constraint; the exact
@@ -699,7 +721,8 @@ export async function createAssignedChatSession(
     row.employee_assignment_id !== assignment.id ||
     (row.employee_instance_id ?? row.employee_assignment_id) !== instance.id ||
     row.archived_at ||
-    row.visibility !== 'private'
+    row.visibility !== 'private' ||
+    row.execution_generation !== executionGeneration
   )
     throw new DataAccessError('authorization_denied');
   await audit(
@@ -888,6 +911,16 @@ export async function updateChatSession(
       const [locked] = await transaction<
         { archived_at: Date | null }[]
       >`select archived_at from allrice_chat_sessions where id=${current.id} for update`;
+      await assertChatExecutionGeneration(
+        transaction,
+        {
+          organizationId: context.organizationId,
+          workspaceId,
+          ownerId: requireUser(context),
+          sessionId: current.id,
+        },
+        '3.x',
+      );
       if (
         await nativeContextExecutionRetired(transaction, 'chat', current.id)
       ) {
@@ -939,15 +972,18 @@ export async function updateChatSession(
               then now()
             else updated_at
           end
-      where id = ${current.id}
+      where id = ${current.id} and execution_generation = '3.x'
       returning *
     `;
+      if (!rows[0]) throw new DataAccessError('not_found');
       if (update.visibility) {
         await transaction`
         update allrice_messages set visibility = ${update.visibility}
         where organization_id = ${context.organizationId}
           and workspace_id = ${workspaceId}
           and session_id = ${current.id}
+          and exists(select 1 from allrice_chat_sessions s where s.id=${current.id}
+            and s.execution_generation='3.x')
       `;
       }
       return rows[0];
@@ -1312,6 +1348,58 @@ export async function authorizeSessionOwner(
   return mapSession(session);
 }
 
+/** Legacy browser writes must pass this before allocating metadata or bytes.
+ * The final database writers independently enforce the same immutable pin. */
+export async function authorizeLegacySessionWrite(
+  context: RequestContext,
+  workspaceId: string,
+  sessionId: string,
+) {
+  const session = await authorizeSessionOwner(context, workspaceId, sessionId);
+  await assertChatExecutionGeneration(
+    getDatabase(),
+    {
+      organizationId: session.organizationId,
+      workspaceId: session.workspaceId,
+      ownerId: session.ownerId,
+      sessionId: session.id,
+    },
+    '3.x',
+  );
+  return session;
+}
+
+/** Owner-only cold history admission. Archival does not grant execution. */
+export async function authorizeSessionHistoryOwner(
+  context: RequestContext,
+  workspaceId: string,
+  sessionId: string,
+) {
+  const session = await sessionRow(context, workspaceId, sessionId);
+  if (session.owner_id !== requireUser(context))
+    throw new DataAccessError('authorization_denied');
+  return mapSession(session);
+}
+
+/** Current owner read of the immutable product writer; never grants execution. */
+export async function getSessionExecutionGeneration(
+  context: RequestContext,
+  workspaceId: string,
+  sessionId: string,
+) {
+  const session = await authorizeSessionHistoryOwner(
+    context,
+    workspaceId,
+    sessionId,
+  );
+  return readChatExecutionGeneration(getDatabase(), {
+    organizationId: session.organizationId,
+    workspaceId: session.workspaceId,
+    ownerId: session.ownerId,
+    sessionId: session.id,
+  });
+}
+
 type ChatMessagePersistenceInput = {
   context: ResourcePrincipal;
   workspaceId: string;
@@ -1352,6 +1440,16 @@ async function persistChatMessageInTransaction(
 ): Promise<PersistedChatMessage> {
   const { context, workspaceId, session, message, requestDigest, options } =
     input;
+  await assertChatExecutionGeneration(
+    transaction,
+    {
+      organizationId: context.organizationId,
+      workspaceId,
+      ownerId: context.actor.id,
+      sessionId: session.id,
+    },
+    '3.x',
+  );
   if (message.userQuestionAnswer)
     await requireNativeQuestionAdmission(
       transaction,
@@ -2232,6 +2330,16 @@ export async function linkFileToSession(input: {
   if (session.owner_id !== requireUser(input.context) || session.archived_at) {
     throw new DataAccessError('authorization_denied');
   }
+  await assertChatExecutionGeneration(
+    sql,
+    {
+      organizationId: input.context.organizationId,
+      workspaceId: input.workspaceId,
+      ownerId: requireUser(input.context),
+      sessionId: session.id,
+    },
+    '3.x',
+  );
   const rows = await sql<{ id: string }[]>`
     insert into allrice_file_references (
       organization_id, workspace_id, object_id, session_id, owner_id, file_name
@@ -2245,6 +2353,9 @@ export async function linkFileToSession(input: {
       and o.workspace_id = ${input.workspaceId}
       and o.owner_id = ${requireUser(input.context)}
       and o.state = 'ready'
+      and exists(select 1 from allrice_chat_sessions s where s.id=${session.id}
+        and s.organization_id=${input.context.organizationId} and s.workspace_id=${input.workspaceId}
+        and s.owner_id=${requireUser(input.context)} and s.execution_generation='3.x')
       and not exists(select 1 from allrice_company_asset_revisions reserved where reserved.snapshot_object_id=o.id)
       and not exists(select 1 from allrice_knowledge_revisions retained where retained.file_object_id=o.id)
       and not exists(select 1 from allrice_company_asset_materials reserved where reserved.object_id=o.id)
@@ -2336,6 +2447,16 @@ export async function linkWorkspaceFileToSession(input: {
     throw new DataAccessError('authorization_denied');
   }
   const sql = getDatabase();
+  await assertChatExecutionGeneration(
+    sql,
+    {
+      organizationId: input.context.organizationId,
+      workspaceId: input.workspaceId,
+      ownerId: requireUser(input.context),
+      sessionId: session.id,
+    },
+    '3.x',
+  );
   const policyNames = await workbenchFileSchemaReady(sql);
   const rows = await sql<{ id: string; file_name: string }[]>`
     select o.id, coalesce(max(f.file_name), ${policyNames ? sql`max(p.file_name)` : sql`null::text`}, '未命名文件') as file_name
@@ -2358,10 +2479,13 @@ export async function linkWorkspaceFileToSession(input: {
   await sql`
     insert into allrice_file_references (
       organization_id, workspace_id, object_id, session_id, owner_id, file_name
-    ) values (
+    ) select
       ${input.context.organizationId}, ${input.workspaceId}, ${file.id},
       ${session.id}, ${requireUser(input.context)}, ${file.file_name}
-    ) on conflict (object_id, session_id) do nothing
+    from allrice_chat_sessions s where s.id=${session.id}
+      and s.organization_id=${input.context.organizationId} and s.workspace_id=${input.workspaceId}
+      and s.owner_id=${requireUser(input.context)} and s.execution_generation='3.x'
+    on conflict (object_id, session_id) do nothing
   `;
   return {
     objectId: file.id,

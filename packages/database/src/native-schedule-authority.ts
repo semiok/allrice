@@ -9,6 +9,7 @@ import { readContentPrincipal } from './content-maintenance.ts';
 import { assertWorkbenchSession } from './artifact-review.ts';
 import { resolveEmployeeSessionInstance } from './employees/employee-instances.ts';
 import type { ResourcePrincipal } from './resource-principal.ts';
+import { assertChatExecutionGeneration } from './conversation/execution-generation.ts';
 type Tx = TransactionSql;
 export type ScheduleScope = {
   organizationId: string;
@@ -109,6 +110,11 @@ export async function lockScheduleTarget(
       and e.employee_key not like 'platform-%' for share of a,e`;
   if (!ordinary || instance.id !== target.employee_instance_id)
     throw new DataAccessError('authorization_denied');
+  await assertChatExecutionGeneration(
+    tx,
+    { ...scope, sessionId: target.id },
+    '3.x',
+  );
   return instance;
 }
 

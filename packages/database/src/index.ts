@@ -400,3 +400,12 @@ export { ReferenceArchiveInputError } from './reference-archive-read.ts';
 export { checkReferenceImageSignal } from './reference-image-read.ts';
 export * from './brand-media/server-wiring.ts';
 export * from './employees/employee-module-bindings.ts';
+
+// MET-272 M1 module allowlist: migration adapters only, not completed 4.0 ports.
+export type { LegacyMcpExecution } from './mcp-legacy-execution.ts';
+export { createLegacyEnterpriseMaterialsMcpPort } from './enterprise-materials-mcp-port.ts';
+export { createLegacyEmployeeMemoryMcpPort } from './employee-memory-mcp-port.ts';
+export {
+  createLegacyDeliverablesMcpPort,
+  type PreparedMcpDeliverable,
+} from './deliverables-mcp-port.ts';
