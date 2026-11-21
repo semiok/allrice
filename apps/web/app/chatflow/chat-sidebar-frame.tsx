@@ -17,6 +17,7 @@ import employeeSidebarCss from './employee-sidebar.module.css';
 import frameUi from './dsh-upstream/AppFrame.module.css';
 import sidebarUi from './dsh-upstream/SidebarRoot.module.css';
 import styles from './dsh-saas.module.css';
+import surfaceCss from './chat-sidebar-frame.module.css';
 
 export interface ChatSidebarFrameProps {
   archive?: ReturnType<typeof useSessionArchive>;
@@ -71,7 +72,7 @@ export function ChatSidebarFrame({
       role={overlay ? 'dialog' : undefined}
       aria-label={overlay ? '任务与历史' : undefined}
       aria-modal={overlay ? true : undefined}
-      className={`${frameUi.sidebarCol} ${overlay ? styles.sidebarOverlay : ''}`}
+      className={`${frameUi.sidebarCol} ${surfaceCss.surface} ${overlay ? styles.sidebarOverlay : ''}`}
       onKeyDown={(event) => {
         if (!overlay || !event.currentTarget.contains(event.target as Node))
           return;

@@ -2,6 +2,8 @@ import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { ChatSidebar } from '../../../../apps/web/app/chatflow/chat-sidebar';
 import { applyTheme } from '../../../../apps/web/lib/theme/theme';
+import frameCss from '../../../../apps/web/app/chatflow/dsh-upstream/AppFrame.module.css';
+import shellCss from '../../../../apps/web/app/chatflow/dsh-saas.module.css';
 import { createSidebarFixtureData } from './sidebar-data.mjs';
 
 // The builder loads ALL imported AllRice app/UI/contracts sources from the
@@ -46,9 +48,10 @@ const archive = {
 function Baseline() {
   const [collapsed, setCollapsed] = useState(false);
   return (
-    <div
+    <main
       data-legacy-sidebar-base
-      style={{ width, height: '100vh', display: 'grid' }}
+      className={`${frameCss.frame} ${shellCss.shell}`}
+      style={{ gridTemplateColumns: `${width}px minmax(0, 1fr) 0px` }}
     >
       <ChatSidebar
         workspace={{
@@ -86,7 +89,7 @@ function Baseline() {
         onOpenAutomations={noop}
         onOpenArchive={noop}
       />
-    </div>
+    </main>
   );
 }
 createRoot(document.getElementById('root')!).render(<Baseline />);

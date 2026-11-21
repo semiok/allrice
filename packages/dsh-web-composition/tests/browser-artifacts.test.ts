@@ -45,6 +45,12 @@ it('rejects changed prepared baseline bytes or a current-entry identity before a
   const metadata = {
     head: sidebarBaselineHead,
     htmlSha256: hash(html),
+    replayEntrySha256: hash(
+      await readFile(
+        new URL('./fixtures/sidebar-base-entry.tsx', import.meta.url),
+        'utf8',
+      ),
+    ),
     fixtureDataSha256: hash(JSON.stringify(createSidebarFixtureData())),
     sources: Object.entries(sidebarBaselineSources).map(([path, sha256]) => ({
       path,
@@ -60,6 +66,20 @@ it('rejects changed prepared baseline bytes or a current-entry identity before a
     await writeLegacySidebarBaseline(output, prepared);
     expect(await readFile(join(output, 'legacy-base-entry.html'), 'utf8')).toBe(
       html,
+    );
+    const replayHash = metadata.replayEntrySha256;
+    metadata.replayEntrySha256 = 'stale-replay-entry';
+    await writeFile(
+      join(prepared, 'legacy-base-sources.json'),
+      JSON.stringify(metadata),
+    );
+    await expect(writeLegacySidebarBaseline(output, prepared)).rejects.toThrow(
+      'identity/hash mismatch',
+    );
+    metadata.replayEntrySha256 = replayHash;
+    await writeFile(
+      join(prepared, 'legacy-base-sources.json'),
+      JSON.stringify(metadata),
     );
     await writeFile(
       join(prepared, 'legacy-base-entry.html'),

@@ -12,6 +12,7 @@ import { startInstalledProfile } from './installed-profile';
 import { documentSession, processSession } from './native-history.mjs';
 import { createBrowserArtifacts } from './browser-artifacts';
 import { createSidebarFixtureData } from './fixtures/sidebar-data.mjs';
+import { compareSidebarPixels } from './sidebar-pixels';
 import {
   sidebarBaselineHead,
   writeLegacySidebarBaseline,
@@ -106,17 +107,188 @@ const sidebarGeometry = (view: Page, selector = '#chat-sidebar') =>
         boxSizing: style.boxSizing,
         borderLeftWidth: style.borderLeftWidth,
         borderRightWidth: style.borderRightWidth,
+        reservedScrollbarWidth:
+          width -
+          node.clientWidth -
+          parseFloat(style.borderLeftWidth) -
+          parseFloat(style.borderRightWidth),
+        clientWidth: node.clientWidth,
+        scrollWidth: node.scrollWidth,
+        scrollbarGutter: style.scrollbarGutter,
+        scrollbarToken: style.getPropertyValue('--dsh-scrollbar-width').trim(),
+        scrollbarPaintWidth: getComputedStyle(node, '::-webkit-scrollbar')
+          .width,
+        fontFamily: style.fontFamily,
+        fontWeight: style.fontWeight,
+        fontSize: style.fontSize,
+        lineHeight: style.lineHeight,
+        letterSpacing: style.letterSpacing,
+        fontSmoothing: style.getPropertyValue('-webkit-font-smoothing'),
+        color: style.color,
+        backgroundColor: style.backgroundColor,
+        hovered: node.matches(':hover'),
+        focused: node === document.activeElement,
       };
     };
+    const tree = frame.querySelector('[role="tree"][aria-label="员工与工作"]');
     return {
       viewport: { width: innerWidth, height: innerHeight },
       compact: matchMedia('(max-width: 760px)').matches,
+      document: {
+        lang: document.documentElement.lang,
+        theme: document.documentElement.getAttribute('data-theme'),
+        dark: document.body.hasAttribute('data-ds-dark-theme'),
+        fonts: document.fonts.status,
+        dpr: devicePixelRatio,
+      },
       frame: read(frame),
       root: read(frame.lastElementChild),
       parent: read(frame.parentElement),
       layout: read(frame.parentElement?.parentElement ?? null),
+      body: read(document.body),
+      tree: read(tree),
+      groups: [...(tree?.querySelectorAll(':scope > section') ?? [])].map(
+        (group) => {
+          const label = group.getAttribute('aria-label');
+          const row = group.querySelector('[data-row-key^="workspace:"]');
+          const title = [...(row?.querySelectorAll('span') ?? [])].find(
+            (node) => !node.childElementCount && node.textContent === label,
+          );
+          const range = document.createRange();
+          if (title) range.selectNodeContents(title);
+          return {
+            label,
+            card: read(group.firstElementChild),
+            row: read(row),
+            title: read(title ?? null),
+            titleLines: title
+              ? [...range.getClientRects()].map(({ x, y, width, height }) => ({
+                  x,
+                  y,
+                  width,
+                  height,
+                }))
+              : [],
+            actions: [
+              ...group.firstElementChild!.querySelectorAll('button'),
+            ].map(read),
+            sessions: [
+              ...group.querySelectorAll('[data-row-key^="session:"]'),
+            ].map((session) => ({
+              id: session.getAttribute('data-row-key'),
+              row: read(session),
+              title: read(session.children[1] ?? null),
+              time: read(session.children[2] ?? null),
+            })),
+          };
+        },
+      ),
     };
   });
+
+type SidebarGeometry = Awaited<ReturnType<typeof sidebarGeometry>>;
+const sidebarVisualDifferences = (
+  before: SidebarGeometry,
+  after: SidebarGeometry,
+) => {
+  const differences: string[] = [];
+  const box = (
+    path: string,
+    a: SidebarGeometry['root'],
+    b: SidebarGeometry['root'],
+  ) => {
+    if (!a || !b) {
+      differences.push(`${path}: missing measured element`);
+      return;
+    }
+    for (const key of ['x', 'y', 'width', 'height'] as const)
+      if (Math.abs(a.rect[key] - b.rect[key]) > 0.5)
+        differences.push(`${path}.${key}: ${a.rect[key]} / ${b.rect[key]}`);
+    for (const key of [
+      'clientWidth',
+      'scrollWidth',
+      'reservedScrollbarWidth',
+    ] as const)
+      if (Math.abs(a[key] - b[key]) > 0.5)
+        differences.push(`${path}.${key}: ${a[key]} / ${b[key]}`);
+    for (const key of [
+      'fontFamily',
+      'fontWeight',
+      'fontSize',
+      'lineHeight',
+      'letterSpacing',
+      'fontSmoothing',
+      'color',
+      'backgroundColor',
+      'hovered',
+      'focused',
+    ] as const)
+      if (a[key] !== b[key])
+        differences.push(`${path}.${key}: ${a[key]} / ${b[key]}`);
+  };
+  box('root', before.root, after.root);
+  box('tree', before.tree, after.tree);
+  if (before.tree?.scrollbarPaintWidth !== after.tree?.scrollbarPaintWidth)
+    differences.push(
+      `tree.scrollbarPaintWidth: ${before.tree?.scrollbarPaintWidth} / ${after.tree?.scrollbarPaintWidth}`,
+    );
+  if (before.groups.length !== after.groups.length)
+    differences.push('group count differs');
+  before.groups.forEach((group, index) => {
+    const current = after.groups[index];
+    if (!current || group.label !== current.label) {
+      differences.push(`group ${index}: identity differs`);
+      return;
+    }
+    for (const key of ['card', 'row', 'title'] as const)
+      box(`${group.label}.${key}`, group[key], current[key]);
+    if (group.titleLines.length !== current.titleLines.length)
+      differences.push(`${group.label}: title line count differs`);
+    group.titleLines.forEach((line, index) => {
+      const other = current.titleLines[index];
+      for (const key of ['x', 'y', 'width', 'height'] as const)
+        if (!other || Math.abs(line[key] - other[key]) > 0.5)
+          differences.push(`${group.label}.line${index}.${key} differs`);
+    });
+    if (group.actions.length !== current.actions.length)
+      differences.push(`${group.label}: action count differs`);
+    group.actions.forEach((action, index) =>
+      box(
+        `${group.label}.action${index}`,
+        action,
+        current.actions[index] ?? null,
+      ),
+    );
+    if (group.sessions.length !== current.sessions.length)
+      differences.push(`${group.label}: session count differs`);
+    group.sessions.forEach((session, index) => {
+      const other = current.sessions[index];
+      if (!other || other.id !== session.id)
+        differences.push(`${session.id}: identity differs`);
+      else
+        for (const key of ['row', 'title', 'time'] as const)
+          box(`${session.id}.${key}`, session[key], other[key]);
+    });
+  });
+  return differences;
+};
+
+const prepareSidebarCapture = async (view: Page) => {
+  const viewport = view.viewportSize()!;
+  // Actual pointer/focus events, not a CSS :hover override. The last viewport
+  // pixel is outside both desktop and compact sidebar content.
+  await view.mouse.move(viewport.width - 1, viewport.height - 1);
+  await view.evaluate(async () => {
+    if (document.activeElement instanceof HTMLElement)
+      document.activeElement.blur();
+    await document.fonts.ready;
+  });
+  await view.waitForFunction(() => {
+    const root = document.querySelector('#chat-sidebar')!.lastElementChild!;
+    return !root.matches(':hover') && !root.querySelector(':hover');
+  });
+  await settle(view);
+};
 
 suite('real AllRice sidebar in installed native profiles', () => {
   const hosts: Awaited<ReturnType<typeof startInstalledProfile>>[] = [];
@@ -755,6 +927,13 @@ suite('real AllRice sidebar in installed native profiles', () => {
 
   it('replays identical Frame/View data in light/dark at 1440/390 and keeps mobile keyboard focus bounded', async () => {
     await mkdir(artifacts, { recursive: true });
+    const comparisons: {
+      width: number;
+      theme: string;
+      state: string;
+      geometryDifferences: string[];
+      pixels: ReturnType<typeof compareSidebarPixels>;
+    }[] = [];
     for (const width of [1440, 390])
       for (const theme of ['light', 'dark'] as const) {
         await page.setViewportSize({ width, height: 1000 });
@@ -770,7 +949,7 @@ suite('real AllRice sidebar in installed native profiles', () => {
             .getByRole('dialog', { name: '任务与历史', exact: true })
             .waitFor();
         }
-        await settle(page);
+        await prepareSidebarCapture(page);
         expect(
           await page.evaluate(
             () => document.documentElement.scrollWidth > innerWidth,
@@ -780,15 +959,6 @@ suite('real AllRice sidebar in installed native profiles', () => {
         const frameBox = await nativeFrame.boundingBox();
         const native = nativeFrame.locator(':scope > div').last();
         const box = await native.boundingBox();
-        await native.screenshot({
-          animations: 'disabled',
-          path: join(artifacts, `native-${width}-${theme}.png`),
-        });
-        await page.screenshot({
-          animations: 'disabled',
-          path: join(artifacts, `native-page-${width}-${theme}.png`),
-          fullPage: true,
-        });
         const baseUrl = new URL(legacyUrl);
         baseUrl.searchParams.set('theme', theme);
         // sidebarWidth is the containing column's border-box budget. Passing
@@ -799,17 +969,46 @@ suite('real AllRice sidebar in installed native profiles', () => {
         await legacy.locator('#chat-sidebar').waitFor();
         await settle(legacy);
         const old = legacy.locator('#chat-sidebar > div').last();
-        await appendFile(
-          join(artifacts, 'sidebar-geometry.jsonl'),
-          `${JSON.stringify({
+        const capturePair = async (state: 'preview' | 'expanded') => {
+          await prepareSidebarCapture(page);
+          await prepareSidebarCapture(legacy);
+          const current = await sidebarGeometry(page),
+            previous = await sidebarGeometry(legacy);
+          await appendFile(
+            join(artifacts, 'sidebar-geometry.jsonl'),
+            `${JSON.stringify({
+              width,
+              theme,
+              phase:
+                state === 'preview' ? 'pinned-base' : 'pinned-base-expanded',
+              measuredNative: { frame: frameBox, root: box },
+              native: current,
+              legacy: previous,
+            })}\n`,
+          );
+          const suffix = `${state === 'expanded' ? 'expanded-' : ''}${width}-${theme}`;
+          const actual = await native.screenshot({
+            animations: 'disabled',
+            path: join(artifacts, `native-${suffix}.png`),
+          });
+          const expected = await old.screenshot({
+            animations: 'disabled',
+            path: join(artifacts, `base3x-${suffix}.png`),
+          });
+          const comparison = {
             width,
             theme,
-            phase: 'pinned-base',
-            measuredNative: { frame: frameBox, root: box },
-            native: await sidebarGeometry(page),
-            legacy: await sidebarGeometry(legacy),
-          })}\n`,
-        );
+            state,
+            geometryDifferences: sidebarVisualDifferences(previous, current),
+            pixels: compareSidebarPixels(expected, actual),
+          };
+          comparisons.push(comparison);
+          // Preserve all four screens before the final zero-pixel assertion.
+          await appendFile(
+            join(artifacts, 'sidebar-visual-comparison.jsonl'),
+            `${JSON.stringify(comparison)}\n`,
+          );
+        };
         expect(
           Math.abs(
             (await legacy.locator('#chat-sidebar').boundingBox())!.width -
@@ -819,9 +1018,11 @@ suite('real AllRice sidebar in installed native profiles', () => {
         expect(
           Math.abs((await old.boundingBox())!.width - box!.width),
         ).toBeLessThanOrEqual(0.5);
-        await old.screenshot({
+        await capturePair('preview');
+        await page.screenshot({
           animations: 'disabled',
-          path: join(artifacts, `base3x-${width}-${theme}.png`),
+          path: join(artifacts, `native-page-${width}-${theme}.png`),
+          fullPage: true,
         });
         await legacy.screenshot({
           animations: 'disabled',
@@ -879,14 +1080,7 @@ suite('real AllRice sidebar in installed native profiles', () => {
         expect(
           await legacy.locator('[data-row-key^="session:"]').count(),
         ).toBeGreaterThan(30);
-        await native.screenshot({
-          animations: 'disabled',
-          path: join(artifacts, `native-expanded-${width}-${theme}.png`),
-        });
-        await old.screenshot({
-          animations: 'disabled',
-          path: join(artifacts, `base3x-expanded-${width}-${theme}.png`),
-        });
+        await capturePair('expanded');
         await page
           .getByRole('button', { name: '收起更多会话', exact: true })
           .first()
@@ -914,6 +1108,19 @@ suite('real AllRice sidebar in installed native profiles', () => {
         }
       }
     await writeFile(
+      join(artifacts, 'sidebar-visual-comparison.json'),
+      JSON.stringify(
+        {
+          geometryToleranceCssPx: 0.5,
+          pixelTolerance: 0,
+          excludedPixels: 0,
+          comparisons,
+        },
+        null,
+        2,
+      ),
+    );
+    await writeFile(
       join(artifacts, 'capture-context.json'),
       JSON.stringify(
         {
@@ -927,7 +1134,9 @@ suite('real AllRice sidebar in installed native profiles', () => {
           reducedMotion: 'reduce',
           timezone: 'UTC',
           animationSampling:
-            'Two animation frames settle; screenshot animations disabled',
+            'Fonts ready; actual pointer moved outside both sidebars and active elements blurred; two animation frames settle; screenshot animations disabled',
+          pixelComparison:
+            'Exact decoded RGBA; zero threshold, no masks or antialias exclusions. All four screens and expanded states must match.',
           widths: [1440, 390],
           themes: ['light', 'dark'],
           baseline: `Actual pre-extraction ChatSidebar/EmployeeSidebar/SidebarSettings sources and layout CSS from ${sidebarBaselineHead}; same deterministic sidebar-data.mjs and measured width. Shared-frame image is supplementary current-head container comparison only.`,
@@ -943,7 +1152,7 @@ suite('real AllRice sidebar in installed native profiles', () => {
       `<!doctype html><meta charset="utf-8"><title>MET-276 真实侧栏对照</title>
 <style>body{font:16px system-ui;margin:24px;background:#f3f4f6;color:#111}main{display:flex;gap:24px;align-items:flex-start}img{max-width:100%;border:1px solid #bbb}section{min-width:0}p{max-width:900px}select{font:inherit;margin:12px}</style>
 <h1>MET-276 真实 AllRice Frame/View → 原生 sidebar</h1>
-<p>待主线逐屏复核。两侧使用同一 sidebar-data.mjs 合成数据、固定时间、DPR1、减少动态效果和实测相同宽度。左侧真实旧 ChatSidebar 从固定 base ${sidebarBaselineHead} 编译，源码哈希保存在 legacy-base-sources.json。正式 SSO、同 origin 员工草稿隔离、跨根附件/scroll 仍未接通。</p>
+<p>待主线逐屏复核。两侧使用同一 sidebar-data.mjs 合成数据、固定时间、DPR1、减少动态效果、相同鼠标/焦点状态和实测相同宽度。左侧真实旧 ChatSidebar 及 main.frame/shell 从固定 base ${sidebarBaselineHead} 编译，源码哈希保存在 legacy-base-sources.json。逐项几何差异与零阈值像素结果见 <a href="sidebar-visual-comparison.json">对比记录</a>；非零差异不豁免。正式 SSO、同 origin 员工草稿隔离、跨根附件/scroll 仍未接通。</p>
 <label>画布<select id="width"><option>1440</option><option>390</option></select></label><label>主题<select id="theme"><option>light</option><option>dark</option></select></label>
 <label>列表<select id="expanded"><option value="">预览</option><option value="expanded-">展开其余</option></select></label>
 <main><section><h2>固定 base 的真实 3.x 入口</h2><img id="before"></section><section><h2>原生 sidebar 内实现</h2><img id="after"></section></main>
@@ -952,5 +1161,13 @@ suite('real AllRice sidebar in installed native profiles', () => {
     );
     expect(errors).toEqual([]);
     expect(legacyRequests).toEqual([]);
+    expect(
+      comparisons.filter(
+        ({ geometryDifferences, pixels }) =>
+          geometryDifferences.length ||
+          !pixels.dimensionsMatch ||
+          pixels.changedPixels !== 0,
+      ),
+    ).toEqual([]);
   }, 60_000);
 });

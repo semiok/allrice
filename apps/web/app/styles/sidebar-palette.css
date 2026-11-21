@@ -1,5 +1,8 @@
 /* Shared by the sidebar and dialogs portaled outside the workbench shell. */
 body {
+  /* Existing AllRice sidebar budget; native ui-theme exposes the local seat
+     through --dsh-scrollbar-width. Keep its 5px default outside this sidebar. */
+  --allrice-sidebar-scrollbar-width: 8px;
   --allrice-sidebar-bg: #f8f9fb;
   --allrice-employee-bg: #f0f2f5;
   --allrice-sidebar-hover: #e9ecf1;

@@ -16,6 +16,10 @@ export const sidebarBaselineSources = {
     '142c4faf51665b924437986fac17db21d1793968934fe24f5f195854c25b79d8',
 };
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+const replayEntry = new URL(
+  './fixtures/sidebar-base-entry.tsx',
+  import.meta.url,
+);
 const sha256 = (value: string) =>
   createHash('sha256').update(value).digest('hex');
 
@@ -68,6 +72,7 @@ export async function writeLegacySidebarBaseline(
   artifacts: string,
   prepared = process.env.ALLRICE_SIDEBAR_BASELINE_ARTIFACT_DIR,
 ) {
+  const replayEntrySha256 = sha256(await readFile(replayEntry, 'utf8'));
   if (prepared) {
     // Source-archive runners may receive this exact generator's credential-free
     // artifact from source preparation. Verify bytes/data/old entry identities;
@@ -84,6 +89,7 @@ export async function writeLegacySidebarBaseline(
     const valid =
       parsed.head === sidebarBaselineHead &&
       parsed.htmlSha256 === sha256(html) &&
+      parsed.replayEntrySha256 === replayEntrySha256 &&
       parsed.fixtureDataSha256 ===
         sha256(JSON.stringify(createSidebarFixtureData())) &&
       Array.isArray(parsed.sources) &&
@@ -131,11 +137,7 @@ export async function writeLegacySidebarBaseline(
   };
   const entry = await build({
     ...common,
-    entryPoints: [
-      fileURLToPath(
-        new URL('./fixtures/sidebar-base-entry.tsx', import.meta.url),
-      ),
-    ],
+    entryPoints: [fileURLToPath(replayEntry)],
     format: 'iife',
     platform: 'browser',
     jsx: 'automatic',
@@ -176,6 +178,7 @@ export async function writeLegacySidebarBaseline(
           sha256: sha256(contents),
         })),
         htmlSha256: sha256(html),
+        replayEntrySha256,
         cssModuleClasses,
       },
       null,

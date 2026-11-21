@@ -1,0 +1,25 @@
+/* Retain the existing AllRice sidebar appearance inside the native Web shell.
+ * The real 3.x main.shell supplies this font stack, its global reset uses
+ * border-box, and it leaves font smoothing at the browser's auto setting.
+ * These are local inheritance boundaries, not replacements for native globals. */
+.surface {
+  --dsh-scrollbar-width: var(--allrice-sidebar-scrollbar-width);
+  font-family: var(
+    --ds-font-family-ui,
+    Inter,
+    ui-sans-serif,
+    system-ui,
+    sans-serif
+  );
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
+}
+
+:where(.surface, .surface *) {
+  box-sizing: border-box;
+}
+
+/* Match AllRice's existing form reset without outranking component fonts. */
+:where(.surface button, .surface input, .surface select, .surface textarea) {
+  font: inherit;
+}
