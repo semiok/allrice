@@ -10,7 +10,7 @@ import type {
 } from './contract.ts';
 import { createPostgresModelGatewayStore } from './postgres-store.ts';
 import { unknownUsage } from './usage.ts';
-import { freshCall, modelBinding } from './gateway.fixture.ts';
+import { deferred, freshCall, modelBinding } from './gateway.fixture.ts';
 
 const integration =
   process.env.ALLRICE_RUN_DB_INTEGRATION === '1'
@@ -24,11 +24,13 @@ integration(
     let secondDb: postgres.Sql;
     let first: ReturnType<typeof createPostgresModelGatewayStore>;
     let second: ReturnType<typeof createPostgresModelGatewayStore>;
+    let databaseUrl: string;
     const schema = 'met268_' + randomUUID().replaceAll('-', '_');
     beforeAll(async () => {
       const value = process.env.ALLRICE_TEST_DATABASE_URL;
       if (!value) throw Error('Dedicated test database required');
       const url = new URL(value);
+      databaseUrl = value;
       if (
         !['postgres:', 'postgresql:'].includes(url.protocol) ||
         url.hostname !== '127.0.0.1' ||
@@ -170,6 +172,65 @@ integration(
       expect(results.find((r) => r.status === 'rejected')).toMatchObject({
         reason: { code: 'DUPLICATE_CALL' },
       });
+    });
+
+    it('真实LISTEN backend重连后，结束的waiter不累积driver listener，pool结束释放长期监听', async () => {
+      const applicationName = 'met268-listen-' + randomUUID();
+      const db = postgres(databaseUrl, {
+        max: 1,
+        connection: { search_path: schema, application_name: applicationName },
+      });
+      const reconnected = deferred();
+      let generations = 0;
+      let registrations = 0;
+      let listenerPid = 0;
+      const observed = new Proxy(db, {
+        get(target, key, receiver) {
+          if (key !== 'listen') return Reflect.get(target, key, receiver);
+          return async (...args: Parameters<typeof db.listen>) => {
+            registrations++;
+            const listener = await db.listen(args[0], args[1], () => {
+              args[2]?.();
+              if (++generations === 2) reconnected.resolve();
+            });
+            listenerPid = listener.state.pid;
+            return listener;
+          };
+        },
+      }) as postgres.Sql;
+      const store = createPostgresModelGatewayStore(observed);
+      const person = randomUUID();
+      const signal = new AbortController().signal;
+      const watch = await store.watchCapacity(person, signal);
+      try {
+        await watch.wait();
+        await admin`select pg_terminate_backend(${listenerPid})`;
+        await reconnected.promise;
+        await watch.wait();
+        await watch.close();
+        // The driver listener is deliberately pool-owned; replacing 100 local
+        // watchers after reconnect must not register 100 unreleasable listeners.
+        for (let index = 0; index < 100; index++) {
+          const next = await store.watchCapacity(person, signal);
+          await next.wait();
+          const notified = next.wait();
+          await firstDb.notify('allrice_model_gateway_capacity', person);
+          await notified;
+          await next.close();
+        }
+        expect(registrations).toBe(1);
+        await expect(watch.wait()).rejects.toMatchObject({
+          code: 'ADMISSION_CLOSED',
+        });
+      } finally {
+        await watch.close();
+        await db.end({ timeout: 5 });
+      }
+      const [remaining] = await admin<
+        { count: number }[]
+      >`select count(*)::int as count
+        from pg_stat_activity where application_name=${applicationName}`;
+      expect(remaining?.count).toBe(0);
     });
 
     it('重启只读未知intent保留null；时间流逝不释放slot，可信死进程恢复才释放', async () => {

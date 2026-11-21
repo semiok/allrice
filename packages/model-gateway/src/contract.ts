@@ -81,7 +81,11 @@ export interface GatewayProvider {
     signal: AbortSignal,
   ): AsyncIterable<StreamChunk>;
   /** Fixed host configuration recognizes its model and refresh endpoints;
-   * never select credentials, owners or arbitrary destinations from guest data. */
+   * never select credentials, owners or arbitrary destinations from guest data.
+   * auth-refresh requires the host credential owner to wrap its whole existing
+   * modify/modifyRecord + persistence Promise with withGatewayAuthTransaction.
+   * Refresh keeps its native independent timeout signal after it starts;
+   * cancellation/revocation/close still prevents any subsequent model fetch. */
   classify(
     input: RequestInfo | URL,
     init?: RequestInit,
@@ -110,6 +114,8 @@ export type ModelAttemptReceipt = ModelAttemptStart &
     dispatchObserved: boolean | null;
     httpStatus: number | null;
     terminal: 'completed' | 'failed' | 'incomplete' | null;
+    /** Explicit wire reason only. Older/unknown receipts omit this fact. */
+    terminalReason?: 'max_output_tokens' | null;
     outcome: 'closed' | 'failed' | 'canceled' | 'unknown';
     usage: ModelUsage;
   }>;
@@ -165,6 +171,7 @@ export type ModelGatewayErrorCode =
   | 'DUPLICATE_CALL'
   | 'ADMISSION_CLOSED'
   | 'UNCLASSIFIED_UPSTREAM'
+  | 'AUTH_TRANSACTION_REQUIRED'
   | 'MISSING_UPSTREAM_TERMINAL'
   | 'PROVIDER_FAILED'
   | 'LEDGER_UNAVAILABLE';

@@ -326,6 +326,9 @@ export function createModelGateway(options: {
                     ...(failure.requestId === undefined
                       ? {}
                       : { requestId: failure.requestId }),
+                    ...(failure.offloadImages === undefined
+                      ? {}
+                      : { offloadImages: failure.offloadImages }),
                   },
                 ).failure,
               },
@@ -346,7 +349,12 @@ export function createModelGateway(options: {
           last.httpStatus === null ||
           last.httpStatus < 200 ||
           last.httpStatus >= 300 ||
-          last.terminal !== 'completed'
+          !(
+            last.terminal === 'completed' ||
+            (terminal.reason.kind === 'max-tokens' &&
+              last.terminal === 'incomplete' &&
+              last.terminalReason === 'max_output_tokens')
+          )
         )
           throw new ModelGatewayError('MISSING_UPSTREAM_TERMINAL');
         if (last.usage.usageComplete && last.usage.cacheUsageKnown) {

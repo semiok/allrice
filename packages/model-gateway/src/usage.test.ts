@@ -4,6 +4,27 @@ import type { ModelAttemptReceipt } from './contract.ts';
 
 const bytes = (value: string) => new TextEncoder().encode(value);
 describe('wire usage facts, independent of provider synthesized totals', () => {
+  it('Responses explicit failed frame is a failure fact; Codex done needs an explicit valid status', () => {
+    const failed = new WireUsageObserver('openai-responses');
+    failed.push(
+      bytes(
+        'data: {"type":"response.failed","response":{"status":"failed"}}\n\n',
+      ),
+    );
+    expect(failed.terminal).toBe('failed');
+    for (const status of [undefined, 'unrecognized', 'in_progress']) {
+      const observer = new WireUsageObserver('openai-responses');
+      observer.push(
+        bytes(
+          'data: ' +
+            JSON.stringify({ type: 'response.done', response: { status } }) +
+            '\n\n',
+        ),
+      );
+      expect(observer.terminal).toBeNull();
+      expect(observer.usage).toEqual(unknownUsage());
+    }
+  });
   it('Responses incomplete keeps real partial counters while completion remains incomplete', () => {
     const observer = new WireUsageObserver('openai-responses');
     const frame =

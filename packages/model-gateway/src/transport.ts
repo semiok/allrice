@@ -11,6 +11,7 @@ import { unknownUsage, WireUsageObserver } from './usage.ts';
 
 type Fetch = typeof globalThis.fetch;
 type FetchScope = {
+  authTransaction<T>(operation: () => Promise<T>): Promise<T>;
   fetch(
     original: Fetch,
     input: RequestInfo | URL,
@@ -18,10 +19,22 @@ type FetchScope = {
   ): Promise<Response>;
 };
 const scopes = new AsyncLocalStorage<FetchScope>();
+const authTransactions = new AsyncLocalStorage<symbol>();
 let users = 0;
 let original: Fetch;
 let wrapper: Fetch;
 let deactivate: () => void;
+
+/** The host credential owner wraps its existing public modify/modifyRecord
+ * operation, including durable persistence. No credential enters the gateway.
+ * Native refresh may outlive its canceled caller; the gateway must await that
+ * whole transaction before detaching its meter or disposing the host loader. */
+export function withGatewayAuthTransaction<T>(
+  operation: () => Promise<T>,
+): Promise<T> {
+  const scope = scopes.getStore();
+  return scope ? scope.authTransaction(operation) : operation();
+}
 
 /** Explicitly installed by an opt-in host gateway, never at module import.
  * Shared scopes allow multiple gateway instances without stacking meters. */
@@ -63,19 +76,50 @@ export function createMeteredTransport(options: {
   const signal = AbortSignal.any([options.signal, controller.signal]);
   const pending = new Set<Promise<void>>();
   const cancellations = new Set<() => Promise<void>>();
+  const activeAuth = new Set<symbol>();
   let ledgerFailure: unknown;
   let stopped = false;
   const scope: FetchScope = {
-    async fetch(nativeFetch, input, init) {
+    async authTransaction(operation) {
       if (stopped) throw new ModelGatewayError('ADMISSION_CLOSED');
       signal.throwIfAborted();
+      const token = Symbol();
+      activeAuth.add(token);
+      let resolveDone!: () => void;
+      const done = new Promise<void>((resolve) => {
+        resolveDone = resolve;
+      });
+      pending.add(done);
+      try {
+        return await authTransactions.run(token, operation);
+      } finally {
+        activeAuth.delete(token);
+        pending.delete(done);
+        resolveDone();
+      }
+    },
+    async fetch(nativeFetch, input, init) {
       const classification = options.provider.classify(input, init);
       if (!classification) throw new ModelGatewayError('UNCLASSIFIED_UPSTREAM');
+      const refreshing = classification.kind === 'auth-refresh';
+      if (refreshing) {
+        const token = authTransactions.getStore();
+        if (!token || !activeAuth.has(token))
+          throw new ModelGatewayError('AUTH_TRANSACTION_REQUIRED');
+      } else {
+        if (stopped) throw new ModelGatewayError('ADMISSION_CLOSED');
+        signal.throwIfAborted();
+      }
       const incoming =
         init?.signal ?? (input instanceof Request ? input.signal : undefined);
-      const requestSignal = incoming
-        ? AbortSignal.any([signal, incoming])
-        : signal;
+      // pi-ai supplies its own independent 15s timeout after refresh starts.
+      // Never merge model/client/revocation/close cancellation into it.
+      const requestSignal = refreshing
+        ? (incoming ??
+          AbortSignal.abort(new ModelGatewayError('AUTH_TRANSACTION_REQUIRED')))
+        : incoming
+          ? AbortSignal.any([signal, incoming])
+          : signal;
       let resolveDone!: () => void;
       const done = new Promise<void>((resolve) => {
         resolveDone = resolve;
@@ -103,6 +147,7 @@ export function createMeteredTransport(options: {
                 dispatchObserved: dispatched,
                 httpStatus: status,
                 terminal: observer.terminal,
+                terminalReason: observer.terminalReason,
                 outcome,
                 usage:
                   classification.kind === 'model'
@@ -127,7 +172,7 @@ export function createMeteredTransport(options: {
         try {
           for (;;) {
             requestSignal.throwIfAborted();
-            await options.assertCurrent(requestSignal);
+            if (!refreshing) await options.assertCurrent(requestSignal);
             if (await options.store.tryStartAttempt(attempt)) {
               started = true;
               break;
@@ -139,7 +184,7 @@ export function createMeteredTransport(options: {
           await watch?.close();
         }
         // Current epoch/membership may have changed while the intent committed.
-        await options.assertCurrent(requestSignal);
+        if (!refreshing) await options.assertCurrent(requestSignal);
         requestSignal.throwIfAborted();
         dispatched = true;
         // Never follow redirects: fetch otherwise hides additional actual HTTP
@@ -182,7 +227,7 @@ export function createMeteredTransport(options: {
             // actual client/revoke signal remains authoritative for cancellation.
             cleanup();
             await finish(
-              options.signal.aborted
+              !refreshing && options.signal.aborted
                 ? 'canceled'
                 : observer.terminal !== null
                   ? 'closed'
@@ -209,7 +254,7 @@ export function createMeteredTransport(options: {
             },
           );
         };
-        cancellations.add(cancel);
+        if (!refreshing) cancellations.add(cancel);
         requestSignal.addEventListener('abort', onAbort, { once: true });
         const body = new ReadableStream<Uint8Array>(
           {

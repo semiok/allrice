@@ -21,7 +21,9 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "4.0.5",
+    "@deepseek-ai/dsh-compaction-image-offload": "0.2.1-rc.2",
     "@deepseek-ai/dsh-credentials-local": "0.2.1-rc.2",
-    "@deepseek-ai/dsh-llm-pi-ai": "0.2.1-rc.2"
+    "@deepseek-ai/dsh-llm-pi-ai": "0.2.1-rc.2",
+    "@earendil-works/pi-ai": "1.1.0"
   }
 }

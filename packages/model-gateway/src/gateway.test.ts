@@ -7,6 +7,7 @@ import {
 import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm';
 import { ModelGatewayError } from './contract.ts';
 import type { GatewayProvider } from './contract.ts';
+import { withGatewayAuthTransaction } from './transport.ts';
 import {
   deferred,
   FixtureStore,
@@ -306,13 +307,15 @@ describe.sequential(
       const provider: GatewayProvider = {
         ...f.native.provider,
         async *stream(binding, input, signal) {
-          await (
-            await fetch(f.upstream.url + '/refresh', {
-              method: 'POST',
-              signal,
-              body: '{}',
-            })
-          ).text();
+          await withGatewayAuthTransaction(async () =>
+            (
+              await fetch(f.upstream.url + '/refresh', {
+                method: 'POST',
+                signal: AbortSignal.timeout(15_000),
+                body: '{}',
+              })
+            ).text(),
+          );
           await (
             await fetch(f.upstream.url + '/v1/first-attempt', {
               method: 'POST',

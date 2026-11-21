@@ -10,6 +10,38 @@ import type {
 import { summarizeAttempts, unknownUsage } from './usage.ts';
 
 const CHANNEL = 'allrice_model_gateway_capacity';
+type CapacityHub = {
+  subscribers: Map<string, Set<() => void>>;
+  ready: Promise<unknown>;
+};
+const capacityHubs = new WeakMap<postgres.Sql, CapacityHub>();
+
+function capacityHub(db: postgres.Sql): CapacityHub {
+  const existing = capacityHubs.get(db);
+  if (existing) return existing;
+  const hub: CapacityHub = { subscribers: new Map(), ready: Promise.resolve() };
+  capacityHubs.set(db, hub);
+  // One long-lived listener belongs to the caller-owned pool, including its
+  // reconnect lifecycle. postgres 3.4.9 rebuilds listener identities on reconnect;
+  // per-waiter unlisten handles cannot safely remove those rebuilt listeners.
+  // Waiters own only these local subscriptions, never driver listener handles.
+  hub.ready = db
+    .listen(
+      CHANNEL,
+      (person) => {
+        for (const pulse of hub.subscribers.get(person) ?? []) pulse();
+      },
+      () => {
+        for (const subscribers of hub.subscribers.values())
+          for (const pulse of subscribers) pulse();
+      },
+    )
+    .catch((error: unknown) => {
+      capacityHubs.delete(db);
+      throw error;
+    });
+  return hub;
+}
 type AttemptRow = {
   id: string;
   call_id: string;
@@ -69,25 +101,38 @@ export function createPostgresModelGatewayStore(
     },
     async watchCapacity(personId, signal) {
       signal.throwIfAborted();
+      const hub = capacityHub(db);
       let notified = false;
+      let closed = false;
       let wake: (() => void) | undefined;
       const pulse = () => {
         notified = true;
         wake?.();
         wake = undefined;
       };
-      const listener = await db.listen(
-        CHANNEL,
-        (person) => {
-          if (person === personId) pulse();
-        },
-        pulse,
-      );
+      const subscribers = hub.subscribers.get(personId) ?? new Set();
+      hub.subscribers.set(personId, subscribers);
+      subscribers.add(pulse);
+      const detach = () => {
+        subscribers.delete(pulse);
+        if (!subscribers.size) hub.subscribers.delete(personId);
+        signal.removeEventListener('abort', pulse);
+      };
       signal.addEventListener('abort', pulse);
+      try {
+        await hub.ready;
+        signal.throwIfAborted();
+        // A hub may already be listening before this waiter subscribes.
+        pulse();
+      } catch (error) {
+        detach();
+        throw error;
+      }
       // A disconnect/reconnect loses notifications; postgres' onlisten callback
       // must wake the waiter for an atomic recheck after every reconnect.
       return {
         async wait() {
+          if (closed) throw new ModelGatewayError('ADMISSION_CLOSED');
           signal.throwIfAborted();
           if (!notified)
             await new Promise<void>((resolve) => {
@@ -95,12 +140,14 @@ export function createPostgresModelGatewayStore(
               if (signal.aborted) pulse();
             });
           notified = false;
+          if (closed) throw new ModelGatewayError('ADMISSION_CLOSED');
           signal.throwIfAborted();
         },
         async close() {
-          signal.removeEventListener('abort', pulse);
+          if (closed) return;
+          closed = true;
+          detach();
           pulse();
-          await listener.unlisten();
         },
       };
     },

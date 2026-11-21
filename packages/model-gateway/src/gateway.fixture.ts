@@ -350,32 +350,57 @@ export async function upstreamFixture(
   };
 }
 
-export async function nativeProviderFixture(upstream: string) {
+export async function nativeProviderFixture(
+  upstream: string,
+  options: {
+    api?: 'openai-completions' | 'openai-responses' | 'openai-codex-responses';
+  } = {},
+) {
   const directory = await realpath(
     await mkdtemp(join(tmpdir(), 'allrice-model-gateway-')),
   );
   // Deliberately synthetic, never copied from environment/store/browser/login.
   const envKey = 'ALLRICE_GATEWAY_SYNTHETIC_API_KEY';
   const previous = process.env[envKey];
-  process.env[envKey] = 'synthetic-loopback-only';
+  process.env[envKey] =
+    options.api === 'openai-codex-responses'
+      ? [
+          'synthetic',
+          Buffer.from(
+            JSON.stringify({
+              'https://api.openai.com/auth': {
+                chatgpt_account_id: 'synthetic-account',
+              },
+            }),
+          ).toString('base64url'),
+          'unsigned-fixture',
+        ].join('.')
+      : 'synthetic-loopback-only';
   const ctx = new Context();
+  const route =
+    options.api === 'openai-codex-responses'
+      ? { provider: 'openai-codex', model: 'gpt-5.6-luna' }
+      : { provider: 'openai-compatible', model: 'fixture-model' };
+  const credentialPath = join(directory, 'synthetic-credentials.yaml');
   try {
     await ctx.plugin(Llm);
     await ctx.plugin(Credentials, {
-      path: join(directory, 'synthetic-credentials.yaml'),
+      path: credentialPath,
       watch: false,
     });
     await ctx.plugin(PiAi, {
       providers: {
-        'openai-compatible': {
+        [route.provider]: {
           apiKeyEnv: envKey,
-          api: 'openai-completions',
+          ...(options.api === 'openai-codex-responses'
+            ? {}
+            : { api: options.api ?? 'openai-completions' }),
           baseURL: upstream + '/v1',
           transport: 'sse',
           retryPolicy: { mode: 'normal', maxRetries: 0 },
           models: [
             {
-              id: 'fixture-model',
+              id: route.model,
               contextWindow: 4096,
               maxTokens: 512,
               input: ['text'],
@@ -385,8 +410,7 @@ export async function nativeProviderFixture(upstream: string) {
       },
     });
     const provider = createDshGatewayProvider(ctx.llm, {
-      provider: 'openai-compatible',
-      model: 'fixture-model',
+      ...route,
       transport: 'sse',
       classify(input) {
         const url = new URL(
@@ -396,11 +420,18 @@ export async function nativeProviderFixture(upstream: string) {
         return {
           kind: url.pathname === '/refresh' ? 'auth-refresh' : 'model',
           protocol:
-            url.pathname === '/refresh' ? 'opaque' : 'openai-chat-completions',
+            url.pathname === '/refresh'
+              ? 'opaque'
+              : options.api && options.api !== 'openai-completions'
+                ? 'openai-responses'
+                : 'openai-chat-completions',
         };
       },
     });
     return {
+      ctx,
+      credentialPath,
+      route,
       provider,
       async close() {
         await ctx.fiber.dispose();
@@ -411,6 +442,8 @@ export async function nativeProviderFixture(upstream: string) {
     };
   } catch (error) {
     await ctx.fiber.dispose();
+    if (previous === undefined) delete process.env[envKey];
+    else process.env[envKey] = previous;
     await rm(directory, { recursive: true, force: true });
     throw error;
   }

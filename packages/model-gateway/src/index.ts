@@ -21,3 +21,4 @@ export type {
 export { createModelGateway } from './gateway.ts';
 export { createDshGatewayProvider, GatewayLlmAdapter } from './dsh-provider.ts';
 export { createPostgresModelGatewayStore } from './postgres-store.ts';
+export { withGatewayAuthTransaction } from './transport.ts';

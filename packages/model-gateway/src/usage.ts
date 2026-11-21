@@ -68,6 +68,7 @@ export class WireUsageObserver {
   private chatFinish = false;
   private done = false;
   terminal: ModelAttemptReceipt['terminal'] = null;
+  terminalReason: ModelAttemptReceipt['terminalReason'] = null;
   usage: ModelUsage = unknownUsage();
   constructor(private protocol: GatewayFetchClassification['protocol']) {}
   push(bytes: Uint8Array): void {
@@ -127,8 +128,8 @@ export class WireUsageObserver {
       if (!this.data) return;
       const value = record(JSON.parse(this.data));
       if (this.protocol === 'openai-responses') {
-        this.observeTerminal(String(value.type));
         const response = record(value.response);
+        this.observeTerminal(String(value.type), response);
         if (response.usage !== undefined)
           this.usage = usageFromWire(response.usage, true);
       } else {
@@ -151,10 +152,26 @@ export class WireUsageObserver {
       this.frameOversized = false;
     }
   }
-  private observeTerminal(type: string): void {
-    if (type === 'response.completed') this.terminal = 'completed';
+  private observeTerminal(
+    type: string,
+    response: Record<string, unknown> = {},
+  ): void {
+    if (type === 'response.done') {
+      // Codex normalizes response.done by its explicit response.status. An
+      // absent/unknown status is not evidence of a completed response.
+      if (response.status === 'completed') this.terminal = 'completed';
+      else if (response.status === 'incomplete') this.terminal = 'incomplete';
+      else if (response.status === 'failed' || response.status === 'cancelled')
+        this.terminal = 'failed';
+    } else if (type === 'response.completed') this.terminal = 'completed';
     else if (type === 'response.failed') this.terminal = 'failed';
     else if (type === 'response.incomplete') this.terminal = 'incomplete';
+    if (
+      this.terminal === 'incomplete' &&
+      response.status === 'incomplete' &&
+      record(response.incomplete_details).reason === 'max_output_tokens'
+    )
+      this.terminalReason = 'max_output_tokens';
   }
 }
 
