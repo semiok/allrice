@@ -33,6 +33,7 @@
     "fflate": "0.8.3",
     "mdast-util-from-markdown": "^2.0.3",
     "postgres": "^3.4.7",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@allrice/person-vm": "workspace:*"
   }
 }

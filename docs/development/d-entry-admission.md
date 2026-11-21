@@ -32,13 +32,15 @@
 
 `POST /api/v1/d-entry/admission`使用同一选择器JSON、现有cookie并要求真实同源Origin。先核当前员工/root可继续权限，再读显式发布policy。成功选择结果为`DEntryAdmissionSchema`（identity、executionGeneration、policyRevision）；已有线程以永久pin为准，名单选择只作用于新线程。4.0名单被关闭后，4.0旧线程拒绝继续，身份历史入口仍按当前读权可用。
 
-**当前边界：** `readDEntryReleasePolicy`刻意返回依赖未绑定，不读猜测env、空名单或自设默认值。以后配置接通后，3.x admission可返回既有选择结果；4.0仍因native route未绑定返回503。不会创建线程、启动VM、刷新模型凭据、发prompt或回落到3.x执行。
+**当前边界：** 发布配置已使用下述共享平台来源；缺配置明确关闭4.0，3.x admission 返回既有选择结果。已发布且永久 pin 为4.0的 admission 仍因真实 native route 未组合返回503；未发布4.0拒绝继续。不会创建线程、启动VM、刷新模型凭据、发prompt或回落到3.x执行。
 
 错误全部沿`ApiErrorSchema`；401 AUTHENTICATION_REQUIRED、403 AUTHORIZATION_DENIED、404 RESOURCE_NOT_FOUND、400 VALIDATION_FAILED、409 EMPLOYEE_INSTANCE_ARCHIVED/VERSION_CONFLICT、503 DEPENDENCY_UNAVAILABLE。响应`private, no-store`；不返回guest URL、AllRice cookie、模型秘密、盘路径或任意error.details。
 
 ## 发布配置与产品代际归属
 
-`DEntryRolloutPolicySchema`要求来源显式提供revision、defaultGeneration、selections。每条selection为完整organizationId/personId/employeeInstanceId/generation；重复tuple拒绝。实际载体、管理来源、默认代际和本人名单由发布负责人绑定，当前没有新env、配置表或管理UI。
+`DEntryRolloutPolicySchema`保留显式revision、defaultGeneration、selections；每条selection为完整organizationId/personId/employeeInstanceId/generation，重复tuple拒绝。共享来源是现有 `allrice_settings` 的 system/null/`d_entry_rollout_policy`，沿 `native_question_mode` 平台管理方式。无新表/字段/env/管理UI。缺行返回 `{revision:"unpublished",defaultGeneration:"3.x",selections:[]}`；发布服务只接受默认3.x，只有精确本人/员工条目可开启4.0。当前没有实际名单被写入任何环境。
+
+`GET/PUT /api/v1/admin/d-entry-release-policy` 只走现有 platform-admin cookie/同源写门卫，PUT body 为该 policy schema；revision由服务端生成，客户端revision不能授予权限。`@allrice/database#getDEntryReleasePolicy/updateDEntryReleasePolicy` 使用身份owner的 `requireCurrentPlatformAdmin`，最终写事务持当前session/user SHARE锁，与撤权/停用排序；写入既有 audit_events。配置非法或DB不可用不启用4.0。`readDEntryReleasePolicy` 是宿主内部只读口，调用方先核真实登录/员工；不向guest暴露全名单。
 
 `allrice_chat_sessions.execution_generation`由0249迁移加入；已有线程/3.x创建是3.x，4.0创建由可信宿主调用`createChatSession(...,{executionGeneration:'4.0'})`同事务写入。该options不是浏览器body。DB trigger禁止更新pin；固定ID幂等重试必须匹配代际。4.0创建不伪造3.x native_root_origin。后续VM/native root绑定由各owner公开口完成。
 
@@ -60,7 +62,30 @@
 
 正式依赖：MET-266固定头`abf556870b4454ebbdf1833ad1e35b0fef11a884`的`@allrice/person-vm#PersonVmPort.resolve/assertCurrentBinding`已公开当前本人/租户/VM epoch生命周期绑定；该头仍没有HTTP/WS/profile目标。目标与受管连接、实际撤权signal、原生root关系口还须各owner发布；不从其内部表/代码偷取、不猜端口/secret、不向VM转发AllRice登录cookie。
 
-## F4 consumer 准备，未绑定生产
+## Native Web 入站 consumer
+
+Web/Worker共用 `@allrice/database#resolveDEntryIdentity`；Web旧文件保留薄导出。`requireDEntryNativeIdentity` 对所有VM-live读写核当前可写资格、精确发布名单和线程4.0 pin；冷历史仍沿原 history 服务，不开机。Worker在原Bearer真实认证后重新调用该服务，不接受浏览器 RequestContext、person、VM、endpoint或effect。
+
+| Web公开同源POST / Upgrade         | body / query                                                            | 结果                                                                                                                                     |
+| --------------------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `/api/v1/d-entry/native-owner`    | `DEntrySelectionInputSchema`                                            | `{mount:DEntryMount,controlReady:boolean}`；mount含opaque bindingRef/remountKey，不含receipt/端口/原生Cookie。不是editor-ready/canSend。 |
+| `/api/v1/d-entry/native-resource` | `{selection:含必填threadId的选择器,nativeSessionId}`                    | `DEntryNativeResourceFactsSchema` 安全事实；不序列化revoked signal。                                                                     |
+| `/api/v1/d-entry/native-rpc`      | `{selection:含threadId,endpoint,payload:{args:原生生成参数}}`           | 原生RPC body/content-type；不转发Set-Cookie/Location。不是任意URL代理。                                                                  |
+| `/api/v1/d-entry/native-mux`      | GET WS，query只有organizationId/workspaceId/employeeInstanceId/threadId | 同listener的具名Upgrade；先经原Web cookie/portal现权探测，再把原Bearer只送固定Worker，禁止redirect。                                     |
+
+Worker同listener对应 `/internal/d-entry/native-owner`、`native-resource`、`native-rpc` 的POST和 `native-mux` Upgrade；前三者加宿主当前organizationId，其他字段同上。Worker内部HTTP拒绝浏览器Origin，重新authenticateSession原Bearer，核当前员工/可写资格/发布/代际后才调用owner。RPC先验证登录，再缓冲native body；不把浏览器身份JSON或AllRice Cookie送guest。错误沿ApiError：401未登录、404不可见/失权、400请求非法、503依赖未装配；Web自身当前现权沿原403。所有结果no-store。
+
+`DEntryNativeOwnerPort` 是271对冻结v1的消费接口；`dEntryOwnerViewSchema`只解析该宿主投影，**不是273新receipt发行器或同名替身package**。273正式receipt导出/生产装配由其owner提供。`installDEntryNativeOwnerPort` 仅进程内组合注册，无person/lease Map或权威；默认未注册503。`readSessions`直接使用rc.2公开 `RemoteResult<SessionListValue>` 与真实生成result codec，原生失败保留code/message/details。
+
+资源组合只读现有 `getSessionNativeSubagentTarget` 的不可变业务pin，经 `getDEntryNativeRootPin` 安全投影，与native catalog完整parent链核对；拒绝跨root、循环、重复ID、缺parent、换pin及失权。该读取不创建/修复pin。现有4.0创建origin为NULL，旧binder只准3.x，故**新的4.0 root producer仍缺失**，不会挑列表第一项、改旧origin或用浏览器root。
+
+数据面另需真实host注入 `DEntryNativeDataPort`：同一c041 boundary/entry participant、完整原业务envelope resolver，以及同步取得的每请求owned RPC/Mux handle。run内开始I/O，close主动取消并join部分初始化和全部子操作；不能用长期native job.close代替每请求close。失败未拿到handle保持callback rejection；业务/合作取消在实际join后fulfiloutcome，最外层finally finish后保原错。catalog的实际readSessions Promise仅在admitted callback的owned scope内启动；scope主动取消并join所有真实读取，raw reject没有单独joined-close事实时保持unknown。HTTP/Mux shutdown等待实际请求/reader/transport和finish，不用socket.destroyed或单个iterator.return宣称全域完成。
+
+Mux逐逻辑open消费rc.2公开frame parser与 `TYPERT_REMOTE.input({strict:true})`，再按源码逐项登记effect；每次native下行也核当前资源。prompt/queue edit/cancel/rename/selectModel仅root；child无论continuable与否都不可网页写。当前无uplink方法被接纳，未知/global/plugin/`$events/result`全部拒绝，不能通过opaque WS或事件答复绕child门卫。父会话在原生内部的工具指挥不经过此网页adapter，3.x入口保持原断言。
+
+公开descriptor没有effect，`$events/result`只给opaque event关联；v1没有agent/event→SaaS root归属、全局control/list安全投影或native数据面借用。不能因此声称原生页面已完整可发。生产transport/full-envelope/current-revocation producer、4.0 root writer、cold/first-prewarm及physical fence均未组合；当前默认503。测试替身只核consumer调用/真实JS关闭Promise，不证明PG sticky unsafe或VM物理fence。
+
+## F4 生命周期共用服务
 
 `@allrice/person-vm` 在本树仅携带 #905 `c041d94c6984463c9ff9a068cba0db58ebc91e16` 的公开合同与构建基座；barrel 不导出 host/service/store/provider。模型 owner 已回交该中间 producer 的独审及 PG 测试结果，本树仍未组合真实 Host。`admission-contract.ts` 仅作显式格式派生，QA 保留源/派生 blob、diff 及原 8115 首检。不能用这份切片或 consumer 测试替身声称本树 PG 准入、停机或恢复已通过。
 
@@ -78,7 +103,7 @@ freeze 前 queued 保留原 permit；freeze 后 deferred 依次 waitUntilReady�
 
 ## 给打野3的客户端重挂合同
 
-准备就绪后，宿主`dEntryClientMount(identity,executionGeneration,runtimeBindingRef)`生成`DEntryMountSchema`。runtimeBindingRef由真实受管Host/profile/lease提供；当前尚未生成正式mount响应。`remountKey`的SHA256输入按顺序为organizationId、personId、employeeInstanceId、employeeRevision、employeeVersionId、executionGeneration、runtimeBindingRef。
+宿主`dEntryClientMount(identity,executionGeneration,runtimeBindingRef)`生成`DEntryMountSchema`。runtimeBindingRef由真实受管Host/profile/lease提供；native-owner发现口只在注入真实owner后返回mount投影，不等于可发送。`remountKey`的SHA256输入按顺序为organizationId、personId、employeeInstanceId、employeeRevision、employeeVersionId、executionGeneration、runtimeBindingRef。
 
 UI把remountKey作为DSH Client根的key：key变化时先abort所有旧HTTP/WS/资源流、release旧SessionReference、销毁旧Client/Cordis root，再以新准入挂新Client。同Host内普通thread切换可使用原生session retain/open语义，threadId不参与remountKey。失败保留未挂载/不可用状态；重连重新取cookie准入，不缓存旧RC为永久权限。只调用openSession不等于跨Host切换完成。
 

@@ -700,6 +700,9 @@ importers:
       '@allrice/file-archives':
         specifier: workspace:*
         version: link:../file-archives
+      '@allrice/person-vm':
+        specifier: workspace:*
+        version: link:../person-vm
       '@allrice/storage':
         specifier: workspace:*
         version: link:../storage

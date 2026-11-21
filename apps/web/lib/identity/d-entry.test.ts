@@ -46,6 +46,15 @@ const ports = vi.hoisted(() => ({
 vi.mock('./session', () => ({ requireRequestContext: ports.context }));
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
+  resolveDEntryIdentity: (
+    await original<typeof Database>()
+  ).createDEntryIdentityResolver({
+    getEmployeeInstance: ports.employee,
+    getEmployeeInstanceForHistory: ports.historyEmployee,
+    authorizeSessionOwner: ports.owner,
+    authorizeSessionHistoryOwner: ports.historyOwner,
+    requireCurrentWorkspaceWriteAuthority: ports.writable,
+  }),
   getEmployeeInstance: ports.employee,
   getEmployeeInstanceForHistory: ports.historyEmployee,
   authorizeSessionOwner: ports.owner,

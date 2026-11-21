@@ -11,6 +11,7 @@ export function createWebRuntimeClose({
   return () => {
     if (closing) return closing;
     const pending = [
+      server.dEntryNativeGateway,
       server.nativeFollowGateway,
       server.terminalGateway,
       server.previewGateway,

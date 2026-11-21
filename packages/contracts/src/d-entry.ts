@@ -27,6 +27,19 @@ export const DEntryIdentitySchema = z
   })
   .strict();
 export type DEntryIdentity = z.infer<typeof DEntryIdentitySchema>;
+export function sameDEntryIdentity(a: DEntryIdentity, b: DEntryIdentity) {
+  return (
+    [
+      'organizationId',
+      'workspaceId',
+      'personId',
+      'employeeInstanceId',
+      'employeeRevision',
+      'employeeVersionId',
+      'threadId',
+    ] as const
+  ).every((key) => a[key] === b[key]);
+}
 export const DEntryIdentityResultSchema = z
   .object({ identity: DEntryIdentitySchema })
   .strict();
@@ -105,3 +118,50 @@ export const DEntryMountSchema = z
   })
   .strict();
 export type DEntryMount = z.infer<typeof DEntryMountSchema>;
+
+// 271-owned wire boundary for the frozen native-owner v1 discovery seam.
+// These schemas validate a consumed projection; they do not construct or
+// replace 273's provider receipt or attest that a native job is ready.
+export const DEntryNativeOwnerRequestSchema = z
+  .object({
+    organizationId: UuidSchema,
+    selection: DEntrySelectionInputSchema,
+  })
+  .strict();
+export const DEntryNativeResourceRequestSchema = z
+  .object({
+    organizationId: UuidSchema,
+    selection: DEntrySelectionInputSchema.extend({ threadId: UuidSchema }),
+    nativeSessionId: z.string().min(1),
+  })
+  .strict();
+export const DEntryNativeResourceFactsSchema = z
+  .object({
+    organizationId: UuidSchema,
+    personId: UuidSchema,
+    employeeInstanceId: UuidSchema,
+    threadId: UuidSchema,
+    nativeSessionId: z.string().min(1),
+    rootNativeSessionId: z.string().min(1),
+    parentNativeSessionId: z.string().min(1).nullable(),
+    bindingRef: z.string().min(1),
+  })
+  .strict();
+export type DEntryNativeResourceFacts = z.infer<
+  typeof DEntryNativeResourceFactsSchema
+>;
+
+export const DEntryNativeRpcRequestSchema = z
+  .object({
+    selection: DEntrySelectionInputSchema.extend({ threadId: UuidSchema }),
+    endpoint: z.string().min(1),
+    payload: z.unknown(),
+  })
+  .strict();
+export const DEntryNativeDiscoverySchema = z
+  .object({
+    identity: DEntryIdentitySchema,
+    bindingRef: z.string().min(1),
+    controlReady: z.boolean(),
+  })
+  .strict();

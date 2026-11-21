@@ -1,18 +1,25 @@
 import type { DEntryRolloutPolicy, RequestContext } from '@allrice/contracts';
+import { readDEntryReleasePolicy as readPublishedPolicy } from '@allrice/database';
 
 export class DEntryDependencyUnavailable extends Error {
-  constructor(readonly dependency: 'release-policy' | 'native-route') {
-    super('D entry dependency is not bound');
+  constructor(
+    readonly dependency: 'release-policy' | 'native-route',
+    options?: ErrorOptions,
+  ) {
+    super('D entry dependency is not bound', options);
   }
 }
 
-/** Published host configuration port. Its management source, defaults and
- * actual person/employee selections still require the release owner's binding.
- * No browser header, env guess or empty policy may silently enable execution. */
+/** Caller already resolved the real login and current employee. The platform
+ * settings owner supplies exact selections; an absent release stays disabled. */
 export async function readDEntryReleasePolicy(
   _context: RequestContext,
   signal: AbortSignal,
 ): Promise<DEntryRolloutPolicy> {
   signal.throwIfAborted();
-  throw new DEntryDependencyUnavailable('release-policy');
+  const policy = await readPublishedPolicy().catch((error) => {
+    throw new DEntryDependencyUnavailable('release-policy', { cause: error });
+  });
+  signal.throwIfAborted();
+  return policy;
 }

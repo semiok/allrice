@@ -57,6 +57,13 @@ import { POST as cancelOnceTask } from '../../app/api/v1/sessions/[id]/once-task
 import { POST as createRecurringTask } from '../../app/api/v1/sessions/[id]/schedule-tasks/route';
 import { resolveDEntryAdmission } from '../d-entry/admission';
 import { resolveDEntryIdentity } from '../d-entry/identity';
+import {
+  dEntryReleasePolicyKey,
+  readDEntryReleasePolicy,
+  updateDEntryReleasePolicy,
+  getDEntryNativeRootPin,
+} from '@allrice/database';
+import { authorizeFixturePlatformAdministrator } from '../../../../packages/database/src/platform-authority.fixture.ts';
 
 const cookie = vi.hoisted(() => ({
   token: '',
@@ -241,10 +248,85 @@ suite(
       });
       expect(response.headers.get('cache-control')).toContain('no-store');
       const admission = await POST(request(f, true));
-      expect(admission.status).toBe(503);
-      expect((await admission.json()).error.code).toBe(
-        'DEPENDENCY_UNAVAILABLE',
-      );
+      expect(admission.status).toBe(200);
+      expect(await admission.json()).toMatchObject({
+        executionGeneration: '3.x',
+        policyRevision: 'unpublished',
+      });
+    });
+    it('uses shared platform publication, defaults off, and never manufactures a 4.0 root pin or fallback', async () => {
+      const f = await setup();
+      const thread = await four(f);
+      const selection = { ...f.selection, threadId: thread.id };
+      const policy = {
+        revision: 'caller-revision-is-not-authority',
+        defaultGeneration: '3.x' as const,
+        selections: [
+          {
+            organizationId: f.org,
+            personId: f.user,
+            employeeInstanceId: f.assignment,
+            generation: '4.0' as const,
+          },
+        ],
+      };
+      expect(await readDEntryReleasePolicy()).toEqual({
+        revision: 'unpublished',
+        defaultGeneration: '3.x',
+        selections: [],
+      });
+      expect((await POST(request(f, true, selection))).status).toBe(403);
+      await expect(
+        updateDEntryReleasePolicy(f.context, policy),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await authorizeFixturePlatformAdministrator(fixture.db, f.user);
+      try {
+        await expect(
+          updateDEntryReleasePolicy(f.context, {
+            ...policy,
+            defaultGeneration: '4.0',
+          }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+        const published = await updateDEntryReleasePolicy(f.context, policy);
+        expect(published.revision).not.toBe(policy.revision);
+        expect(await readDEntryReleasePolicy()).toEqual(published);
+        const [setting] =
+          await fixture.db`select value from allrice_settings where scope_type='system'
+          and scope_id is null and key=${dEntryReleasePolicyKey}`;
+        expect(setting?.value).toEqual(published);
+        // An existing 3.x writer stays 3.x. An opted-in 4.0 writer has no fake
+        // native transport; exact routing is still a real owner dependency.
+        expect(await (await POST(request(f, true))).json()).toMatchObject({
+          executionGeneration: '3.x',
+        });
+        const unavailable = await POST(request(f, true, selection));
+        expect(unavailable.status).toBe(503);
+        expect((await unavailable.json()).error.code).toBe(
+          'DEPENDENCY_UNAVAILABLE',
+        );
+        await expect(
+          getDEntryNativeRootPin(f.context, selection),
+        ).rejects.toThrow('NATIVE_QUERY_BINDING_UNAVAILABLE');
+        const [unchanged] =
+          await fixture.db`select native_root_origin from allrice_chat_sessions where id=${thread.id}`;
+        expect(unchanged?.native_root_origin).toBeNull();
+        const [count] =
+          await fixture.db`select count(*)::int n from allrice_native_session_bindings where context_kind='chat' and context_id=${thread.id}`;
+        expect(count?.n).toBe(0);
+        await updateDEntryReleasePolicy(f.context, {
+          ...policy,
+          selections: [],
+        });
+        expect((await POST(request(f, true, selection))).status).toBe(403);
+        expect((await GET(request(f, false, selection))).status).toBe(200);
+        await revokeSession(f.login.token);
+        await expect(
+          updateDEntryReleasePolicy(f.context, policy),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+      } finally {
+        await fixture.db`delete from allrice_settings where scope_type='system' and scope_id is null and key=${dEntryReleasePolicyKey}`;
+        vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
+      }
     });
     it('rejects a foreign tenant/person and rechecks cookie and membership revocation', async () => {
       const f = await setup(),

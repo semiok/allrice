@@ -6,8 +6,16 @@
       "issue": "MET-271",
       "upstreamVersion": "0.2.1-rc.2",
       "kind": "protocol-extension",
-      "path": "apps/web/lib/d-entry/admission-participant.ts",
-      "reason": "Host-injected entry consumer preparation at the public person VM admission boundary. Preserve original native call identity and current SaaS authority; fulfil business outcomes only after the real operation owner joins all children. Unknown acquisition/close rejects the callback for the final producer to retain. No VM/SQL/Agent lifecycle implementation or production binding; full execution owner, joined-close producer and final sticky-unsafe producer remain unbound."
+      "path": "packages/database/src/d-entry-admission.ts",
+      "reason": "Shared Web/Worker host-injected consumer of the public c041 person VM admission boundary. Preserve original native call identity and current SaaS authority; fulfil business outcomes only after the actual owner joins all children. Unknown acquisition/close rejects; always finally finish and retain the original error chain. The reviewed producer is upstream; this tree carries public contracts only and does not construct a host, SQL authority, VM or Agent lifecycle. Full execution owner, per-request transports and physical fence remain unbound."
+    },
+    {
+      "id": "allrice-native-web-entry-guard-v1",
+      "issue": "MET-271",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "apps/worker/src/d-entry/native-invocation.ts",
+      "reason": "SaaS current-session/employee/release and immutable thread-root guard on existing Web/Worker listeners. Reuse public rc.2 generated Remote strict codecs and Mux frame parsers, with an explicit source-verified endpoint/effect map. Each logical stream is authorized; child browser writes, unclassified global/plugin methods and arbitrary uplink are denied. Native parent commands remain unchanged. Native authentication and actual joined-close handles must be injected by their trusted owner; discovery controlReady never grants editor/send readiness. No new listener, provider, identity authority, VM table or Agent state machine."
     },
     {
       "id": "allrice-reference-read-v1",
