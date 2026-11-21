@@ -409,3 +409,14 @@ it('passes host-only identity to dispatch and receipt lookup without exposing it
   expect(seen).toEqual([f.binding, f.binding]);
   expect(JSON.stringify(reconciled)).not.toContain(f.binding.vm.personId);
 });
+
+it('freezes the host operation label for human review along with the actual target and bytes', async () => {
+  const f = fixture();
+  const view = await f.gateway.stage(f.binding, f.input, signal());
+  expect(view.adapterId).toBe('inbox');
+  expect(view.actionLabel).toBe('发送到合成接收器');
+  f.options.destinations.inbox.actionLabel = 'changed registration';
+  expect(
+    (await f.gateway.view(f.context, view.ref, signal())).actionLabel,
+  ).toBe(view.actionLabel);
+});
