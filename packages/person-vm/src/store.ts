@@ -185,7 +185,11 @@ export function bindingOf(row: VmRecord): PersonVmBinding {
 }
 
 export class PostgresPersonVmStore implements PersonVmStore {
+  // ownerToken -> personId. A claim whose COMMIT acknowledgement was lost may
+  // leave either token durable; neither can authorize physical work until its
+  // own callback/commands have settled.
   private readonly settledOrphans = new Map<string, string>();
+  private readonly activeRecoveries = new Map<string, string>();
   constructor(
     private readonly openSql: PersonVmSqlFactory,
     private readonly fence?: PersonVmLeaseFencePort,
@@ -309,7 +313,7 @@ export class PostgresPersonVmStore implements PersonVmStore {
       } finally {
         // work() and physical cleanup have settled before this local fence exists.
         if (locked && session.connectionFailure)
-          this.settledOrphans.set(personId, token);
+          this.settledOrphans.set(token, personId);
         bodyError ??= session.connectionFailure;
         await session.end();
       }
@@ -323,9 +327,13 @@ export class PostgresPersonVmStore implements PersonVmStore {
     work: (lease: VmLease) => Promise<T>,
   ) {
     options.signal.throwIfAborted();
+    if (this.activeRecoveries.has(personId))
+      throw new PersonVmError('LEASE_CONFLICT');
     const session = new VmSqlSession(this.openSql());
     const sql = session.client;
     let locked = false;
+    let recoveryToken: string | undefined;
+    let released = false;
     try {
       const [lock] = await session.query(
         () =>
@@ -339,25 +347,42 @@ export class PostgresPersonVmStore implements PersonVmStore {
       );
       if (!stored) throw new PersonVmError('NOT_FOUND');
       const row = fromRow(stored);
-      const token = row.leaseOwner;
+      const previousToken = row.leaseOwner;
       if (
-        !token ||
+        !previousToken ||
         !row.leaseExpiresAt ||
         Date.parse(row.leaseExpiresAt) > options.now().getTime()
       )
         throw new PersonVmError('LEASE_CONFLICT');
-      if (this.settledOrphans.get(personId) !== token) {
+      if (this.settledOrphans.get(previousToken) !== personId) {
         if (!this.fence) throw new PersonVmError('LEASE_CONFLICT');
         await this.fence.confirmSettled(
           {
             personId,
             vmId: row.vmId,
-            ownerToken: token,
+            ownerToken: previousToken,
             leaseEpoch: row.leaseEpoch,
           },
           options.signal,
         );
       }
+      // The proof covers the previous operation, never this recovery. Persist
+      // a unique owner before work can reach any physical provider. Other hosts
+      // must now fence this new token, even if our PG connection is lost.
+      const token = randomUUID();
+      recoveryToken = token;
+      this.activeRecoveries.set(personId, token);
+      const expires = new Date(
+        options.now().getTime() + options.ttlMs,
+      ).toISOString();
+      const [claimed] = await session.query(
+        () => sql`update person_virtual_machines set lease_owner=${token},lease_expires_at=${expires}
+          where person_id=${personId} and lease_owner=${previousToken} and lease_epoch=${row.leaseEpoch} returning vm_id`,
+      );
+      if (!claimed) throw new PersonVmError('LEASE_LOST');
+      this.settledOrphans.delete(previousToken);
+      row.leaseOwner = token;
+      row.leaseExpiresAt = expires;
       const guard = async () => {
         const [found] = await session.query(
           () =>
@@ -388,12 +413,12 @@ export class PostgresPersonVmStore implements PersonVmStore {
           );
         },
       });
-      const [released] = await session.query(
+      const [cleared] = await session.query(
         () =>
           sql`update person_virtual_machines set lease_owner=null,lease_expires_at=null where person_id=${personId} and lease_owner=${token} returning vm_id`,
       );
-      if (!released) throw new PersonVmError('LEASE_LOST');
-      this.settledOrphans.delete(personId);
+      if (!cleared) throw new PersonVmError('LEASE_LOST');
+      released = true;
       return result;
     } finally {
       try {
@@ -403,7 +428,17 @@ export class PostgresPersonVmStore implements PersonVmStore {
               sql`select pg_advisory_unlock(hashtextextended(${'person-vm:' + personId},0))`,
           );
       } finally {
-        await session.end();
+        try {
+          await session.end();
+        } finally {
+          // Await work(), its failure cleanup, and SQL disposal before exposing
+          // a new local proof. onclose alone never establishes settlement.
+          if (recoveryToken) {
+            if (!released) this.settledOrphans.set(recoveryToken, personId);
+            if (this.activeRecoveries.get(personId) === recoveryToken)
+              this.activeRecoveries.delete(personId);
+          }
+        }
       }
     }
   }

@@ -281,15 +281,33 @@ export class PersonVmService implements PersonVmHostPort {
       gatewayPorts: Object.freeze([...value.gatewayPorts]),
     });
   }
-  private async mounted(row: VmRecord, signal: AbortSignal, lease: VmLease) {
+  private async reconcileDisk(
+    row: VmRecord,
+    signal: AbortSignal,
+    lease: VmLease,
+  ) {
     const inspected = await this.options.disk.inspect(row.vmId, signal);
-    if (inspected.state !== 'ready') throw new PersonVmError('PROVIDER_FAILED');
+    if (inspected.state !== 'ready') {
+      if (
+        inspected.state !== 'absent' ||
+        row.instanceId ||
+        row.nativeCreated ||
+        (row.phase !== 'starting' && row.phase !== 'failed')
+      )
+        throw new PersonVmError('PROVIDER_FAILED');
+      return { state: 'absent' } as const;
+    }
     if (row.diskTier !== inspected.disk.tier) {
       row.diskTier = inspected.disk.tier;
       if (row.phase === 'cold' || row.phase === 'stopped')
         row.phase = row.diskTier === 'cold' ? 'cold' : 'stopped';
       await lease.save(row);
     }
+    return inspected;
+  }
+  private async mounted(row: VmRecord, signal: AbortSignal, lease: VmLease) {
+    if ((await this.reconcileDisk(row, signal, lease)).state !== 'ready')
+      throw new PersonVmError('PROVIDER_FAILED');
     const mount = await this.options.disk.attach(
       { vmId: row.vmId, tier: row.diskTier },
       signal,
@@ -329,7 +347,8 @@ export class PersonVmService implements PersonVmHostPort {
         row.phase === 'starting' ||
         row.egressReceipt
       ) {
-        await this.takeoverSafe(row, signal, lease);
+        if ((await this.takeoverSafe(row, signal, lease)).state !== 'ready')
+          throw new PersonVmError('PROVIDER_FAILED');
         await this.cleanup(row, lease, 'takeover');
       }
       row.leaseEpoch += 1;
@@ -465,7 +484,11 @@ export class PersonVmService implements PersonVmHostPort {
     lease: VmLease,
   ) {
     if (row.holds.length > 0) throw new PersonVmError('VM_ACTIVE');
-    if (!row.instanceId) return;
+    const inspected = await this.reconcileDisk(row, signal, lease);
+    if (!row.instanceId) {
+      if (row.nativeCreated) throw new PersonVmError('PROVIDER_FAILED');
+      return inspected;
+    }
     await this.mounted(row, signal, lease);
     const state = await this.options.native.status(bindingOf(row), signal);
     if (state === 'unknown') throw new PersonVmError('ACTIVITY_UNKNOWN');
@@ -475,6 +498,7 @@ export class PersonVmService implements PersonVmHostPort {
       // freeze native admission. No public VM-wide primitive is wired yet.
       throw new PersonVmError('ACTIVITY_UNKNOWN');
     }
+    return inspected;
   }
   private async cleanup(
     row: VmRecord,
@@ -506,7 +530,10 @@ export class PersonVmService implements PersonVmHostPort {
         const state = await this.options.native.status(binding, signal);
         stopped = state === 'stopped' || state === 'absent';
         if (state === 'stopped') row.nativeCreated = true; // Native create may have committed before a failed host save/ack.
-      } else stopped = !row.nativeCreated;
+      } else {
+        const inspected = await this.reconcileDisk(row, signal, lease);
+        stopped = !row.nativeCreated && inspected.state === 'ready';
+      }
     } catch {
       failed = true;
     }
@@ -590,6 +617,7 @@ export class PersonVmService implements PersonVmHostPort {
       if (row.phase === 'running') await this.takeoverSafe(row, signal, lease);
       if (row.holds.length > 0 || row.phase === 'starting')
         throw new PersonVmError('VM_ACTIVE');
+      if (row.diskRetained) await this.reconcileDisk(row, signal, lease);
       const action = input.deleteDisk ? 'delete-disk' : 'delete';
       await lease.audit(row, {
         requestId: context.requestId,
@@ -736,12 +764,25 @@ export class PersonVmService implements PersonVmHostPort {
           identity.personId,
           lease,
           async () => {
-            await this.takeoverSafe(row, signal, lease);
+            const inspected = await this.takeoverSafe(row, signal, lease);
             await lease.audit(row, {
               requestId: context.requestId,
               action: 'recover',
               result: 'started',
             });
+            if (inspected.state === 'absent') {
+              // Ownership is recovered, but an initial creation without image
+              // bytes is not a stopped/ready disk. Keep the retryable phase.
+              row.phase = 'failed';
+              row.stoppedAt = null;
+              await lease.save(row);
+              await lease.audit(row, {
+                requestId: context.requestId,
+                action: 'recover-create-retry',
+                result: 'succeeded',
+              });
+              return view(row);
+            }
             try {
               await this.cleanup(row, lease, 'takeover');
               await lease.audit(row, {

@@ -357,9 +357,23 @@ export class ApfsPersonVmDisk implements PersonVmDiskPort {
     return next;
   }
   async delete(disk: PersonDisk, signal: AbortSignal) {
-    if (await this.isAttached(disk, signal))
+    const inspected = await this.inspect(disk.vmId, signal);
+    if (inspected.state === 'unknown')
+      throw new PersonVmError('PROVIDER_FAILED');
+    const actual = inspected.state === 'ready' ? inspected.disk : disk;
+    if (await this.isAttached(actual, signal))
       throw new PersonVmError('CLEANUP_INCOMPLETE');
-    await rm(this.image(disk), { force: true });
+    await rm(this.image(actual), { force: true });
+    // Never erase the completion receipt/key while either owned image remains,
+    // including when the caller's persisted tier lagged a committed rename.
+    for (const tier of ['warm', 'cold'] as const) {
+      try {
+        await lstat(this.image({ vmId: disk.vmId, tier }));
+        throw new PersonVmError('CLEANUP_INCOMPLETE');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
     await rm(this.manifest(disk.vmId), { force: true });
     await this.options.keys.delete(disk.vmId);
   }

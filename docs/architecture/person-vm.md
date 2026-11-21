@@ -41,6 +41,10 @@ ownedData为迁移0247的`person_virtual_machines`与`person_vm_audit`、私有�
 
 每次开停/hold持有PG advisory锁与持久owner租约。`recoverExpired` 只在过期且旧操作已可靠fence时运行：先撤旧出口→确认旧native停止→卸载→CAS清owner。默认实现能证明同进程原callback及子进程promise已settled后的数据库断线恢复；普通业务/原生错误不会因类型未知永久留owner。跨进程/跨host没有可靠fence时拒绝，`PersonVmLeaseFencePort` 留给MET-274接线；TTL或PID存在性不证明旧操作不能再执行。活动hold不会靠TTL自动变成0，异常hold的可信对账同属后续恢复边界。
 
+恢复在调用物理provider前先CAS登记新的唯一recovery owner、消费前代settled证明，guard/save/清owner只认新token。即使恢复自身PG连接被终止、advisory锁已释放，也不能拿前代证明再做物理清理；本地active recovery拒绝重入，其他host须fence新owner。只有恢复callback及其失败清理/命令真正settled、client销毁后才登记新owner的本地证明。claim提交回执未知时，可分别保留尚未消费的前代证明与新token收敛证明，但任何新物理工作都须核当前持久owner；onclose或TTL不是收敛证明。
+
+无instance的恢复同样先inspect盘：ready回写真实warm/cold位置；首次建盘阶段absent恢复为failed可重试而非stopped，unknown/部分盘保留拒绝。挂载与host盘对账分开，显式授权删除也按vmId查实际位置，确认warm/cold镜像都已移除后才删完成凭据/key并记成功。
+
 PostgresPersonVmStore构造参数为`PersonVmSqlFactory`：每次调用返回全新、未使用、独占的`postgres(url, { max: 1, ...可信数据库配置 })` client，由store在每次read/withLease/recover结束时调用公开`end({timeout:0})`销毁。不能传Web pool、缓存同一client或让工厂返回已经使用的client；复用client或max非1会拒绝。max:1与操作独占保证advisory锁的全部SQL都在同一session上，不依赖reserve/release重新入池。resolve/assert每次也会建连接，网关逐chunk调用将产生相应连接/鉴权开销，目前未实测吞吐；后续容量治理需实测优化，不可用不可信缓存或旧epoch资格替代当前现权检查。factory不得在其他模块改为共享client。
 
 postgres.js 3.4.9的`release()`无条件把reserved连接标回可用，FATAL关闭后的query/errorResponse直到ReadyForQuery才清理。因此这里只用公开onclose和SQL错误作废当前client：每条SQL同时等待关闭事件；连接错误发生即拒绝该操作后续guard/save/audit，避免失败审计抢在关闭通知前再次发送SQL。无论成功失败均销毁该client，下一次读取/恢复来自全新session；普通SQL/业务错误仍清owner。断线保留durable owner，同进程settled证明仍要等原callback及物理清理结束，不用重连、TTL或SQL报错代替fence。源码依据：[reserve/release/onclose/end](https://github.com/porsager/postgres/blob/v3.4.9/src/index.js)、[ErrorResponse/closed/ReadyForQuery](https://github.com/porsager/postgres/blob/v3.4.9/src/connection.js)。

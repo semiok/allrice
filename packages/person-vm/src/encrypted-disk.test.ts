@@ -108,7 +108,11 @@ describe('APFS adapter protocol and private filesystem (not actual encryption ac
       ]),
     );
     expect(create.input?.every((byte) => byte === 0)).toBe(true);
-    await disk.delete(warm, signal());
+    await disk.move(warm, 'cold', signal());
+    await disk.delete(warm, signal()); // Persisted caller tier may lag actual cold location.
+    await expect(
+      readFile(join(volume, 'cold', ref.vmId + '.sparseimage')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
     await disk.delete(warm, signal());
     await expect(keys.read(ref.vmId)).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -153,6 +157,9 @@ describe('APFS adapter protocol and private filesystem (not actual encryption ac
     await copyFile(image, join(volume, 'cold', ref.vmId + '.sparseimage'));
     expect((await disk.inspect(ref.vmId, signal())).state).toBe('unknown');
     await expect(disk.move(ref, 'cold', signal())).rejects.toMatchObject({
+      code: 'PROVIDER_FAILED',
+    });
+    await expect(disk.delete(ref, signal())).rejects.toMatchObject({
       code: 'PROVIDER_FAILED',
     });
     expect(await readFile(image, 'utf8')).toBe('completed-image');
