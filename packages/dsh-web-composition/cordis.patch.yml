@@ -1,6 +1,30 @@
 - insert:
     - id: allrice-web-composition
       name: '@allrice/dsh-web-composition'
+# Its Host entry is a no-op. The AllRice column is the cold-profile child owner;
+# native settings-general continues to own the actual settings shell.
+- id: ui-sidebar
+  disabled: true
+# Employee settings retain native General and all execution/Host services.
+# These UI packages contribute manager-only sections or plugin management.
+- id: ui-settings-models
+  disabled: true
+- id: ui-settings-agent-loop
+  disabled: true
+- id: ui-settings-plugins
+  disabled: true
+- id: ui-settings-plugin-inventory
+  disabled: true
+- id: ui-settings-shell
+  disabled: true
+- id: ui-settings-subagent
+  disabled: true
+- id: ui-settings-web-search
+  disabled: true
+- id: ui-settings-account
+  disabled: true
+- id: ui-plugin-manager
+  disabled: true
 - id: ui-trajectory
   disabled: true
 - id: open-in-app

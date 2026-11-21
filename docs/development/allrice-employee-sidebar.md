@@ -10,7 +10,11 @@ AllRice 保留自己的 logo WORKSPACE、创建/归档、员工卡、线程行�
 
 **既有样式来源：** Frame/View 继续使用仓库已存在、带来源声明的 `dsh-upstream/AppFrame.module.css`、`SidebarRoot.module.css`、workspace Rows/样式、SettingsRoot 样式（旧 0.1.1 来源例外）。它们属于当前 AllRice 外观，不是本票重新复制的 rc.2 原生样式。没有新增 DSH 源码副本、私有包深导入或改写上游 CSS。AllRice 自有 sidebar palette 从 `styles/base.css` 移至共享 `sidebar-palette.css`；两入口引用同一文件。
 
-SaaS 自补仅为已批门卫的 UI 接线与业务呈现：不新增认证、权限/租户状态、数据库、Agent 状态机、后台入口或定时页。自动化调用原生 `layout.selectPanel('schedules')`；设置按钮调用 MET-279 员工设置 owner，不落到旧后台。
+SaaS 自补仅为已批门卫的 UI 接线与业务呈现：不新增认证、权限/租户状态、数据库、Agent 状态机、后台入口或定时页。自动化调用原生 `layout.selectPanel('schedules')`；设置经原生 shell 的真实 launcher 打开员工设置，不落到旧后台。
+
+MET-279 cold-profile 接线：独立 profile 停用 Host apply 为 noop 的 ui-sidebar UI row，AllRice 首次声明 `sidebar.settings`，经自身公开 props.renderSlot 渲染原生 General 的唯一 SettingsRoot。没有动态夺权/rebind、复制 shell、私参或 CSS 隐藏。Workflow 的 guarded renderLauncher 渲染共享 `SidebarSettingsButton`，由原生 shell 提供 row；3.x wrapper 仍渲染原 row + 同一 button。未绑定可信 sidebar owner 时该独立 profile 没有 fallback 左栏，不能提前切换正式入口；下表“未注入不替换”仅指客户端注入等待，不代表禁用 native UI 后仍有原生栏。
+
+设置集成浏览器文件为 `settings-integration.browser.test.ts`，调用 Workflow 原5cases并增加唯一shell/真实安装composition fiber公开Cordis卸载重建/新owner props稳定性。使用明确合成business owner与账号，未替代真实旧3.x业务port；固定时间、1440/390亮暗截图及首败原件均有输出接线，实际执行由主线排资源。单元/离线注册/SSR不是Host/DOM或业务迁移验收。
 
 ## 五面与公开符号清单
 
