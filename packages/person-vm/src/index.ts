@@ -1,5 +1,6 @@
 export * from './contract.ts';
 export * from './admission-contract.ts';
+export * from './admission-boundary.ts';
 export { PersonVmService, sameVmBinding } from './person-vm.ts';
 export {
   PostgresPersonVmStore,

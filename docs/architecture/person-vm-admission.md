@@ -2,6 +2,8 @@
 
 本合同补充 `person-vm.md`，公开入口为 `@allrice/person-vm` 的 `admission-contract.ts` 导出。它固定 gateway/entry 的 host-only 协议，**没有接线或改变当前 stop/delete/reconcileIdle 行为**。连续 producer、共享权威及消费者均为 **proposed**；类型可引用不代表门禁或产品已经通过。
 
+普通准入的追加公共入口为 `PersonVmAdmissionBoundary`（`admission-boundary.ts`），不改变本v1合同语义。两端在memory/8slot/refresh/连接副作用之前 `admit`，以 `queued` 拥有前置等待，再以 `activate` 拥有真实transport/事务/原生操作，finally `finish` 取消并join实际工作后才释放持久permit。deferred仅 `waitUntilReady` 等exact双release并经host真ready；返回新binding后finish旧permit、重新admit，不给旧执行envelope改标签。此合同提交时PG实现尚在同片后续，不能只凭类型或fixture称已接线。
+
 依据：用户 2026-11-21 决定不等 DSH 上游，按冻结边界合同 v1.0 §9 的门卫/租约实现；持续 20min 同时无原生活动、gateway 本人 inflight/queued、入口本人 active connection/typing/prewarm 后，先冻结双端，再重核，最后安全停机。20min 使用现有 `PERSON_VM_IDLE_MS`；不增加业务阈值、TTL、PG 状态、私有原生接口或事件总线。
 
 ## 所有权与依赖
