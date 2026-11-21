@@ -15,7 +15,12 @@ import { PersonVmService } from './person-vm.ts';
 import { PostgresPersonVmStore, type PersonVmSqlFactory } from './store.ts';
 import { PERSON_VM_IDLE_MS } from './contract.ts';
 import type { PersonVmAdmissionPermit } from './admission-boundary.ts';
-import type { PersonVmAdmissionHost } from './admission-host.ts';
+import {
+  advanceIdleCandidate,
+  type PersonVmAdmissionHost,
+} from './admission-host.ts';
+import type { AdmissionState } from './admission-store.ts';
+import type { PersonVmIdleCoverage } from './admission-contract.ts';
 import { context, harness, running } from './test-support.ts';
 
 const suite =
@@ -184,9 +189,9 @@ suite(
         rc,
         binding,
         physical,
-        advanceMono: (ms: number) => {
+        advanceMono: (ms: number, advanceUtc = true) => {
           mono += ms;
-          h.advance(ms);
+          if (advanceUtc) h.advance(ms);
         },
       };
     }
@@ -212,6 +217,38 @@ suite(
     }
     async function counts(personId: string) {
       return db`select disposition,count(*)::int as count from person_vm_admission_permits where person_id=${personId} group by disposition order by disposition`;
+    }
+    async function idleInputs(
+      h: Awaited<ReturnType<typeof setup>>,
+      mono: number,
+    ) {
+      const g = await h.host
+        .participant('gateway')
+        .observe(h.binding, signal());
+      const e = await h.host.participant('entry').observe(h.binding, signal());
+      const [record] =
+        await db`select admission_state from person_virtual_machines where person_id=${h.rc.actor.id}`;
+      const state = record!.admission_state as AdmissionState;
+      const origin = '2026-11-21T10:00:00.000Z';
+      // Only native coverage is synthetic. Accepted stamps/counts above are actual PG facts.
+      const coverage: PersonVmIdleCoverage[] = [
+        g.coverage,
+        e.coverage,
+        {
+          state: 'continuous',
+          cursor: { sourceId: 'synthetic-native', revision: '0' },
+          from: origin,
+          through: new Date(Date.parse(origin) + mono).toISOString(),
+          idleSince: origin,
+        },
+      ];
+      return [
+        h.binding,
+        coverage,
+        [state.gateway.idleRevision, state.entry.idleRevision, '0'],
+        await h.store.read(h.rc.actor.id),
+        mono,
+      ] as const;
     }
     async function settledOrphan(h: Awaited<ReturnType<typeof setup>>) {
       const entered = latch(),
@@ -562,6 +599,158 @@ suite(
       } finally {
         await subscription.close();
       }
+    });
+
+    it('issue, peer freeze ACK and demand wake subscribers without resetting the accepted idle candidate', async () => {
+      const h = await setup(),
+        participant = h.peer.participant('gateway');
+      const subscription = await participant.subscribe(h.binding, signal());
+      const candidate = advanceIdleCandidate(
+        undefined,
+        ...(await idleInputs(h, 0)),
+      );
+      const cancel = new AbortController(),
+        reason = new Error('join synthetic demand');
+      let mono = 0,
+        demand: Promise<unknown> | undefined;
+      async function unchanged<T>(operation: () => Promise<T>) {
+        const before = await participant.observe(h.binding, signal());
+        const result = await operation();
+        await subscription.wait(before.coverage.cursor, signal());
+        expect(
+          (await participant.observe(h.binding, signal())).coverage.cursor,
+        ).not.toEqual(before.coverage.cursor);
+        mono += 5 * 60_000;
+        h.advanceMono(5 * 60_000, false);
+        expect(
+          advanceIdleCandidate(candidate, ...(await idleInputs(h, mono))),
+        ).toEqual(candidate);
+        return result;
+      }
+      try {
+        const lease = await unchanged(() =>
+          h.host.issue(h.rc, h.binding, signal()),
+        );
+        await unchanged(() =>
+          h.peer.participant('entry').freeze(lease, signal()),
+        );
+        await unchanged(async () => {
+          demand = own(
+            h.host.wake(
+              h.rc,
+              h.binding,
+              AbortSignal.any([signal(), cancel.signal]),
+            ),
+          ).catch((error: unknown) => error);
+        });
+        h.advanceMono(5 * 60_000, false);
+        expect(
+          advanceIdleCandidate(
+            candidate,
+            ...(await idleInputs(h, PERSON_VM_IDLE_MS)),
+          )?.mono,
+        ).toBe(0);
+        expect(h.log).not.toContain('native:stop');
+        cancel.abort(reason);
+        expect(await demand).toBe(reason);
+        await h.host.participant('gateway').thaw(lease, signal());
+        await h.peer.participant('entry').thaw(lease, signal());
+      } finally {
+        cancel.abort(reason);
+        await demand;
+        await subscription.close();
+      }
+    });
+
+    it.each(['gateway', 'entry'] as const)(
+      'a short accepted %s start/end resets idle even at the same UTC millisecond',
+      async (participant) => {
+        const h = await setup(),
+          before = await idleInputs(h, 0);
+        const candidate = advanceIdleCandidate(undefined, ...before);
+        h.advanceMono(18 * 60_000, false);
+        const item = await permit(h, participant);
+        await h.host.activate(
+          item,
+          async () => 'actual callback joined',
+          signal(),
+        );
+        await h.host.finish(item);
+        const after = await idleInputs(h, 18 * 60_000);
+        expect(
+          after[1].map(
+            (coverage) => coverage.state === 'continuous' && coverage.idleSince,
+          ),
+        ).toEqual(
+          before[1].map(
+            (coverage) => coverage.state === 'continuous' && coverage.idleSince,
+          ),
+        );
+        expect(after[2]).not.toEqual(before[2]);
+        const reset = advanceIdleCandidate(candidate, ...after);
+        expect(reset?.mono).toBe(18 * 60_000);
+        h.advanceMono(2 * 60_000, false);
+        expect(
+          advanceIdleCandidate(
+            reset,
+            ...(await idleInputs(h, PERSON_VM_IDLE_MS)),
+          )?.mono,
+        ).toBe(18 * 60_000);
+        expect(await counts(h.rc.actor.id)).toEqual([]);
+      },
+    );
+
+    it('candidate continuity still resets on source/gap, monotonic rollback and real hold activity', async () => {
+      const h = await setup();
+      const candidate = advanceIdleCandidate(
+        undefined,
+        ...(await idleInputs(h, 0)),
+      );
+      h.advanceMono(18 * 60_000, false);
+      const replaced = await idleInputs(h, 18 * 60_000);
+      replaced[1][0] = (
+        await h.peer.participant('gateway').observe(h.binding, signal())
+      ).coverage;
+      expect(advanceIdleCandidate(candidate, ...replaced)?.mono).toBe(
+        18 * 60_000,
+      );
+      const gap = await idleInputs(h, 18 * 60_000);
+      gap[1][2] = {
+        state: 'unknown',
+        cursor: null,
+        reason: 'native source gap',
+      };
+      expect(advanceIdleCandidate(candidate, ...gap)).toBeUndefined();
+      h.advanceMono(2 * 60_000, false);
+      const fresh = advanceIdleCandidate(
+        undefined,
+        ...(await idleInputs(h, PERSON_VM_IDLE_MS)),
+      );
+      expect(fresh?.mono).toBe(PERSON_VM_IDLE_MS);
+      h.advanceMono(-60_000, false);
+      const rollback = advanceIdleCandidate(
+        fresh,
+        ...(await idleInputs(h, 19 * 60_000)),
+      );
+      expect(rollback?.mono).toBe(19 * 60_000);
+      const hold = await h.service.acquireHold(
+        h.rc,
+        h.binding,
+        { kind: 'host-operation', operationId: randomUUID() },
+        signal(),
+      );
+      expect(
+        advanceIdleCandidate(rollback, ...(await idleInputs(h, 19 * 60_000))),
+      ).toBeUndefined();
+      h.advanceMono(60_000, false);
+      h.advance(1);
+      await h.service.releaseHold(h.rc, h.binding, hold, signal());
+      expect(
+        advanceIdleCandidate(
+          rollback,
+          ...(await idleInputs(h, PERSON_VM_IDLE_MS)),
+        )?.mono,
+      ).toBe(PERSON_VM_IDLE_MS);
     });
 
     it('unknown native producer never gains automatic stop permission from PG/fixture zero or wall-clock time', async () => {

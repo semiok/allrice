@@ -21,6 +21,7 @@ import type {
   PersonVmAdmissionParticipant,
   PersonVmAdmissionPort,
   PersonVmAdmissionSubscription,
+  PersonVmIdleCoverage,
   PersonVmNativeActivityPort,
 } from './admission-contract.ts';
 import {
@@ -31,7 +32,7 @@ import {
   sameLease,
   type AdmissionTransaction,
 } from './admission-store.ts';
-import type { PersonVmStore, VmLease } from './store.ts';
+import type { PersonVmStore, VmLease, VmRecord } from './store.ts';
 
 type OwnedPermit = {
   context: RequestContext;
@@ -53,6 +54,36 @@ const cursorEqual = (
   a: PersonVmActivityCursor | null,
   b: PersonVmActivityCursor | null,
 ) => a?.sourceId === b?.sourceId && a?.revision === b?.revision;
+type IdleCandidate = { key: string; mono: number };
+
+/** @internal Actual candidate calculation; deliberately not a package export.
+ * Notification revisions wake readers, while accepted revisions interrupt idle. */
+export function advanceIdleCandidate(
+  previous: IdleCandidate | undefined,
+  binding: PersonVmBinding,
+  coverage: readonly PersonVmIdleCoverage[],
+  acceptedRevisions: readonly (string | undefined)[],
+  row: Pick<VmRecord, 'holds' | 'lastActivityAt'> | null,
+  mono: number,
+): IdleCandidate | undefined {
+  if (
+    row?.holds.length ||
+    coverage.some((value) => value.state !== 'continuous' || !value.idleSince)
+  )
+    return undefined;
+  const key = JSON.stringify([
+    binding,
+    coverage.map((value) => [
+      value.cursor?.sourceId,
+      value.state === 'continuous' ? value.idleSince : null,
+    ]),
+    acceptedRevisions,
+    row?.lastActivityAt,
+  ]);
+  return !previous || previous.key !== key || mono < previous.mono
+    ? { key, mono }
+    : previous;
+}
 
 /** Instantiate through PersonVmService.createAdmissionHost: actual store owner
  * and private owned lifecycle callbacks, never public stop/start recursion. */
@@ -71,7 +102,7 @@ export class PersonVmAdmissionHost
     string,
     { revision: string; at: string; mono: number }
   >();
-  private readonly idle = new Map<string, { key: string; mono: number }>();
+  private readonly idle = new Map<string, IdleCandidate>();
   constructor(
     private readonly options: {
       shared: PostgresPersonVmAdmissionStore;
@@ -1079,11 +1110,15 @@ export class PersonVmAdmissionHost
       this.idle.delete(binding.personId);
       return;
     }
-    const gateway = this.participant('gateway'),
-      entry = this.participant('entry');
-    const [g, e, native, row] = await Promise.all([
-      gateway.observe(binding, signal),
-      entry.observe(binding, signal),
+    const [[g, e, accepted], native, row] = await Promise.all([
+      this.options.shared.transaction(binding.personId, signal, async (tx) => {
+        this.check(tx, binding);
+        return [
+          await this.observation(tx, 'gateway'),
+          await this.observation(tx, 'entry'),
+          [tx.state.gateway.idleRevision, tx.state.entry.idleRevision],
+        ] as const;
+      }),
       this.options.nativeActivity.observe(binding, signal),
       this.options.store.read(binding.personId),
     ]);
@@ -1098,25 +1133,26 @@ export class PersonVmAdmissionHost
       native.activity.activeTurns +
         native.activity.activeJobs +
         native.activity.activeSubtasks +
-        native.activity.pendingApprovals ||
-      row?.holds.length ||
-      coverage.some((value) => value.state !== 'continuous' || !value.idleSince)
+        native.activity.pendingApprovals
     ) {
       this.idle.delete(binding.personId);
       return;
     }
-    const key = JSON.stringify([
+    const mono = this.mono();
+    const candidate = advanceIdleCandidate(
+      this.idle.get(binding.personId),
       binding,
-      coverage.map((value) => value.cursor),
-      row?.lastActivityAt,
-    ]);
-    const mono = this.mono(),
-      previous = this.idle.get(binding.personId);
-    if (!previous || previous.key !== key || mono < previous.mono) {
-      this.idle.set(binding.personId, { key, mono });
+      coverage,
+      [...accepted, native.coverage.cursor?.revision],
+      row,
+      mono,
+    );
+    if (!candidate) {
+      this.idle.delete(binding.personId);
       return;
     }
-    if (mono - previous.mono < PERSON_VM_IDLE_MS) return;
+    this.idle.set(binding.personId, candidate);
+    if (mono - candidate.mono < PERSON_VM_IDLE_MS) return;
     // This composition has no native autonomous-admission barrier. Do not
     // freeze users merely because an injected projection looks complete: it
     // cannot commit a running stop. Keep the VM/open gates and the candidate.

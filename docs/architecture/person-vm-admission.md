@@ -38,6 +38,8 @@ PG LISTEN只作提示，读前注册并重读持久cursor，短start/end不会�
 
 双端屏障采用同一PG事务返回条件与共享`admission_revision`水位；participant订阅的cursor覆盖两端ACK/stop/版本事实，wait注册之前发生的peer release仍可由持久水位发现。各端`idleRevision`独立保留accepted活动起点，不能把共享通知当作新的工作或重置连续空闲。
 
+idle候选在同一PG快照采集双端accepted修订，以来源/idleSince、accepted修订、native活动修订及hold最后活动判定连续性；issue/ACK/demand仅唤醒。同毫秒短accepted start/end仍重置，unknown/gap或单调时钟倒退重新积累；此计算不证明完整native屏障或授权running stop。
+
 `recoverStop`只对exact round已经持久提交的pending/unknown stop恢复，在新physical owner下重核双端frozen且未release、两端accepted active/queued均为0及hold；物理owner的settled证明不是其他permit的join证明。public `recoverExpired`在cleanup前也核accepted permit，不能借恢复绕过正常保护。拒绝时不物理stop/detach，不自动thaw。
 
 非stop的读取/freeze owner失联，可信host可鉴权后显式使用已有`PostgresPersonVmStore.recover`，在真实settled/fence与新owner下执行无物理动作的guard callback、释放残owner，再对账exact thaw；VM phase、permit及gate不随这一步改写。它不是`recoverStop`的隐式fallback，也不按TTL偷租约。MET273仍须装配此host恢复调用；本片没有新增service模式/port。
