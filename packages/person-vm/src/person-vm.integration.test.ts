@@ -168,6 +168,12 @@ suite(
         unknownHost.service.recoverExpired(rc, signal()),
       ).rejects.toMatchObject({ code: 'LEASE_CONFLICT' });
       expect(unknownHost.log).not.toContain('egress:revoke');
+      h.setActivity({ activeSubtasks: 1 });
+      await expect(
+        h.service.recoverExpired(rc, signal()),
+      ).rejects.toMatchObject({ code: 'VM_ACTIVE' });
+      expect(h.states.get(binding.vmId)).toBe('running');
+      h.setActivity({ activeSubtasks: 0 });
       expect((await h.service.recoverExpired(rc, signal())).phase).toBe(
         'stopped',
       );

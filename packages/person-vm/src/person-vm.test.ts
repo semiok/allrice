@@ -193,6 +193,7 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
     expect((await h.service.reconcileIdle(rc, signal())).phase).toBe('stopped');
     h.advance(2);
     expect((await h.service.reconcileIdle(rc, signal())).phase).toBe('cold');
+    expect((await h.service.stop(rc, signal())).phase).toBe('cold');
     expect(h.mounts.size).toBe(0);
     expect(h.disks.has(binding.vmId)).toBe(true);
     const restored = await h.service.start(rc, signal());
@@ -392,5 +393,23 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
     await h.service.start(rc, signal());
     release();
     expect((await late)!.leaseEpoch).toBeGreaterThan(first.leaseEpoch);
+  });
+  it('失败VM的接管仍检查真实活动；活跃/未知不能借重开机误回收', async () => {
+    const store = new MemoryStore(),
+      h = harness(store),
+      { rc } = await running(h);
+    store.rows.get(rc.actor.id)!.phase = 'failed';
+    h.setActivity({ activeJobs: 1 });
+    await expect(h.service.start(rc, signal())).rejects.toMatchObject({
+      code: 'VM_ACTIVE',
+    });
+    h.setActivity({ state: 'unknown', activeJobs: 0 });
+    await expect(h.service.start(rc, signal())).rejects.toMatchObject({
+      code: 'ACTIVITY_UNKNOWN',
+    });
+    await expect(h.service.stop(rc, signal())).rejects.toMatchObject({
+      code: 'ACTIVITY_UNKNOWN',
+    });
+    expect(h.log).not.toContain('native:stop');
   });
 });

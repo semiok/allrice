@@ -287,12 +287,15 @@ export class PersonVmService implements PersonVmHostPort {
         await this.ready(row, signal);
         return view(row, true);
       }
+      if (row.holds.length > 0) throw new PersonVmError('VM_ACTIVE');
       if (
         row.phase === 'failed' ||
         row.phase === 'starting' ||
         row.egressReceipt
-      )
+      ) {
+        await this.takeoverSafe(row, signal);
         await this.cleanup(row, lease, 'takeover');
+      }
       row.leaseEpoch += 1;
       row.instanceId = randomUUID();
       row.phase = 'starting';
@@ -420,6 +423,14 @@ export class PersonVmService implements PersonVmHostPort {
     if (counts.some((value) => value > 0)) throw new PersonVmError('VM_ACTIVE');
     return snapshot;
   }
+  private async takeoverSafe(row: VmRecord, signal: AbortSignal) {
+    if (row.holds.length > 0) throw new PersonVmError('VM_ACTIVE');
+    if (!row.instanceId) return;
+    await this.mounted(row, signal);
+    const state = await this.options.native.status(bindingOf(row), signal);
+    if (state === 'unknown') throw new PersonVmError('ACTIVITY_UNKNOWN');
+    if (state === 'running') await this.inactive(row, signal);
+  }
   private async cleanup(
     row: VmRecord,
     lease: VmLease,
@@ -472,8 +483,15 @@ export class PersonVmService implements PersonVmHostPort {
   async stop(context: RequestContext, signal: AbortSignal) {
     return this.leased(context, 'stop', signal, async (lease) => {
       const row = this.required(lease.row);
+      if (row.holds.length > 0) throw new PersonVmError('VM_ACTIVE');
       if (row.phase === 'running') await this.inactive(row, signal);
+      if (row.phase === 'failed') await this.takeoverSafe(row, signal);
       if (row.phase === 'starting') throw new PersonVmError('ACTIVITY_UNKNOWN');
+      if (
+        (row.phase === 'cold' || row.phase === 'stopped') &&
+        !row.egressReceipt
+      )
+        return view(row);
       await lease.audit(row, {
         requestId: context.requestId,
         action: 'stop',
@@ -534,8 +552,10 @@ export class PersonVmService implements PersonVmHostPort {
         result: 'started',
       });
       try {
-        if (row.instanceId && row.diskRetained)
+        if (row.instanceId && row.diskRetained) {
+          if (row.phase !== 'running') await this.takeoverSafe(row, signal);
           await this.cleanup(row, lease, 'delete');
+        }
         if (input.deleteDisk && row.diskRetained) {
           await lease.guard();
           await this.options.disk.delete(
@@ -688,6 +708,7 @@ export class PersonVmService implements PersonVmHostPort {
       async (lease) => {
         const row = this.required(lease.row);
         this.checkOrganization(row, identity.organizationId);
+        await this.takeoverSafe(row, signal);
         await lease.audit(row, {
           requestId: context.requestId,
           action: 'recover',

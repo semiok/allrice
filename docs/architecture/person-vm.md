@@ -41,6 +41,8 @@ ownedData为迁移0247的`person_virtual_machines`与`person_vm_audit`、私有�
 
 PostgresPersonVmStore须使用本模块专用pool。通过postgres.js公开onclose通知把失联reservation作废；不对断开的reserved连接再查询或release，也不把普通业务异常当失联。关闭通知会保守作废此专用pool的在途VM租约，不与Web/其他业务共享pool。
 
+接管/失败重开也先核真实native状态与当前原生活动/host hold；running且活跃、未知或探针失联时拒绝回收。可靠fence不等于原生任务已结束。新启动本次自身的失败清理仍尝试撤销、物理停机并确认；后续跨进程恢复由MET-274接线。revoke的实现由MET-269负责取消/join该binding在途流并记效果未知，VM层不能仅凭调用前的一次binding检查宣称长期流已回收。
+
 源码依据：[v0.7.16 start](https://github.com/microsandbox/microsandbox/blob/v0.7.16/crates/cli/lib/commands/start.rs)、[create](https://github.com/microsandbox/microsandbox/blob/v0.7.16/crates/cli/lib/commands/create.rs)、[pull](https://github.com/microsandbox/microsandbox/blob/v0.7.16/crates/cli/lib/commands/pull.rs)、[list JSON](https://github.com/microsandbox/microsandbox/blob/v0.7.16/crates/cli/lib/commands/list.rs)。hdiutil的stdinpass按系统man使用NUL结束，不把key放命令参数或环境。
 
 真实前置：固定 v0.7.16 二进制与其公共配置、宿主加密盘密钥托管、MET-269 出口、DSH 装配与活动/就绪公开接缝、MET-271 身份/BFF 页面绑定。未绑定这些前置时不得报可交付或迁入完成。样机证据只作实现参照，不替代产品验收。

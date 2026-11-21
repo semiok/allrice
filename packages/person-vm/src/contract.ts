@@ -31,7 +31,8 @@ export interface PersonVmEgressPort {
     receipt: PersonVmEgressReceipt,
     signal: AbortSignal,
   ): Promise<void>;
-  /** Idempotent for this exact epoch. Revoke external capabilities/routes. */
+  /** Idempotent for this exact epoch. Revoke routes/capabilities, cancel and join
+   * owned in-flight streams; the egress owner records unknown external effects. */
   revoke(
     receipt: PersonVmEgressReceipt,
     reason: 'stop' | 'failure' | 'takeover' | 'delete',
@@ -90,6 +91,7 @@ export type PersonVmView = Readonly<{
   organizationId: string;
   phase: 'stopped' | 'starting' | 'running' | 'cold' | 'failed' | 'deleted';
   ready: boolean;
+  /** Persisted retention ownership; failed/starting does not prove image bytes exist. */
   diskRetained: boolean;
   lastActivityAt: string;
   /** No ownerToken, key material, mount paths, or egress credentials. */
