@@ -74,7 +74,11 @@ async function sendResponse(
     signal?.removeEventListener('abort', abort);
   }
 }
-async function sendError(res: ServerResponse, error: unknown) {
+async function sendError(
+  res: ServerResponse,
+  error: unknown,
+  signal: AbortSignal,
+) {
   if (res.closed || res.writableFinished) return;
   if (res.destroyed || res.headersSent) {
     const closed = new Promise<void>((resolve) => res.once('close', resolve));
@@ -83,19 +87,23 @@ async function sendError(res: ServerResponse, error: unknown) {
     return;
   }
   try {
-    await sendResponse(res, {
-      status:
-        error instanceof EgressError &&
-        ['DENIED', 'STALE_BINDING'].includes(error.code)
-          ? 403
-          : 502,
-      contentType: 'application/json',
-      body: Buffer.from(
-        JSON.stringify({
-          code: error instanceof EgressError ? error.code : 'UNAVAILABLE',
-        }),
-      ),
-    });
+    await sendResponse(
+      res,
+      {
+        status:
+          error instanceof EgressError &&
+          ['DENIED', 'STALE_BINDING'].includes(error.code)
+            ? 403
+            : 502,
+        contentType: 'application/json',
+        body: Buffer.from(
+          JSON.stringify({
+            code: error instanceof EgressError ? error.code : 'UNAVAILABLE',
+          }),
+        ),
+      },
+      signal,
+    );
   } catch {
     // sendResponse rejects only after the failed response has actually closed.
   }
@@ -197,7 +205,7 @@ export function createEgressGateway(
     request: EgressRequest,
     signal: AbortSignal,
     deliver: (response: EgressResponse, signal: AbortSignal) => Promise<void>,
-    fail: (error: unknown) => Promise<void>,
+    fail: (error: unknown, signal: AbortSignal) => Promise<void>,
   ): Promise<void> {
     stateFor(state.receipt);
     signal.throwIfAborted();
@@ -256,14 +264,14 @@ export function createEgressGateway(
                 permit,
                 async (ownedSignal) => {
                   activeEntered = true;
+                  const activeSignal = AbortSignal.any([
+                    waitingSignal,
+                    queuedSignal,
+                    ownedSignal,
+                    permit.signal,
+                    AbortSignal.timeout(route.timeoutMs),
+                  ]);
                   try {
-                    const activeSignal = AbortSignal.any([
-                      waitingSignal,
-                      queuedSignal,
-                      ownedSignal,
-                      permit.signal,
-                      AbortSignal.timeout(route.timeoutMs),
-                    ]);
                     await options.vm.assertAdmissionBinding(
                       context,
                       binding,
@@ -316,7 +324,7 @@ export function createEgressGateway(
                     return { ok: true as const };
                   } catch (error) {
                     // Transport and delivery contracts settle only after actual close/join.
-                    await fail(error);
+                    await fail(error, activeSignal);
                     return { ok: false as const, error };
                   }
                 },
@@ -326,7 +334,10 @@ export function createEgressGateway(
               if (activeEntered) throw error; // Unknown active/listener cleanup stays sticky.
               // No active callback/transport entered. Admission owns and joins
               // its pre-entry resources; report the canceled business outcome.
-              await fail(error);
+              await fail(
+                error,
+                AbortSignal.any([waitingSignal, queuedSignal, permit.signal]),
+              );
               return { ok: false as const, error };
             }
           },
@@ -335,7 +346,7 @@ export function createEgressGateway(
         if (!outcome.ok) throw outcome.error;
         return;
       } catch (error) {
-        await fail(error);
+        await fail(error, AbortSignal.any([waitingSignal, permit.signal]));
         throw error;
       } finally {
         await options.admission.finish(permit);
@@ -486,10 +497,14 @@ export function createEgressGateway(
                 disconnect.signal,
                 (response, deliverySignal) =>
                   sendResponse(res, response, deliverySignal),
-                (error) => sendError(res, error),
+                (error, signal) => sendError(res, error, signal),
               );
             } catch (error) {
-              await sendError(res, error);
+              await sendError(
+                res,
+                error,
+                AbortSignal.any([disconnect.signal, state.controller.signal]),
+              );
             }
           })();
           state.inflight.add(operation);
