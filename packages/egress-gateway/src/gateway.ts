@@ -205,9 +205,13 @@ export function createEgressGateway(
     state.controller.abort(new EgressError('STALE_BINDING'));
     // Do not let one cleanup failure skip the model drain or transport shutdown.
     const cleanup = await Promise.allSettled([
-      options.revokeModel(state.receipt.binding, signal),
-      options.provisioner.remove(state.receipt.binding, signal),
-      close(state.server),
+      Promise.resolve().then(() =>
+        options.revokeModel(state.receipt.binding, signal),
+      ),
+      Promise.resolve().then(() =>
+        options.provisioner.remove(state.receipt.binding, signal),
+      ),
+      Promise.resolve().then(() => close(state.server)),
       Promise.allSettled([...state.inflight]),
     ]);
     const failures = cleanup.filter((result) => result.status === 'rejected');
@@ -347,6 +351,11 @@ export function createEgressGateway(
               });
               res.end(response.body);
             } catch (error) {
+              if (res.headersSent) {
+                // A failed native stream cannot become a second JSON response.
+                res.destroy();
+                return;
+              }
               if (!res.destroyed) {
                 res.writeHead(
                   error instanceof EgressError &&

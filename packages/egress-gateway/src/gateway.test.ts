@@ -45,6 +45,7 @@ async function freePort() {
 }
 async function fixture(
   extra: Partial<Parameters<typeof createEgressGateway>[0]> = {},
+  remove: () => Promise<void> = async () => {},
 ) {
   const port = await freePort();
   let access: GuestEgressAccess | undefined;
@@ -90,7 +91,7 @@ async function fixture(
       install: async (_b, a) => {
         access = a;
       },
-      remove: async () => {},
+      remove,
     },
     ...extra,
   });
@@ -267,6 +268,96 @@ describe('trusted VM HTTP egress (VM and identity owners are explicit fixtures)'
     );
     fail = false;
   });
+  it('terminates a failed native stream without writing a second response or hanging drain', async () => {
+    let cancelled!: () => void;
+    const cancellation = new Promise<void>((resolve) => {
+      cancelled = resolve;
+    });
+    let fail!: () => void;
+    const failing = new Promise<void>((resolve) => {
+      fail = resolve;
+    });
+    const f = await fixture({
+      services: [
+        {
+          id: 'native-model',
+          path: '/model',
+          method: 'POST',
+          handle: async (_req, res, _trusted, signal) => {
+            signal.addEventListener('abort', cancelled, { once: true });
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            res.write('data: started\n\n');
+            await failing;
+            throw Error('upstream lost');
+          },
+        },
+      ],
+    });
+    const response = await f.read('/model', { method: 'POST' });
+    const reader = response.body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain(
+      'started',
+    );
+    fail();
+    await expect(reader.read()).rejects.toThrow();
+    await cancellation;
+    await f.gateway.revoke(f.receipt, 'stop', signal());
+    await expect(f.gateway.assertActive(f.receipt, signal())).rejects.toThrow(
+      'STALE_BINDING',
+    );
+  });
+  it.each(['model', 'remove'])(
+    'still closes transport and drains reads when %s cleanup throws synchronously',
+    async (adapter) => {
+      let began!: () => void;
+      const started = new Promise<void>((resolve) => {
+        began = resolve;
+      });
+      let aborted = false,
+        fail = true;
+      const remove = vi.fn(() => {
+        if (fail && adapter === 'remove') throw Error('sync remove failure');
+        return Promise.resolve();
+      });
+      const f = await fixture(
+        {
+          revokeModel: () => {
+            if (fail && adapter === 'model')
+              throw Error('sync cleanup failure');
+            return Promise.resolve();
+          },
+          transport: {
+            read: async (_url, { signal }) => {
+              began();
+              await new Promise<void>((resolve) =>
+                signal.addEventListener(
+                  'abort',
+                  () => {
+                    aborted = true;
+                    resolve();
+                  },
+                  { once: true },
+                ),
+              );
+              signal.throwIfAborted();
+              return asJson(candles);
+            },
+          },
+        },
+        remove,
+      );
+      const request = f.read().catch(() => null);
+      await started;
+      await expect(
+        f.gateway.revoke(f.receipt, 'stop', signal()),
+      ).rejects.toThrow('EGRESS_CLEANUP_INCOMPLETE');
+      expect(aborted).toBe(true);
+      expect(remove).toHaveBeenCalledTimes(1);
+      await request;
+      await expect(fetch(f.access.origin)).rejects.toThrow();
+      fail = false;
+    },
+  );
 });
 
 describe('standard package metadata and byte integrity', () => {
@@ -280,6 +371,128 @@ describe('standard package metadata and byte integrity', () => {
     pythonFilesOrigin: 'https://files.pythonhosted.org',
     maxArtifacts: 20,
   };
+  it.each([
+    ['npm', 'invalid-tail'],
+    ['python', 'invalid-tail'],
+    ['npm', 'output-size'],
+    ['python', 'output-size'],
+  ])(
+    'rolls back %s index additions after %s transformation failure',
+    (kind, failure) => {
+      const routes = createPackageMirrorRoutes({
+        ...options,
+        maxArtifacts: 1,
+        maxResponseBytes: 1000,
+      });
+      const route = routes.find((r) => r.id === `packages.${kind}.read`)!;
+      const metadata = (name: string, invalidTail: boolean) =>
+        kind === 'npm'
+          ? {
+              name,
+              versions: {
+                '1': {
+                  name,
+                  version: '1',
+                  dist: {
+                    tarball: `https://registry.npmjs.org/${name}/-/${name}.tgz`,
+                    integrity,
+                  },
+                },
+                ...(invalidTail ? { '2': {} } : {}),
+              },
+            }
+          : {
+              info: { name },
+              releases: {
+                '1': [
+                  {
+                    filename: `${name}.whl`,
+                    url: `https://files.pythonhosted.org/packages/${name}.whl`,
+                    digests: {
+                      sha256: createHash('sha256').update(body).digest('hex'),
+                    },
+                  },
+                  ...(invalidTail ? [{}] : []),
+                ],
+              },
+            };
+      const path = (name: string) =>
+        kind === 'npm' ? `/npm/${name}` : `/python/simple/${name}/`;
+      expect(() =>
+        route.transform!(
+          asJson(metadata('bad', failure === 'invalid-tail')),
+          path('bad'),
+          failure === 'output-size'
+            ? 'http://' + 'x'.repeat(2000)
+            : 'http://host',
+        ),
+      ).toThrow(
+        failure === 'invalid-tail' ? 'INVALID_RESPONSE' : 'LIMIT_EXCEEDED',
+      );
+      expect(
+        route.transform!(
+          asJson(metadata('good', false)),
+          path('good'),
+          'http://host',
+        ).status,
+      ).toBe(200);
+    },
+  );
+  it.each(['npm', 'python'])(
+    'does not consume artifact capacity for failed %s metadata',
+    async (kind) => {
+      const sha = createHash('sha256').update(body).digest('hex');
+      const metadata = (name: string, count: number) =>
+        kind === 'npm'
+          ? {
+              name,
+              versions: Object.fromEntries(
+                Array.from({ length: count }, (_, i) => [
+                  String(i),
+                  {
+                    name,
+                    version: String(i),
+                    dist: {
+                      tarball: `https://registry.npmjs.org/${name}/-/${i}.tgz`,
+                      integrity,
+                    },
+                  },
+                ]),
+              ),
+            }
+          : {
+              info: { name },
+              releases: {
+                '1': Array.from({ length: count }, (_, i) => ({
+                  filename: `${name}-${i}.whl`,
+                  url: `https://files.pythonhosted.org/packages/${name}-${i}.whl`,
+                  digests: { sha256: sha },
+                })),
+              },
+            };
+      const f = await fixture({
+        policy: {
+          routes: createPackageMirrorRoutes({ ...options, maxArtifacts: 2 }),
+        },
+        transport: {
+          read: async (url) =>
+            asJson(
+              url.pathname.includes('large')
+                ? metadata('large', 3)
+                : metadata('small', 1),
+            ),
+        },
+      });
+      const path = (name: string) =>
+        kind === 'npm' ? `/npm/${name}` : `/python/simple/${name}/`;
+      const failed = await f.read(path('large'));
+      expect(failed.status).toBe(502);
+      expect(await failed.json()).toEqual({ code: 'LIMIT_EXCEEDED' });
+      const next = await f.read(path('small'));
+      expect(next.status).toBe(200);
+      expect(await next.text()).toContain('/packages/');
+    },
+  );
   it('rewrites npm metadata to same gateway and only serves checksum-matching artifacts', async () => {
     const routes = createPackageMirrorRoutes(options);
     const f = await fixture({

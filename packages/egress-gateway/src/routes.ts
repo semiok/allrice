@@ -179,6 +179,7 @@ export function createPackageMirrorRoutes(
     return id;
   }
   function add(
+    pending: Map<string, Artifact>,
     target: URL,
     algorithm: Artifact['algorithm'],
     digest: string,
@@ -201,10 +202,18 @@ export function createPackageMirrorRoutes(
     const id = createHash('sha256')
       .update(JSON.stringify([target.href, algorithm, digest]))
       .digest('hex');
-    if (!artifacts.has(id) && artifacts.size >= policy.maxArtifacts)
-      throw new EgressError('LIMIT_EXCEEDED');
-    artifacts.set(id, { target, algorithm, digest });
+    pending.set(id, { target, algorithm, digest });
     return `${gateway}/packages/${id}/${encodeURIComponent(name)}`;
+  }
+  function commit(pending: Map<string, Artifact>, response: EgressResponse) {
+    const added = [...pending.keys()].filter((id) => !artifacts.has(id)).length;
+    if (
+      artifacts.size + added > policy.maxArtifacts ||
+      response.body.byteLength > policy.maxResponseBytes
+    )
+      throw new EgressError('LIMIT_EXCEEDED');
+    for (const [id, artifact] of pending) artifacts.set(id, artifact);
+    return response;
   }
   const common = {
     ...policy,
@@ -227,6 +236,7 @@ export function createPackageMirrorRoutes(
         );
       },
       transform(response, path, gateway) {
+        const pending = new Map<string, Artifact>();
         const value = json(response),
           name = npmName(path);
         if (value.name !== name) return invalid();
@@ -260,6 +270,7 @@ export function createPackageMirrorRoutes(
           )
             return invalid();
           dist.tarball = add(
+            pending,
             target,
             algorithm,
             bytes.toString('hex'),
@@ -267,7 +278,7 @@ export function createPackageMirrorRoutes(
             gateway,
           );
         }
-        return respond(value);
+        return commit(pending, respond(value));
       },
     },
     {
@@ -280,6 +291,7 @@ export function createPackageMirrorRoutes(
         return new URL(`/pypi/${pythonName(path)}/json`, policy.pypiOrigin);
       },
       transform(response, path, gateway) {
+        const pending = new Map<string, Artifact>();
         const value = json(response),
           name = pythonName(path);
         const info = record(value.info);
@@ -308,7 +320,14 @@ export function createPackageMirrorRoutes(
             )
               return invalid();
             if (!/\.(?:whl|tar\.gz|zip)$/.test(file.filename)) continue;
-            const url = add(target, 'sha256', digest, file.filename, gateway);
+            const url = add(
+              pending,
+              target,
+              'sha256',
+              digest,
+              file.filename,
+              gateway,
+            );
             const escape = (s: string) =>
               s.replace(
                 /[&<>"']/g,
@@ -332,13 +351,13 @@ export function createPackageMirrorRoutes(
             );
           }
         }
-        return {
+        return commit(pending, {
           status: 200,
           contentType: 'text/html; charset=utf-8',
           body: Buffer.from(
             '<!doctype html><html><body>' + links.join('\n') + '</body></html>',
           ),
-        };
+        });
       },
     },
     {
