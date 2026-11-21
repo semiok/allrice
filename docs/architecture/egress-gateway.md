@@ -39,8 +39,10 @@ MET-268 公开 authority 解析实际原生会话/call，再调 `ModelGatewayPor
 `services.admissionOwner` 必须显式为 `service`。managed model 的 permit 只由
 model-gateway 持有，`assertCall` 仍核完整执行身份，本地 capability 不能替代它。
 read 冻结前 queued 保留；冻结后的请求进入可取消 deferred，等待双端 exact release
-及真实 ready，期间不因冻结返回 403/502。ready 不授权旧执行：旧请求返回
-`409 EXECUTION_REBIND_REQUIRED`，由调用方发起重新授权的新请求，不自动重绑或重放。
+及真实 ready，期间不因冻结返回 403/502。read 若完整 binding 未变，先结束旧 permit，
+重新获取当前权限并 fresh admit，然后才执行首次 I/O；再次冻结时仍可继续 deferred。
+binding 已变则取消旧 read，不能重标或重放。模型旧执行由 model-gateway 返回
+`EXECUTION_REBIND_REQUIRED`，不走 read 的 fresh admission 路径。
 网络 timeout 只从 active 阶段开始；permit 保留到 HTTPS request/response 真正关闭及
 下游响应结束。取消同样等待实际收尾；没有新增本地冻结状态或 VM 私表读取。
 

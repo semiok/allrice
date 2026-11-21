@@ -9,7 +9,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 export class EgressError extends Error {
   constructor(
     readonly code:
-      | 'EXECUTION_REBIND_REQUIRED'
       | 'DENIED'
       | 'STALE_BINDING'
       | 'UNAVAILABLE'

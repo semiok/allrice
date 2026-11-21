@@ -94,6 +94,9 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
       readyAllowed = latch<void>();
     releases.push(() => readyAllowed.resolve());
     let blockReady = false;
+    let changedReady = false;
+    const events: string[] = [];
+    const finishErrors: unknown[] = [];
     let waitSignal: AbortSignal | undefined;
     let beforeActivate: (() => Promise<void>) | undefined;
     let managedCalls = 0;
@@ -126,6 +129,7 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
     const permits: PersonVmAdmissionPermit[] = [];
     const boundary: PersonVmAdmissionBoundary = {
       async admit(...args) {
+        events.push('admit');
         const permit = await host.admit(...args);
         permits.push(permit);
         admitted.resolve(permit);
@@ -139,11 +143,27 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
       async waitUntilReady(...args) {
         waitSignal = args[2];
         waiting.resolve();
-        return host.waitUntilReady(...args);
+        const ready = await host.waitUntilReady(...args);
+        // Contract-edge fixture: actual PG exact thaw + ready above, but a VM
+        // owner may return a different generation. Never authorize its use here.
+        return changedReady
+          ? {
+              ...ready,
+              instanceId: randomUUID(),
+              leaseEpoch: ready.leaseEpoch + 1,
+            }
+          : ready;
       },
       async finish(permit) {
-        await host.finish(permit);
-        finished.resolve();
+        try {
+          await host.finish(permit);
+          events.push('finished');
+        } catch (error) {
+          finishErrors.push(error);
+          throw error;
+        } finally {
+          finished.resolve();
+        }
       },
     };
     const upstream = vi.fn(async () => ({
@@ -156,6 +176,7 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
       admission: boundary,
       authority: {
         context: async (_binding, signal) => {
+          events.push('authorize');
           receivedSignals.push(signal);
           return rc;
         },
@@ -288,6 +309,11 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
         physicalRelease?.();
         await physicalWork;
       },
+      changedReady() {
+        changedReady = true;
+      },
+      events,
+      finishErrors,
       blockReady() {
         blockReady = true;
       },
@@ -347,7 +373,7 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
     });
     expect(f.upstream).toHaveBeenCalledTimes(1);
   });
-  it('F2 waits for both exact releases and actual ready; never replays old execution', async () => {
+  it('F2 same binding waits for both releases and ready, then fresh admission performs first IO', async () => {
     const f = await setup();
     const lease = await f.freeze();
     f.blockReady();
@@ -357,6 +383,7 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
       return value;
     });
     await expectDeferred(f, pending);
+    await f.releasePhysical();
     expect(
       await f.participant.thaw({ ...lease, version: 'wrong' }, caller.signal),
     ).toBe('superseded');
@@ -365,7 +392,6 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
       active: 0,
     });
     expect(returned).toBe(false);
-    await f.releasePhysical();
     await f.entry.thaw(lease, caller.signal);
     await f.readyEntered.promise;
     expect(
@@ -374,14 +400,41 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
     ).toBe(false);
     expect(f.upstream).not.toHaveBeenCalled();
     f.readyAllowed.resolve();
-    const old = await pending;
-    expect(old).toMatchObject({ status: 409 });
-    expect(JSON.parse(old.body)).toEqual({ code: 'EXECUTION_REBIND_REQUIRED' });
-    await f.finished.promise;
-    expect(f.upstream).not.toHaveBeenCalled();
-    expect(await f.request()).toMatchObject({ status: 200, body: 'fixture' });
+    expect(await pending).toMatchObject({ status: 200, body: 'fixture' });
+    await f.observe(
+      (v) => v.active === 0 && v.queued === 0 && v.deferred === 0,
+    );
+    expect(f.events).toEqual([
+      'authorize',
+      'admit',
+      'finished',
+      'authorize',
+      'admit',
+      'finished',
+    ]);
     expect(f.upstream).toHaveBeenCalledTimes(1);
     expect(f.permits.map((p) => p.disposition)).toEqual(['deferred', 'queued']);
+  });
+  it('F4 changed ready binding cancels old read without fresh admission or IO', async () => {
+    const f = await setup();
+    const lease = await f.freeze();
+    f.changedReady();
+    const pending = f.request();
+    await expectDeferred(f, pending);
+    await f.releasePhysical();
+    await f.participant.thaw(lease, caller.signal);
+    await f.entry.thaw(lease, caller.signal);
+    const result = await pending;
+    expect(result.status).toBe(403);
+    expect(JSON.parse(result.body)).toEqual({ code: 'STALE_BINDING' });
+    expect(f.permits.map((p) => p.disposition)).toEqual(['deferred']);
+    expect(f.upstream).not.toHaveBeenCalled();
+    await f.finished.promise;
+    expect(await f.observe(() => true)).toMatchObject({
+      active: 0,
+      queued: 0,
+      deferred: 0,
+    });
   });
   it('F3 cancellation reaches deferred wait and joins it without thaw or dispatch', async () => {
     const f = await setup();
@@ -397,6 +450,30 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
     await f.finished.promise;
     const value = await f.observe((v) => v.deferred === 0);
     expect(value).toMatchObject({ active: 0, queued: 0, frozen: lease });
+    expect(f.upstream).not.toHaveBeenCalled();
+  });
+  it('F5 cancellation after queued callback enters but before activation releases joined permit', async () => {
+    const f = await setup();
+    const hold = f.holdQueued();
+    const cancel = new AbortController();
+    const pending = f.request('/read', cancel.signal);
+    await hold.entered.promise;
+    cancel.abort();
+    await expect(pending).rejects.toThrow();
+    await expect
+      .poll(() => f.receivedSignals[0]?.aborted, { timeout: 1000 })
+      .toBe(true);
+    hold.hold.resolve();
+    await f.finished.promise;
+    expect(
+      f.finishErrors,
+      'pre-activation cancellation has no unknown child',
+    ).toEqual([]);
+    expect(await f.observe(() => true)).toMatchObject({
+      active: 0,
+      queued: 0,
+      deferred: 0,
+    });
     expect(f.upstream).not.toHaveBeenCalled();
   });
   it('managed service receives qualified frozen ingress without an egress permit', async () => {
