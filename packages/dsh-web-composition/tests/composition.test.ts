@@ -183,6 +183,69 @@ it('assembles the independent profile with native question/document/catalog and 
   expect(entry('allrice-web-composition')?.name).toBe(
     '@allrice/dsh-web-composition',
   );
+  expect(entry('typert-loader')?.config).toMatchObject({
+    packages: ['@deepseek-ai/dsh-client-ui-plugin-manager'],
+  });
+});
+
+it('retains native manager Host behavior through public Host-only entry exports', async () => {
+  const ctx = new Context();
+  contexts.push(ctx);
+  const configurations: object[] = [];
+  let released = 0;
+  ctx.provide('settings', {
+    configure(config: object) {
+      configurations.push(config);
+      return () => {
+        released++;
+      };
+    },
+  });
+  const hosts = [];
+  for (const name of [
+    'plugin-manager',
+    'settings-models',
+    'settings-account',
+  ]) {
+    const entry = '@allrice/dsh-web-composition/host/' + name;
+    const module = await import(entry);
+    const native = await import('@deepseek-ai/dsh-client-ui-' + name);
+    expect(module.default ?? module.apply).toBe(native.default ?? native.apply);
+    expect((module.default ?? module).Config).toBe(
+      (native.default ?? native).Config,
+    );
+    // Cordis Loader unwraps a module's default export before plugin mounting.
+    hosts.push(ctx.plugin(module.default ?? module));
+  }
+  await Promise.all(hosts);
+  expect(typeof ctx.get('pluginRegistryProbe')?.fastest).toBe('function');
+  const injected: { kind: string; name: string; value: unknown }[] = [];
+  ctx.emit('webserver/index-inject', injected);
+  expect(injected).toEqual(
+    expect.arrayContaining([
+      {
+        kind: 'global',
+        name: '__DSH_MODELS_ONBOARDING__',
+        value: { credentialOnboarding: true },
+      },
+      {
+        kind: 'global',
+        name: '__DSH_CONTACT_CONFIG__',
+        value: expect.objectContaining({
+          contactSource: '',
+          bonusAckRetryDelayMs: 1000,
+          bonusAckRetryMaxDelayMs: 60_000,
+        }),
+      },
+    ]),
+  );
+  expect(configurations).toEqual([{ auto: false }]);
+  await Promise.all(hosts.map((host) => host.dispose()));
+  expect(ctx.get('pluginRegistryProbe')).toBeUndefined();
+  expect(released).toBe(1);
+  const afterDispose: typeof injected = [];
+  ctx.emit('webserver/index-inject', afterDispose);
+  expect(afterDispose).toEqual([]);
 });
 
 it('reopens portable native process/question/document histories through released persistence', async () => {

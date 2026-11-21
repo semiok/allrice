@@ -1,9 +1,15 @@
 import { useSyncExternalStore, type ComponentProps } from 'react';
 import type { Context } from '@deepseek-ai/cordis';
 import type { SidebarOwnerProps } from '@deepseek-ai/dsh-client-ui-layout/client';
+import type { PropsRenderSlots } from '@deepseek-ai/dsh-client-ui-slots';
+import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client';
+import type { SettingsLauncherOwnerProps } from '@deepseek-ai/dsh-client-ui-settings/client';
 import { ChatSidebarFrame } from '../../../apps/web/app/chatflow/chat-sidebar-frame';
 import { EmployeeSidebarView } from '../../../apps/web/app/chatflow/employee-sidebar-view';
-import { SidebarSettingsTrigger } from '../../../apps/web/app/chatflow/sidebar-settings-trigger';
+import {
+  SidebarSettingsButton,
+  SidebarSettingsTrigger,
+} from '../../../apps/web/app/chatflow/sidebar-settings-trigger';
 import '@allrice/ui/tokens.css';
 import '../../../apps/web/app/styles/sidebar-palette.css';
 
@@ -48,7 +54,9 @@ declare module '@deepseek-ai/cordis' {
 export function EmployeeSidebar({
   ctx,
   collapsed,
-}: SidebarOwnerProps & { ctx: Context }) {
+  renderSlot,
+}: SidebarOwnerProps &
+  PropsRenderSlots<'sidebar.settings'> & { ctx: Context }) {
   const port = ctx.allriceEmployeeSidebar;
   const snapshot = useSyncExternalStore(port.subscribe, port.getSnapshot);
   const panel = useSyncExternalStore(
@@ -99,13 +107,7 @@ export function EmployeeSidebar({
           />
         </>
       }
-      settings={
-        <SidebarSettingsTrigger
-          collapsed={collapsed}
-          expanded={snapshot.settingsOpen}
-          onOpen={port.openEmployeeSettings}
-        />
-      }
+      settings={renderSlot('sidebar.settings', { wide: !collapsed })}
     />
   );
 }
@@ -115,8 +117,12 @@ export function apply(ctx: Context) {
   ctx.inject(['allriceEmployeeSidebar', 'layout'], (scope) => {
     scope.slots.inject('sidebar', () =>
       scope.slots.register(
-        { name: 'sidebar', priority: -100 },
-        (props: SidebarOwnerProps) => (
+        {
+          name: 'sidebar',
+          priority: -100,
+          children: { 'sidebar.settings': { kind: 'single', scope: 'root' } },
+        },
+        (props: SidebarOwnerProps & PropsRenderSlots<'sidebar.settings'>) => (
           <EmployeeSidebar {...props} ctx={scope} />
         ),
       ),
@@ -127,6 +133,21 @@ export function apply(ctx: Context) {
 /** Called by the authenticated owner plugin in its own Cordis lifetime. */
 export function bindEmployeeSidebar(ctx: Context, port: EmployeeSidebarPort) {
   ctx.provide('allriceEmployeeSidebar', port);
+}
+
+/** Native SettingsRoot supplies the row and the authoritative open/state. */
+export function AllRiceSettingsLauncher({
+  wide,
+  settingsOpen,
+  openSettings,
+}: SettingsLauncherOwnerProps) {
+  return (
+    <SidebarSettingsButton
+      collapsed={!wide}
+      expanded={settingsOpen}
+      onOpen={openSettings}
+    />
+  );
 }
 
 export { ChatSidebarFrame, EmployeeSidebarView, SidebarSettingsTrigger };

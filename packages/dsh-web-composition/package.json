@@ -6,10 +6,16 @@
   "exports": {
     ".": "./index.mjs",
     "./client": "./dist/client.js",
+    "./settings-types": {
+      "types": "./src/employee-settings-port.ts"
+    },
     "./employee-client": {
       "types": "./src/employee-client.d.mts",
       "default": "./src/employee-client.mjs"
     },
+    "./host/plugin-manager": "./host/plugin-manager.mjs",
+    "./host/settings-account": "./host/settings-account.mjs",
+    "./host/settings-models": "./host/settings-models.mjs",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./profile": "./profiles/allrice-web/package.json",
     "./package.json": "./package.json"
@@ -19,6 +25,8 @@
     "dist/client.js",
     "src/employee-client.mjs",
     "src/employee-client.d.mts",
+    "src/employee-settings-port.ts",
+    "host",
     "cordis.patch.yml",
     "profiles",
     "README.md"
@@ -46,24 +54,37 @@
     "build": "node build.mjs",
     "prepack": "node build.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint build.mjs index.mjs src",
-    "test": "pnpm --dir ../.. exec vitest run packages/dsh-web-composition/tests/composition.test.ts packages/dsh-web-composition/tests/employee-client.test.ts packages/dsh-web-composition/tests/browser-artifacts.test.ts"
+    "lint": "eslint build.mjs index.mjs host src",
+    "test": "node build.mjs && pnpm --dir ../.. exec vitest run packages/dsh-web-composition/tests/composition.test.ts packages/dsh-web-composition/tests/employee-client.test.ts packages/dsh-web-composition/tests/browser-artifacts.test.ts packages/dsh-web-composition/tests/employee-settings.test.ts packages/dsh-web-composition/tests/cold-profile.test.ts packages/dsh-web-composition/tests/public-client.test.ts"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-client-ui-plugin-manager": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings-account": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings-models": "0.2.1-rc.2"
   },
   "devDependencies": {
     "@allrice/ui": "workspace:*",
     "@deepseek-ai/cordis": "4.0.5",
     "@deepseek-ai/dsh": "0.2.1-rc.2",
     "@deepseek-ai/dsh-app-boot": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-modules": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-conversation": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-layout": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-primitives": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-renderer": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-schedule": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings-general": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-slots": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-theme": "0.2.1-rc.2",
     "@deepseek-ai/dsh-client-ui-workspace": "0.2.1-rc.2",
     "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.4",
     "esbuild": "0.28.1",
     "playwright-core": "1.62.1",
-    "react": "19.2.0"
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "zod": "4.4.3"
   }
 }
