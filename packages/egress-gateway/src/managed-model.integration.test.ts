@@ -424,9 +424,20 @@ suite(
       await f.host.participant('entry').thaw(lease, cancel.signal);
       const old = await pending;
       expect(old.status).toBe(200);
-      expect(old.body).toContain('EXECUTION_REBIND_REQUIRED');
+      expect(JSON.parse(old.body.trim().split('\n').at(-1)!)).toMatchObject({
+        type: 'finish',
+        reason: {
+          kind: 'aborted',
+          failure: { code: 'EXECUTION_REBIND_REQUIRED' },
+        },
+      });
       expect(f.native.requests).toHaveLength(0);
-      expect((await f.post()).status).toBe(200);
+      const fresh = await f.post();
+      expect(fresh.status).toBe(200);
+      expect(JSON.parse(fresh.body.trim().split('\n').at(-1)!)).toMatchObject({
+        type: 'finish',
+        reason: { kind: 'stop' },
+      });
       expect(f.native.requests).toHaveLength(1);
       expect(f.calls[0]!.native.callId).not.toBe(f.calls[1]!.native.callId);
       expect(f.permits.map((p) => p.disposition)).toEqual([
