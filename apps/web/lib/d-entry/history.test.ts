@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
 import { DataAccessError } from '@allrice/database';
 import {
+  HostHistoryAttachmentSchema,
   HostHistorySnapshotSchema,
   makeObjectKey,
   type DEntryIdentity,
@@ -78,6 +79,7 @@ beforeEach(() => {
   authority.generation.mockResolvedValue('4.0');
 });
 afterEach(async () => {
+  vi.unstubAllGlobals();
   for (const path of directories.splice(0))
     await rm(path, { recursive: true, force: true });
 });
@@ -720,6 +722,76 @@ describe('host-only native recovery history BFF', () => {
     });
     expect(f.files.acquire).not.toHaveBeenCalled();
     expect(spoolIO.files).toEqual([]);
+  });
+
+  it('rejects a schema-valid unencodable filename before acquiring an owner or spool', async () => {
+    const f = await fixture();
+    f.attachment.fileName = '\ud800';
+    expect(HostHistoryAttachmentSchema.parse(f.attachment).fileName).toBe(
+      '\ud800',
+    );
+    const saved = await f.capture();
+    const response = await f.handlers.download(
+      f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
+    );
+    expect(response.status).toBe(500);
+    expect(f.files.acquire).not.toHaveBeenCalled();
+    expect(f.owner.open).not.toHaveBeenCalled();
+    expect(f.owner.close).not.toHaveBeenCalled();
+    expect(spoolIO.files).toEqual([]);
+    await expect(readdir(f.files.spoolDirectory)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+  });
+
+  it('cancels a prepared body and joins owner/spool release if Response construction fails', async () => {
+    const f = await fixture();
+    const saved = await f.capture();
+    let closing!: () => void;
+    const closeStarted = new Promise<void>((resolve) => {
+      closing = resolve;
+    });
+    let release!: () => void;
+    const closeFinished = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    f.owner.close.mockImplementation(async () => {
+      closing();
+      await closeFinished;
+    });
+    const NativeResponse = Response;
+    let constructionFailed = false;
+    vi.stubGlobal(
+      'Response',
+      class extends NativeResponse {
+        constructor(body?: BodyInit | null, init?: ResponseInit) {
+          if (body instanceof ReadableStream) {
+            constructionFailed = true;
+            throw new Error('Injected Response construction failure');
+          }
+          super(body, init);
+        }
+      },
+    );
+    let settled = false;
+    const pending = f.handlers.download(
+      f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
+    );
+    void pending.then(() => {
+      settled = true;
+    });
+    await closeStarted;
+    expect(constructionFailed).toBe(true);
+    expect(f.files.acquire).toHaveBeenCalledTimes(1);
+    expect(spoolIO.files).toHaveLength(1);
+    await spoolIO.files[0]!.closedPromise;
+    expect(settled).toBe(false);
+    release();
+    const response = await pending;
+    expect(response.status).toBe(500);
+    expect(f.owner.close).toHaveBeenCalledTimes(1);
+    expect(spoolIO.files[0]!.closed).toBe(true);
+    expect(await readdir(f.files.spoolDirectory)).toEqual([]);
   });
 
   it.each(['root-revoke', 'object-revoke', 'request-cancel'])(

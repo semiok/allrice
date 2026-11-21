@@ -262,6 +262,13 @@ export function createDEntryHistoryHandlers(ports: DEntryHistoryPorts) {
             message: 'Attachment permission owner is not bound',
             retryable: false,
           });
+        const headers = new Headers({
+          'content-type': 'application/octet-stream',
+          'content-length': String(attachment.sizeBytes),
+          'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(attachment.fileName)}`,
+          'cache-control': 'private, no-store',
+          'x-content-type-options': 'nosniff',
+        });
         const body = await prepareHistoryAttachment({
           files: ports.files,
           context: stored.context,
@@ -293,15 +300,12 @@ export function createDEntryHistoryHandlers(ports: DEntryHistoryPorts) {
             signal.throwIfAborted();
           },
         });
-        return new Response(body, {
-          headers: {
-            'content-type': 'application/octet-stream',
-            'content-length': String(attachment.sizeBytes),
-            'content-disposition': `attachment; filename*=UTF-8''${encodeURIComponent(attachment.fileName)}`,
-            'cache-control': 'private, no-store',
-            'x-content-type-options': 'nosniff',
-          },
-        });
+        try {
+          return new Response(body, { headers });
+        } catch (error) {
+          await body.cancel(error);
+          throw error;
+        }
       } catch (error) {
         return historyError(error);
       }
