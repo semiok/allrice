@@ -9,6 +9,7 @@ import {
   type EmployeeExecutionSnapshot,
   type EmployeeRuntimePolicy,
   type EmployeeRuntimePackage,
+  type ExecutionGeneration,
   type PlatformEmployeeDefinition,
   type RuntimePolicyControls,
   type RuntimeTaskRef,
@@ -179,6 +180,9 @@ export async function createRunAuthorityFixture(
     legacyPublication?: LegacyPublicationFixtureSource;
     /** Test-only first-INSERT issuance; historical fixtures remain NULL. */
     businessCreationOrigin?: boolean;
+    /** Test-only birth fact for forged legacy queue admission. Omitted on
+     * historical schemas; never rewrite an immutable existing Session/Run. */
+    executionGeneration?: ExecutionGeneration;
   } = {},
   suppliedBase?: Awaited<ReturnType<typeof runFixture>>,
 ) {
@@ -381,8 +385,12 @@ export async function createRunAuthorityFixture(
           version,
         )
       : null;
-    await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,project_id,owner_id,title,employee_assignment_id,employee_version_id,native_root_origin)
+    if (options.executionGeneration === undefined)
+      await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,project_id,owner_id,title,employee_assignment_id,employee_version_id,native_root_origin)
         values(${session},${org},${workspace},${task.scope.projectId},${user},'P25 authority',${assignment},${version},${origin ? tx.json(origin) : null})`;
+    else
+      await tx`insert into allrice_chat_sessions(id,organization_id,workspace_id,project_id,owner_id,title,employee_assignment_id,employee_version_id,native_root_origin,execution_generation)
+        values(${session},${org},${workspace},${task.scope.projectId},${user},'P25 authority',${assignment},${version},${origin ? tx.json(origin) : null},${options.executionGeneration})`;
     await tx`insert into allrice_messages(id,organization_id,workspace_id,session_id,owner_id,role,content)
     values(${um},${org},${workspace},${session},${user},'user','{"text":"synthetic","citations":[]}'),
       (${am},${org},${workspace},${session},${user},'assistant','{"text":"synthetic","citations":[]}')`;

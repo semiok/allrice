@@ -20,6 +20,7 @@ import {
   dEntryClientMount,
 } from '../d-entry/admission';
 import { DEntryDependencyUnavailable } from '../d-entry/release-policy';
+import type * as ReleasePolicy from '../d-entry/release-policy';
 import {
   authorizeDEntryNativeResource,
   followDEntryNativeResource,
@@ -47,7 +48,7 @@ vi.mock('@allrice/database', async (original) => ({
   requireCurrentWorkspaceWriteAuthority: ports.writable,
 }));
 vi.mock('../d-entry/release-policy', async (original) => ({
-  ...(await original<typeof import('../d-entry/release-policy')>()),
+  ...(await original<typeof ReleasePolicy>()),
   readDEntryReleasePolicy: ports.policy,
 }));
 

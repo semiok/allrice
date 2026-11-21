@@ -15,6 +15,7 @@ import {
   runtimeFixtureStorage,
 } from '../../../../packages/database/src/runtime.fixture.ts';
 import { createRunAuthorityFixture } from '../../../../packages/database/src/run-authority.fixture.ts';
+import { nativeBindingDescriptor } from '../../../../packages/database/src/native-session-binding.fixture.ts';
 import { createEmployeeAdministrationFixture } from '../../../../packages/database/src/employee-administration.fixture.ts';
 import { buildEmployeeRuntimePackage } from '../../../../packages/database/src/platform-employees/runtime-package.ts';
 import {
@@ -39,6 +40,7 @@ import {
   claimNextJob,
   startClaimedJob,
   prepareJobNativeSession,
+  bindJobNativeSession,
 } from '../../../../packages/database/src/execution/queue.ts';
 import { acquireConversationRuntime } from '../../../../packages/database/src/conversation/conversation-runtime.ts';
 import { enqueueNativeSubagentControl } from '../../../../packages/database/src/conversation/native-subagent-control.ts';
@@ -131,10 +133,11 @@ suite(
       vi.unstubAllEnvs();
       await fixture?.close();
     });
-    async function setup() {
+    async function setup(executionGeneration?: '4.0') {
       const f = await createRunAuthorityFixture(fixture.db, {
         configure: false,
         memberRole: 'member',
+        executionGeneration,
         runtimePackage,
         toolNames: runtimePackage.runtimeManifest.toolNames,
         allowedTools: runtimePackage.runtimeManifest.toolNames,
@@ -665,35 +668,66 @@ suite(
       expect(counts).toMatchObject({ messages: 0, runtimes: 0, commands: 0 });
     });
     it('filters 4.0 from the real legacy claim and rechecks forged claimed/bind attempts', async () => {
-      const f = await setup(),
-        thread = await four(f);
-      // Synthetic inconsistent queue state tests the real legacy entrypoints;
-      // no public writer can create this 4.0 employee Run through enqueue/send.
-      await fixture.db`update allrice_employee_runs set session_id=${thread.id} where run_id=${f.rootRunId}`;
+      // Freeze the inconsistent legacy queue at first INSERT; existing Run
+      // snapshots and Session writer pins remain immutable in this test too.
+      const f = await setup('4.0');
+      expect(
+        await getSessionExecutionGeneration(f.context, f.workspace, f.session),
+      ).toBe('4.0');
+      const evidence = () => fixture.db`select
+        (select to_jsonb(er) from allrice_employee_runs er where run_id=${f.rootRunId}) employee_run,
+        (select to_jsonb(r) from allrice_conversation_runtimes r where session_id=${f.session}) runtime,
+        (select count(*)::int from allrice_messages where session_id=${f.session}) messages,
+        (select count(*)::int from allrice_native_session_bindings where context_kind='chat' and context_id=${f.session}) bindings,
+        (select count(*)::int from allrice_run_events where run_id=${f.rootRunId}) events`;
+      const before = await evidence();
+      const job = () =>
+        fixture.db`select status,worker_id,lease_token,lease_expires_at,attempt from allrice_jobs where id=${f.worker.jobId}`;
       await fixture.db`update allrice_jobs set status='queued',available_at=clock_timestamp()-interval '1 second',attempt=1 where id=${f.worker.jobId}`;
+      const queued = await job();
       expect(await claimNextJob(randomUUID(), 60000)).toBeNull();
+      expect(await job()).toEqual(queued);
       await fixture.db`update allrice_jobs set status='claimed',lease_expires_at=clock_timestamp()+interval '5 minutes' where id=${f.worker.jobId}`;
+      const claimed = await job();
       await expect(
         startClaimedJob(f.worker.workerId, f.worker.jobId, f.worker.leaseToken),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
+      expect(await job()).toEqual(claimed);
       await fixture.db`update allrice_jobs set status='running' where id=${f.worker.jobId}`;
+      const running = await job();
+      const lease = {
+        workerId: f.worker.workerId,
+        jobId: f.worker.jobId,
+        leaseToken: f.worker.leaseToken,
+        attempt: 1,
+        subject: {
+          kind: 'chat' as const,
+          id: f.session,
+          configChecksum: 'sha256:' + 'a'.repeat(64),
+          generation: 0,
+          expectedThreadId: null,
+        },
+      };
       await expect(
         prepareJobNativeSession({
-          workerId: f.worker.workerId,
-          jobId: f.worker.jobId,
-          leaseToken: f.worker.leaseToken,
-          attempt: 1,
-          subject: {
-            kind: 'chat',
-            id: thread.id,
-            configChecksum: 'sha256:' + 'a'.repeat(64),
-            generation: 0,
-            expectedThreadId: null,
-          },
-          nativeSessionId: 'dsh-' + thread.id,
-          storageContextKey: thread.id,
+          ...lease,
+          nativeSessionId: 'dsh-' + f.session,
+          storageContextKey: f.session,
         }),
       ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await expect(
+        bindJobNativeSession({
+          ...lease,
+          descriptor: nativeBindingDescriptor({
+            organizationId: f.org,
+            workspaceId: f.workspace,
+            ownerId: f.user,
+            contextKey: f.session,
+          }),
+        }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      expect(await job()).toEqual(running);
+      expect(await evidence()).toEqual(before);
     });
   },
 );
