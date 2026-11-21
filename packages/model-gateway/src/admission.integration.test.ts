@@ -533,7 +533,7 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
       await close().catch((error) => failures.push(error));
     await settle([...clients].map((client) => client.end({ timeout: 0 })));
     if (admin && schema) {
-      // Driver end joins the local socket, not PostgreSQL's independent
+      // Driver end may return before local socket close or PostgreSQL's
       // backend teardown. Still require zero owned backends before disposal;
       // do not terminate them or turn a persistent leak into a passing check.
       await expect
