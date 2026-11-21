@@ -293,7 +293,7 @@ describe.sequential(
             : null;
         },
         async *stream(_binding, _input, signal) {
-          const response = await fetch(endpoint, { signal });
+          const response = await fetch(endpoint, { method: 'POST', signal });
           const reader = response.body!.getReader();
           await reader.read();
           await reader.cancel();

@@ -220,6 +220,7 @@ export async function upstreamFixture(
     hold?: boolean;
     status?: number;
     firstAttemptStatus?: number;
+    firstRequestStatus?: number;
     missingTerminal?: boolean;
     missingUsage?: boolean;
     tools?: boolean;
@@ -271,6 +272,13 @@ export async function upstreamFixture(
         : {};
       requests.push({ url: request.url!, body, response });
       waits.get(requests.length)?.resolve();
+      if (options.firstRequestStatus && requests.length === 1) {
+        response.writeHead(options.firstRequestStatus, {
+          'content-length': '0',
+        });
+        response.end();
+        return;
+      }
       if (request.url === '/refresh') {
         response.setHeader('content-type', 'application/json');
         response.end('{"synthetic":true}');

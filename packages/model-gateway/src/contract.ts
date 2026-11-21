@@ -74,7 +74,10 @@ export type GatewayFetchClassification = Readonly<{
 }>;
 export interface GatewayProvider {
   /** Inject an HTTP-fetch provider. Native loader configuration MUST pin SSE;
-   * WebSocket or a separate SDK transport cannot bypass this host meter. */
+   * WebSocket or a separate SDK transport cannot bypass this host meter.
+   * Model/refresh endpoints must accept one-shot request bodies (native POST).
+   * GET/HEAD are rejected before dispatch: their null body permits hidden 421
+   * replay. SDK retries via separate fetch calls remain individually metered. */
   stream(
     binding: ModelCallBinding,
     input: GatewayModelInput,
@@ -174,6 +177,7 @@ export type ModelGatewayErrorCode =
   | 'DUPLICATE_CALL'
   | 'ADMISSION_CLOSED'
   | 'UNCLASSIFIED_UPSTREAM'
+  | 'UNSUPPORTED_UPSTREAM'
   | 'AUTH_TRANSACTION_REQUIRED'
   | 'MISSING_UPSTREAM_TERMINAL'
   | 'PROVIDER_FAILED'

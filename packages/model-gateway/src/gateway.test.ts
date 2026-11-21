@@ -15,6 +15,7 @@ import {
   gatewayFixture,
   modelBinding,
   nativeProviderFixture,
+  nativeFailure,
   upstreamFixture,
 } from './gateway.fixture.ts';
 
@@ -124,6 +125,104 @@ describe.sequential(
             )
           ).totalTokens,
         ).toBeNull();
+      },
+    );
+
+    it('原生SDK maxRetries=0的421不在单个fetch内隐藏重发，下次显式调用独立记200', async () => {
+      const f = await setup({ firstRequestStatus: 421 });
+      const chunks = await f.collect();
+      const observed = {
+        requests: f.upstream.requests.length,
+        statuses: [...f.store.rows.values()].map((r) => r.httpStatus),
+      };
+      expect(observed, JSON.stringify(observed)).toEqual({
+        requests: 1,
+        statuses: [421],
+      });
+      expect(finish(chunks)).toMatchObject({ reason: { kind: 'error' } });
+      expect([...f.store.rows.values()][0]).toMatchObject({
+        dispatchObserved: true,
+        usage: { totalTokens: null, usageComplete: false },
+      });
+      expect(f.store.slots.get(f.binding.vm.personId)?.size).toBe(0);
+      expect(finish(await f.collect())).toMatchObject({
+        reason: { kind: 'stop' },
+      });
+      expect(f.upstream.requests).toHaveLength(2);
+      expect(f.upstream.requests[1]!.body).toEqual(
+        f.upstream.requests[0]!.body,
+      );
+      expect([...f.store.rows.values()].map((r) => r.httpStatus)).toEqual([
+        421, 200,
+      ]);
+      expect(
+        (
+          await f.store.usage(
+            f.binding.vm.personId,
+            f.binding.vm.organizationId,
+          )
+        ).totalTokens,
+      ).toBeNull();
+    });
+
+    it('无body的auth-refresh也不隐藏重放421，仍属于原call且usage未知', async () => {
+      const upstream = await upstreamFixture({ firstRequestStatus: 421 });
+      cleanup.push(() => upstream.close());
+      const provider: GatewayProvider = {
+        classify() {
+          return { kind: 'auth-refresh', protocol: 'opaque' };
+        },
+        async *stream() {
+          const status = await withGatewayAuthTransaction(async () => {
+            const response = await fetch(upstream.url + '/refresh', {
+              method: 'POST',
+              signal: AbortSignal.timeout(15_000),
+            });
+            await response.text();
+            return response.status;
+          });
+          yield nativeFailure('HTTP_' + status);
+        },
+      };
+      const f = await gatewayFixture({ provider });
+      cleanup.push(() => f.close());
+      expect(finish(await f.collect())).toMatchObject({
+        reason: { kind: 'error', failure: { code: 'HTTP_421' } },
+      });
+      expect(upstream.requests).toHaveLength(1);
+      expect([...f.store.rows.values()]).toMatchObject([
+        {
+          callId: [...f.store.calls.keys()][0],
+          kind: 'auth-refresh',
+          httpStatus: 421,
+          usage: { totalTokens: null },
+        },
+      ]);
+      expect(f.store.slots.get(f.binding.vm.personId)?.size ?? 0).toBe(0);
+    });
+
+    it.each(['GET', 'HEAD'])(
+      '%s无法禁用隐藏421重放，在实际上游外发前拒绝',
+      async (method) => {
+        const upstream = await upstreamFixture();
+        cleanup.push(() => upstream.close());
+        const f = await gatewayFixture({
+          provider: {
+            classify() {
+              return { kind: 'model', protocol: 'opaque' };
+            },
+            async *stream(_binding, _input, signal) {
+              await fetch(upstream.url + '/v1', { method, signal });
+              yield nativeFailure('UNREACHABLE');
+            },
+          },
+        });
+        cleanup.push(() => f.close());
+        expect(finish(await f.collect())).toMatchObject({
+          reason: { kind: 'error', failure: { code: 'UNSUPPORTED_UPSTREAM' } },
+        });
+        expect(upstream.requests).toHaveLength(0);
+        expect(f.store.rows.size).toBe(0);
       },
     );
 

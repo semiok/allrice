@@ -126,6 +126,11 @@ export function createMeteredTransport(options: {
         : incoming
           ? AbortSignal.any([signal, incoming])
           : signal;
+      const method = (
+        init?.method ?? (input instanceof Request ? input.method : 'GET')
+      ).toUpperCase();
+      if (method === 'GET' || method === 'HEAD')
+        throw new ModelGatewayError('UNSUPPORTED_UPSTREAM');
       let resolveDone!: () => void;
       const done = new Promise<void>((resolve) => {
         resolveDone = resolve;
@@ -193,15 +198,31 @@ export function createMeteredTransport(options: {
         // Current epoch/membership may have changed while the intent committed.
         if (!refreshing) await options.assertCurrent(requestSignal);
         requestSignal.throwIfAborted();
+        // Construct only after admission and durable intent. A replayable body
+        // (including null) lets native Fetch resend 421 inside one call. Use the
+        // public Request's exact bytes/headers as a one-shot stream, without tee.
+        const requestInit: RequestInit & { duplex: 'half' } = {
+          ...init,
+          signal: requestSignal,
+          redirect: 'manual',
+          duplex: 'half',
+        };
+        const request = new Request(input, requestInit);
+        const dispatchInit: RequestInit & { duplex: 'half' } = {
+          body:
+            request.body ??
+            new ReadableStream({
+              start(value) {
+                value.close();
+              },
+            }),
+          duplex: 'half',
+        };
         dispatched = true;
-        // Never follow redirects: fetch otherwise hides additional actual HTTP
-        // requests and can forward credentials outside the approved endpoint.
+        // Redirects are disabled in request; hidden 421 replay is disabled by
+        // the one-shot body. Each later SDK fetch gets its own durable attempt.
         const response = await nativeClose.run(() =>
-          nativeFetch(input, {
-            ...init,
-            redirect: 'manual',
-            signal: requestSignal,
-          }),
+          nativeFetch(request, dispatchInit),
         );
         status = response.status;
         if (!response.body) {
