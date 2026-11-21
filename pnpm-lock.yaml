@@ -713,6 +713,18 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
 
+  packages/egress-gateway:
+    dependencies:
+      '@allrice/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@allrice/person-vm':
+        specifier: workspace:*
+        version: link:../person-vm
+      '@allrice/project-runtime':
+        specifier: workspace:*
+        version: link:../project-runtime
+
   packages/file-archives:
     dependencies:
       crc-32:
@@ -749,6 +761,15 @@ importers:
       pdf-parse:
         specifier: 2.4.5
         version: 2.4.5
+
+  packages/person-vm:
+    dependencies:
+      '@allrice/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      postgres:
+        specifier: ^3.4.7
+        version: 3.4.9
 
   packages/project-runtime:
     dependencies:
