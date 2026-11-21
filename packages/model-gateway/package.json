@@ -24,6 +24,7 @@
     "@deepseek-ai/dsh-compaction-image-offload": "0.2.1-rc.2",
     "@deepseek-ai/dsh-credentials-local": "0.2.1-rc.2",
     "@deepseek-ai/dsh-llm-pi-ai": "0.2.1-rc.2",
-    "@earendil-works/pi-ai": "1.1.0"
+    "@earendil-works/pi-ai": "1.1.0",
+    "undici-native-proof": "npm:undici@7.29.0"
   }
 }

@@ -5,6 +5,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { setImmediate } from 'node:timers/promises';
 import postgres from 'postgres';
 import {
   afterAll,
@@ -54,6 +55,10 @@ import {
   observeNativeLifecycle,
   type NativeLifecycleProof,
 } from './admission-proof.fixture.ts';
+import {
+  nativeCloseSensitivityFixture,
+  type NativeReleaseProbe,
+} from './native-close-sensitivity.fixture.ts';
 
 type Host = ReturnType<PersonVmService['createAdmissionHost']>;
 type Phase = 'queued' | 'active';
@@ -158,6 +163,7 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
   function traceBoundary(
     host: Host,
     native?: NativeLifecycleProof,
+    releaseProof?: NativeReleaseProbe,
   ): BoundaryTrace {
     const permits: PersonVmAdmissionPermit[] = [];
     const finished = new Set<PersonVmAdmissionPermit>();
@@ -214,6 +220,7 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
         native?.mark(permit, 'finish-enter');
         try {
           await host.finish(permit);
+          releaseProof?.permitFinished();
           native?.mark(permit, 'finish-return');
         } catch (error) {
           finishErrors.push(error);
@@ -234,7 +241,7 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
     boundaries.push(trace);
     return trace;
   }
-  async function setup() {
+  async function setup(releaseProof?: NativeReleaseProbe) {
     const openA = vmFactory('A');
     const openB = vmFactory('B');
     const storeA = new PostgresPersonVmStore(openA);
@@ -271,6 +278,7 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
           return result;
         },
         async finishAttempt(receipt) {
+          releaseProof?.slotEnter();
           receipts.push(receipt);
           if (ledgerFailure) {
             const error = ledgerFailure;
@@ -279,6 +287,7 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
             throw error; // Only G08: before the real ledger write, not close.
           }
           await actual.finishAttempt(receipt);
+          releaseProof?.slotCommitted();
         },
       };
     }
@@ -325,6 +334,7 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
       const trace = traceBoundary(
         options.second ? hostB : hostA,
         options.nativeProof,
+        releaseProof,
       );
       const observedProvider =
         options.nativeProof?.provider(provider) ?? provider;
@@ -1016,5 +1026,127 @@ suite('MET268 formal PG host with gateway HTTP/native composition', () => {
     });
     expect(mounted.trace.finishCalls).toHaveLength(1);
     expect(mounted.trace.finishErrors).toEqual([]);
+  });
+
+  it('G12 native TCP close precedes actual PG slot and shared permit release', async () => {
+    const proof = await nativeCloseSensitivityFixture({
+      release: (callback) => {
+        releases.add(callback);
+      },
+      close: (callback) => {
+        closers.push(callback);
+      },
+    });
+    const f = await setup(proof.releaseProbe);
+    const mounted = await f.mount(proof.provider);
+    const collecting = mounted.collect();
+    await proof.arrived.promise;
+    await f.observe((value) => value.active === 1 && value.queued === 0);
+    expect(await f.slots()).toBe(1);
+    expect(proof.snapshot()).toMatchObject({
+      calls: 1,
+      sockets: 1,
+      requests: 1,
+      eof: 0,
+      tcpPeer: true,
+      peerOpen: true,
+    });
+    expect(
+      proof.snapshot().events.filter((event) => event.kind === 'local-close'),
+    ).toEqual([]);
+    proof.arm();
+    const revoked = own(mounted.gateway.revoke(f.binding));
+    await proof.destroying.promise;
+    await proof.rejected.promise;
+    // Fixed source has only finite promise jobs from raw rejection to public
+    // finishAttempt entry. One check phase drains those jobs, without a sleep.
+    await setImmediate();
+    const held = proof.snapshot();
+    expect(held).toMatchObject({
+      held: true,
+      peerOpen: true,
+      tcpPeer: true,
+      eof: 0,
+    });
+    expect(held.events.filter((event) => event.kind === 'local-close')).toEqual(
+      [],
+    );
+    const entered = held.events.some((event) => event.kind === 'slot-enter');
+    if (entered) {
+      // Keep the real FD open through REAL commit/join, defeating PG latency
+      // as a mask. The probe never waits or releases anything in product work.
+      await proof.committed.promise;
+      await proof.finished.promise;
+      await Promise.all([collecting, revoked, mounted.join()]);
+      expect(await f.slots()).toBe(0);
+      expect(await f.peer.observe(f.binding, caller.signal)).toMatchObject({
+        active: 0,
+        queued: 0,
+        deferred: 0,
+      });
+      const beforeClose = proof.snapshot();
+      expect(beforeClose).toMatchObject({ held: true, peerOpen: true });
+      expect(
+        beforeClose.events.filter((event) => event.kind === 'local-close'),
+      ).toEqual([]);
+    } else {
+      expect(await f.slots()).toBe(1);
+      expect(await f.peer.observe(f.binding, caller.signal)).toMatchObject({
+        active: 1,
+        queued: 0,
+        deferred: 0,
+      });
+    }
+    // Correct code is released independently of the release it must withhold.
+    proof.allowPhysicalDestroy();
+    await proof.closed.promise;
+    const [chunks] = await Promise.all([collecting, revoked, mounted.join()]);
+    await mounted.gateway.close();
+    await proof.dispose();
+    expect(terminal(chunks).reason.kind).toBe('error');
+    expect(mounted.errors).toEqual([]);
+    expect(mounted.starts).toBe(1);
+    expect(mounted.trace.finishCalls).toHaveLength(1);
+    expect(mounted.trace.finishErrors).toEqual([]);
+    expect(await f.slots()).toBe(0);
+    expect(await f.peer.observe(f.binding, caller.signal)).toMatchObject({
+      active: 0,
+      queued: 0,
+      deferred: 0,
+    });
+    const rows = await f.modelA.attempts(f.claims[0]!);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'model',
+      protocol: 'opaque',
+      dispatchObserved: true,
+      httpStatus: null,
+      outcome: 'canceled',
+      terminal: null,
+      usage: {
+        inputTokens: null,
+        outputTokens: null,
+        totalTokens: null,
+        cachedInputTokens: null,
+        usageComplete: false,
+        cacheUsageKnown: false,
+      },
+    });
+    const final = proof.snapshot();
+    expect(final).toMatchObject({ calls: 1, sockets: 1, requests: 1, eof: 0 });
+    const at = (kind: string) => {
+      const matching = final.events.filter((event) => event.kind === kind);
+      expect(matching, `exact real ${kind}`).toHaveLength(1);
+      return matching[0]!.at;
+    };
+    const close = at('local-close');
+    const violations = ['slot-committed', 'permit-finished'].filter(
+      (kind) => at(kind) < close,
+    );
+    console.info('NATIVE_CLOSE_RELEASE_FACTS', JSON.stringify(final));
+    expect(
+      violations,
+      'NATIVE_CLOSE_RELEASE_ORDER: ' + JSON.stringify(final.events),
+    ).toEqual([]);
   });
 });
