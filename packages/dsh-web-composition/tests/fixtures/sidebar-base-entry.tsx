@@ -48,7 +48,7 @@ function Baseline() {
   return (
     <div
       data-legacy-sidebar-base
-      style={{ width, height: '100vh', display: 'flex' }}
+      style={{ width, height: '100vh', display: 'grid' }}
     >
       <ChatSidebar
         workspace={{

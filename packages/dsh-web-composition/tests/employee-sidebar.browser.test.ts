@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import {
@@ -50,11 +50,12 @@ interface SidebarTest {
     referenceCount: number;
     retainedBy: Record<string, number>;
   };
-  nativeScroll: (id?: string) => Promise<{
+  nativeReady: (id?: string) => Promise<string>;
+  nativeScroll: (id?: string) => {
     anchorKey: string;
     anchorTop: number;
     scrollTop: number;
-  } | null>;
+  } | null;
 }
 declare global {
   interface Window {
@@ -75,6 +76,48 @@ const settle = (page: Page) =>
       ),
   );
 
+const readingSnapshot = (node: Element) => ({
+  at: performance.now(),
+  sessionId: node
+    .closest('[data-conversation-session]')
+    ?.getAttribute('data-conversation-session'),
+  scrollTop: node.scrollTop,
+  scrollHeight: node.scrollHeight,
+  clientHeight: node.clientHeight,
+  saved: window.__allriceSidebarTest!.nativeScroll(),
+  retention: window.__allriceSidebarTest!.nativeRetention(),
+});
+
+const sidebarGeometry = (view: Page, selector = '#chat-sidebar') =>
+  view.locator(selector).evaluate((frame) => {
+    const read = (node: Element | null) => {
+      if (!node) return null;
+      const { x, y, width, height } = node.getBoundingClientRect();
+      const style = getComputedStyle(node);
+      return {
+        rect: { x, y, width, height },
+        className: node.className,
+        display: style.display,
+        position: style.position,
+        width: style.width,
+        minWidth: style.minWidth,
+        flex: style.flex,
+        gridTemplateColumns: style.gridTemplateColumns,
+        boxSizing: style.boxSizing,
+        borderLeftWidth: style.borderLeftWidth,
+        borderRightWidth: style.borderRightWidth,
+      };
+    };
+    return {
+      viewport: { width: innerWidth, height: innerHeight },
+      compact: matchMedia('(max-width: 760px)').matches,
+      frame: read(frame),
+      root: read(frame.lastElementChild),
+      parent: read(frame.parentElement),
+      layout: read(frame.parentElement?.parentElement ?? null),
+    };
+  });
+
 suite('real AllRice sidebar in installed native profiles', () => {
   const hosts: Awaited<ReturnType<typeof startInstalledProfile>>[] = [];
   const errors: string[] = [],
@@ -86,6 +129,7 @@ suite('real AllRice sidebar in installed native profiles', () => {
     legacy: Page,
     artifacts: string,
     legacyUrl: string;
+  let readingAttempt: Record<string, unknown> | undefined;
 
   const open = async (view: Page, host: (typeof hosts)[number]) => {
     view.setDefaultTimeout(15_000);
@@ -173,6 +217,8 @@ suite('real AllRice sidebar in installed native profiles', () => {
   });
 
   afterEach(async ({ task }) => {
+    const reading = readingAttempt;
+    readingAttempt = undefined;
     if (task.result?.state !== 'fail' || !artifacts || !page || page.isClosed())
       return;
     await page.screenshot({
@@ -192,6 +238,14 @@ suite('real AllRice sidebar in installed native profiles', () => {
             commands: window.__allriceSidebarTest?.commands,
             events: window.__allriceSidebarTest?.controlledOwner.events,
           })),
+          reading: reading && {
+            ...reading,
+            last: await page
+              .locator('[data-conversation-scroll]')
+              .first()
+              .evaluate(readingSnapshot)
+              .catch((error) => ({ error: String(error) })),
+          },
         },
         null,
         2,
@@ -587,6 +641,7 @@ suite('real AllRice sidebar in installed native profiles', () => {
   }, 60_000);
 
   it('uses the native reading anchor for same-Host session switches', async () => {
+    readingAttempt = { phase: 'open' };
     // This history fits at 600px. Use an actually overflowing native viewport,
     // so wheel movement (rather than a synthetic saved value) owns the anchor.
     // Keep the native default disclosure state on both sides of the switch;
@@ -596,6 +651,10 @@ suite('real AllRice sidebar in installed native profiles', () => {
       (id) => window.__allriceSidebarTest!.openSession(id),
       processSession,
     );
+    readingAttempt.openState = await page.evaluate(() =>
+      window.__allriceSidebarTest!.nativeReady(),
+    );
+    expect(readingAttempt.openState).toBe('open');
     const scrollport = async () => {
       const text = await page
         .getByText('请核对三条销售记录，计算合计，并简要说明结果。', {
@@ -617,22 +676,32 @@ suite('real AllRice sidebar in installed native profiles', () => {
       port,
     );
     await settle(page);
-    const before = await port!.evaluate((node) => ({
-      scrollTop: node.scrollTop,
-      scrollHeight: node.scrollHeight,
-      clientHeight: node.clientHeight,
-    }));
+    const before = await port!.evaluate(readingSnapshot);
+    readingAttempt.beforeWheel = before;
     expect(before.scrollHeight - before.clientHeight).toBeGreaterThan(20);
     expect(before.scrollTop).toBeGreaterThan(0);
     const box = await port!.boundingBox();
     await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
     await page.mouse.wheel(0, -80);
-    await page.waitForFunction(
-      async () => (await window.__allriceSidebarTest!.nativeScroll()) !== null,
+    readingAttempt.phase = 'native-save';
+    readingAttempt.afterWheelDispatch = await port!.evaluate(readingSnapshot);
+    // wheel() only dispatches input. Native ChatReading saves after its scroll
+    // sampling/scrollend; an async predicate would itself be a truthy Promise.
+    const savedHandle = await page.waitForFunction(
+      ({ node, previous }) => {
+        const position = window.__allriceSidebarTest!.nativeScroll();
+        return position !== null &&
+          node!.scrollTop < previous &&
+          Math.abs(node!.scrollTop - position.scrollTop) <= 0.5
+          ? position
+          : null;
+      },
+      { node: port, previous: before.scrollTop },
     );
-    const saved = await page.evaluate(() =>
-      window.__allriceSidebarTest!.nativeScroll(),
-    );
+    const saved = await savedHandle.jsonValue();
+    await savedHandle.dispose();
+    readingAttempt.saved = saved;
+    expect(saved).not.toBeNull();
     expect(saved!.scrollTop).toBeLessThan(before.scrollTop);
     await page.evaluate(
       (id) => window.__allriceSidebarTest!.openSession(id),
@@ -645,9 +714,20 @@ suite('real AllRice sidebar in installed native profiles', () => {
       (id) => window.__allriceSidebarTest!.openSession(id),
       processSession,
     );
+    readingAttempt.phase = 'native-restore';
+    readingAttempt.reopenedState = await page.evaluate(() =>
+      window.__allriceSidebarTest!.nativeReady(),
+    );
+    expect(readingAttempt.reopenedState).toBe('open');
     await settle(page);
     const restoredPort = await scrollport();
     expect(restoredPort).not.toBeNull();
+    await page.waitForFunction(
+      ({ node, position }) =>
+        Math.abs(node!.scrollTop - position!.scrollTop) <= 0.5,
+      { node: restoredPort, position: saved },
+    );
+    readingAttempt.restored = await restoredPort!.evaluate(readingSnapshot);
     expect(
       Math.abs(
         (await restoredPort!.evaluate((node) => node.scrollTop)) -
@@ -660,6 +740,7 @@ suite('real AllRice sidebar in installed native profiles', () => {
         {
           saved,
           beforeWheel: before,
+          attempt: readingAttempt,
           restored: await page.evaluate(() =>
             window.__allriceSidebarTest!.nativeScroll(),
           ),
@@ -718,6 +799,17 @@ suite('real AllRice sidebar in installed native profiles', () => {
         await legacy.locator('#chat-sidebar').waitFor();
         await settle(legacy);
         const old = legacy.locator('#chat-sidebar > div').last();
+        await appendFile(
+          join(artifacts, 'sidebar-geometry.jsonl'),
+          `${JSON.stringify({
+            width,
+            theme,
+            phase: 'pinned-base',
+            measuredNative: { frame: frameBox, root: box },
+            native: await sidebarGeometry(page),
+            legacy: await sidebarGeometry(legacy),
+          })}\n`,
+        );
         expect(
           Math.abs(
             (await legacy.locator('#chat-sidebar').boundingBox())!.width -
@@ -742,6 +834,19 @@ suite('real AllRice sidebar in installed native profiles', () => {
         );
         const baseline = page.locator('[data-sidebar-baseline] #chat-sidebar');
         await baseline.waitFor();
+        await appendFile(
+          join(artifacts, 'sidebar-geometry.jsonl'),
+          `${JSON.stringify({
+            width,
+            theme,
+            phase: 'shared-frame',
+            measuredNative: { frame: frameBox, root: box },
+            supplementary: await sidebarGeometry(
+              page,
+              '[data-sidebar-baseline] #chat-sidebar',
+            ),
+          })}\n`,
+        );
         expect(
           Math.abs((await baseline.boundingBox())!.width - frameBox!.width),
         ).toBeLessThanOrEqual(0.5);

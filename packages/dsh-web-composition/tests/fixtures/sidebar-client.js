@@ -463,19 +463,24 @@ window.__ModuleLoader__.load({
               reference.release();
             }
           },
-          async nativeScroll(id = first) {
+          async nativeReady(id = first) {
             const reference = ctx.sessions.retain(id, {
               source: 'workspaceOperation',
             });
             try {
-              await reference.ready;
-              const chat = ctx.slots
-                .entriesOfSlot('conversation.view')
-                .find((entry) => entry.options.id === 'chat');
-              return chat.inject(id).chatScroll.read();
+              const binding = await reference.ready;
+              return binding.session.getSnapshot().openState;
             } finally {
               reference.release();
             }
+          },
+          nativeScroll(id = first) {
+            // The visible mainView already retains this binding. Read its
+            // public store synchronously so waitForFunction polls a value.
+            const chat = ctx.slots
+              .entriesOfSlot('conversation.view')
+              .find((entry) => entry.options.id === 'chat');
+            return chat.inject(id).chatScroll.read();
           },
         };
         ctx.effect(() => {
