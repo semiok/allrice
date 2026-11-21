@@ -369,6 +369,7 @@ export function main() {
         const text = gh([
           'api',
           `repos/${repository}/actions/jobs/${job.id}/logs`,
+          '--allow-escape-sequences',
         ]);
         const evidence = `job-logs/${job.id}.log`;
         mkdirSync(resolve(directory, 'job-logs'), { recursive: true });

@@ -249,6 +249,7 @@ const nodeLog = [
   '2026-11-21T01:00:02.250Z # Subtest: retains the first failure',
   '2026-11-21T01:00:03.250Z not ok 1 - retains the first failure',
   '2026-11-21T01:00:04.250Z not ok 2 - future behavior # TODO',
+  '2026-11-21T01:00:08.250Z \u001b[31moriginal diagnostic\u001b[0m',
 ].join('\n');
 const pythonLog = [
   '2026-11-21T01:00:01.250Z FAIL: test_quota_alert (test_monitor.QuotaTests.test_quota_alert)',
@@ -432,6 +433,10 @@ it.each([
     const match = endpoint.match(/artifacts\/(\d+)\/zip$/);
     if (endpoint.endsWith('/logs')) {
       if (process.env.FAIL_LOGS === '1') process.exit(1);
+      if (!process.argv.includes('--allow-escape-sequences') && fs.readFileSync('job.log').includes(0x1b)) {
+        console.error('the response contains terminal escape sequences; pass --allow-escape-sequences');
+        process.exit(1);
+      }
       process.stdout.write(fs.readFileSync('job.log'));
     } else if (match) process.stdout.write(fs.readFileSync(path.resolve(match[1] + '.zip')));
     else process.stdout.write(JSON.stringify(endpoint.includes('/jobs?') ? {jobs:api.jobs} : endpoint.includes('/artifacts?') ? {artifacts:api.artifacts} : api.run));
@@ -466,8 +471,8 @@ it.each([
       );
       if (mode !== 'logs-api')
         expect(
-          readFileSync(join(root, '.local/nightly-ci/job-logs/0.log'), 'utf8'),
-        ).toBe(readFileSync(join(root, 'job.log'), 'utf8'));
+          readFileSync(join(root, '.local/nightly-ci/job-logs/0.log')),
+        ).toEqual(readFileSync(join(root, 'job.log')));
       else
         expect(result.evidenceProblems.join(' ')).toContain(
           'original job log unavailable',
@@ -478,6 +483,11 @@ it.each([
       .split('\n')
       .map((line) => JSON.parse(line));
     expect(calls.every((call) => call[0] === 'api')).toBe(true);
+    expect(
+      calls
+        .filter((call) => call[1].endsWith('/logs'))
+        .every((call) => call.includes('--allow-escape-sequences')),
+    ).toBe(true);
     expect(
       calls.some((call) =>
         call.some((arg: string) => /rerun|dispatch/.test(arg)),
