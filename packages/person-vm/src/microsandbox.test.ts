@@ -148,7 +148,8 @@ describe('Microsandbox public CLI protocol through real child processes (no actu
       dshHome = await directory(),
       nonce = randomUUID();
     await mkdir(join(dshHome, 'native-web'));
-    const authenticatedUrl = `http://127.0.0.1:32179/?token=${'a'.repeat(43)}`;
+    const localAuthSample = 'QWxsUmljZU5hdGl2ZVdlYkF1dGhGaXh0dXJlT25seTA';
+    const authenticatedUrl = `http://127.0.0.1:32179/?token=${localAuthSample}`;
     await writeFile(
       join(dshHome, 'native-web', `auth-${nonce}.json`),
       JSON.stringify({ v: 1, nonce, authenticatedUrl }),
@@ -174,7 +175,7 @@ describe('Microsandbox public CLI protocol through real child processes (no actu
           args.includes('--timeout'),
       ),
     ).toBe(true);
-    expect(JSON.stringify(calls)).not.toContain('a'.repeat(43));
+    expect(JSON.stringify(calls)).not.toContain(localAuthSample);
     await expect(read(request)).rejects.toMatchObject({ code: 'LEASE_LOST' });
     expect(await f.calls()).toEqual(calls);
   });
