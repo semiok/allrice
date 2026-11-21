@@ -252,6 +252,9 @@ function installSyntheticPanelsOwner(ctx: Context, product: Product) {
     },
     setTheme: (theme: 'light' | 'dark') => ctx.theme.setTheme(theme),
     setState(value: PanelsState) {
+      // Choosing the current visual state is not an authority/scope change.
+      // switchScope below explicitly exercises invalidation when requested.
+      if (state === value) return;
       state = value;
       revision++;
       refresh();

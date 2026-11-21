@@ -81,13 +81,20 @@ const settle = (page: Page) =>
 const catalogResponse = (page: Page, kind: Kind, state: PanelsState) =>
   state === 'loading' || (kind !== 'materials' && kind !== 'files')
     ? Promise.resolve()
-    : page.waitForResponse(
-        (response) =>
-          new URL(response.url()).pathname ===
-          (kind === 'materials'
-            ? '/api/v1/references/publications'
-            : '/api/v1/workbench/files'),
-      );
+    : page
+        .waitForResponse(
+          (response) =>
+            new URL(response.url()).pathname ===
+            (kind === 'materials'
+              ? '/api/v1/references/publications'
+              : '/api/v1/workbench/files'),
+        )
+        .then(async (response) => {
+          // Headers alone precede the completed network outcome. A subsequent
+          // native tab cleanup must not cancel the response under inspection.
+          const failure = await response.finished();
+          if (failure) throw failure;
+        });
 const contentReady = async (page: Page, kind: Kind, state: PanelsState) => {
   const root = body(page, kind);
   if (state === 'loading') {
@@ -98,9 +105,14 @@ const contentReady = async (page: Page, kind: Kind, state: PanelsState) => {
     else await root.getByRole('status').waitFor({ state: 'visible' });
   } else if (state === 'denied') {
     // Materials keeps its existing generic catalog failure wording.
-    if (kind === 'materials')
-      await root.getByRole('alert').waitFor({ state: 'visible' });
-    else
+    if (kind === 'materials' || kind === 'files') {
+      const alert = root.getByRole('alert');
+      await alert.waitFor({ state: 'visible' });
+      if (kind === 'files')
+        expect(await alert.textContent()).toBe(
+          '当前权限已撤销或不允许此操作。重新加载',
+        );
+    } else
       await root
         .getByText('无权访问', { exact: false })
         .first()
@@ -639,13 +651,18 @@ suite('installed native employee panels with synthetic business owner', () => {
         await baseline.route(
           'http://allrice-panels-rev2.invalid/**',
           async (route) => {
-            if (new URL(route.request().url()).pathname.startsWith('/api/v1/'))
-              await businessRoute(route);
-            else
+            const path = new URL(route.request().url()).pathname;
+            if (path.startsWith('/api/v1/')) await businessRoute(route);
+            else if (path === '/favicon.ico')
+              // This replay has no icon resource. Returning the entire HTML
+              // document as an image made Chromium cancel every icon fetch.
+              await route.fulfill({ status: 204 });
+            else if (path === '/')
               await route.fulfill({
                 contentType: 'text/html',
                 body: baselineHtml,
               });
+            else await route.abort('failed');
           },
         );
         await baseline.setViewportSize({ width, height: 1000 });

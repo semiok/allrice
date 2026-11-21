@@ -136,6 +136,25 @@ const sidebarGeometry = (view: Page, selector = '#chat-sidebar') =>
         leafText: node.childElementCount ? null : node.textContent,
         color: style.color,
         backgroundColor: style.backgroundColor,
+        // Retain paint inputs as well as layout when an exact RGBA gate fails.
+        // These are diagnostics, never masks/tolerances or replacement styles.
+        backgroundImage: style.backgroundImage,
+        borderRadius: style.borderRadius,
+        opacity: style.opacity,
+        filter: style.filter,
+        backdropFilter: style.backdropFilter,
+        transform: style.transform,
+        willChange: style.willChange,
+        isolation: style.isolation,
+        mixBlendMode: style.mixBlendMode,
+        maskImage: style.maskImage,
+        clipped: node.hasAttribute('data-clipped'),
+        scrolled: node.hasAttribute('data-scrolled'),
+        animations: node.getAnimations().map((animation) => ({
+          playState: animation.playState,
+          currentTime: animation.currentTime,
+          timing: animation.effect?.getComputedTiming(),
+        })),
         hovered: node.matches(':hover'),
         focused: node === document.activeElement,
       };

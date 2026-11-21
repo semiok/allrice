@@ -76,6 +76,17 @@ it('observes its provided panels owner through real Cordis injection across unlo
   );
   const integration = window.__allricePanelsIntegration!;
   expect(integration.evidence().nativeInputReady).toBe(true);
+  const originalScope = integration.evidence().scopeKey;
+  integration.setState('list');
+  expect(integration.evidence().scopeKey).toBe(originalScope);
+  integration.setState('denied');
+  const deniedScope = integration.evidence().scopeKey;
+  expect(deniedScope).not.toBe(originalScope);
+  integration.setState('denied');
+  expect(integration.evidence().scopeKey).toBe(deniedScope);
+  // Authority invalidation has its own explicit control and stays real.
+  integration.switchScope();
+  expect(integration.evidence().scopeKey).not.toBe(deniedScope);
   await integration.unload();
   expect(integration.evidence()).toMatchObject({
     ownerBound: false,

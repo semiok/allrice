@@ -7,6 +7,7 @@ import type {
   PropsRuntime,
 } from '@deepseek-ai/dsh-client-ui-slots';
 import { createElement, type ReactElement } from 'react';
+import { readFile } from 'node:fs/promises';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -33,6 +34,7 @@ import { WorkbenchFilesPanel } from '../../../apps/web/app/chatflow/workbench-fi
 import { EmployeeMemorySidebar } from '../../../apps/web/app/chatflow/employee-memory-sidebar';
 import { EmployeeCapabilitiesPanel } from '../../../apps/web/app/chatflow/employee-capabilities-panel';
 import { WorkbenchEntries } from '../../../apps/web/app/chatflow/workbench-modules';
+import css from '../src/employee-panels.module.css';
 import { nativeClientModule } from './native-client-module.mjs';
 import {
   syntheticNavigation,
@@ -232,6 +234,67 @@ describe('public registration and owner lifetime', () => {
 });
 
 describe('real components and original header behavior', () => {
+  it('scopes the original AllRice inheritance to both public mounts, retaining the existing typography tokens', async () => {
+    const { ctx } = setup();
+    const owner = syntheticPanelsOwner();
+    const header = renderToStaticMarkup(
+      createElement(EmployeePanelsHeader, headerProps(ctx, owner)),
+    );
+    expect(
+      header.startsWith(`<div class="${css.surface} ${css.header}">`),
+    ).toBe(true);
+    const pane = renderToStaticMarkup(
+      createElement(EmployeePanelBody, {
+        ...headerProps(ctx, owner),
+        kind: 'experience',
+        useTabInfo: () =>
+          ({
+            tab: { visible: true, signal: owner.lifetime.signal },
+          }) as ReturnType<
+            PropsRuntime<'sidebar.right.pane.tab'>['useTabInfo']
+          >,
+      } as Parameters<typeof EmployeePanelBody>[0]),
+    );
+    expect(pane.startsWith(`<div class="${css.surface} ${css.body}">`)).toBe(
+      true,
+    );
+    expect(pane).toContain('aria-label="Rice · 记忆"');
+    const [surface, tokens, base] = await Promise.all([
+      readFile(
+        new URL('../src/employee-panels.module.css', import.meta.url),
+        'utf8',
+      ),
+      readFile(new URL('../../ui/src/tokens.css', import.meta.url), 'utf8'),
+      readFile(
+        new URL('../../../apps/web/app/styles/base.css', import.meta.url),
+        'utf8',
+      ),
+    ]);
+    const compact = (value: string) => value.replace(/\s+/g, ' ').trim();
+    const declarations = (value: string) =>
+      new Map(
+        [...value.matchAll(/(--ar-font-[\w-]+)\s*:\s*([^;]+);/g)].map(
+          (entry) => [entry[1]!, compact(entry[2]!)],
+        ),
+      );
+    const original = declarations(tokens);
+    for (const [name, value] of declarations(surface))
+      expect(value, name).toBe(original.get(name));
+    expect(compact(surface.match(/\n\s+font-family:([^;]+);/)![1]!)).toBe(
+      compact(base.match(/\n\s+font-family:([^;]+);/)![1]!),
+    );
+    expect(surface).toContain(':where(.surface, .surface *)');
+    expect(surface).toContain('box-sizing: border-box;');
+    expect(surface).toContain(
+      ':where(.surface button, .surface input, .surface select, .surface textarea)',
+    );
+    expect(surface).toContain('font: inherit;');
+    expect(surface).toContain(
+      '--dsh-scrollbar-width: var(--allrice-sidebar-scrollbar-width);',
+    );
+    expect(surface).toContain('.header {\n  display: contents;');
+  });
+
   it('renders each original component and preserves owner data/actions without cloning a panel', () => {
     const { ctx } = setup();
     const owner = syntheticPanelsOwner();

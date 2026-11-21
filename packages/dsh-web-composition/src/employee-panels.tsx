@@ -137,7 +137,7 @@ export function EmployeePanelBody({
   );
   if (!snapshot || !tab.visible || signal.aborted) return null;
   return (
-    <div className={css.body} key={snapshot.scopeKey}>
+    <div className={`${css.surface} ${css.body}`} key={snapshot.scopeKey}>
       <EmployeePanelContent
         ctx={ctx}
         binding={binding}
@@ -159,13 +159,15 @@ export function EmployeePanelsHeader({
   binding: EmployeePanelsBinding;
 }) {
   const snapshot = useOwner(binding, sessionId);
-  return snapshot ? (
-    <EmployeePanelsEntries
-      ctx={ctx}
-      binding={binding}
-      sessionId={sessionId}
-      snapshot={snapshot}
-    />
+  return snapshot && snapshot.filesUnread !== null ? (
+    <div className={`${css.surface} ${css.header}`}>
+      <EmployeePanelsEntries
+        ctx={ctx}
+        binding={binding}
+        sessionId={sessionId}
+        snapshot={snapshot}
+      />
+    </div>
   ) : null;
 }
 
