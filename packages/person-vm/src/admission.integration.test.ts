@@ -21,7 +21,10 @@ import {
   type PersonVmAdmissionHost,
 } from './admission-host.ts';
 import type { AdmissionState } from './admission-store.ts';
-import type { PersonVmIdleCoverage } from './admission-contract.ts';
+import type {
+  PersonVmAdmissionLease,
+  PersonVmIdleCoverage,
+} from './admission-contract.ts';
 import { context, harness, running } from './test-support.ts';
 
 const suite =
@@ -293,20 +296,49 @@ suite(
       let block = false;
       const sql = factory('qualify', async () => {
         if (!block) return;
+        const current = lease;
+        const [row] =
+          await db`select admission_state from person_virtual_machines
+          where person_id=${current.binding.personId} and admission_version=${current.version}`;
+        const round = (row?.admission_state as AdmissionState | undefined)
+          ?.round;
+        if (
+          !round ||
+          round.lease.freezeId !== current.freezeId ||
+          round.lease.version !== current.version ||
+          !round.frozen.includes('gateway') ||
+          round.released.includes('gateway')
+        )
+          return;
         block = false;
         committed.resolve();
         await release.promise;
       });
       const h = await setup(sql.open);
-      const lease = await h.host.issue(h.rc, h.binding, signal());
+      const lease: PersonVmAdmissionLease = await h.host.issue(
+        h.rc,
+        h.binding,
+        signal(),
+      );
       block = true;
       const freezing = own(
         h.host.participant('gateway').freeze(lease, signal()),
       );
-      await committed.promise; // Real COMMIT, before freeze audit/physical release.
+      await Promise.race([
+        committed.promise,
+        freezing.then(() => {
+          throw new Error(
+            'freeze completed without its exact committed-ACK barrier',
+          );
+        }),
+      ]);
+      // Independent public PG read, before freeze audit/physical release.
+      expect(
+        await h.peer.participant('gateway').observe(h.binding, signal()),
+      ).toMatchObject({ state: 'known', frozen: lease });
+      expect((await h.store.read(h.rc.actor.id))!.leaseOwner).not.toBe(null);
       const port: PersonVmAdmissionBindingPort = h.service;
       await port.assertAdmissionBinding(h.rc, h.binding, signal());
-      expect((await h.store.read(h.rc.actor.id))!.leaseOwner).not.toBe(null);
       await expect(h.service.resolve(h.rc, signal())).rejects.toMatchObject({
         code: 'LEASE_CONFLICT',
       });
