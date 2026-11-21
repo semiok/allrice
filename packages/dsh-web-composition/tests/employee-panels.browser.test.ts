@@ -49,6 +49,7 @@ import {
   servePanelsReplay,
   type PanelsReplayAssetReceipt,
 } from './employee-panels-replay-route';
+import { readPanelsRenderingDiagnostics } from './employee-panels-rendering-diagnostics';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -423,19 +424,13 @@ suite('installed native employee panels with synthetic business owner', () => {
     });
     // Read-only browser diagnostics for exact edge rasterization failures.
     // Launch flags, capture modes and every visual assertion remain unchanged.
-    const rendering = await browser.newBrowserCDPSession();
-    try {
-      const [system, commandLine] = await Promise.all([
-        rendering.send('SystemInfo.getInfo'),
-        rendering.send('Browser.getBrowserCommandLine'),
-      ]);
-      await writeFile(
-        join(artifacts, 'browser-rendering.json'),
-        JSON.stringify({ system, commandLine }, null, 2),
-      );
-    } finally {
-      await rendering.detach();
-    }
+    const rendering = await readPanelsRenderingDiagnostics(
+      await browser.newBrowserCDPSession(),
+    );
+    await writeFile(
+      join(artifacts, 'browser-rendering.json'),
+      JSON.stringify(rendering, null, 2),
+    );
     await writeFile(
       join(artifacts, 'browser-identity.json'),
       JSON.stringify(
