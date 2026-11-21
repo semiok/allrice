@@ -19,6 +19,50 @@ const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
 const sha256 = (value: string) =>
   createHash('sha256').update(value).digest('hex');
 
+/** Preserve CSS module exports while reading the exact baseline source bytes. */
+export function createLegacySidebarSnapshot(
+  readBase: (path: string) => string,
+): Plugin {
+  return {
+    name: 'pinned-allrice-sidebar-base',
+    setup(plugin) {
+      plugin.onLoad({ filter: /\.(?:[cm]?[jt]sx?|css)$/ }, ({ path }) => {
+        const key = relative(repoRoot, path).replaceAll('\\', '/');
+        if (!/^(?:apps\/web\/|packages\/(?:ui|contracts)\/)/.test(key)) return;
+        return {
+          contents: readBase(key),
+          resolveDir: dirname(path),
+          loader: path.endsWith('.module.css')
+            ? 'local-css'
+            : (extname(path)
+                .slice(1)
+                .replace(/^[cm](?=[jt]s$)/, '') as Loader),
+        };
+      });
+    },
+  };
+}
+
+/** Fail before replay if real sidebar class maps or their CSS selectors vanished. */
+export function assertLegacySidebarCssClasses(html: string) {
+  const js = html.match(/<script>([\s\S]*)<\/script>/)?.[1] ?? '';
+  const css = html.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? '';
+  const classes: Record<string, string> = {};
+  for (const key of ['sidebarCol', 'logoRow', 'employeeCard']) {
+    const value = js.match(
+      new RegExp(`(?:[,{])\\s*"?${key}"?\\s*:\\s*"([A-Za-z_][A-Za-z0-9_-]*)"`),
+    )?.[1];
+    if (
+      !value ||
+      !new RegExp(`\\.${value}(?![\\w-])`).test(css) ||
+      !js.includes(`.${key}`)
+    )
+      throw new Error(`Legacy sidebar CSS module mapping missing: ${key}`);
+    classes[key] = value;
+  }
+  return classes;
+}
+
 /** Replay the actual pre-extraction 3.x entry; never alias it to current Frame. */
 export async function writeLegacySidebarBaseline(
   artifacts: string,
@@ -51,6 +95,7 @@ export async function writeLegacySidebarBaseline(
       );
     if (!valid)
       throw new Error('Prepared legacy baseline identity/hash mismatch');
+    assertLegacySidebarCssClasses(html);
     await writeFile(join(artifacts, 'legacy-base-entry.html'), html);
     await writeFile(join(artifacts, 'legacy-base-sources.json'), metadata);
     return pathToFileURL(join(artifacts, 'legacy-base-entry.html')).href;
@@ -68,22 +113,7 @@ export async function writeLegacySidebarBaseline(
     }
     return text;
   };
-  const snapshot: Plugin = {
-    name: 'pinned-allrice-sidebar-base',
-    setup(plugin) {
-      plugin.onLoad({ filter: /\.(?:[cm]?[jt]sx?|css)$/ }, ({ path }) => {
-        const key = relative(repoRoot, path).replaceAll('\\', '/');
-        if (!/^(?:apps\/web\/|packages\/(?:ui|contracts)\/)/.test(key)) return;
-        return {
-          contents: readBase(key),
-          resolveDir: dirname(path),
-          loader: extname(path)
-            .slice(1)
-            .replace(/^[cm](?=[jt]s$)/, '') as Loader,
-        };
-      });
-    },
-  };
+  const snapshot = createLegacySidebarSnapshot(readBase);
   const common = {
     absWorkingDir: repoRoot,
     nodePaths: [resolve(repoRoot, 'apps/web/node_modules')],
@@ -129,6 +159,7 @@ export async function writeLegacySidebarBaseline(
     file.path.endsWith('.css'),
   )!.text;
   const html = `<!doctype html><html lang="zh-CN" data-allrice-framework="v2"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><style>${globals.outputFiles![0]!.text}\n${css}</style></head><body><div id="root"></div><script>${js.replaceAll('</script', '<\\/script')}</script></body></html>`;
+  const cssModuleClasses = assertLegacySidebarCssClasses(html);
   const path = join(artifacts, 'legacy-base-entry.html');
   await writeFile(path, html);
   await writeFile(
@@ -145,6 +176,7 @@ export async function writeLegacySidebarBaseline(
           sha256: sha256(contents),
         })),
         htmlSha256: sha256(html),
+        cssModuleClasses,
       },
       null,
       2,
