@@ -191,7 +191,7 @@ type Query = <T>(pending: Pending<T>) => Promise<T>;
  * Keep separately observed query/transaction failures and the caller's reason. */
 async function joined<T>(
   signal: AbortSignal | undefined,
-  work: (query: Query) => Promise<T>,
+  work: (query: Query, recordFailure: (error: unknown) => void) => Promise<T>,
 ): Promise<T> {
   signal?.throwIfAborted();
   const failures: unknown[] = [];
@@ -211,7 +211,9 @@ async function joined<T>(
     }
   };
   try {
-    const result = await work(query);
+    const result = await work(query, (error) => {
+      failures.push(error);
+    });
     signal?.throwIfAborted();
     return result;
   } catch (error) {
@@ -265,11 +267,11 @@ export function createPostgresNativeScheduleObservationLedger(db: Sql) {
     kind: Operation['kind'],
     signal?: AbortSignal,
   ) {
-    return joined(signal, async (query) => {
+    return joined(signal, async (query, recordFailure) => {
       const expected = prepare(input, kind);
       const { operation, inputDigest } = expected;
       const o = operation.origin;
-      return db.begin(async (tx) => {
+      const transaction = async (tx: TransactionSql) => {
         const previous = await existing(tx, operation, query);
         if (previous) return exact(previous, expected);
         if (operation.invalidateReceiptIds.length) {
@@ -297,6 +299,15 @@ export function createPostgresNativeScheduleObservationLedger(db: Sql) {
         const row = rows[0] ?? (await existing(tx, operation, query));
         if (!row) throw new LedgerError('receipt_conflict');
         return exact(row, expected);
+      };
+      return db.begin(async (tx) => {
+        try {
+          return await transaction(tx);
+        } catch (error) {
+          // The driver may replace this rejection if its rollback also fails.
+          recordFailure(error);
+          throw error;
+        }
       });
     });
   }

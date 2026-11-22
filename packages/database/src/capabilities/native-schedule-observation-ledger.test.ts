@@ -211,4 +211,66 @@ describe('receipt storage contracts; scripted SQL is not migration or authority 
     expect(await caught).toBe(error);
     expect(f.db.begin).toHaveBeenCalledOnce();
   });
+
+  it.each([false, true])(
+    'joins rollback and retains the original callback and rollback failures (abort=%s)',
+    async (cancelDuringRollback) => {
+      const rollingBack = deferred<unknown>(),
+        rollback = deferred<void>();
+      const rollbackError = Error('driver rollback failed');
+      // Empty reads make the real ledger reject a missing reference. The SQL
+      // list helper is a fragment; only tagged requests return pending results.
+      const tx = vi.fn((parts: TemplateStringsArray | string[]) =>
+        'raw' in parts ? pending(Promise.resolve([])) : { values: parts },
+      ) as unknown as TransactionSql;
+      const db = Object.assign(vi.fn(), {
+        begin: vi.fn(
+          async (run: (value: TransactionSql) => Promise<unknown>) => {
+            let original: unknown;
+            try {
+              await run(tx);
+            } catch (error) {
+              original = error;
+            }
+            rollingBack.resolve(original);
+            await rollback.promise;
+            // Model the driver's distinct rollback rejection replacing the
+            // actual callback error; do not synthesize a ledger error here.
+            if (original !== undefined) throw rollbackError;
+          },
+        ),
+      }) as unknown as Sql;
+      const abort = new AbortController();
+      const result = createPostgresNativeScheduleObservationLedger(
+        db,
+      ).commitBatch(
+        { ...input(), invalidateReceiptIds: [randomUUID()] },
+        abort.signal,
+      );
+      const settled = vi.fn();
+      const outcome = result.finally(settled).catch((error: unknown) => error);
+      try {
+        const original = await rollingBack.promise;
+        expect(original).toMatchObject({ code: 'invalid_receipt_reference' });
+        if (cancelDuringRollback)
+          abort.abort(Error('caller canceled during rollback'));
+        // Drain the event-loop turn without a timer or settling the driver.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(settled).not.toHaveBeenCalled();
+        rollback.resolve();
+        const error = await outcome;
+        expect(error).toBeInstanceOf(AggregateError);
+        const failures = (error as AggregateError).errors as unknown[];
+        expect((error as Error).cause).toBe(original);
+        expect(failures).toHaveLength(cancelDuringRollback ? 3 : 2);
+        expect(failures[0]).toBe(original);
+        expect(failures[1]).toBe(rollbackError);
+        if (cancelDuringRollback) expect(failures[2]).toBe(abort.signal.reason);
+        expect(db.begin).toHaveBeenCalledOnce();
+      } finally {
+        rollback.resolve();
+        await outcome;
+      }
+    },
+  );
 });
