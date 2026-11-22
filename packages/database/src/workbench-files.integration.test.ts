@@ -1,4 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import {
+  readPathSignal,
+  scheduleReadPathQuery,
+} from './read-path-races.fixture.ts';
 import { legacyReferenceFixture } from './legacy-reference.fixture.ts';
 import { allocateWorkbenchFileName } from './workbench-file-name.ts';
 import { createDeliverablesPort } from './deliverables-port.ts';
@@ -977,6 +982,287 @@ suite(
       }
       expect(upstreamCanceled).toHaveBeenCalledTimes(2);
     }, 30000);
+    it.each([false, true])(
+      'ends reader.closed after abort without a rescue read (paused=%s)',
+      async (paused) => {
+        const t = await setup();
+        const actualStorage = storage();
+        const uploaded = await uploadWorkbenchFile(
+          t.owner,
+          uploadInput(t.owner),
+          actualStorage,
+        );
+        const source = {
+          ...uploaded,
+          checksum: (await readWorkbenchFile(t.owner, uploaded.objectId)).object
+            .checksum,
+        };
+        const cancelEntered = readPathSignal();
+        const cancelGate = readPathSignal();
+        const upstreamPull = vi.fn(
+          (value: ReadableStreamDefaultController<Uint8Array>) => {
+            value.enqueue(new TextEncoder().encode('按'));
+          },
+        );
+        const upstreamCancel = vi.fn(async () => {
+          cancelEntered.resolve();
+          await cancelGate.promise;
+        });
+        const upstream = new ReadableStream<Uint8Array>(
+          { pull: upstreamPull, cancel: upstreamCancel },
+          { highWaterMark: 0 },
+        );
+        const port = createDeliverablesPort({
+          // Explicit qualification substitute; real owner/membership SQL runs.
+          requireCurrentAccess: async () => {},
+          storage: { ...actualStorage, get: async () => upstream },
+        });
+        const cancellation = new AbortController();
+        const resource = await port.authorizedResource(
+          t.owner,
+          source,
+          cancellation.signal,
+        );
+        const reader = (await resource.open(cancellation.signal)).getReader();
+        let settled = false;
+        const closed = reader.closed.then(
+          () => {
+            settled = true;
+          },
+          (error: unknown) => {
+            settled = true;
+            return error;
+          },
+        );
+        const reason = new Error('native request canceled while paused');
+        try {
+          if (paused)
+            expect(await reader.read()).toEqual({
+              done: false,
+              value: new TextEncoder().encode('按'),
+            });
+          cancellation.abort(reason);
+          await cancelEntered.promise;
+          await nextTurn();
+          expect(settled).toBe(false);
+          expect(upstream.locked).toBe(true);
+          cancelGate.resolve();
+          expect(await closed).toBe(reason);
+          expect(upstream.locked).toBe(false);
+          expect(upstreamCancel).toHaveBeenCalledTimes(1);
+          expect(upstreamCancel).toHaveBeenCalledWith(reason);
+          expect(upstreamPull).toHaveBeenCalledTimes(paused ? 1 : 0);
+        } finally {
+          cancelGate.resolve();
+          await closed;
+          reader.releaseLock();
+        }
+      },
+      30000,
+    );
+    it.each(['qualification', 'owner'] as const)(
+      'consumer cancel joins the in-flight %s boundary and starts no later read',
+      async (boundary) => {
+        const t = await setup();
+        const actualStorage = storage();
+        const uploaded = await uploadWorkbenchFile(
+          t.owner,
+          uploadInput(t.owner),
+          actualStorage,
+        );
+        const source = {
+          ...uploaded,
+          checksum: (await readWorkbenchFile(t.owner, uploaded.objectId)).object
+            .checksum,
+        };
+        const entered = readPathSignal();
+        const gate = readPathSignal();
+        const cancelEntered = readPathSignal();
+        const cancelGate = readPathSignal();
+        let armed = false;
+        let qualifications = 0;
+        let queries = 0;
+        let principalReads = 0;
+        let boundaryFinished = false;
+        const upstreamPull = vi.fn();
+        const upstreamCancel = vi.fn(async () => {
+          cancelEntered.resolve();
+          await cancelGate.promise;
+        });
+        const upstream = new ReadableStream<Uint8Array>(
+          { pull: upstreamPull, cancel: upstreamCancel },
+          { highWaterMark: 0 },
+        );
+        const port = createDeliverablesPort({
+          requireCurrentAccess: async () => {
+            // Explicit 273 substitute, not a production qualification binding.
+            if (!armed) return;
+            qualifications++;
+            if (boundary === 'qualification') {
+              entered.resolve();
+              await gate.promise;
+              boundaryFinished = true;
+            }
+          },
+          storage: { ...actualStorage, get: async () => upstream },
+        });
+        const signal = new AbortController().signal;
+        const resource = await port.authorizedResource(t.owner, source, signal);
+        const reader = (await resource.open(signal)).getReader();
+        const observed = new Proxy(fixture.db, {
+          apply(target, self, args: unknown[]) {
+            const query = Reflect.apply(target, self, args);
+            const [strings] = args;
+            if (!Array.isArray(strings) || !('raw' in strings)) return query;
+            return scheduleReadPathQuery(
+              query,
+              strings.join(' ? '),
+              async (statement, execute) => {
+                queries++;
+                const result = await execute(); // Actual PostgreSQL, no fake row.
+                // For a ready personal upload, the fourth principal query is
+                // the last owner read. Hold its real result delivery, not SQL
+                // cancellation or a second source of resource authority.
+                if (
+                  boundary === 'owner' &&
+                  statement.startsWith(
+                    'select d.id as department_id,coalesce(',
+                  ) &&
+                  ++principalReads === 4
+                ) {
+                  entered.resolve();
+                  await gate.promise;
+                  boundaryFinished = true;
+                }
+                return result;
+              },
+            );
+          },
+          get: (target, key) => Reflect.get(target, key, target),
+        });
+        vi.mocked(client.getDatabase).mockReturnValue(observed);
+        armed = true;
+        const reading = reader.read();
+        let canceled: Promise<void> | undefined;
+        try {
+          await entered.promise;
+          const queriesAtCancel = queries;
+          const reason = new Error('consumer canceled an in-flight owner read');
+          let settled = false;
+          canceled = reader.cancel(reason).then(() => {
+            settled = true;
+          });
+          await cancelEntered.promise;
+          cancelGate.resolve();
+          await nextTurn();
+          expect(settled).toBe(false);
+          expect(boundaryFinished).toBe(false);
+          expect(upstream.locked).toBe(true);
+          gate.resolve();
+          await canceled;
+          expect(boundaryFinished).toBe(true);
+          expect(qualifications).toBe(1);
+          expect(queries).toBe(queriesAtCancel);
+          if (boundary === 'qualification') expect(queries).toBe(0);
+          else expect(principalReads).toBe(4);
+          expect(upstreamPull).not.toHaveBeenCalled();
+          expect(upstreamCancel).toHaveBeenCalledTimes(1);
+          expect(upstreamCancel).toHaveBeenCalledWith(reason);
+          expect(upstream.locked).toBe(false);
+          expect(await reading).toEqual({ done: true, value: undefined });
+        } finally {
+          gate.resolve();
+          cancelGate.resolve();
+          await Promise.allSettled([reading, canceled]);
+          vi.mocked(client.getDatabase).mockReturnValue(fixture.db);
+          reader.releaseLock();
+        }
+      },
+      30000,
+    );
+    it.each(['signal', 'consumer'] as const)(
+      'retains the original %s cancel reason and upstream cleanup failure',
+      async (entry) => {
+        const t = await setup();
+        const actualStorage = storage();
+        const uploaded = await uploadWorkbenchFile(
+          t.owner,
+          uploadInput(t.owner),
+          actualStorage,
+        );
+        const source = {
+          ...uploaded,
+          checksum: (await readWorkbenchFile(t.owner, uploaded.objectId)).object
+            .checksum,
+        };
+        const cancelEntered = readPathSignal();
+        const cancelGate = readPathSignal();
+        const cleanup = new Error('upstream cancellation failed');
+        const upstreamCancel = vi.fn(async () => {
+          cancelEntered.resolve();
+          await cancelGate.promise;
+          throw cleanup;
+        });
+        const upstream = new ReadableStream<Uint8Array>(
+          { cancel: upstreamCancel },
+          { highWaterMark: 0 },
+        );
+        const port = createDeliverablesPort({
+          requireCurrentAccess: async () => {}, // Explicit qualification substitute.
+          storage: { ...actualStorage, get: async () => upstream },
+        });
+        const cancellation = new AbortController();
+        const resource = await port.authorizedResource(
+          t.owner,
+          source,
+          cancellation.signal,
+        );
+        const reader = (await resource.open(cancellation.signal)).getReader();
+        // Signal termination is observed only through closed, never a rescue read.
+        const closed = reader.closed.then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        const reason = new Error('original native cancellation');
+        let outcome: Promise<unknown>;
+        if (entry === 'signal') {
+          cancellation.abort(reason);
+          outcome = closed;
+        } else
+          outcome = reader.cancel(reason).then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+        let settled = false;
+        void outcome.then(() => {
+          settled = true;
+        });
+        try {
+          await cancelEntered.promise;
+          if (entry === 'consumer')
+            cancellation.abort(
+              new Error('later signal must not replace reason'),
+            );
+          await nextTurn();
+          expect(settled).toBe(false);
+          expect(upstream.locked).toBe(true);
+          cancelGate.resolve();
+          expect(await outcome).toBeInstanceOf(AggregateError);
+          expect(await outcome).toMatchObject({
+            cause: reason,
+            errors: [reason, cleanup],
+          });
+          expect(upstreamCancel).toHaveBeenCalledTimes(1);
+          expect(upstreamCancel).toHaveBeenCalledWith(reason);
+          expect(upstream.locked).toBe(false);
+        } finally {
+          cancelGate.resolve();
+          await outcome;
+          reader.releaseLock();
+        }
+      },
+      30000,
+    );
     it('uses the materials Port for independent saves and current personal, department and company publication queries', async () => {
       const t = await setup();
       const actualStorage = storage();
