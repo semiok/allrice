@@ -2,6 +2,7 @@ import {
   DEntryIdentitySchema,
   DEntrySelectionInputSchema,
   EmployeeInstanceSchema,
+  sameDEntryIdentity,
   type DEntryIdentity,
   type EmployeeInstance,
   type RequestContext,
@@ -11,13 +12,14 @@ import {
   getEmployeeInstanceForHistory,
   requireDEntryNativeIdentity,
   resolveDEntryIdentity,
+  readApplicationBuiltinModules,
 } from '@allrice/database';
 import {
   denyBusinessProjection,
   EmployeeBusinessRuntimeError,
 } from './contract.ts';
 
-export type DEntryBusinessIdentityProjection = {
+type CurrentIdentity = {
   identity: DEntryIdentity;
   instance: Pick<
     EmployeeInstance,
@@ -31,6 +33,10 @@ export type DEntryBusinessIdentityProjection = {
     | 'archivedAt'
   >;
 };
+export type DEntryBusinessIdentityProjection = CurrentIdentity & {
+  /** Application availability only; never a binding, config pin or B. */
+  applicationModules: Awaited<ReturnType<typeof readApplicationBuiltinModules>>;
+};
 
 const sameUuid = (left: string, right: string) =>
   left.toLowerCase() === right.toLowerCase();
@@ -42,12 +48,12 @@ const sameUuid = (left: string, right: string) =>
  * inside the original caller transaction. Separate reads are not a fence.
  * 271's reads have no signal parameter: await them before suppressing late
  * results rather than claiming the caller canceled their SQL transport. */
-export async function readDEntryBusinessIdentity(
+async function readCurrentIdentity(
   context: RequestContext,
   input: unknown,
   access: 'history' | 'execute',
   signal?: AbortSignal,
-): Promise<DEntryBusinessIdentityProjection> {
+): Promise<CurrentIdentity> {
   signal?.throwIfAborted();
   if (access !== 'history' && access !== 'execute')
     throw new EmployeeBusinessRuntimeError(
@@ -118,4 +124,28 @@ export async function readDEntryBusinessIdentity(
       archivedAt,
     },
   };
+}
+
+/** Consume the application-owned policy under the same original current scope.
+ * A pending build read is joined, then current rights are checked again. This
+ * is no SQL fence or original execution/configuration producer. */
+export async function readDEntryBusinessIdentity(
+  context: RequestContext,
+  input: unknown,
+  access: 'history' | 'execute',
+  signal?: AbortSignal,
+): Promise<DEntryBusinessIdentityProjection> {
+  const before = await readCurrentIdentity(context, input, access, signal);
+  const applicationModules = await readApplicationBuiltinModules('worker');
+  signal?.throwIfAborted();
+  const current = await readCurrentIdentity(context, input, access, signal);
+  if (
+    !sameDEntryIdentity(before.identity, current.identity) ||
+    !sameUuid(before.instance.assignmentId, current.instance.assignmentId) ||
+    before.instance.archivedAt !== current.instance.archivedAt ||
+    JSON.stringify(before.instance.source) !==
+      JSON.stringify(current.instance.source)
+  )
+    denyBusinessProjection('identity.current');
+  return { ...current, applicationModules };
 }

@@ -3,6 +3,7 @@ import type {
   EmployeeInstance,
   RequestContext,
 } from '@allrice/contracts';
+import { setImmediate as turn } from 'node:timers/promises';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const readers = vi.hoisted(() => ({
@@ -10,9 +11,10 @@ const readers = vi.hoisted(() => ({
   requireDEntryNativeIdentity: vi.fn(),
   getEmployeeInstance: vi.fn(),
   getEmployeeInstanceForHistory: vi.fn(),
+  readApplicationBuiltinModules: vi.fn(),
 }));
 // Explicit identity contract fakes; the production module imports these exact
-// four public symbols. No fake is registered in a production composition.
+// public symbols. No fake is registered in a production composition.
 vi.mock('@allrice/database', () => readers);
 import { readDEntryBusinessIdentity } from './d-entry-current.ts';
 
@@ -56,6 +58,17 @@ const instance = (): EmployeeInstance => ({
   updatedAt: '2026-11-22T00:00:00Z',
   archivedAt: null,
 });
+const applicationModules = () => ({
+  schemaVersion: 1 as const,
+  policy: 'all-enabled' as const,
+  applicationBuild: null,
+  builtinModules: {
+    deliverables: true,
+    'enterprise-materials': true,
+    'employee-memory': true,
+    capabilities: true,
+  },
+});
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -63,6 +76,7 @@ beforeEach(() => {
   readers.resolveDEntryIdentity.mockResolvedValue(identity());
   readers.getEmployeeInstance.mockResolvedValue(instance());
   readers.getEmployeeInstanceForHistory.mockResolvedValue(instance());
+  readers.readApplicationBuiltinModules.mockResolvedValue(applicationModules());
 });
 
 describe('real 271 symbol identity adapter with explicit contract fakes', () => {
@@ -81,6 +95,10 @@ describe('real 271 symbol identity adapter with explicit contract fakes', () => 
     expect(readers.getEmployeeInstanceForHistory).not.toHaveBeenCalled();
     expect(result.identity).toEqual(identity());
     expect(result.instance.assignmentId).toBe(id(9));
+    expect(result.applicationModules).toEqual(applicationModules());
+    expect(
+      readers.readApplicationBuiltinModules,
+    ).toHaveBeenCalledExactlyOnceWith('worker');
     for (const key of ['employeeId', 'b', 'module', 'enabled_modules'])
       expect(result).not.toHaveProperty(key);
     expect(result.instance).not.toHaveProperty('employeeId');
@@ -103,6 +121,83 @@ describe('real 271 symbol identity adapter with explicit contract fakes', () => 
     );
     expect(readers.requireDEntryNativeIdentity).not.toHaveBeenCalled();
     expect(readers.getEmployeeInstance).not.toHaveBeenCalled();
+    expect(
+      readers.readApplicationBuiltinModules,
+    ).toHaveBeenCalledExactlyOnceWith('worker');
+  });
+
+  it('rechecks current execution rights after the build read and never falls back to history', async () => {
+    const denied = Error('current membership withdrawn');
+    readers.requireDEntryNativeIdentity
+      .mockResolvedValueOnce(identity())
+      .mockRejectedValueOnce(denied);
+    await expect(
+      readDEntryBusinessIdentity(context, selected, 'execute'),
+    ).rejects.toBe(denied);
+    expect(readers.readApplicationBuiltinModules).toHaveBeenCalledTimes(1);
+    expect(readers.resolveDEntryIdentity).not.toHaveBeenCalled();
+  });
+
+  it('rejects an assignment changed during module reading even when the visible identity revision is unchanged', async () => {
+    readers.getEmployeeInstance
+      .mockResolvedValueOnce(instance())
+      .mockResolvedValueOnce({ ...instance(), assignmentId: id(99) });
+    await expect(
+      readDEntryBusinessIdentity(context, selected, 'execute'),
+    ).rejects.toMatchObject({ code: 'business_runtime_authorization_denied' });
+  });
+
+  it('does not replace a failed trusted build read with binding, request or environment claims', async () => {
+    const failed = Error('invalid application build seal');
+    readers.readApplicationBuiltinModules.mockRejectedValueOnce(failed);
+    await expect(
+      readDEntryBusinessIdentity(context, selected, 'history'),
+    ).rejects.toBe(failed);
+    expect(readers.resolveDEntryIdentity).toHaveBeenCalledTimes(1);
+    expect(readers.requireDEntryNativeIdentity).not.toHaveBeenCalled();
+  });
+
+  it('joins a pending application read on cancellation and does not begin a late current lookup', async () => {
+    let entered!: () => void,
+      finish!: (value: ReturnType<typeof applicationModules>) => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    readers.readApplicationBuiltinModules.mockImplementationOnce(() => {
+      entered();
+      return new Promise<ReturnType<typeof applicationModules>>((resolve) => {
+        finish = resolve;
+      });
+    });
+    const stop = new AbortController(),
+      reason = Error('cancelled during policy read');
+    let settled = false;
+    const outcome = readDEntryBusinessIdentity(
+      context,
+      selected,
+      'execute',
+      stop.signal,
+    )
+      .then(
+        () => null,
+        (error: unknown) => error,
+      )
+      .finally(() => {
+        settled = true;
+      });
+    try {
+      await started;
+      stop.abort(reason);
+      await turn();
+      expect(settled).toBe(false);
+      expect(readers.requireDEntryNativeIdentity).toHaveBeenCalledTimes(1);
+      finish(applicationModules());
+      expect(await outcome).toBe(reason);
+      expect(readers.requireDEntryNativeIdentity).toHaveBeenCalledTimes(1);
+    } finally {
+      finish(applicationModules());
+      await outcome;
+    }
   });
 
   it('preserves a native denial and never retries it through history', async () => {
@@ -113,6 +208,7 @@ describe('real 271 symbol identity adapter with explicit contract fakes', () => 
     ).rejects.toBe(denied);
     expect(readers.resolveDEntryIdentity).not.toHaveBeenCalled();
     expect(readers.getEmployeeInstance).not.toHaveBeenCalled();
+    expect(readers.readApplicationBuiltinModules).not.toHaveBeenCalled();
   });
 
   it.each([
