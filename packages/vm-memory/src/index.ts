@@ -17,3 +17,10 @@ export type {
 export { createVmMemoryAdmission } from './admission.ts';
 export { createVmMemoryGuestPlan } from './guest-config.ts';
 export type { VmMemoryGuestPlan } from './guest-config.ts';
+
+export { createVmMemoryHostSource } from './host-source.ts';
+export type {
+  VmMemoryHostPressureObservation,
+  VmMemoryHostPressureWatch,
+  VmMemoryHostPressurePort,
+} from './host-source.ts';

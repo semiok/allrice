@@ -43,3 +43,15 @@ export {
   type PersonDisk,
   type PersonVmDiskInspection,
 } from './encrypted-disk.ts';
+
+export type {
+  PersonVmNativeResourceFacts,
+  PersonVmNativeResourcePort,
+  PersonVmNativeResourceSubscription,
+  PersonVmResourceLiveness,
+  PersonVmResourceLifecycleWatch,
+  PersonVmResourceLifecyclePort,
+  PersonVmResourceWatch,
+  PersonVmResourcePort,
+} from './resource-contract.ts';
+export { createPersonVmResourcePort } from './resource-watch.ts';
