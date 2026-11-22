@@ -242,6 +242,16 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+class DevHttpProblem(Exception):
+    def __init__(self, endpoint, status, code):
+        # Only these two fixed, read-only BFF operations are used by this runner.
+        self.step = {'/api/v1/d-entry/identity': 'IDENTITY.login',
+                     '/api/v1/d-entry/native-owner': 'IDENTITY.employee'}[endpoint]
+        self.diagnostic = {'endpoint': endpoint, 'status': status, 'code': code}
+        self.missing_source = status == 503 and code == 'DEPENDENCY_UNAVAILABLE'
+        super().__init__(f'{endpoint} HTTP {status} code={code}')
+
+
 def validate_live(config):
     if not config.get('baseUrl'):
         raise Unavailable('未配置已获开验授权的Dev origin/本人范围；没有访问共享Dev')
@@ -266,6 +276,7 @@ def validate_live(config):
 
 
 def dev_json(origin, route, selection, token, timeout, post=False):
+    endpoint = route
     headers = {'Cookie': 'allrice_session=' + token, 'Origin': origin,
                'Accept': 'application/json', 'Cache-Control': 'no-store'}
     data = None
@@ -278,11 +289,26 @@ def dev_json(origin, route, selection, token, timeout, post=False):
     try:
         with urllib.request.build_opener(NoRedirect).open(request, timeout=timeout) as response:
             if response.status != 200:
-                raise Unavailable('真实服务返回HTTP ' + str(response.status))
+                raise DevHttpProblem(endpoint, response.status, 'UNRECOGNIZED')
             return json.loads(response.read())
     except urllib.error.HTTPError as error:
-        # Never persist response headers or an arbitrary error body.
-        raise Unavailable('真实入口HTTP ' + str(error.code) + '，无可验证4.0来源') from None
+        # The BFF maps DEntryDependencyUnavailable to precisely this envelope.
+        # Other statuses, malformed bodies and unknown codes are execution failures.
+        allowed = {'DEPENDENCY_UNAVAILABLE', 'AUTHENTICATION_REQUIRED',
+                   'AUTHORIZATION_DENIED', 'VALIDATION_FAILED', 'RESOURCE_NOT_FOUND',
+                   'CONFLICT', 'INTERNAL_ERROR'}
+        code = 'UNRECOGNIZED'
+        with error:
+            try:
+                body = json.load(error)
+                problem = body.get('error') if isinstance(body, dict) else None
+                value = problem.get('code') if isinstance(problem, dict) else None
+                if isinstance(value, str) and value in allowed:
+                    code = value
+            except (ValueError, OSError):
+                pass
+        # No response headers, arbitrary body/message, query or session is evidence.
+        raise DevHttpProblem(endpoint, error.code, code) from None
 
 
 def dev_identity(config, output):
@@ -355,8 +381,12 @@ def browser_reads(config, output):
             raise ValueError('UI pass requires a real browser screenshot')
         row = result(step, step.split('.')[0], step, item['status'], 'dev',
                      item['reason'], valid[step]['ownerSource'], ['browser.json'], screenshot)
+        for key in ('failure', 'captureFailure'):
+            if item.get(key) is not None:
+                row[key] = item[key]
         if not screenshot:
-            row['noScreenshotReason'] = '真实浏览器未能取得PNG；' + item['reason']
+            row['noScreenshotReason'] = item.get('noScreenshotReason') or (
+                '真实浏览器未能取得PNG；' + item['reason'])
         steps.append(row)
     return steps
 
@@ -391,6 +421,14 @@ def run(mode, output, config):
                           for step, recipe in config.get('ui', {}).items() if step in READ_UI]
             by_id = {item['id']: item for item in actual}
             steps[:] = [by_id.get(step['id'], step) for step in steps]
+    except DevHttpProblem as error:
+        status = 'skipped' if error.missing_source else 'failed'
+        reason = ('已确认BFF生产依赖未装配；' if error.missing_source else '真实BFF请求失败；') + str(error)
+        for index, step in enumerate(steps):
+            if step['id'] == error.step:
+                steps[index] = {**result(step['id'], step['case'], step['title'],
+                    status, 'dev', reason, '271/273'), 'http': error.diagnostic}
+                break
     except Unavailable as error:
         steps.append(result('RUNNER.precondition', 'GATE', '实际开验前置', 'skipped',
                             'dev', str(error), '发布负责人/对应producer owner'))

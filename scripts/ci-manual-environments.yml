@@ -66,6 +66,7 @@ files:
     - scripts/rice-bridge-pdf-guardian.test.mjs
     - scripts/rice-bridge-terminal-runtime.test.mjs
   manual:
+    - scripts/acceptance/workday/native-entry.fixture.test.ts
     - apps/rice-bridge/src/local-browser-login.native.test.ts
     - apps/worker/src/browser-control/driver.production.integration.test.ts
     - apps/worker/src/browser-control/static-browser.native.integration.test.ts
@@ -127,6 +128,9 @@ extra:
     - apps/worker/test/p25/native-schedule-recurring.integration.test.ts
     - apps/worker/test/p25/platform-quality-recurring.integration.test.ts
 tags:
+  manual:WORKDAY_FIXTURE_SOURCE:
+    reason: Exact owner-mapped 271/273 source checkout with nativeEntryServer/nativeEntryFixture, validated by workday/run.py; WORKDAY_FIXTURE_RECEIPT and WORKDAY_FIXTURE_CACHE must name new owned output paths. Synthetic consumer HTTP only, no real Host, VM, database, model or Dev acceptance.
+    command: WORKDAY_FIXTURE_SOURCE="$FIXTURE_SOURCE" WORKDAY_FIXTURE_RECEIPT="$FIXTURE_RECEIPT" WORKDAY_FIXTURE_CACHE="$FIXTURE_CACHE" pnpm exec vitest run {file} --config scripts/acceptance/workday/fixture.config.mjs --maxWorkers=1
   manual:ALLRICE_OFFICE_PREVIEW_DIR:
     reason: Actual native Office renderer output from the task sandbox; requires docx.json, xlsx.json and pptx.json OfficeRenderResponse documents plus their rendered page bytes, produced by the external Office rendering environment.
     command: ALLRICE_OFFICE_PREVIEW_DIR="$OFFICE_PREVIEW_DIR" pnpm exec vitest run {file} --maxWorkers=2

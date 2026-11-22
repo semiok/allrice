@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vitest/config';
+import { testTags } from '../../ci-integration-tests.mjs';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const root = resolve(directory, '../../..');
@@ -36,6 +37,7 @@ export default defineConfig({
   },
   server: { fs: { allow: [root, source] } },
   test: {
+    tags: testTags(root),
     include: [resolve(directory, 'native-entry.fixture.test.ts')],
     setupFiles: [],
     maxWorkers: 1,

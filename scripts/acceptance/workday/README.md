@@ -50,6 +50,8 @@ python3 scripts/acceptance/workday/run.py --mode fixture --config /absolute/fixt
 
 只调用已核实的两个现有公开BFF：`GET /api/v1/d-entry/identity`、语义只读的 `POST /api/v1/d-entry/native-owner`。不跟随HTTP重定向，不保存响应头/任意错误体。实际服务器identity必须匹配配置，native-owner必须返回同identity的 `4.0` mount，3.x或缺源均不能填绿。controlReady仅是discovery，`editorReady/canSend`始终标not-verified；不会发送prompt或启动VM。
 
+HTTP缺源只认实际BFF合同的 `503` 与结构化 `error.code=DEPENDENCY_UNAVAILABLE` 同时成立，记入对应身份/员工步骤的 skipped。其他HTTP错误（含500/502、503未知或坏错误体）均为 failed/退出1；仅保存固定endpoint、status和白名单code，服务器message/header/body不入报告。
+
 只读UI需要 `browserExecutable` 指向已有锁定Chromium以及 `ui` 映射。允许的步骤只有：SUBAGENT.read、REFERENCES.read、DELIVERABLES.read、MEMORY.read、CAPABILITIES.read、APPROVAL.review、RECOVERY.cold-history、ADMIN.runtime/usage/approvals。每项须由D/模块owner给 `ownerSource`（固定source/symbol）、`path`、`locator`、`scopeLocator` 和 `scopeAttribute`；后两者必须对应**实际已有**DOM属性，值等于employeeInstanceId。没有封版locator就保持该项skipped，不自行造data-testid。可选 `text` 做精确可见文本核验，不拿显示文字当权限。
 
 ```json
@@ -68,6 +70,8 @@ python3 scripts/acceptance/workday/run.py --mode fixture --config /absolute/fixt
 
 这些是配置字段说明，**不是已存在的产品路由/locator**。当且仅当owner补齐真实值后才能执行。浏览器复用既有Worker `playwright-core`（与browser-qa.fixture.ts同一依赖），仅新建临时context，不接用户浏览器。阻断跨origin、所有页面POST/其他写、opaque WS、service worker与下载；只读页面可以失败，不能因此放开写。每步前后用相同两个只读BFF复查当前身份、4.0代际、原bindingRef及页面员工scope；只用实际 `page.screenshot` 生成PNG。没有截图则给具体原因，不生成占位图、不把rev2示意/旧截图替代。单张只读截图不关闭VISUAL全矩阵。
 
+失败保留阶段、有限错误分类/类型和受控HTTP状态，截图失败另记 `captureFailure` 与无截图原因，不覆盖原首败。Playwright任意message/call log可能含selector、URL query、页面正文或凭据，因此只保存安全投影；不将这些原文放进JSON/HTML。`browser-diagnostics.mjs` 复用同一单页读取路径，注入page回归只证明诊断组合，不生成截图或宣称实际浏览器通过。
+
 Dev写入、定时执行、审批/发送、VM开关/破坏、真实模型、空闲20分钟、恢复与性能压测目前没有在本runner装配生产入口，明确skipped到owner。本工具不调用3.x API冒4.0，也不提供任意shell/HTTP/模型adapter。四面板的读/写状态分别记录；不能将只读截图当业务写验收。
 
 ## 结果与退出码
@@ -83,7 +87,16 @@ Dev写入、定时执行、审批/发送、VM开关/破坏、真实模型、空�
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/acceptance/workday/run.test.py -v
 node --check scripts/acceptance/workday/browser.mjs
+node --check scripts/acceptance/workday/browser-diagnostics.mjs
 node --check scripts/acceptance/workday/fixture.config.mjs
+```
+
+`runner.test.ts` 由既有默认Vitest自动收集，不依赖开关，调用完整Python标准库回归并测试单页诊断组合。Python的CLI缺源负向显式指定不存在的source路径，因此不会因组合树恰有fixture而误跑driver；另有错pin仍失败且不dispatch的回归。HTTP回归使用自建loopback BFF合成响应和真实HTTP请求，不连Dev。
+
+`native-entry.fixture.test.ts` 是独立手工项，原生tag `manual:WORKDAY_FIXTURE_SOURCE` 在 `scripts/ci-manual-environments.yml` 精确登记。缺source时仍可见skip；显式提供source而缺receipt/cache属于配置失败，不再成为未登记的条件skip。必须先通过本runner的精确source/pin校验，另提供新receipt/cache路径，才用本目录fixture config实跑。自动Python/诊断通过不能替代该HTTP driver实跑。单文件检查示例（由根安排依赖与资源）：
+
+```sh
+pnpm exec vitest run scripts/acceptance/workday/runner.test.ts --maxWorkers=1
 ```
 
 作者只运行标准库离线小测试/语法检查；实际native fixture driver与浏览器由根会话按资源/授权统一安排。负向覆盖escape/脱敏、skip非pass、3.x/错本人、缺生产来源、异常/cleanup、非零exit和首败不覆盖。不为了过门禁修改产品或放宽任何旧断言。

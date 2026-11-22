@@ -4,10 +4,9 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { expect, it } from 'vitest';
 
-it.skipIf(
-  !process.env.WORKDAY_FIXTURE_SOURCE || !process.env.WORKDAY_FIXTURE_RECEIPT,
-)(
+it.skipIf(!process.env.WORKDAY_FIXTURE_SOURCE)(
   'drives the existing native entry fixture through real HTTP and joins its close',
+  { tags: ['manual:WORKDAY_FIXTURE_SOURCE'] },
   async () => {
     const source = process.env.WORKDAY_FIXTURE_SOURCE;
     const receipt = process.env.WORKDAY_FIXTURE_RECEIPT;

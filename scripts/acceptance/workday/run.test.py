@@ -1,10 +1,13 @@
 import importlib.util
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -12,6 +15,39 @@ ROOT = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('workday', ROOT / 'run.py')
 workday = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(workday)
+
+
+@contextmanager
+def bff_http(responses):
+    """Actual isolated HTTP, synthetic BFF bodies; no Dev, identity or producer."""
+    requests = []
+    class Handler(BaseHTTPRequestHandler):
+        def reply(self):
+            status, body = responses[len(requests)]
+            requests.append((self.command, self.path.split('?')[0]))
+            if self.command == 'POST':
+                self.rfile.read(int(self.headers['Content-Length']))
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Set-Cookie', 'server-private-header=must-not-persist')
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode())
+        do_GET = do_POST = reply
+        def log_message(self, *args):
+            pass
+    with HTTPServer(('127.0.0.1', 0), Handler) as server:
+        server.timeout = 1
+        def serve():
+            for _ in responses:
+                server.handle_request()
+        thread = threading.Thread(target=serve)
+        thread.start()
+        try:
+            yield f'http://127.0.0.1:{server.server_port}', requests
+        finally:
+            thread.join(timeout=2)
+            if thread.is_alive():
+                raise AssertionError('isolated HTTP fixture did not join')
 
 
 class RunnerTests(unittest.TestCase):
@@ -135,6 +171,47 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(evidence['editorReady'], 'not-verified')
             self.assertEqual(evidence['canSend'], 'not-verified')
 
+    def test_real_http_missing_producer_and_service_errors_have_distinct_status_and_exit(self):
+        for status, code, expected_exit in [(503, 'DEPENDENCY_UNAVAILABLE', 2),
+                (500, 'INTERNAL_ERROR', 1), (500, 'DEPENDENCY_UNAVAILABLE', 1),
+                (502, 'INTERNAL_ERROR', 1), (400, 'VALIDATION_FAILED', 1),
+                (503, 'server-private-code', 1), (503, None, 1)]:
+            with self.subTest(status=status, code=code), tempfile.TemporaryDirectory() as temp:
+                body = {'error': {'code': code, 'message': 'server-private-body',
+                                  'accessToken': 'server-private-token'}}
+                with bff_http([(status, body)]) as (origin, requests), patch.dict(
+                        os.environ, {workday.SESSION_ENV: 'synthetic-private-session'}):
+                    config = {**self.live_config(), 'baseUrl': origin}
+                    output = Path(temp) / 'run'
+                    self.assertEqual(workday.run('dev', output, config), expected_exit)
+                    self.assertEqual(requests, [('GET', '/api/v1/d-entry/identity')])
+                receipt = json.loads((output / 'result.json').read_text())
+                row = next(item for item in receipt['steps'] if item['id'] == 'IDENTITY.login')
+                self.assertEqual(row['status'], 'skipped' if expected_exit == 2 else 'failed')
+                self.assertEqual(receipt['summary']['counts']['failed'], int(expected_exit == 1))
+                self.assertEqual(row['http'], {'endpoint': '/api/v1/d-entry/identity',
+                    'status': status, 'code': code if code not in {None, 'server-private-code'} else 'UNRECOGNIZED'})
+                for name in ['index.html', 'result.json']:
+                    text = (output / name).read_text()
+                    self.assertIn(f'HTTP {status}', text)
+                    self.assertNotIn('server-private-', text)
+                    self.assertNotIn('synthetic-private-session', text)
+
+    def test_real_native_owner_http_failure_is_recorded_against_employee_step(self):
+        config = self.live_config()
+        identity = {key: config[key] for key in ['personId', 'organizationId', 'workspaceId', 'employeeInstanceId', 'threadId']}
+        identity.update(employeeRevision=1, employeeVersionId='66666666-6666-4666-8666-666666666666')
+        with tempfile.TemporaryDirectory() as temp, bff_http([(200, {'identity': identity}),
+                (502, {'error': {'code': 'INTERNAL_ERROR'}})]) as (origin, requests), patch.dict(
+                    os.environ, {workday.SESSION_ENV: 'synthetic'}):
+            output = Path(temp) / 'run'
+            self.assertEqual(workday.run('dev', output, {**config, 'baseUrl': origin}), 1)
+            receipt = json.loads((output / 'result.json').read_text())
+            row = next(item for item in receipt['steps'] if item['id'] == 'IDENTITY.employee')
+            self.assertEqual(row['status'], 'failed')
+            self.assertEqual(row['http']['endpoint'], '/api/v1/d-entry/native-owner')
+            self.assertEqual(requests[-1], ('POST', '/api/v1/d-entry/native-owner'))
+
     def test_unexpected_identity_fields_are_rejected_without_persisting_secret_body(self):
         config = self.live_config()
         identity = {key: config[key] for key in ['personId', 'organizationId', 'workspaceId', 'employeeInstanceId', 'threadId']}
@@ -196,6 +273,37 @@ class RunnerTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     workday.native_fixture({'fixtureSource': str(source)}, root)
 
+    def test_browser_primary_and_capture_diagnostics_survive_json_and_html(self):
+        config = self.live_config()
+        config.update(browserExecutable=sys.executable, ui={'MEMORY.read': {
+            'ownerSource': 'synthetic-test-source', 'path': '/fixture-only',
+            'locator': 'fixture', 'scopeLocator': 'fixture', 'scopeAttribute': 'fixture-id'}})
+        failure = {'stage': 'locator', 'code': 'locator-timeout', 'type': 'TimeoutError'}
+        capture = {'stage': 'capture', 'code': 'capture-error', 'type': 'Error'}
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {workday.SESSION_ENV: 'synthetic'}):
+            root = Path(temp)
+            (root / 'apps/worker/node_modules/playwright-core').mkdir(parents=True)
+            def identity(_config, output):
+                workday.write_json(output / 'dev-identity.json', {'bindingRef': 'synthetic'})
+                workday.write_json(output / 'browser.json', {'closed': True, 'steps': {
+                    'MEMORY.read': {'status': 'failed', 'screenshot': None, 'failure': failure,
+                        'captureFailure': capture, 'reason': 'locator/locator-timeout TimeoutError <private>',
+                        'noScreenshotReason': 'capture/capture-error Error <private>'}}})
+                return []
+            with patch.object(workday, 'REPO', root), patch.object(workday, 'dev_identity', side_effect=identity), patch.object(
+                    subprocess, 'check_output', return_value='a' * 40), patch.object(workday, 'child', return_value=0):
+                output = root / 'run'
+                self.assertEqual(workday.run('dev', output, config), 1)
+            row = next(item for item in json.loads((output / 'result.json').read_text())['steps'] if item['id'] == 'MEMORY.read')
+            self.assertEqual(row['failure'], failure)
+            self.assertEqual(row['captureFailure'], capture)
+            rendered = (output / 'index.html').read_text()
+            self.assertIn('locator/locator-timeout', rendered)
+            self.assertIn('capture/capture-error', rendered)
+            self.assertIn('&lt;private&gt;', rendered)
+            self.assertNotIn('<private>', rendered)
+            self.assertNotIn('<img', rendered)
+
     def test_interrupted_owned_child_is_joined_and_failure_is_not_success(self):
         class Interrupted:
             pid = 12345
@@ -240,15 +348,36 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(code, 7)
             self.assertNotIn('synthetic-private-token', (Path(temp) / 'driver.log').read_text())
 
-    def test_cli_incomplete_exit_and_report_survive_driver_exception(self):
+    def test_cli_explicit_missing_fixture_remains_incomplete_on_any_combination_head(self):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / 'run'
+            config = Path(temp) / 'config.json'
+            config.write_text(json.dumps({'fixtureSource': str(Path(temp) / 'missing-source')}))
             completed = subprocess.run([sys.executable, str(ROOT / 'run.py'), '--mode', 'fixture',
-                                        '--output', str(output)], capture_output=True, text=True)
+                                        '--config', str(config), '--output', str(output)], capture_output=True, text=True)
             self.assertEqual(completed.returncode, 2, completed.stderr)
             self.assertTrue((output / 'index.html').is_file())
             self.assertFalse(json.loads(completed.stdout)['completeWorkday'])
             self.assertNotIn('allrice_session=', (output / 'result.json').read_text())
+
+    def test_wrong_fixture_pin_is_still_a_failure_and_never_dispatches_driver(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            fixture = root / 'source' / workday.FIXTURE_FILE
+            fixture.parent.mkdir(parents=True)
+            fixture.write_text('// synthetic source-presence boundary, never imported')
+            # Preserve real runner HEAD reads; only the synthetic source has a wrong pin.
+            check_output = subprocess.check_output
+            def source_head(args, **kwargs):
+                return 'b' * 40 if '-C' in args else check_output(args, **kwargs)
+            with patch.object(subprocess, 'check_output', side_effect=source_head), patch.object(workday, 'child') as driver:
+                output = root / 'run'
+                self.assertEqual(workday.run('fixture', output, {
+                    'fixtureSource': str(root / 'source'), 'fixtureSha': 'a' * 40}), 1)
+                driver.assert_not_called()
+            receipt = json.loads((output / 'result.json').read_text())
+            self.assertEqual(receipt['summary']['counts']['failed'], 1)
+            self.assertIn('HEAD differs from fixed fixtureSha', (output / 'index.html').read_text())
 
 
 if __name__ == '__main__':
