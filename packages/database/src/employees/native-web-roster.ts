@@ -67,6 +67,8 @@ async function readRoster(
       // Existing admission identity lock also rechecks session expiry/revocation,
       // current membership and organization; stale context.memberships is ignored.
       await lockEmployeeInstanceAdmissionIdentity(tx, scope);
+      // Match employee-instances: assignment serializes publication/revocation.
+      // Publication locks employee before assignment; do not invert it here.
       const assignments = await tx<{ id: string; materialized: boolean }[]>`
         select a.id,exists(select 1 from allrice_employee_instances i
           join allrice_employee_instance_revisions r on r.instance_id=i.id and r.revision=1
@@ -82,7 +84,7 @@ async function readRoster(
           and not exists(select 1 from allrice_platform_employee_tenant_assignments d
             where d.organization_id=a.organization_id and d.workspace_id=a.workspace_id
               and d.tenant_employee_id=e.id and not d.active)
-        order by a.id for share of a,e`;
+        order by a.id for share of a`;
       for (const assignment of assignments) {
         if (materialize) await ensureGeneralEmployeeInstance(tx, assignment.id);
         else if (!assignment.materialized)

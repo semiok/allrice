@@ -43,6 +43,8 @@ import { EmployeeInstanceProfileSchema } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import * as queue from '../execution/queue.ts';
 import * as accessCancellation from './employee-access-cancellation.ts';
+import * as instances from './employee-instances.ts';
+import * as tenantAccess from '../tenant-employee-access.ts';
 import { updateEmployeeRelease } from './employee-quality.ts';
 import * as folderTriggers from '../folder-triggers.ts';
 import { lockSchedulePrincipal } from '../native-schedule-authority.ts';
@@ -75,6 +77,7 @@ import {
   savePlatformEmployeeDraft,
   disablePlatformEmployee,
   assignPublishedPlatformEmployeeToWorkspace,
+  materializePlatformEmployeeRevision,
 } from './platform-employees.ts';
 import {
   assertEmployeeInstanceAdmission,
@@ -349,6 +352,143 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       await fixture.db`select archived_at from allrice_employee_instances where id=${f.assignment.id}`;
     expect(row!.archived_at).not.toBeNull();
   });
+  it.each(['readonly', 'prepare'] as const)(
+    '%s roster与真实发布e→a交错：不反向锁employee，保留assignment序列化并join两事务',
+    async (mode) => {
+      const f = await setup();
+      const before = await preparePersonNativeWebRoster(f.a.context);
+      const employeeWritten = gate(),
+        resumePublication = gate(),
+        rosterIdentity = gate(),
+        resumeRoster = gate();
+      let publisherPid = 0,
+        rosterPid = 0,
+        assignmentLocked = false;
+      const synchronize = tenantAccess.synchronizeTenantEmployeeAccess;
+      const identity = instances.lockEmployeeInstanceAdmissionIdentity;
+      const list = instances.listEmployeeInstances;
+      const publishingSpy = vi
+        .spyOn(tenantAccess, 'synchronizeTenantEmployeeAccess')
+        .mockImplementation(async (...args) => {
+          if (
+            args[1].organizationId === f.a.organizationId &&
+            args[1].workspaceId === f.a.workspaceId
+          ) {
+            publisherPid = (await args[0]`select pg_backend_pid() pid`)[0]!.pid;
+            employeeWritten.resolve(); // Real materializer already upserted e.
+            await resumePublication.promise;
+          }
+          return synchronize(...args);
+        });
+      const identitySpy = vi
+        .spyOn(instances, 'lockEmployeeInstanceAdmissionIdentity')
+        .mockImplementationOnce(async (...args) => {
+          rosterPid = (await args[0]`select pg_backend_pid() pid`)[0]!.pid;
+          rosterIdentity.resolve();
+          return identity(...args);
+        });
+      const rosterSpy = vi
+        .spyOn(instances, 'listEmployeeInstances')
+        .mockImplementationOnce(async (...args) => {
+          assignmentLocked = true; // Roster's actual a SHARE query has returned.
+          await resumeRoster.promise;
+          return list(...args);
+        });
+      const publishing = fixture.db.begin(async (tx) => {
+        const [revision] = await tx<
+          Parameters<
+            typeof materializePlatformEmployeeRevision
+          >[1]['revision'][]
+        >`
+          select * from allrice_platform_employee_revisions where id=${f.source.revisionId}`;
+        await materializePlatformEmployeeRevision(tx, {
+          employeeId: f.source.employeeId,
+          revision: revision!,
+          definition: f.source.definition,
+          workspaceIds: [f.a.workspaceId],
+          actorLabel: f.admin.context.actor.id,
+        });
+      });
+      void publishing.catch(() => {});
+      let reading: ReturnType<typeof readPersonNativeWebRoster> | undefined;
+      try {
+        await Promise.race([
+          employeeWritten.promise,
+          publishing.then(() => {
+            throw Error('publication missed synchronization barrier');
+          }),
+        ]);
+        const [employee] =
+          await fixture.db`select employee_id from allrice_employee_assignments where id=${f.assignment.id}`;
+        await expect(
+          fixture.db.begin(async (probe) => {
+            await probe`select id from allrice_employees where id=${employee!.employee_id} for share nowait`;
+          }),
+        ).rejects.toMatchObject({ code: '55P03' });
+        reading = (
+          mode === 'readonly'
+            ? readPersonNativeWebRoster
+            : preparePersonNativeWebRoster
+        )(f.a.context);
+        void reading.catch(() => {});
+        await Promise.race([
+          rosterIdentity.promise,
+          reading.then(() => {
+            throw Error('roster missed identity barrier');
+          }),
+        ]);
+        let waitsOnEmployee = false;
+        // Observe either the successful a barrier or the exact forbidden e wait.
+        // No sleep chooses the interleaving and a timeout can never count as success.
+        await expect
+          .poll(
+            async () => {
+              const [row] = await fixture.db<{ blocked: boolean }[]>`
+            select ${publisherPid}::integer=any(pg_blocking_pids(${rosterPid}::integer)) blocked`;
+              waitsOnEmployee = row!.blocked;
+              return assignmentLocked || waitsOnEmployee;
+            },
+            { timeout: 5000, interval: 10 },
+          )
+          .toBe(true);
+        expect(waitsOnEmployee).toBe(false);
+        expect(assignmentLocked).toBe(true);
+        expect(rosterPid).not.toBe(publisherPid);
+        resumePublication.resolve();
+        await expect
+          .poll(
+            async () => {
+              const [row] = await fixture.db<
+                { blocked: boolean; assignment_update: boolean }[]
+              >`
+            select ${rosterPid}::integer=any(pg_blocking_pids(pid)) blocked,
+              position('insert into allrice_employee_assignments' in query)>0 assignment_update
+            from pg_stat_activity where pid=${publisherPid}`;
+              return row?.blocked === true && row.assignment_update;
+            },
+            { timeout: 5000, interval: 10 },
+          )
+          .toBe(true);
+        resumeRoster.resolve();
+        expect(await reading).toEqual(before);
+        await publishing;
+        const after = await readPersonNativeWebRoster(f.a.context);
+        expect(after.digest).not.toBe(before.digest);
+        expect(
+          after.entries.find(
+            (entry) => entry.employeeInstanceId === f.assignment.id,
+          )?.employeeVersionId,
+        ).not.toBe(f.assignment.currentVersion.id);
+      } finally {
+        resumePublication.resolve();
+        resumeRoster.resolve();
+        await Promise.allSettled([publishing, ...(reading ? [reading] : [])]);
+        publishingSpy.mockRestore();
+        identitySpy.mockRestore();
+        rosterSpy.mockRestore();
+      }
+    },
+  );
   it('本人首次4.0准备读取全部可访问workspace的真实实例；稳定物化且不创建分配/Run', async () => {
     const f = await setup(),
       custom = await f.custom('Native Web employee');
