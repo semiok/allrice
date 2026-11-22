@@ -340,7 +340,9 @@ suite('SDK deliverable_read: real owners, test-only qualification', () => {
     });
     await expect(call(connection.client, input)).rejects.toMatchObject({
       code: ErrorCode.InternalError,
-      message: 'MCP error -32603: AllRice business service failed',
+      message:
+        'MCP error -32603: MCP error -32603: AllRice business service failed',
+      data: undefined,
     });
     expect(connection.read).toHaveBeenCalledTimes(1);
     expect(connection.get).toHaveBeenCalledTimes(1);
