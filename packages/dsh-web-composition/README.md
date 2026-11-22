@@ -59,10 +59,11 @@ shortcut injection, routing its open gesture through public `openTab('guide')`.
 The native guide tab hosts the existing `WorkbenchStart` cards with the four
 employee descriptions. Card selection replaces that guide through its own
 native tab action; the native multi-tab strip, add, split, fullscreen and close
-controls retain their owners. The native narrow/fullscreen panel still covers
-the parent header: four-icon pointer reachability in the open 390px layout is
-an unresolved layout requirement, explicitly asserted by the targeted browser
-suite rather than claimed complete.
+controls retain their owners. At the existing employee mobile breakpoint
+(max-width: 760px), only the AllRice business-launcher container is hidden;
+the native title, subagent catalog and sidebar corner remain intact. Mobile
+uses the same four Start cards, while desktop launchers remain visible. Native
+title ellipsis and narrow/fullscreen pane behavior retain their owners.
 
 The employee profile disables both `ui-sidebar-terminal` and the separate Host
 `terminal-controller`, so interactive terminals are closed at the server as

@@ -251,6 +251,12 @@ function installSyntheticPanelsOwner(ctx: Context, product: Product) {
       ctx.conversation.input.for(binding.ctx).setDraft('');
     },
     setTheme: (theme: 'light' | 'dark') => ctx.theme.setTheme(theme),
+    renameSession: (title: string) => {
+      const id = ctx.sidebarRight.mounted.getSnapshot();
+      const binding = id && bindings.get(id);
+      if (!binding) throw Error('No actual retained native session');
+      return binding.session.rename(title);
+    },
     setState(value: PanelsState) {
       // Choosing the current visual state is not an authority/scope change.
       // switchScope below explicitly exercises invalidation when requested.

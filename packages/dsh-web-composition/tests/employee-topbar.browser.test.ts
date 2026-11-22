@@ -6,6 +6,7 @@ import {
   chromium,
   type Browser,
   type BrowserContext,
+  type Locator,
   type Page,
 } from 'playwright-core';
 import {
@@ -48,6 +49,9 @@ const descriptions = [
 ];
 const kinds = ['files', 'materials', 'experience', 'workflow'];
 const session = 'session-00000000-0000-4000-8000-000000000036';
+const shortTitle = '销售复盘';
+const longTitle =
+  '核对销售记录并计算合计，整理每个部门本季度交付成果和工作参考资料';
 const settle = (page: Page) =>
   page.evaluate(
     () =>
@@ -84,12 +88,18 @@ suite('installed employee topbar and native Start', () => {
       .getByRole('tab')
       .filter({ has: page.getByText(title, { exact: true }) });
   const entries = () => page.locator('[aria-label="工作台入口"]');
+  const title = (text: string) =>
+    page
+      .getByRole('navigation', { name: '会话层级', exact: true })
+      .getByText(text, { exact: true });
+  const catalog = () =>
+    page.getByRole('button', { name: '1 个子智能体', exact: true });
+  const corner = () =>
+    page.getByRole('button', { name: '打开右侧边栏', exact: true });
   const collapse = () =>
     right().getByRole('button', { name: '收起右侧边栏', exact: true }).click();
   const openStart = async () => {
-    await page
-      .getByRole('button', { name: '打开右侧边栏', exact: true })
-      .click();
+    await corner().click();
     await tab('开始').waitFor();
     await right().getByText(descriptions[0]!, { exact: true }).waitFor();
   };
@@ -99,28 +109,57 @@ suite('installed employee topbar and native Start', () => {
       .filter({
         has: page.locator('strong').getByText(label, { exact: true }),
       });
+  const reachable = async (control: Locator, label: string) => {
+    expect(await control.isVisible(), `${label} must remain visible`).toBe(
+      true,
+    );
+    // DOM visibility alone does not detect a native pane covering the header.
+    expect(
+      await control.evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        const hit = document.elementFromPoint(
+          box.x + box.width / 2,
+          box.y + box.height / 2,
+        );
+        return hit !== null && node.contains(hit);
+      }),
+      `${label} must remain pointer-reachable`,
+    ).toBe(true);
+  };
   const fourVisible = async () => {
-    for (const label of labels) {
-      const button = entries().getByRole('button', {
-        name: new RegExp(`^${label}(?:，|$)`),
-      });
-      expect(await button.isVisible(), `${label} must remain visible`).toBe(
-        true,
-      );
-      // isVisible alone does not detect the native narrow overlay covering the
-      // parent header. A real pointer must still reach the requested launcher.
-      expect(
-        await button.evaluate((node) => {
-          const box = node.getBoundingClientRect();
-          const hit = document.elementFromPoint(
-            box.x + box.width / 2,
-            box.y + box.height / 2,
-          );
-          return hit !== null && node.contains(hit);
+    for (const label of labels)
+      await reachable(
+        entries().getByRole('button', {
+          name: new RegExp(`^${label}(?:，|$)`),
         }),
-        `${label} must remain pointer-reachable`,
-      ).toBe(true);
-    }
+        label,
+      );
+  };
+  const fourHidden = async () => {
+    expect(await entries().isVisible()).toBe(false);
+    expect(await entries().getByRole('button').count()).toBe(0);
+  };
+  const nativeHeader = async (text: string, width: number) => {
+    const current = title(text);
+    await current.waitFor();
+    await reachable(current, '原生标题');
+    await reachable(catalog(), '原生子智能体目录');
+    await reachable(corner(), '原生侧栏总开关');
+    const titleBox = (await current.boundingBox())!,
+      countBox = (await catalog().boundingBox())!,
+      cornerBox = (await corner().boundingBox())!;
+    expect(titleBox.x).toBeGreaterThanOrEqual(0);
+    expect(titleBox.x + titleBox.width).toBeLessThanOrEqual(countBox.x);
+    expect(countBox.x + countBox.width).toBeLessThanOrEqual(cornerBox.x);
+    expect(cornerBox.x + cornerBox.width).toBeLessThanOrEqual(width);
+    expect(
+      await page
+        .locator('header')
+        .filter({ has: current })
+        .getByRole('button')
+        .last()
+        .getAttribute('aria-label'),
+    ).toBe('打开右侧边栏');
   };
   const shot = async (name: string) => {
     await settle(page);
@@ -268,35 +307,74 @@ suite('installed employee topbar and native Start', () => {
   for (const width of [1440, 390])
     for (const theme of ['light', 'dark'] as const) {
       it(`keeps controls in native order, opens Start, switches panels and returns closed ${width} ${theme}`, async () => {
+        const mobile = width <= 760;
         await page.setViewportSize({ width, height: 1000 });
         await command('setTheme', theme);
+        await settle(page);
+        await command('renameSession', shortTitle);
+        await nativeHeader(shortTitle, width);
+        const shortMetrics = await title(shortTitle).evaluate((node) => ({
+          clientWidth: node.clientWidth,
+          scrollWidth: node.scrollWidth,
+        }));
+        expect(shortMetrics.scrollWidth).toBeLessThanOrEqual(
+          shortMetrics.clientWidth,
+        );
+        // Exercise native log-backed title projection, never patch title DOM.
+        await command('renameSession', longTitle);
+        await nativeHeader(longTitle, width);
+        const longMetrics = await title(longTitle).evaluate((node) => {
+          const style = getComputedStyle(node);
+          return {
+            clientWidth: node.clientWidth,
+            scrollWidth: node.scrollWidth,
+            overflow: style.overflowX,
+            textOverflow: style.textOverflow,
+            whiteSpace: style.whiteSpace,
+          };
+        });
+        expect(longMetrics).toMatchObject({
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        });
+        expect(longMetrics.clientWidth).toBeGreaterThan(0);
+        expect(longMetrics.scrollWidth).toBeGreaterThan(
+          longMetrics.clientWidth,
+        );
+        await command('renameSession', shortTitle);
+        await nativeHeader(shortTitle, width);
+        await writeFile(
+          join(artifacts, `title-geometry-${width}-${theme}.json`),
+          JSON.stringify({ shortMetrics, longMetrics }, null, 2),
+        );
         expect(await page.getByText('标准模式', { exact: true }).count()).toBe(
           0,
         );
-        await fourVisible();
-        const launchers = entries().getByRole('button');
-        expect((await launchers.all()).length).toBe(4);
-        expect(
-          (
-            await launchers.evaluateAll((nodes) =>
-              nodes.map((node) => node.getAttribute('aria-label')),
-            )
-          ).map((label) => label?.split('，')[0]),
-        ).toEqual(labels);
-        const count = page.getByRole('button', {
-          name: '1 个子智能体',
-          exact: true,
-        });
-        const corner = page.getByRole('button', {
-          name: '打开右侧边栏',
-          exact: true,
-        });
-        const countBox = (await count.boundingBox())!,
-          firstBox = (await launchers.first().boundingBox())!,
-          lastBox = (await launchers.last().boundingBox())!,
-          cornerBox = (await corner.boundingBox())!;
-        expect(countBox.x + countBox.width).toBeLessThanOrEqual(firstBox.x);
-        expect(lastBox.x + lastBox.width).toBeLessThanOrEqual(cornerBox.x);
+        if (mobile) await fourHidden();
+        else {
+          await fourVisible();
+          const launchers = entries().getByRole('button');
+          expect((await launchers.all()).length).toBe(4);
+          expect(
+            (
+              await launchers.evaluateAll((nodes) =>
+                nodes.map((node) => node.getAttribute('aria-label')),
+              )
+            ).map((label) => label?.split('，')[0]),
+          ).toEqual(labels);
+          const countBox = (await catalog().boundingBox())!,
+            firstBox = (await launchers.first().boundingBox())!,
+            lastBox = (await launchers.last().boundingBox())!,
+            cornerBox = (await corner().boundingBox())!;
+          expect(countBox.x + countBox.width).toBeLessThanOrEqual(firstBox.x);
+          expect(lastBox.x + lastBox.width).toBeLessThanOrEqual(cornerBox.x);
+        }
+        await catalog().click();
+        const tree = page.getByRole('tree', { name: '子智能体会话' });
+        await tree.waitFor();
+        await page.keyboard.press('Escape');
+        await tree.waitFor({ state: 'hidden' });
         await shot(`topbar-closed-${width}-${theme}`);
         await openStart();
         const cards = right()
@@ -342,25 +420,29 @@ suite('installed employee topbar and native Start', () => {
             .getByRole('button', { name: '收起右侧边栏', exact: true })
             .count(),
         ).toBe(1);
-        // This deliberately remains a strict regression at 390. Native fullscreen
-        // currently covers the main header; do not weaken it to DOM existence.
-        await fourVisible();
-        for (const [index, kind] of kinds.entries()) {
-          await entries()
-            .getByRole('button', {
-              name: new RegExp(`^${labels[index]}(?:，|$)`),
-            })
-            .click();
-          await page.waitForFunction(
-            (kind) =>
-              window.__allricePanelsIntegration!.evidence().activeKind ===
-              `allrice-employee-panels.${kind}`,
-            kind,
-          );
+        if (mobile) await fourHidden();
+        else {
           await fourVisible();
+          for (const [index, kind] of kinds.entries()) {
+            await entries()
+              .getByRole('button', {
+                name: new RegExp(`^${labels[index]}(?:，|$)`),
+              })
+              .click();
+            await page.waitForFunction(
+              (kind) =>
+                window.__allricePanelsIntegration!.evidence().activeKind ===
+                `allrice-employee-panels.${kind}`,
+              kind,
+            );
+            await fourVisible();
+          }
         }
         await collapse();
-        await fourVisible();
+        if (mobile) {
+          await fourHidden();
+          await nativeHeader(shortTitle, width);
+        } else await fourVisible();
         await openStart(); // Reopening after a selected business tab must be Start.
         await collapse();
         expect(
