@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { build, type Loader, type PluginBuild } from 'esbuild';
 import { panelsRev2Head, panelsRev2Sources } from './employee-panels-baseline';
 import { createLegacySidebarSnapshot } from './legacy-sidebar-baseline';
+import {
+  derivePinnedReferenceStyle,
+  referenceStyleBoundaryId,
+} from './employee-panels-reference-style';
 
 export const panelsReferenceCarrierId = 'pinned-rev2-public-slot-v1';
 const root = fileURLToPath(new URL('../../../', import.meta.url));
@@ -19,7 +23,10 @@ const files = {
   javascript: 'panels-reference-carrier.cjs',
   components: 'panels-reference-components.css',
   globals: 'panels-reference-globals.css',
+  surface: 'panels-reference-surface.css',
+  rules: 'panels-reference-style-rules.json',
 } as const;
+const cssScope = `${referenceStyleBoundaryId}: fixed globals/components are preserved separately; only their mapped derivative applies inside the unboxed reference document/body owners. Native Host chrome and viewport are outside that scope.`;
 const replaySources = {
   'baseline.tsx':
     'fab7d7e1b73e94c191ce953ebea2c55265092810ea348fc225ca26ca8b0c6b99',
@@ -68,6 +75,7 @@ export type NativePanelsHostBudget = {
   mode: string | null;
   session: string | null;
   open: boolean;
+  chrome: Record<string, string | null>;
 };
 
 /** Compare only native DOM outside either component wrapper. The wrapper's
@@ -94,6 +102,8 @@ export function compareNativePanelsHostBudget(
   };
   for (const key of ['mode', 'session', 'open'] as const)
     if (actual[key] !== expected[key]) differences.push(key);
+  if (JSON.stringify(actual.chrome) !== JSON.stringify(expected.chrome))
+    differences.push('native chrome style');
   rect('native tab', actual.tab, expected.tab);
   rect('native panel', actual.panel, expected.panel);
   rect('available clip', actual.available, expected.available);
@@ -342,13 +352,17 @@ export async function writeEmployeePanelsReferenceCarrier(
         resolveDir: resolve(root, 'apps/web/app'),
       },
     });
-    contents = {
+    const raw = {
       javascript: result.outputFiles!.find((file) => file.path.endsWith('.js'))!
         .text,
       components:
         result.outputFiles!.find((file) => file.path.endsWith('.css'))!.text +
         '\n.m0-before{height:100%;overflow:auto;background:var(--dsw-alias-bg-base);color:var(--dsw-alias-label-primary)}',
       globals: globals.outputFiles![0]!.text,
+    };
+    contents = {
+      ...raw,
+      ...derivePinnedReferenceStyle(raw.globals, raw.components),
     };
     const inputs = await Promise.all(
       [
@@ -403,8 +417,7 @@ export async function writeEmployeePanelsReferenceCarrier(
           { file, sha256: hash(contents[key as keyof Contents]) },
         ]),
       ) as CarrierMetadata['artifacts'],
-      cssScope:
-        'Original pinned globals apply document-wide on reference page only, before native mount; component CSS has source-qualified names. Actual page receives neither. Host geometry/paint/full frames remain evidence and original gates stay strict.',
+      cssScope,
     };
   }
   validateReferenceCarrier(
@@ -414,6 +427,16 @@ export async function writeEmployeePanelsReferenceCarrier(
     entrySha256,
     lockSha256,
   );
+  const derived = derivePinnedReferenceStyle(
+    contents.globals,
+    contents.components,
+  );
+  if (
+    metadata.cssScope !== cssScope ||
+    contents.surface !== derived.surface ||
+    contents.rules !== derived.rules
+  )
+    throw Error('Reference derived style boundary mismatch');
   for (const [key, file] of Object.entries(files))
     await writeFile(join(artifacts, file), contents[key as keyof Contents]);
   const metadataBytes =

@@ -11,7 +11,6 @@ import { EnterpriseMaterialsPanel } from '../../../../../apps/web/app/chatflow/e
 import { WorkbenchFilesPanel } from '../../../../../apps/web/app/chatflow/workbench-files-panel';
 import { EmployeeMemorySidebar } from '../../../../../apps/web/app/chatflow/employee-memory-sidebar';
 import { EmployeeCapabilitiesPanel } from '../../../../../apps/web/app/chatflow/employee-capabilities-panel';
-import { applyTheme } from '../../../../../apps/web/lib/theme/theme';
 import { syntheticPanelSnapshot } from './presentation';
 import { panelStates, type PanelsState } from './data';
 
@@ -75,6 +74,36 @@ export function renderReferenceContent(
   }
 }
 
+/** Unboxed equivalents of the pinned document root/body. They own the old
+ * tokens and theme selectors; the public native pane owns all geometry. */
+export function renderReferenceSurface(
+  content: React.ReactNode,
+  theme: 'light' | 'dark',
+  width: number,
+  height: number,
+) {
+  return (
+    <div
+      data-panels-reference-document={referenceCarrierId}
+      data-theme={theme}
+      data-allrice-framework="v2"
+    >
+      <div
+        data-panels-reference-body=""
+        data-ds-dark-theme={theme === 'dark' ? '' : undefined}
+      >
+        <div
+          data-panels-reference-carrier={referenceCarrierId}
+          className="m0-before"
+          style={{ width, height }}
+        >
+          {content}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /** Callable test contribution: the real Host owns React, tab/session scope and
  * unmount. There is no independent createRoot, product binder or business owner. */
 export function createReferenceFixture() {
@@ -112,7 +141,6 @@ function installReference(ctx: Context) {
   )
     throw Error('Invalid pinned reference carrier options');
   ctx.theme.setTheme(theme as 'light' | 'dark');
-  applyTheme(theme as 'light' | 'dark');
   for (const key of referenceKinds) {
     const id = `allrice-employee-panels.${key}`;
     ctx.effect(() =>
@@ -133,14 +161,11 @@ function installReference(ctx: Context) {
             [key, state, active],
           );
           if (!active) return null;
-          return (
-            <div
-              data-panels-reference-carrier={referenceCarrierId}
-              className="m0-before"
-              style={{ width, height }}
-            >
-              {content}
-            </div>
+          return renderReferenceSurface(
+            content,
+            theme as 'light' | 'dark',
+            width,
+            height,
           );
         },
       ),

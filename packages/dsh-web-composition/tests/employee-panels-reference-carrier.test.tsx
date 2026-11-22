@@ -30,7 +30,13 @@ import {
   createReferenceFixture,
   referenceKinds,
   renderReferenceContent,
+  renderReferenceSurface,
 } from './fixtures/employee-panels/reference';
+import {
+  derivePinnedReferenceStyle,
+  projectReferenceStyleSnapshot,
+  referenceDocumentSelector,
+} from './employee-panels-reference-style';
 import { nativeClientModule } from './native-client-module.mjs';
 import { installedFixtureComposition } from './installed-profile';
 import { panelStates, type PanelsState } from './fixtures/employee-panels/data';
@@ -62,6 +68,11 @@ const nativeBudget = (): NativePanelsHostBudget => ({
   mode: 'push',
   session: 'native-session-A',
   open: true,
+  chrome: {
+    boxSizing: 'content-box',
+    fontFamily: 'native Host font',
+    cornerShape: 'superellipse(1.5)',
+  },
 });
 it('accepts equal independent native pane and clip budgets', () => {
   expect(compareNativePanelsHostBudget(nativeBudget(), nativeBudget())).toEqual(
@@ -74,6 +85,7 @@ it.each([
   'outer-position',
   'clip',
   'clip-css',
+  'chrome',
   'missing-tab',
   'empty-clip',
 ] as const)(
@@ -88,6 +100,7 @@ it.each([
     else if (mutation === 'outer-position') expected.panel!.x += 1;
     else if (mutation === 'clip') expected.available.width -= 2;
     else if (mutation === 'clip-css') expected.clips[0]!.css[0] = 'visible';
+    else if (mutation === 'chrome') expected.chrome.boxSizing = 'border-box';
     else if (mutation === 'missing-tab') expected.tab = null;
     else expected.available.width = 0;
     expect(actualWrapper).toEqual(expectedWrapper);
@@ -634,6 +647,8 @@ const codecFixture = () => {
     javascript: 'synthetic codec JS',
     components: 'synthetic codec CSS',
     globals: 'synthetic codec globals',
+    surface: 'synthetic codec derivative',
+    rules: 'synthetic codec source mappings',
   };
   const metadata: Parameters<typeof validateReferenceCarrier>[0] = {
     id: panelsReferenceCarrierId,
@@ -681,6 +696,14 @@ const codecFixture = () => {
         file: 'panels-reference-globals.css',
         sha256: hash(contents.globals),
       },
+      surface: {
+        file: 'panels-reference-surface.css',
+        sha256: hash(contents.surface),
+      },
+      rules: {
+        file: 'panels-reference-style-rules.json',
+        sha256: hash(contents.rules),
+      },
     },
     cssScope: 'synthetic codec only',
   };
@@ -713,6 +736,8 @@ it.each([
   'javascript',
   'components',
   'globals',
+  'surface',
+  'rules',
   'entry',
   'missing-source',
   'duplicate-source',
@@ -720,7 +745,11 @@ it.each([
   'current-product-input',
 ] as const)('rejects reference artifact corruption: %s', (mutation) => {
   const x = codecFixture();
-  if (['javascript', 'components', 'globals'].includes(mutation))
+  if (
+    ['javascript', 'components', 'globals', 'surface', 'rules'].includes(
+      mutation,
+    )
+  )
     x.contents[mutation as keyof typeof x.contents] += 'tampered';
   else if (mutation === 'entry') x.metadata.entrySha256 = hash('wrong entry');
   else if (mutation === 'missing-source') x.metadata.sources.shift();
@@ -748,7 +777,7 @@ it.each([
   ).toThrow();
 });
 
-it('selects only the explicit reference executable and keeps its global CSS/HTML attribute lifetime off the actual branch', async () => {
+it('isolates reference surface CSS without mutating either Host document and removes only its own styles', async () => {
   const root = await mkdtemp(join(tmpdir(), 'allrice-reference-codec-'));
   roots.push(root);
   const reference = {
@@ -756,6 +785,8 @@ it('selects only the explicit reference executable and keeps its global CSS/HTML
     javascript:
       'module.exports.createReferenceFixture=()=>({inject:[],apply:(ctx)=>{ctx.referenceApplied=true;}});',
     globals: '/* synthetic reference globals */',
+    surface: '/* synthetic isolated surface CSS */',
+    rules: '{}',
     components: '/* synthetic component CSS */',
     metadataSha256: hash('synthetic carrier'),
     metadata: { entrySha256: hash('synthetic entry'), artifacts: {} },
@@ -805,20 +836,131 @@ it('selects only the explicit reference executable and keeps its global CSS/HTML
     selected.fixture.apply(ctx as unknown as Context);
     expect(selected.requested).toEqual([]);
     expect(ctx.referenceApplied).toBe(true);
-    expect(document.styles[0]!.textContent).toBe(
-      reference.globals + '\n' + reference.components,
-    );
+    expect(document.styles[0]!.textContent).toBe(reference.surface);
     expect(
       document.documentElement.getAttribute('data-allrice-framework'),
-    ).toBe('v2');
+    ).toBe(previous);
     cleanup.reverse().forEach((dispose) => dispose());
     expect(document.styles).toHaveLength(0);
     expect(
       document.documentElement.getAttribute('data-allrice-framework'),
     ).toBe(previous);
   }
+  // Independent Host documents have independent effect lifetimes. A dispose
+  // removes only this contribution's style, never another Host or foreign CSS.
+  const left = documentDouble(),
+    right = documentDouble();
+  const foreign = left.createElement();
+  foreign.textContent = 'foreign Host CSS';
+  left.head.append(foreign);
+  const cleanups: (() => void)[][] = [[], []];
+  for (const [index, document] of [left, right].entries()) {
+    load('?allricePanelsReference=' + reference.id, document).fixture.apply({
+      effect: (setup: () => () => void) => cleanups[index]!.push(setup()),
+    } as unknown as Context);
+  }
+  expect(left.styles).toHaveLength(2);
+  expect(right.styles).toHaveLength(1);
+  cleanups[0]!.reverse().forEach((dispose) => dispose());
+  expect(left.styles).toEqual([foreign]);
+  expect(right.styles[0]!.textContent).toBe(reference.surface);
+  cleanups[1]!.reverse().forEach((dispose) => dispose());
+  expect(right.styles).toHaveLength(0);
   expect(load('').requested).toContain('@allrice/dsh-web-composition');
   expect(() => load('?allricePanelsReference=unknown')).toThrow(
     'Unknown reference carrier',
   );
 });
+
+it('projects the complete fixed-rule shape while preserving declarations, order and root/body theme specificity', () => {
+  const viewport =
+    'html{min-height:100%;overflow-y:scroll;scrollbar-gutter:stable}body{margin:0;min-height:100%}';
+  const input =
+    ':root{--font:system-ui}:root[data-theme=dark]{color-scheme:dark}body{--ui:var(--font)}body[data-ds-dark-theme]{color:white}*{box-sizing:border-box}[data-allrice-framework=v2]{--framework:v2}@media(max-width:760px){body button{font:inherit}}' +
+    viewport;
+  const { projected, mappings } = projectReferenceStyleSnapshot(
+    input,
+    'globals',
+  );
+  expect(projected).toContain(
+    `:is(:root,:where(${referenceDocumentSelector})):where(:scope){--font:system-ui}`,
+  );
+  expect(projected).toContain(
+    ':where(:scope)[data-theme=dark]{color-scheme:dark}',
+  );
+  expect(projected).toContain(
+    ':is(body,:where([data-panels-reference-body]))[data-ds-dark-theme]{color:white}',
+  );
+  expect(projected).toContain(
+    ':where(:scope)[data-allrice-framework=v2]{--framework:v2}',
+  );
+  expect(projected).not.toContain('scrollbar-gutter');
+  expect(
+    mappings.map((x) => x.policy).filter((x) => x.startsWith('original-')),
+  ).toEqual(['original-html-viewport', 'original-body-viewport']);
+  expect(mappings).toHaveLength(9);
+  for (const mapping of mappings) {
+    const original = input.slice(mapping.offset);
+    expect(original.startsWith(mapping.originalSelector + '{')).toBe(true);
+  }
+  expect(() =>
+    projectReferenceStyleSnapshot(
+      input.replace('overflow-y:scroll', 'overflow-y:hidden'),
+      'globals',
+    ),
+  ).toThrow('missing or changed');
+  expect(() =>
+    projectReferenceStyleSnapshot(
+      '@layer unexpected{button{color:red}}',
+      'components',
+    ),
+  ).toThrow('Unrecognized');
+  expect(() => derivePinnedReferenceStyle(input, '')).toThrow(
+    'Unrecognized pinned',
+  );
+});
+
+it('contains CSS-only named definitions without changing their values or leaking their document-global names', () => {
+  const raw =
+    '@property --allrice-workbench-offset{syntax: "<length>"; inherits: true; initial-value: 0px;}@keyframes employee_skills_host_spin{to{transform:rotate(360deg)}}.x{--allrice-workbench-offset:0px;animation:employee_skills_host_spin 1s linear}';
+  const result = projectReferenceStyleSnapshot(raw, 'components');
+  expect(result.projected).toContain(
+    '@property --reference-rev2-workbench-offset{syntax: "<length>"; inherits: true; initial-value: 0px;}',
+  );
+  expect(result.projected).toContain(
+    'animation:reference_rev2_employee_skills_host_spin 1s linear',
+  );
+  expect(result.projected).not.toContain('--allrice-workbench-offset');
+  expect(() =>
+    projectReferenceStyleSnapshot(
+      raw.replace('initial-value: 0px', 'initial-value: 1px'),
+      'components',
+    ),
+  ).toThrow('Unrecognized');
+});
+
+it.each(['light', 'dark'] as const)(
+  'projects the pinned %s root/body attributes onto unboxed contribution owners, not the Host',
+  (theme) => {
+    const node = renderReferenceSurface(
+      'same original component',
+      theme,
+      647,
+      962,
+    );
+    expect(node.props['data-theme']).toBe(theme);
+    expect(node.props['data-allrice-framework']).toBe('v2');
+    const body = node.props.children;
+    expect(body.props['data-panels-reference-body']).toBe('');
+    expect(body.props['data-ds-dark-theme']).toBe(
+      theme === 'dark' ? '' : undefined,
+    );
+    expect(body.props.children.props.children).toBe('same original component');
+    expect(body.props.children.props.style).toEqual({
+      width: 647,
+      height: 962,
+    });
+    expect(node.props.style).toBeUndefined();
+    expect(body.props.style).toBeUndefined();
+  },
+);

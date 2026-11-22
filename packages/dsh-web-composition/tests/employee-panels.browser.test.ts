@@ -240,6 +240,20 @@ const inspectContent = (page: Page, kind: Kind, includePaint = false) =>
       'div[data-sidebar-right-tab][data-sidebar-right-occurrence]',
     );
     const nativePanel = nativeTab?.closest('[data-sidebar-right-panel]');
+    const chrome = Object.fromEntries(
+      [nativeTab, nativePanel].flatMap((element, index) =>
+        [
+          'box-sizing',
+          'font-family',
+          'corner-shape',
+          '-webkit-font-smoothing',
+          'text-autospace',
+        ].map((property) => [
+          `${index}:${property}`,
+          element ? getComputedStyle(element).getPropertyValue(property) : null,
+        ]),
+      ),
+    );
     const available = { x: 0, y: 0, width: innerWidth, height: innerHeight };
     const clips: { rect: typeof available; css: string[] }[] = [];
     for (let parent = nativeTab; parent; parent = parent.parentElement) {
@@ -289,6 +303,7 @@ const inspectContent = (page: Page, kind: Kind, includePaint = false) =>
       root: box(node),
       parent: box(node.parentElement!),
       nativeHost: {
+        chrome,
         tab: nativeTab ? box(nativeTab) : null,
         panel: nativePanel ? box(nativePanel) : null,
         available,
@@ -320,6 +335,19 @@ const inspectContent = (page: Page, kind: Kind, includePaint = false) =>
               .map(paintNode),
             activeElement: document.activeElement?.tagName,
             elementAtViewportOrigin: document.elementFromPoint(0, 0)?.tagName,
+            referenceSurface: (() => {
+              const owner = node.closest('[data-panels-reference-document]');
+              const body = node.closest('[data-panels-reference-body]');
+              return owner && body
+                ? {
+                    theme: owner.getAttribute('data-theme'),
+                    framework: owner.getAttribute('data-allrice-framework'),
+                    dark: body.hasAttribute('data-ds-dark-theme'),
+                    rootDisplay: getComputedStyle(owner).display,
+                    bodyDisplay: getComputedStyle(body).display,
+                  }
+                : null;
+            })(),
             referenceStyle:
               document
                 .querySelector('style[data-panels-reference-carrier]')
@@ -1033,8 +1061,8 @@ suite('installed native employee panels with synthetic business owner', () => {
                 path: join(artifacts, `${prefix}-rev2-frame.png`),
                 fullPage: true,
               });
-              // Original globals are document-wide on reference only. Keep the
-              // real public Host's resulting budget/clip/placement accountable.
+              // Scoped legacy content must leave the real native chrome,
+              // independent pane/clip budget and actual placement unchanged.
               expect
                 .soft(
                   compareNativePanelsHostBudget(
@@ -1058,6 +1086,24 @@ suite('installed native employee panels with synthetic business owner', () => {
                   )
                   .toBeLessThanOrEqual(0.5);
               }
+              expect
+                .soft(
+                  expected.paintEvidence!.referenceSurface,
+                  prefix + ' isolated pinned document/body owners',
+                )
+                .toEqual({
+                  theme,
+                  framework: 'v2',
+                  dark: theme === 'dark',
+                  rootDisplay: 'contents',
+                  bodyDisplay: 'contents',
+                });
+              expect
+                .soft(
+                  actual.paintEvidence!.referenceSurface,
+                  prefix + ' no reference owner on actual',
+                )
+                .toBeNull();
               expect
                 .soft(
                   actual.paintEvidence!.referenceStyle,

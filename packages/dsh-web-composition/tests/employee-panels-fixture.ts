@@ -59,7 +59,7 @@ export async function writeEmployeePanelsFixture(
     ? `window.__ModuleLoader__.load({id:'@allrice/composition-test-fixture',factory:(require)=>{
 const requestedReference=new URLSearchParams(location.search).get('allricePanelsReference');if(requestedReference!==null&&requestedReference!==${JSON.stringify(reference.id)})throw Error('Unknown reference carrier identity');const referenceMode=requestedReference!==null;
 const fixture=referenceMode?(()=>{const module={exports:{}};const exports=module.exports;${reference.javascript}\nreturn module.exports.createReferenceFixture();})():(()=>{const module={exports:{}};const exports=module.exports;${js}\nreturn module.exports.createFixture(require);})();
-const apply=fixture.apply;fixture.apply=(ctx)=>{ctx.effect(()=>{const style=document.createElement('style');const html=document.documentElement;const previous=html.getAttribute('data-allrice-framework');if(referenceMode){style.dataset.panelsReferenceCarrier=${JSON.stringify(reference.metadataSha256)};html.setAttribute('data-allrice-framework','v2');}else style.dataset.syntheticPanelsOwner='';style.textContent=referenceMode?${JSON.stringify(reference.globals + '\n' + reference.components)}:${JSON.stringify(css)};document.head.append(style);return()=>{style.remove();if(referenceMode){if(html.getAttribute('data-allrice-framework')!=='v2')throw Error('Reference framework attribute changed outside fixture');if(previous===null)html.removeAttribute('data-allrice-framework');else html.setAttribute('data-allrice-framework',previous);}};});apply(ctx);};return fixture;}});\n`
+const apply=fixture.apply;fixture.apply=(ctx)=>{ctx.effect(()=>{const style=document.createElement('style');if(referenceMode)style.dataset.panelsReferenceCarrier=${JSON.stringify(reference.metadataSha256)};else style.dataset.syntheticPanelsOwner='';style.textContent=referenceMode?${JSON.stringify(reference.surface)}:${JSON.stringify(css)};document.head.append(style);return()=>style.remove();});apply(ctx);};return fixture;}});\n`
     : `window.__ModuleLoader__.load({id:'@allrice/composition-test-fixture',factory:(require)=>{const module={exports:{}};const exports=module.exports;${js}\nconst fixture=module.exports.createFixture(require);const apply=fixture.apply;fixture.apply=(ctx)=>{ctx.effect(()=>{const style=document.createElement('style');style.dataset.syntheticPanelsOwner='';style.textContent=${JSON.stringify(css)};document.head.append(style);return()=>style.remove();});apply(ctx);};return fixture;}});\n`;
   const file = join(artifacts, 'panels-fixture-client.js');
   await writeFile(file, client);
@@ -80,7 +80,7 @@ const apply=fixture.apply;fixture.apply=(ctx)=>{ctx.effect(()=>{const style=docu
                 entrySha256: reference.metadata.entrySha256,
                 artifacts: reference.metadata.artifacts,
                 combinedCssSha256: createHash('sha256')
-                  .update(reference.globals + '\n' + reference.components)
+                  .update(reference.surface)
                   .digest('hex'),
               },
             }
