@@ -55,3 +55,25 @@ export type {
   PersonVmResourcePort,
 } from './resource-contract.ts';
 export { createPersonVmResourcePort } from './resource-watch.ts';
+
+export {
+  createPersonVmCommandMemoryObserver,
+  PERSON_VM_COMMAND_MEMORY_PROGRAM,
+} from './native-command-observer.ts';
+export type {
+  PersonVmManagedProbeJob,
+  PersonVmManagedProbePort,
+  PersonVmNativeCommandExecution,
+  PersonVmCommandMemoryCompletion,
+} from './native-command-observer.ts';
+
+export {
+  createPersonVmGuestMemoryReader,
+  PERSON_VM_GUEST_CONTROL_READER,
+} from './native-resource.ts';
+export type {
+  PersonVmGuestControlValue,
+  PersonVmGuestControlTarget,
+  PersonVmGuestControlReadback,
+  PersonVmGuestMemoryReadback,
+} from './native-resource.ts';

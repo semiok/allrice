@@ -160,6 +160,7 @@ export function createPersonVmResourcePort(input: {
             return null;
           if (facts.physical.state === 'verified') {
             if (
+              facts.physical.scope !== 'host-physical' ||
               !Number.isSafeInteger(facts.physical.enforcedBytes) ||
               facts.physical.enforcedBytes <= 0 ||
               !text(facts.physical.sourceRef)

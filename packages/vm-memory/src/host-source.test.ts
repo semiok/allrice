@@ -91,6 +91,7 @@ const resourceFacts = (): PersonVmNativeResourceFacts => ({
   evidenceRef: 'synthetic-native-evidence',
   physical: {
     state: 'verified',
+    scope: 'host-physical',
     configuredBytes: VM_PHYSICAL_MEMORY_BYTES,
     enforcedBytes: VM_PHYSICAL_MEMORY_BYTES,
     sourceRef: 'synthetic-runtime-cap',
@@ -98,17 +99,19 @@ const resourceFacts = (): PersonVmNativeResourceFacts => ({
   host: { vmRssBytes: 42, helperRssBytes: null, swapBytes: 0 },
 });
 const pressureFacts = (
-  pressure: VmMemoryHostPressureObservation['pressure'] = 'normal',
+  pressure: VmMemoryHostPressureObservation['pressure'],
+  capacity: VmMemoryHostPressureObservation['capacity'],
 ): VmMemoryHostPressureObservation => ({
   binding,
   revision: 'synthetic-pressure-1',
   evidenceRef: 'synthetic-host-evidence',
   policyRef: 'synthetic-approved-policy',
   pressure,
+  capacity,
 });
 const fixture = () => {
   const resources = new Pulse(resourceFacts());
-  const pressure = new Pulse(pressureFacts());
+  const pressure = new Pulse(pressureFacts('normal', 'parallel'));
   const resourceWatch = vi.fn(async () => resources);
   const pressureWatch = vi.fn(async () => pressure);
   const resourcePort: PersonVmResourcePort = { watch: resourceWatch };
@@ -137,7 +140,7 @@ const combination = () => {
     evidenceRef: 'synthetic-liveness',
   });
   const native = new Pulse('synthetic-resource-1');
-  const pressure = new Pulse(pressureFacts());
+  const pressure = new Pulse(pressureFacts('normal', 'parallel'));
   const nativePort: PersonVmNativeResourcePort = {
     subscribe: async () => native,
     read: vi.fn(async () => ({ ...resourceFacts(), revision: native.value! })),
@@ -246,6 +249,7 @@ describe('host memory source consumer (synthetic inputs; not VM acceptance)', ()
             }
           : {
               state: 'verified',
+              scope: 'host-physical',
               configuredBytes: VM_PHYSICAL_MEMORY_BYTES,
               enforcedBytes: state === 'null' ? null : undefined,
               sourceRef: 'synthetic',
@@ -253,6 +257,29 @@ describe('host memory source consumer (synthetic inputs; not VM acceptance)', ()
       h.resources.publish({
         ...facts,
         physical,
+        guestControls: {
+          binding,
+          scope: 'guest-cgroup',
+          boundary: 'guest-root-cooperative',
+          state: 'verified',
+          revision: 'synthetic-guest-2GiB',
+          evidenceRef: 'synthetic-guest-cgroup-controls',
+          groups: [
+            {
+              target: 'vm-controls',
+              path: '/sys/fs/cgroup',
+              state: 'verified',
+              reason: null,
+              observed: {
+                device: '5',
+                inode: '1',
+                high: VM_PHYSICAL_MEMORY_BYTES,
+                max: VM_PHYSICAL_MEMORY_BYTES,
+                swapMax: VM_PHYSICAL_MEMORY_BYTES,
+              },
+            },
+          ],
+        },
         host: { ...facts.host, vmRssBytes: VM_PHYSICAL_MEMORY_BYTES },
       } as PersonVmNativeResourceFacts);
       const watch = await createVmMemoryAdmission(h.source).watch(
@@ -267,12 +294,87 @@ describe('host memory source consumer (synthetic inputs; not VM acceptance)', ()
     },
   );
 
+  it.each([undefined, null, 'guest-cgroup', 'configured-only'])(
+    'does not accept guest or missing physical scope %s despite matching bytes',
+    async (scope) => {
+      const h = fixture();
+      h.resources.publish({
+        ...resourceFacts(),
+        physical: { ...resourceFacts().physical, scope },
+      } as unknown as PersonVmNativeResourceFacts);
+      const watch = await createVmMemoryAdmission(h.source).watch(
+        binding,
+        new AbortController().signal,
+      );
+      try {
+        expect(() => watch.read()).toThrow(
+          expect.objectContaining({ code: 'MEMORY_OBSERVATION_UNAVAILABLE' }),
+        );
+      } finally {
+        await watch.close();
+      }
+    },
+  );
+
+  it.each([undefined, null, '', 'normal', 'PARALLEL', 1])(
+    'does not default malformed host capacity %s to parallel',
+    async (capacity) => {
+      const h = fixture();
+      h.pressure.publish({
+        ...pressureFacts('normal', 'parallel'),
+        capacity,
+      } as unknown as VmMemoryHostPressureObservation);
+      const watch = await h.source.watch(binding, new AbortController().signal);
+      try {
+        expect(watch.read()).toBe(null);
+      } finally {
+        await watch.close();
+      }
+    },
+  );
+
+  it('preserves serial separately through real resource/source/admission composition; stop only queues this gate', async () => {
+    const h = combination();
+    const watch = await createVmMemoryAdmission(h.source).watch(
+      binding,
+      new AbortController().signal,
+    );
+    try {
+      await turn();
+      await watch.wait(); // Initial resource notification, not permission.
+      expect(watch.read()).toBe('ready');
+      for (const [capacity, pressure, expected] of [
+        ['serial', 'normal', 'serial'],
+        ['stop', 'pressure', 'queued'],
+        ['serial', 'pressure', 'serial'],
+        ['parallel', 'normal', 'ready'],
+      ] as const) {
+        const notified = watch.wait();
+        h.pressure.publish({
+          ...pressureFacts(pressure, capacity),
+          revision: `host-${pressure}-${capacity}`,
+        });
+        await notified;
+        expect(watch.read()).toBe(expected);
+        expect(h.lifecycle.close).not.toHaveBeenCalled();
+        expect(h.native.close).not.toHaveBeenCalled();
+      }
+      expect(h.state.guardTriggered).toBe(false);
+    } finally {
+      await watch.close();
+    }
+    expect(
+      h.lifecycle.activeWaits + h.native.activeWaits + h.pressure.activeWaits,
+    ).toBe(0);
+  });
+
   it('preserves a verified different cap so the real admission entry rejects it', async () => {
     const h = fixture();
     h.resources.publish({
       ...resourceFacts(),
       physical: {
         state: 'verified',
+        scope: 'host-physical',
         configuredBytes: VM_PHYSICAL_MEMORY_BYTES,
         enforcedBytes: 4 * 1024 ** 3,
         sourceRef: 'synthetic-actual-cap',
@@ -291,10 +393,10 @@ describe('host memory source consumer (synthetic inputs; not VM acceptance)', ()
 
   it.each([
     null,
-    pressureFacts('unavailable'),
-    { ...pressureFacts(), evidenceRef: '' },
-    { ...pressureFacts(), policyRef: '' },
-    { ...pressureFacts(), revision: '' },
+    pressureFacts('unavailable', 'parallel'),
+    { ...pressureFacts('normal', 'parallel'), evidenceRef: '' },
+    { ...pressureFacts('normal', 'parallel'), policyRef: '' },
+    { ...pressureFacts('normal', 'parallel'), revision: '' },
   ])(
     'missing/unavailable/unattributed pressure %# cannot become normal',
     async (facts) => {
@@ -318,11 +420,14 @@ describe('host memory source consumer (synthetic inputs; not VM acceptance)', ()
   ] as const)('requires the same %s on both sources', async (field) => {
     const h = fixture();
     const other = { ...binding, [field]: field === 'leaseEpoch' ? 2 : 'other' };
-    h.pressure.publish({ ...pressureFacts(), binding: other });
+    h.pressure.publish({
+      ...pressureFacts('normal', 'parallel'),
+      binding: other,
+    });
     const watch = await h.source.watch(binding, new AbortController().signal);
     try {
       expect(watch.read()).toBe(null);
-      h.pressure.publish(pressureFacts());
+      h.pressure.publish(pressureFacts('normal', 'parallel'));
       h.resources.publish({ ...resourceFacts(), binding: other });
       expect(watch.read()).toBe(null);
     } finally {
@@ -332,7 +437,7 @@ describe('host memory source consumer (synthetic inputs; not VM acceptance)', ()
 
   it('retains a prior pressure pulse; notification stays queued and waits do not accumulate or spin', async () => {
     const h = fixture();
-    h.pressure.publish(pressureFacts('pressure'));
+    h.pressure.publish(pressureFacts('pressure', 'stop'));
     const watch = await createVmMemoryAdmission(h.source).watch(
       binding,
       new AbortController().signal,
@@ -342,7 +447,7 @@ describe('host memory source consumer (synthetic inputs; not VM acceptance)', ()
       expect(watch.read()).toBe('queued');
       for (let index = 0; index < 3; index++) {
         h.pressure.publish({
-          ...pressureFacts('pressure'),
+          ...pressureFacts('pressure', 'stop'),
           revision: `pressure-${index}`,
         });
         await watch.wait();
@@ -395,7 +500,7 @@ describe('host memory source consumer (synthetic inputs; not VM acceptance)', ()
       h.pressure.publish(null);
       expect(watch.read()).toBe(null);
       h.pressure.publish({
-        ...pressureFacts('pressure'),
+        ...pressureFacts('pressure', 'stop'),
         revision: 'reconnected-pressure',
       });
       expect(watch.read()?.pressure).toBe('pressure');
@@ -408,7 +513,7 @@ describe('host memory source consumer (synthetic inputs; not VM acceptance)', ()
     const h = fixture();
     let reads = 0;
     vi.spyOn(h.pressure, 'read').mockImplementation(() => ({
-      ...pressureFacts(),
+      ...pressureFacts('normal', 'parallel'),
       revision: `revision-${reads++}`,
     }));
     const watch = await h.source.watch(binding, new AbortController().signal);
@@ -424,7 +529,7 @@ describe('host memory source consumer (synthetic inputs; not VM acceptance)', ()
     const watch = await h.source.watch(binding, new AbortController().signal);
     try {
       h.pressure.wait.mockRejectedValueOnce(new Error('synthetic disconnect'));
-      h.pressure.publish(pressureFacts()); // Release the already pending wait.
+      h.pressure.publish(pressureFacts('normal', 'parallel')); // Release the already pending wait.
       await turn();
       expect(watch.read()).toBe(null);
       await expect(watch.wait()).rejects.toMatchObject({

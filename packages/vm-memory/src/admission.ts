@@ -58,6 +58,7 @@ export function createVmMemoryAdmission(
             if (
               !observation ||
               observation.pressure === 'unavailable' ||
+              !['parallel', 'serial', 'stop'].includes(observation.capacity) ||
               !observation.revision.trim() ||
               !observation.evidenceRef.trim() ||
               ![
@@ -78,7 +79,11 @@ export function createVmMemoryAdmission(
             if (!['normal', 'pressure'].includes(observation.pressure))
               throw new VmMemoryError('MEMORY_OBSERVATION_UNAVAILABLE');
             // Guest counters are retained for diagnostics, never evaluated here.
-            return observation.pressure === 'normal' ? 'ready' : 'queued';
+            return observation.capacity === 'parallel'
+              ? 'ready'
+              : observation.capacity === 'serial'
+                ? 'serial'
+                : 'queued';
           } catch (cause) {
             if (cause instanceof VmMemoryError) throw cause;
             throw new VmMemoryError('MEMORY_OBSERVATION_UNAVAILABLE', {

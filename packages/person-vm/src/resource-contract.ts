@@ -1,5 +1,6 @@
 import type { RequestContext } from '@allrice/contracts';
 import type { PersonVmBinding } from './contract.ts';
+import type { PersonVmGuestMemoryReadback } from './native-resource.ts';
 
 /** Host facts only. The type does not authenticate a native producer. */
 export type PersonVmNativeResourceFacts = Readonly<{
@@ -7,9 +8,12 @@ export type PersonVmNativeResourceFacts = Readonly<{
   /** Must equal the native resource subscription's current revision. */
   revision: string;
   evidenceRef: string;
+  /** Guest controls are cooperative diagnostics, never host physical proof. */
+  guestControls?: PersonVmGuestMemoryReadback;
   physical:
     | Readonly<{
         state: 'verified';
+        scope: 'host-physical';
         configuredBytes: number;
         enforcedBytes: number;
         sourceRef: string;

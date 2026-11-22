@@ -5,7 +5,11 @@ import type {
   PersonVmResourceWatch,
 } from '@allrice/person-vm';
 import { VmMemoryError } from './contract.ts';
-import type { VmMemoryObservation, VmMemorySource } from './contract.ts';
+import type {
+  VmMemoryCapacity,
+  VmMemoryObservation,
+  VmMemorySource,
+} from './contract.ts';
 
 /** Trusted host policy output, never guest JSON. References identify evidence;
  * their presence alone does not authenticate a source or approve its policy. */
@@ -15,6 +19,7 @@ export type VmMemoryHostPressureObservation = Readonly<{
   revision: string;
   evidenceRef: string;
   policyRef: string;
+  capacity: VmMemoryCapacity;
   pressure: 'normal' | 'pressure' | 'unavailable';
 }>;
 
@@ -200,7 +205,9 @@ export function createVmMemoryHostSource(input: {
               host.policyRef,
             ].every(text) ||
             !['normal', 'pressure'].includes(host.pressure) ||
+            !['parallel', 'serial', 'stop'].includes(host.capacity) ||
             facts.physical.state !== 'verified' ||
+            facts.physical.scope !== 'host-physical' ||
             !text(facts.physical.sourceRef) ||
             !Number.isSafeInteger(facts.physical.configuredBytes) ||
             facts.physical.configuredBytes <= 0 ||
@@ -227,6 +234,7 @@ export function createVmMemoryHostSource(input: {
               host.policyRef,
             ]),
             pressure: host.pressure as 'normal' | 'pressure',
+            capacity: host.capacity,
             physical: Object.freeze({
               configuredBytes: facts.physical.configuredBytes,
               enforcedBytes: facts.physical.enforcedBytes,

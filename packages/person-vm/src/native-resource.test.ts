@@ -13,7 +13,8 @@ import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { runInNewContext } from 'node:vm';
-import type { PersonVmBinding } from './contract.ts';
+import { PersonVmError, type PersonVmBinding } from './contract.ts';
+import { spawnMicrosandboxManagedProbe } from './microsandbox-bootstrap.ts';
 import type {
   PersonVmManagedProbeJob,
   PersonVmManagedProbePort,
@@ -681,4 +682,352 @@ describe('managed guest control reader (synthetic cgroup2/native sources; not ph
       await first.catch(() => {});
     }
   });
+});
+
+/** Calls the actual extracted executor; only the public CLI transport and
+ * lifecycle authority are synthetic. No guest/VM execution or new executor. */
+function managedProtocol() {
+  const scopeAbort = new AbortController(),
+    cleanup = new AbortController();
+  const name = 'synthetic-native-sandbox',
+    jobId = 'synthetic-retained-probe';
+  const output = '{"version":1,"retained":"fast-probe"}';
+  let current = true;
+  const lost = new PersonVmError('LEASE_LOST');
+  const assertCurrent = vi.fn(async () => {
+    if (!current) throw lost;
+  });
+  const scope = { binding, signal: scopeAbort.signal, assertCurrent };
+  const raw = (args: string[]) => {
+    if (args[0] === 'exec') return jobId + '\n';
+    if (args[0] === 'wait')
+      return JSON.stringify({ code: 137, success: false, timed_out: false });
+    if (args[0] === 'kill') return '';
+    if (args[0] === 'logs')
+      return (
+        [output.slice(0, 13), output.slice(13)]
+          .map((d) => JSON.stringify({ id: jobId, s: 'stdout', e: null, d }))
+          .join('\n') + '\n'
+      );
+    throw new Error('unexpected synthetic public CLI operation');
+  };
+  const command = vi.fn<
+    Parameters<typeof spawnMicrosandboxManagedProbe>[0]['command']
+  >(async (args, signal) => {
+    signal.throwIfAborted();
+    return raw(args);
+  });
+  const spec = {
+    executable: '/fixed-node/bin/node',
+    args: ['-e', 'process.stdout.write("synthetic")'],
+    env: { SYNTHETIC: 'value with spaces' },
+    workdir: '/workspace',
+  };
+  return {
+    name,
+    jobId,
+    output,
+    command,
+    spec,
+    scope,
+    scopeAbort,
+    assertCurrent,
+    cleanup,
+    raw,
+    lost,
+    loseAuthority: () => {
+      current = false;
+    },
+    revoke: (reason: unknown) => {
+      current = false;
+      scopeAbort.abort(reason);
+    },
+    launch: () =>
+      spawnMicrosandboxManagedProbe(
+        { scope, name, cleanupTimeoutMs: 10_000, command },
+        spec,
+      ),
+  };
+}
+
+describe('extracted managed probe public protocol (synthetic transport, not VM acceptance)', () => {
+  it('uses exact detached job/wait and retained stdout logs, including a probe which exited before reading', async () => {
+    const h = managedProtocol();
+    const job = await h.launch();
+    expect(job.binding).toEqual(binding);
+    expect(job.jobId).toBe(h.jobId);
+    expect(h.command.mock.calls[0]).toEqual([
+      [
+        'exec',
+        h.name,
+        '--detach',
+        '--no-stdin',
+        '--no-tty',
+        '--env',
+        'SYNTHETIC=value with spaces',
+        '--workdir',
+        '/workspace',
+        '--',
+        h.spec.executable,
+        ...h.spec.args,
+      ],
+      h.scope.signal,
+    ]);
+    const caller = new AbortController();
+    expect(await job.wait(caller.signal)).toEqual({
+      exitCode: 137,
+      timedOut: false,
+    });
+    expect(await job.stdout(caller.signal)).toBe(h.output);
+    expect(h.command.mock.calls[1]).toEqual([
+      ['wait', h.name, '--job', h.jobId, '--format', 'json'],
+      expect.any(AbortSignal),
+      true,
+    ]);
+    expect(h.command.mock.calls[2]).toEqual([
+      ['logs', h.name, '--job', h.jobId, '--source', 'stdout', '--json'],
+      expect.any(AbortSignal),
+    ]);
+    expect(h.command.mock.calls.map(([args]) => args[0])).toEqual([
+      'exec',
+      'wait',
+      'logs',
+    ]);
+    expect(h.assertCurrent).toHaveBeenCalledTimes(6); // Before/after launch, wait, stdout.
+  });
+
+  it.each(['wait', 'stdout'] as const)(
+    'revocation after launch blocks ordinary %s but not exact independent cleanup',
+    async (operation) => {
+      const h = managedProtocol();
+      const job = await h.launch();
+      const reason = new Error('owner revoked after launch');
+      h.revoke(reason);
+      await expect(job[operation](new AbortController().signal)).rejects.toBe(
+        reason,
+      );
+      expect(h.command).toHaveBeenCalledOnce();
+      const assertions = h.assertCurrent.mock.calls.length;
+      expect(await job.cancelAndWait(h.cleanup.signal)).toEqual({
+        exitCode: 137,
+        timedOut: false,
+      });
+      expect(h.command.mock.calls.slice(1)).toEqual([
+        [['kill', h.name, '--job', h.jobId], h.cleanup.signal],
+        [
+          ['wait', h.name, '--job', h.jobId, '--format', 'json'],
+          h.cleanup.signal,
+          true,
+        ],
+      ]);
+      expect(h.assertCurrent).toHaveBeenCalledTimes(assertions);
+      expect(h.cleanup.signal.aborted).toBe(false);
+    },
+  );
+
+  it.each([
+    ['wait', 'scope'],
+    ['stdout', 'scope'],
+    ['wait', 'caller'],
+    ['stdout', 'caller'],
+  ] as const)(
+    '%s observes %s cancellation and waits for transport settlement',
+    async (operation, owner) => {
+      const h = managedProtocol();
+      const job = await h.launch();
+      const entered = gate(),
+        settledTransport = gate(),
+        caller = new AbortController();
+      const reason = new Error('owner revoked during native operation');
+      let running: AbortSignal | undefined;
+      h.command.mockImplementationOnce(async (args, signal) => {
+        running = signal;
+        entered.resolve();
+        await settledTransport.promise; // Deliberately ignores abort until joined.
+        return h.raw(args);
+      });
+      const pending = job[operation](caller.signal);
+      const rejected = expect(pending).rejects.toBe(reason);
+      let settled = false;
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      try {
+        await entered.promise;
+        if (owner === 'scope') h.revoke(reason);
+        else caller.abort(reason);
+        expect(running?.aborted).toBe(true);
+        expect(caller.signal.aborted).toBe(owner === 'caller');
+        expect(h.scope.signal.aborted).toBe(owner === 'scope');
+        await setImmediate();
+        expect(settled).toBe(false);
+        settledTransport.resolve();
+        await rejected;
+        expect(await job.cancelAndWait(h.cleanup.signal)).toEqual({
+          exitCode: 137,
+          timedOut: false,
+        });
+      } finally {
+        settledTransport.resolve();
+        await pending.catch(() => {});
+      }
+    },
+  );
+
+  it.each(['wait', 'stdout'] as const)(
+    'authority lost just before %s returns rejects retained output even without a signal event',
+    async (operation) => {
+      const h = managedProtocol();
+      const job = await h.launch();
+      h.command.mockImplementationOnce(async (args) => {
+        const result = h.raw(args);
+        h.loseAuthority();
+        return result;
+      });
+      await expect(job[operation](new AbortController().signal)).rejects.toBe(
+        h.lost,
+      );
+      expect(h.scope.signal.aborted).toBe(false);
+      const assertions = h.assertCurrent.mock.calls.length;
+      await job.cancelAndWait(h.cleanup.signal);
+      expect(h.assertCurrent).toHaveBeenCalledTimes(assertions);
+    },
+  );
+
+  it.each(['wait', 'stdout'] as const)(
+    'checks abort again after the final %s authority assertion settles',
+    async (operation) => {
+      const h = managedProtocol();
+      const job = await h.launch();
+      const reason = new Error('revoked while final fence settled');
+      h.assertCurrent
+        .mockResolvedValueOnce(undefined)
+        .mockImplementationOnce(async () => {
+          h.scopeAbort.abort(reason);
+        });
+      await expect(job[operation](new AbortController().signal)).rejects.toBe(
+        reason,
+      );
+      await job.cancelAndWait(h.cleanup.signal);
+    },
+  );
+
+  it('retains a late launch handle after revocation and cannot reject before exact independent cleanup wait joins', async () => {
+    const h = managedProtocol();
+    const entered = gate(),
+      admitted = gate(),
+      cleanupEntered = gate(),
+      joined = gate();
+    const reason = new Error('revoked during dispatch');
+    h.command.mockImplementation(async (args, signal) => {
+      if (args[0] === 'exec') {
+        entered.resolve();
+        await admitted.promise;
+        return h.raw(args);
+      }
+      expect(signal).not.toBe(h.scope.signal);
+      expect(signal.aborted).toBe(false);
+      if (args[0] === 'wait') {
+        cleanupEntered.resolve();
+        await joined.promise;
+      }
+      return h.raw(args);
+    });
+    const launching = h.launch();
+    const rejected = expect(launching).rejects.toBe(reason);
+    let settled = false;
+    void launching.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    try {
+      await entered.promise;
+      h.revoke(reason);
+      admitted.resolve();
+      await cleanupEntered.promise;
+      await setImmediate();
+      expect(settled).toBe(false);
+      expect(h.command.mock.calls.map(([args]) => args[0])).toEqual([
+        'exec',
+        'kill',
+        'wait',
+      ]);
+      expect(h.command.mock.calls[1]![0]).toEqual([
+        'kill',
+        h.name,
+        '--job',
+        h.jobId,
+      ]);
+      expect(h.command.mock.calls[2]![0]).toEqual([
+        'wait',
+        h.name,
+        '--job',
+        h.jobId,
+        '--format',
+        'json',
+      ]);
+      joined.resolve();
+      await rejected;
+    } finally {
+      admitted.resolve();
+      joined.resolve();
+      await launching.catch(() => {});
+    }
+  });
+
+  it('uses the cleanup completion certificate even if kill refuses, and reports a failed exact wait', async () => {
+    const h = managedProtocol();
+    const job = await h.launch();
+    h.revoke(new Error('owner ended'));
+    h.command.mockRejectedValueOnce(new Error('already exited'));
+    expect(await job.cancelAndWait(h.cleanup.signal)).toEqual({
+      exitCode: 137,
+      timedOut: false,
+    });
+    h.command
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce(
+        JSON.stringify({ code: 137, success: true, timed_out: false }),
+      );
+    await expect(job.cancelAndWait(h.cleanup.signal)).rejects.toMatchObject({
+      code: 'CLEANUP_INCOMPLETE',
+    });
+  });
+
+  it.each(['wrong-job', 'stderr', 'base64', 'malformed'] as const)(
+    'rejects %s retained logs rather than pretending complete stdout',
+    async (failure) => {
+      const h = managedProtocol();
+      const job = await h.launch();
+      h.command.mockResolvedValueOnce(
+        failure === 'malformed'
+          ? 'not-json'
+          : JSON.stringify({
+              id: failure === 'wrong-job' ? 'another-job' : h.jobId,
+              s: failure === 'stderr' ? 'stderr' : 'stdout',
+              e: failure === 'base64' ? 'b64' : null,
+              d: h.output,
+            }),
+      );
+      await expect(job.stdout(new AbortController().signal)).rejects.toThrow();
+      expect(h.command.mock.calls[1]![0]).toEqual([
+        'logs',
+        h.name,
+        '--job',
+        h.jobId,
+        '--source',
+        'stdout',
+        '--json',
+      ]);
+    },
+  );
 });

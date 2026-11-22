@@ -18,7 +18,7 @@ const binding: PersonVmBinding = {
 };
 describe.sequential('external VM memory admission', () => {
   it('压力排队只认host事实；guest自报空闲不能放行，host正常也不由guest诊断改判', async () => {
-    const source = new FixtureMemorySource(binding, 'pressure');
+    const source = new FixtureMemorySource(binding, 'pressure', 'stop');
     const controller = new AbortController();
     const watch = await createVmMemoryAdmission(source).watch(
       binding,
@@ -27,11 +27,11 @@ describe.sequential('external VM memory admission', () => {
     try {
       expect(watch.read()).toBe('queued');
       const wait = watch.wait();
-      source.publish(memoryObservation(binding));
+      source.publish(memoryObservation(binding, 'normal', 'parallel'));
       await wait;
       expect(watch.read()).toBe('ready');
       source.publish({
-        ...memoryObservation(binding),
+        ...memoryObservation(binding, 'normal', 'parallel'),
         guest: {
           ramBytes: 1,
           availableBytes: 0,
@@ -54,15 +54,60 @@ describe.sequential('external VM memory admission', () => {
   });
 
   it.each([
+    { pressure: 'normal', capacity: 'parallel', expected: 'ready' },
+    { pressure: 'normal', capacity: 'serial', expected: 'serial' },
+    { pressure: 'pressure', capacity: 'serial', expected: 'serial' },
+    { pressure: 'pressure', capacity: 'stop', expected: 'queued' },
+  ] as const)(
+    'explicit host $pressure/$capacity yields $expected, keeping serialization distinct',
+    async ({ pressure, capacity, expected }) => {
+      const source = new FixtureMemorySource(binding, pressure, capacity);
+      const watch = await createVmMemoryAdmission(source).watch(
+        binding,
+        new AbortController().signal,
+      );
+      try {
+        expect(watch.read()).toBe(expected);
+      } finally {
+        await watch.close();
+      }
+      expect(source.closeCalls).toBe(1);
+      expect(source.subscribers.size).toBe(0);
+    },
+  );
+
+  it.each([undefined, null, '', 'normal', 'PARALLEL', 1])(
+    'missing or malformed capacity %s never defaults to parallel',
+    async (capacity) => {
+      const source = new FixtureMemorySource(binding, 'normal', 'parallel');
+      source.publish({
+        ...memoryObservation(binding, 'normal', 'parallel'),
+        capacity,
+      } as unknown as VmMemoryObservation);
+      const watch = await createVmMemoryAdmission(source).watch(
+        binding,
+        new AbortController().signal,
+      );
+      try {
+        expect(() => watch.read()).toThrow(
+          expect.objectContaining({ code: 'MEMORY_OBSERVATION_UNAVAILABLE' }),
+        );
+      } finally {
+        await watch.close();
+      }
+    },
+  );
+
+  it.each([
     'vmId',
     'personId',
     'organizationId',
     'instanceId',
     'leaseEpoch',
   ] as const)('拒绝其他%s的观察，不能从guest或旧epoch获得放行', async (key) => {
-    const source = new FixtureMemorySource(binding);
+    const source = new FixtureMemorySource(binding, 'normal', 'parallel');
     source.publish({
-      ...memoryObservation(binding),
+      ...memoryObservation(binding, 'normal', 'parallel'),
       binding: {
         ...binding,
         [key]: key === 'leaseEpoch' ? 2 : 'other',
@@ -80,8 +125,8 @@ describe.sequential('external VM memory admission', () => {
   });
 
   it('物理cap需provider实读；配置值或guest MemTotal不能代替enforced readback', async () => {
-    const source = new FixtureMemorySource(binding);
-    const observation = memoryObservation(binding);
+    const source = new FixtureMemorySource(binding, 'normal', 'parallel');
+    const observation = memoryObservation(binding, 'normal', 'parallel');
     source.publish({
       ...observation,
       physical: { ...observation.physical, enforcedBytes: 4 * 1024 ** 3 },
@@ -104,9 +149,9 @@ describe.sequential('external VM memory admission', () => {
     { name: 'RSS-sized', enforcedBytes: 1234 },
     { name: 'oversized', enforcedBytes: VM_PHYSICAL_MEMORY_BYTES * 2 },
   ])('hardcap $name不能由正确configured、RSS或guest值补齐', async (cap) => {
-    const source = new FixtureMemorySource(binding);
+    const source = new FixtureMemorySource(binding, 'normal', 'parallel');
     source.publish({
-      ...memoryObservation(binding),
+      ...memoryObservation(binding, 'normal', 'parallel'),
       physical: {
         configuredBytes: VM_PHYSICAL_MEMORY_BYTES,
         enforcedBytes: cap.enforcedBytes,
@@ -145,7 +190,7 @@ describe.sequential('external VM memory admission', () => {
   });
 
   it('source建立失败不返回可放行watch；已取消请求不开始建立source', async () => {
-    const source = new FixtureMemorySource(binding);
+    const source = new FixtureMemorySource(binding, 'normal', 'parallel');
     const controller = new AbortController();
     const reason = new Error('synthetic-before-setup');
     controller.abort(reason);
@@ -167,7 +212,7 @@ describe.sequential('external VM memory admission', () => {
   });
 
   it('建立中取消后晚到watch先等真实detach，不能返回ready或留下订阅', async () => {
-    const source = new FixtureMemorySource(binding);
+    const source = new FixtureMemorySource(binding, 'normal', 'parallel');
     const setup = memoryFixtureGate();
     const detach = memoryFixtureGate();
     source.setupGate = setup.promise;
@@ -207,7 +252,7 @@ describe.sequential('external VM memory admission', () => {
   });
 
   it('并发close共用真实detach，关闭后read和已挂起wait都不再放行', async () => {
-    const source = new FixtureMemorySource(binding, 'pressure');
+    const source = new FixtureMemorySource(binding, 'pressure', 'stop');
     const detach = memoryFixtureGate();
     source.detachGate = detach.promise;
     const watch = await createVmMemoryAdmission(source).watch(
@@ -245,7 +290,7 @@ describe.sequential('external VM memory admission', () => {
   });
 
   it('断连与旧epoch通知不丢；只在当前host观察恢复normal后放行', async () => {
-    const source = new FixtureMemorySource(binding);
+    const source = new FixtureMemorySource(binding, 'normal', 'parallel');
     const watch = await createVmMemoryAdmission(source).watch(
       binding,
       new AbortController().signal,
@@ -259,18 +304,18 @@ describe.sequential('external VM memory admission', () => {
       );
       const reconnected = watch.wait();
       source.publish({
-        ...memoryObservation(binding),
+        ...memoryObservation(binding, 'normal', 'parallel'),
         binding: { ...binding, leaseEpoch: binding.leaseEpoch - 1 },
       });
       await reconnected;
       expect(() => watch.read()).toThrow(
         expect.objectContaining({ code: 'MEMORY_BINDING_INVALID' }),
       );
-      source.publish(memoryObservation(binding, 'pressure'));
+      source.publish(memoryObservation(binding, 'pressure', 'stop'));
       await watch.wait();
       expect(watch.read()).toBe('queued');
       const recovered = watch.wait();
-      source.publish(memoryObservation(binding));
+      source.publish(memoryObservation(binding, 'normal', 'parallel'));
       await recovered;
       expect(watch.read()).toBe('ready');
     } finally {
@@ -280,7 +325,7 @@ describe.sequential('external VM memory admission', () => {
   });
 
   it('重复pressure只唤醒通知不放行，无通知不空转，取消仅释放观察不发kill', async () => {
-    const source = new FixtureMemorySource(binding, 'pressure');
+    const source = new FixtureMemorySource(binding, 'pressure', 'stop');
     const controller = new AbortController();
     const watch = await createVmMemoryAdmission(source).watch(
       binding,
@@ -301,7 +346,7 @@ describe.sequential('external VM memory admission', () => {
         expect(notified).toBe(false);
         expect(source.waitCalls).toBe(pulse + 1);
         expect(watch.read()).toBe('queued');
-        source.publish(memoryObservation(binding, 'pressure'));
+        source.publish(memoryObservation(binding, 'pressure', 'stop'));
         await pending;
         expect(notified).toBe(true);
         expect(watch.read()).toBe('queued');
@@ -327,9 +372,9 @@ describe.sequential('external VM memory admission', () => {
   });
 
   it('host计量未知用显式null；漏字段不能冒称完整观察', async () => {
-    const source = new FixtureMemorySource(binding);
+    const source = new FixtureMemorySource(binding, 'normal', 'parallel');
     source.publish({
-      ...memoryObservation(binding),
+      ...memoryObservation(binding, 'normal', 'parallel'),
       host: {
         vmRssBytes: null,
         helperRssBytes: null,
@@ -343,7 +388,7 @@ describe.sequential('external VM memory admission', () => {
     try {
       expect(watch.read()).toBe('ready');
       source.publish({
-        ...memoryObservation(binding),
+        ...memoryObservation(binding, 'normal', 'parallel'),
         host: {},
       } as unknown as ReturnType<typeof memoryObservation>);
       expect(() => watch.read()).toThrow(VmMemoryError);
@@ -355,8 +400,10 @@ describe.sequential('external VM memory admission', () => {
   it.each([null, 'unavailable'] as const)(
     '观察缺失/失效%s不默认放行',
     async (value) => {
-      const source = new FixtureMemorySource(binding);
-      source.publish(value === null ? null : memoryObservation(binding, value));
+      const source = new FixtureMemorySource(binding, 'normal', 'parallel');
+      source.publish(
+        value === null ? null : memoryObservation(binding, value, 'parallel'),
+      );
       const watch = await createVmMemoryAdmission(source).watch(
         binding,
         new AbortController().signal,
@@ -370,13 +417,13 @@ describe.sequential('external VM memory admission', () => {
   );
 
   it('先订阅再读，wait前的通知不丢；取消关闭等真实detach且close幂等', async () => {
-    const source = new FixtureMemorySource(binding, 'pressure');
+    const source = new FixtureMemorySource(binding, 'pressure', 'stop');
     const controller = new AbortController();
     const watch = await createVmMemoryAdmission(source).watch(
       binding,
       controller.signal,
     );
-    source.publish(memoryObservation(binding));
+    source.publish(memoryObservation(binding, 'normal', 'parallel'));
     await watch.wait();
     expect(watch.read()).toBe('ready');
     const pending = watch.wait().catch((error: unknown) => error);

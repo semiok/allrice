@@ -3,6 +3,8 @@ import type { PersonVmBinding } from '@allrice/person-vm';
 export const VM_MEMORY_CONTRACT_VERSION = 1 as const;
 export const VM_PHYSICAL_MEMORY_BYTES = 2048 * 1024 * 1024;
 
+export type VmMemoryCapacity = 'parallel' | 'serial' | 'stop';
+
 /** Explicit host platform configuration with an approved source, not defaults. */
 export type VmMemoryPolicy = Readonly<{
   physicalBytes: number;
@@ -56,6 +58,8 @@ export type VmMemoryObservation = Readonly<{
   /** Produced by external host/provider policy, NOT guest available/memcg data.
    * The provider owns invalidation on disconnect/takeover. No implicit TTL. */
   pressure: 'normal' | 'pressure' | 'unavailable';
+  /** Approved host policy capacity; serial is admissible with caller serialization. */
+  capacity: VmMemoryCapacity;
   physical: Readonly<{
     configuredBytes: number;
     /** Runtime/provider readback of the hard cap, NOT guest /proc/MemTotal. */
@@ -89,7 +93,7 @@ export interface VmMemorySource {
   ): Promise<VmMemorySourceWatch>;
 }
 export interface VmMemoryAdmissionWatch {
-  read(): 'ready' | 'queued';
+  read(): 'ready' | 'serial' | 'queued';
   wait(): Promise<void>;
   close(): Promise<void>;
 }

@@ -1,3 +1,4 @@
+import type { PersonVmManagedProbeJob } from './native-command-observer.ts';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, posix } from 'node:path';
 import { PersonVmError } from './contract.ts';
@@ -46,6 +47,142 @@ function commandInput(command: PersonVmGuestCommand) {
   if (command.workdir) guestPath(command.workdir);
 }
 
+/** The existing managed-job executor, extracted for the same owner to reuse.
+ * Scope must be a live operation fence, never a fabricated/expired start scope. */
+export async function spawnMicrosandboxManagedProbe(
+  input: {
+    scope: PersonVmStartingScope;
+    name: string;
+    cleanupTimeoutMs: number;
+    command: NativeCommand;
+  },
+  commandSpec: PersonVmGuestCommand,
+): Promise<PersonVmManagedProbeJob> {
+  const { scope, name, command } = input;
+  commandInput(commandSpec);
+  scope.signal.throwIfAborted();
+  await scope.assertCurrent();
+  scope.signal.throwIfAborted();
+  const args = ['exec', name, '--detach', '--no-stdin', '--no-tty'];
+  for (const [key, value] of Object.entries(commandSpec.env ?? {}))
+    args.push('--env', `${key}=${value}`);
+  if (commandSpec.workdir) args.push('--workdir', commandSpec.workdir);
+  let jobId: string;
+  try {
+    jobId = (
+      await command(
+        [...args, '--', commandSpec.executable, ...commandSpec.args],
+        scope.signal,
+      )
+    ).trim();
+  } catch (cause) {
+    // Dispatch may have succeeded without returning its job ID. The lifecycle
+    // owner must stop/status this exact VM; no retry or orphaned success.
+    throw new PersonVmError('CLEANUP_INCOMPLETE', { cause });
+  }
+  if (!jobId || /[\s\0]/.test(jobId))
+    throw new PersonVmError('CLEANUP_INCOMPLETE');
+  // Cleanup uses only its independent owner budget, even after scope loss.
+  async function nativeWait(signal: AbortSignal): Promise<PersonVmJobExit> {
+    signal.throwIfAborted();
+    const result: unknown = JSON.parse(
+      await command(
+        ['wait', name, '--job', jobId, '--format', 'json'],
+        signal,
+        true,
+      ),
+    );
+    if (
+      !result ||
+      typeof result !== 'object' ||
+      !('code' in result) ||
+      typeof result.code !== 'number' ||
+      !Number.isInteger(result.code) ||
+      !('success' in result) ||
+      result.success !== (result.code === 0) ||
+      !('timed_out' in result) ||
+      typeof result.timed_out !== 'boolean'
+    )
+      throw new PersonVmError('CLEANUP_INCOMPLETE');
+    signal.throwIfAborted();
+    return Object.freeze({
+      exitCode: result.code,
+      timedOut: result.timed_out,
+    });
+  }
+  async function ordinary<T>(
+    signal: AbortSignal,
+    operation: (running: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const running = AbortSignal.any([scope.signal, signal]);
+    running.throwIfAborted();
+    await scope.assertCurrent();
+    running.throwIfAborted();
+    const result = await operation(running);
+    running.throwIfAborted();
+    await scope.assertCurrent();
+    running.throwIfAborted();
+    return result;
+  }
+  const job: PersonVmManagedProbeJob = Object.freeze({
+    binding: scope.binding,
+    jobId,
+    wait: (signal: AbortSignal) => ordinary(signal, nativeWait),
+    stdout: (signal: AbortSignal) =>
+      ordinary(signal, async (running) => {
+        const records = await command(
+          ['logs', name, '--job', jobId, '--source', 'stdout', '--json'],
+          running,
+        );
+        return records
+          .split(/\r?\n/)
+          .filter((line) => line.length > 0)
+          .map((line) => {
+            const entry: unknown = JSON.parse(line);
+            if (
+              !entry ||
+              typeof entry !== 'object' ||
+              !('id' in entry) ||
+              entry.id !== jobId ||
+              !('s' in entry) ||
+              entry.s !== 'stdout' ||
+              !('e' in entry) ||
+              entry.e !== null ||
+              !('d' in entry) ||
+              typeof entry.d !== 'string'
+            )
+              throw new PersonVmError('PROVIDER_FAILED');
+            return entry.d;
+          })
+          .join('');
+      }),
+    cancelAndWait: async (signal: AbortSignal) => {
+      signal.throwIfAborted();
+      try {
+        await command(['kill', name, '--job', jobId], signal);
+      } catch {
+        /* A completed job can refuse kill; only wait can certify it. */
+      }
+      return nativeWait(signal);
+    },
+  });
+  try {
+    scope.signal.throwIfAborted();
+    await scope.assertCurrent();
+    scope.signal.throwIfAborted();
+  } catch (error) {
+    try {
+      await job.cancelAndWait(AbortSignal.timeout(input.cleanupTimeoutMs));
+    } catch (cleanup) {
+      throw new PersonVmError('CLEANUP_INCOMPLETE', {
+        cause: new AggregateError([error, cleanup]),
+      });
+    }
+    throw error;
+  }
+  return job;
+}
+
 /** Pinned public cp/managed-job protocol. No DSH executor, shell interpolation,
  * private runtime DB, or assumption that terminating msb terminates its guest. */
 export async function bootstrapMicrosandbox(input: {
@@ -81,70 +218,10 @@ export async function bootstrapMicrosandbox(input: {
   )
     throw new PersonVmError('PROVIDER_FAILED');
 
-  async function spawn(
+  const spawn = (
     commandSpec: PersonVmGuestCommand,
-  ): Promise<PersonVmManagedJob> {
-    commandInput(commandSpec);
-    await scope.assertCurrent();
-    const args = ['exec', name, '--detach', '--no-stdin', '--no-tty'];
-    for (const [key, value] of Object.entries(commandSpec.env ?? {}))
-      args.push('--env', `${key}=${value}`);
-    if (commandSpec.workdir) args.push('--workdir', commandSpec.workdir);
-    const jobId = (
-      await command(
-        [...args, '--', commandSpec.executable, ...commandSpec.args],
-        scope.signal,
-      )
-    ).trim();
-    // Native exec prints just its opaque ID. Lost/ambiguous admission is cleaned
-    // by the service's whole-VM stop/status, never by discovering another job.
-    if (!jobId || /[\s\0]/.test(jobId))
-      throw new PersonVmError('PROVIDER_FAILED');
-    async function wait(signal: AbortSignal): Promise<PersonVmJobExit> {
-      const result: unknown = JSON.parse(
-        await command(
-          ['wait', name, '--job', jobId, '--format', 'json'],
-          signal,
-          true,
-        ),
-      );
-      if (
-        !result ||
-        typeof result !== 'object' ||
-        !('code' in result) ||
-        !Number.isInteger(result.code) ||
-        !('success' in result) ||
-        result.success !== (result.code === 0) ||
-        !('timed_out' in result) ||
-        typeof result.timed_out !== 'boolean'
-      )
-        throw new PersonVmError('CLEANUP_INCOMPLETE');
-      return Object.freeze({
-        exitCode: result.code as number,
-        timedOut: result.timed_out,
-      });
-    }
-    const job: PersonVmManagedJob = Object.freeze({
-      binding: scope.binding,
-      jobId,
-      wait,
-      cancelAndWait: async (signal: AbortSignal) => {
-        try {
-          await command(['kill', name, '--job', jobId], signal);
-        } catch {
-          /* A completed job can refuse kill; only wait can certify it. */
-        }
-        return wait(signal);
-      },
-    });
-    try {
-      await scope.assertCurrent();
-    } catch (error) {
-      await job.cancelAndWait(AbortSignal.timeout(input.cleanupTimeoutMs));
-      throw error;
-    }
-    return job;
-  }
+  ): Promise<PersonVmManagedJob> =>
+    spawnMicrosandboxManagedProbe(input, commandSpec);
   async function run(commandSpec: PersonVmGuestCommand) {
     const job = await spawn(commandSpec);
     let result: PersonVmJobExit;

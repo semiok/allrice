@@ -74,6 +74,7 @@ const facts = (revision = 'resource-1'): PersonVmNativeResourceFacts => ({
   evidenceRef: 'synthetic-resource-evidence',
   physical: {
     state: 'verified',
+    scope: 'host-physical',
     configuredBytes: 2 * 1024 ** 3,
     enforcedBytes: 2 * 1024 ** 3,
     sourceRef: 'synthetic-runtime-cap',
@@ -283,6 +284,7 @@ describe('resource consumer (synthetic sources; no native/VM acceptance)', () =>
       ...facts(),
       physical: {
         state: 'verified',
+        scope: 'host-physical',
         configuredBytes: 1,
         enforcedBytes: undefined,
         sourceRef: 'x',
@@ -303,6 +305,34 @@ describe('resource consumer (synthetic sources; no native/VM acceptance)', () =>
     }
   });
 
+  it.each([undefined, null, 'guest-cgroup', 'configured-only'])(
+    'rejects verified bytes without an explicit host-physical scope (%s)',
+    async (scope) => {
+      const h = fixture();
+      h.read.mockResolvedValue({
+        ...facts(),
+        physical: { ...facts().physical, scope },
+      } as unknown as PersonVmNativeResourceFacts);
+      const watch = await h.port.watch(
+        context,
+        binding,
+        new AbortController().signal,
+      );
+      try {
+        expect(watch.read()).toBe(null);
+        h.read.mockResolvedValue(facts('resource-host-physical'));
+        h.resources.publish('resource-host-physical');
+        await turn();
+        expect(watch.read()?.physical).toMatchObject({
+          state: 'verified',
+          scope: 'host-physical',
+        });
+      } finally {
+        await watch.close();
+      }
+    },
+  );
+
   it('keeps an explicit unknown cap diagnostic without inventing enforced bytes', async () => {
     const h = fixture();
     h.read.mockResolvedValue({
@@ -311,6 +341,29 @@ describe('resource consumer (synthetic sources; no native/VM acceptance)', () =>
         state: 'unknown',
         configuredBytes: 2 * 1024 ** 3,
         reason: 'unsupported public fixed-memory readback',
+      },
+      guestControls: {
+        binding,
+        scope: 'guest-cgroup',
+        boundary: 'guest-root-cooperative',
+        state: 'verified',
+        revision: 'synthetic-guest-controls',
+        evidenceRef: 'synthetic-cooperative-readback',
+        groups: [
+          {
+            target: 'commands',
+            path: '/sys/fs/cgroup/commands',
+            state: 'verified',
+            reason: null,
+            observed: {
+              device: '5',
+              inode: '27',
+              high: 768 * 1024 ** 2,
+              max: 1280 * 1024 ** 2,
+              swapMax: 2 * 1024 ** 3,
+            },
+          },
+        ],
       },
     });
     const watch = await h.port.watch(
@@ -325,6 +378,10 @@ describe('resource consumer (synthetic sources; no native/VM acceptance)', () =>
         reason: 'unsupported public fixed-memory readback',
       });
       expect(watch.read()?.physical).not.toHaveProperty('enforcedBytes');
+      expect(watch.read()?.guestControls).toMatchObject({
+        state: 'verified',
+        scope: 'guest-cgroup',
+      });
     } finally {
       await watch.close();
     }

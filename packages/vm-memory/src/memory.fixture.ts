@@ -1,7 +1,11 @@
 /** Synthetic, event-driven host source. Never production telemetry. */
 import type { PersonVmBinding } from '@allrice/person-vm';
 import { VM_PHYSICAL_MEMORY_BYTES } from './contract.ts';
-import type { VmMemoryObservation, VmMemorySource } from './contract.ts';
+import type {
+  VmMemoryCapacity,
+  VmMemoryObservation,
+  VmMemorySource,
+} from './contract.ts';
 
 export function memoryFixtureGate() {
   let resolve!: () => void;
@@ -12,13 +16,15 @@ export function memoryFixtureGate() {
 }
 export function memoryObservation(
   binding: PersonVmBinding,
-  pressure: VmMemoryObservation['pressure'] = 'normal',
+  pressure: VmMemoryObservation['pressure'],
+  capacity: VmMemoryCapacity,
 ): VmMemoryObservation {
   return {
     binding,
     revision: 'synthetic-1',
     evidenceRef: 'fixture:external-observer',
     pressure,
+    capacity,
     physical: {
       configuredBytes: VM_PHYSICAL_MEMORY_BYTES,
       enforcedBytes: VM_PHYSICAL_MEMORY_BYTES,
@@ -43,9 +49,10 @@ export class FixtureMemorySource implements VmMemorySource {
   waitCalls = 0;
   constructor(
     binding: PersonVmBinding,
-    pressure: VmMemoryObservation['pressure'] = 'normal',
+    pressure: VmMemoryObservation['pressure'],
+    capacity: VmMemoryCapacity,
   ) {
-    this.observation = memoryObservation(binding, pressure);
+    this.observation = memoryObservation(binding, pressure, capacity);
   }
   publish(value: VmMemoryObservation | null) {
     this.observation = value;
