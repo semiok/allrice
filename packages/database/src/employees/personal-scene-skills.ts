@@ -40,7 +40,6 @@ import { parseWorkflowSkillSections } from './workflow-skill.ts';
 import {
   EmployeeContentError,
   type ContentSql,
-  type ContentTx,
 } from './employee-content-model.ts';
 
 type Context = Parameters<typeof readPersonalEmployeeSceneLayer>[0];
@@ -423,7 +422,7 @@ export async function savePersonalSceneSkillInTransaction(
   contextInput: RequestContext,
   instanceId: string,
   raw: unknown,
-  tx: ContentTx,
+  tx: ContentSql,
 ) {
   const input = SavePersonalSceneSkillSchema.or(
     RestorePersonalSceneFileSchema,

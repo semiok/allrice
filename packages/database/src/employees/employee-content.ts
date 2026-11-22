@@ -494,7 +494,7 @@ async function assemble(
 async function saveTextEdits(
   context: EmployeeContentContext,
   input: Extract<EmployeeContentMutation, { operation: 'save_draft' }>,
-  tx: ContentTx,
+  tx: ContentSql,
 ) {
   const mapped = new Map<string, EmployeeContentReference>();
   for (const edit of [...input.textEdits].sort((a, b) =>
@@ -605,7 +605,7 @@ export async function mutateEmployeeContent(
 export async function mutateEmployeeContentInTransaction(
   context: EmployeeContentContext,
   input: EmployeeContentMutation,
-  tx: ContentTx,
+  tx: ContentSql,
   options: {
     /** Controlled chat saves publish in the same transaction, without a draft gate. */
     publishOnSave?: boolean;
@@ -924,7 +924,7 @@ async function publishContentRevision(
   row: ContentSetRow,
   revision: ContentRevisionRow,
   sources: ResolvedContentSource[],
-  tx: ContentTx,
+  tx: ContentSql,
 ) {
   await tx`insert into allrice_employee_content_publications(set_id,revision_id)
     values(${row.id},${revision.id}) on conflict do nothing`;
@@ -1062,7 +1062,7 @@ export async function getEmployeeContentHistoryInTransaction(
   context: EmployeeContentContext,
   idInput: string,
   beforeRevision: number | undefined,
-  tx: ContentTx,
+  tx: ContentSql,
 ) {
   const id = UuidSchema.parse(idInput);
   if (

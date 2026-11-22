@@ -628,10 +628,11 @@ export async function mutateCompanyAsset(
               throw new CompanyAssetError('kind_conflict');
             if (input.content.kind === 'template' && !sourceId)
               throw new CompanyAssetError('source_required');
-            if (input.content.sourceMemoryId) {
+            const sourceMemoryId = input.content.sourceMemoryId;
+            if (sourceMemoryId) {
               const [memory] = await sources.companyRuleRevision(
                 () =>
-                  tx`select r.id from allrice_memories m join allrice_memory_revisions r on r.memory_id=m.id and r.organization_id=m.organization_id and r.workspace_id=m.workspace_id where m.id=${input.content.sourceMemoryId} and m.organization_id=${org} and m.archived_at is null and r.id=${input.content.sourceMemoryRevisionId!} and m.lifecycle_state='durable' and m.trust_level='user_confirmed' and r.summary is not null and r.lifecycle_state='durable' and r.trust_level='user_confirmed' for share of m,r`,
+                  tx`select r.id from allrice_memories m join allrice_memory_revisions r on r.memory_id=m.id and r.organization_id=m.organization_id and r.workspace_id=m.workspace_id where m.id=${sourceMemoryId} and m.organization_id=${org} and m.archived_at is null and r.id=${input.content.sourceMemoryRevisionId!} and m.lifecycle_state='durable' and m.trust_level='user_confirmed' and r.summary is not null and r.lifecycle_state='durable' and r.trust_level='user_confirmed' for share of m,r`,
               );
               if (!memory) throw new CompanyAssetError('source_changed');
             }

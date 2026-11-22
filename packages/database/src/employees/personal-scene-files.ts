@@ -31,7 +31,7 @@ import {
 import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
 import {
   EmployeeContentError,
-  type ContentTx,
+  type ContentSql,
 } from './employee-content-model.ts';
 
 function humanContext(context: RequestContext, workspaceId: string) {
@@ -67,7 +67,7 @@ async function previewPersonalSceneFileInTransaction(
   context: RequestContext,
   instanceId: string,
   file: PersonalSceneFile,
-  tx: ContentTx,
+  tx: ContentSql,
 ) {
   if (!('skillPackage' in file.procedure))
     throw new DataAccessError('not_found');

@@ -15,7 +15,7 @@ import { resolvePersonalEmployeeContentTarget } from './employee-content-target.
 import { mutateEmployeeContentInTransaction } from './employee-content.ts';
 import {
   EmployeeContentError,
-  type ContentTx,
+  type ContentSql,
 } from './employee-content-model.ts';
 import { parsePersonalSceneContentRef } from './personal-scene-skills.ts';
 
@@ -37,7 +37,7 @@ export async function removePersonalSceneSkill(
   const context = { ...contextInput, workspaceId: input.workspaceId };
   if (!context.sessionId || context.actor.type !== 'user')
     throw new DataAccessError('authorization_denied');
-  const work = async (tx: ContentTx) => {
+  const work = async (tx: ContentSql) => {
     const authorize = async () => {
       const instance = await getEmployeeInstance(context, instanceId, tx);
       if (!(await canUsePersonalEmployeeScenes(instance, tx)))
