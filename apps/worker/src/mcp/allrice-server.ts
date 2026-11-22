@@ -214,6 +214,12 @@ const rememberWireSchema: unknown = JSON.parse(
   JSON.stringify(rememberSourceSchema),
 );
 const rememberSchema = ToolSchema.shape.inputSchema.parse(rememberWireSchema);
+// The strict text/image branches remain intact; MCP requires an object root
+// even when the source contract is a discriminated union.
+const archiveReadSchema = ToolSchema.shape.inputSchema.parse({
+  ...z.toJSONSchema(ReferenceArchiveReadInputSchema, { io: 'input' }),
+  type: 'object',
+});
 const tools: Tool[] = [
   {
     name: 'identity_read',
@@ -274,9 +280,7 @@ const tools: Tool[] = [
   {
     name: 'reference_archive_read',
     description: 'Read one member of an authorized exact reference archive.',
-    inputSchema: z.toJSONSchema(ReferenceArchiveReadInputSchema, {
-      io: 'input',
-    }) as Tool['inputSchema'],
+    inputSchema: archiveReadSchema,
     annotations: { readOnlyHint: true },
   },
   {
