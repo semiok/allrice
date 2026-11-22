@@ -20,6 +20,7 @@ import type {
 import * as client from '../core/client.ts';
 import * as builds from '../service-build-identity.ts';
 import { createRuntimeFixtureDatabase } from '../runtime.fixture.ts';
+import { approveSyntheticCurrentEmployeeExecution } from '../current-execution.fixture.ts';
 import {
   authenticateSession,
   createSession,
@@ -74,6 +75,8 @@ suite(
     };
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_ASSISTANTS_ENABLED', '1');
+      // SQL birth metadata only; this fixture grants no production native source.
+      approveSyntheticCurrentEmployeeExecution();
       db = await createRuntimeFixtureDatabase({ ownSchemaOnly: true });
     }, 120000);
     beforeEach(async () => {
@@ -520,15 +523,24 @@ suite(
       );
       try {
         await held.entered.promise;
-        await updateEmployeeInstance(f.context, f.instance.id, {
+        const updated = await updateEmployeeInstance(f.context, f.instance.id, {
           workspaceId: f.target.workspaceId,
           expectedRevision: f.instance.revision,
           requestId: randomUUID(),
           profile: {
-            ...f.instance.profile,
-            expressionStyle: 'Changed during preflight',
+            expressionStyle:
+              f.instance.profile.expressionStyle === 'structured'
+                ? 'concise'
+                : 'structured',
           },
         });
+        expect(updated.revision).toBe(f.instance.revision + 1);
+        expect(updated.profile.expressionStyle).not.toBe(
+          f.instance.profile.expressionStyle,
+        );
+        expect(
+          (await getEmployeeInstance(f.context, f.instance.id)).revision,
+        ).toBe(updated.revision);
         held.source.resolve(null);
         await expect(outcome).rejects.toMatchObject({
           code: 'authorization_denied',
