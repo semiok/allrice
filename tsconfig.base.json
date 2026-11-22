@@ -30,6 +30,7 @@
       ],
       "@allrice/project-runtime": ["packages/project-runtime/src/index.ts"],
       "@allrice/person-vm": ["packages/person-vm/src/index.ts"],
+      "@allrice/person-vm/admission": ["packages/person-vm/src/admission.ts"],
       "@allrice/database/technical-contracts": [
         "packages/database/src/platform-technical-contracts.ts"
       ],
