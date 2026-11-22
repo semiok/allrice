@@ -591,6 +591,6 @@ export const baseline: readonly BaselineEntry[] = [
     basis:
       'MET-283 / 0253：持久保存记忆已发摘要、不可变pins及同一V2字节/读取次数账本，恢复原B不重发额度。DSH原生MCP/会话不持有AllRice记忆revision、当前SaaS权限及外部原子预算；无Agent阶段、pins/call附表或新租约。',
     approvedBy:
-      '2026-11-22 UTC 用户原话：“批准最小方案，按正式接口继续实施”；见~/allrice-dev/qa/codex/met283-memory-business-20261122/CARRIER-APPROVAL.md，问题call_d0935e72e3c14c94a8157f07d22f5451。',
+      '2026-11-22 UTC 登记：用户原话“批准最小方案，按正式接口继续实施”（批准原答复时间未核）；见~/allrice-dev/qa/codex/met283-memory-business-20261122/CARRIER-APPROVAL.md，问题call_d0935e72e3c14c94a8157f07d22f5451。',
   },
 ];

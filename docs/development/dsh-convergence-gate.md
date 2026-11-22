@@ -17,7 +17,7 @@ MET-266 同 PR 将 `person_virtual_machines`（本人加密盘与宿主所有权
 
 MET-283 的 `0253_employee_memory_contexts.sql` 同 PR 登记精确表名 `allrice_employee_memory_contexts`，归存储后端：同一行保存已发摘要原文、完整 pins 和原 V2 已花字节/读取次数，避免同一 B 重连或恢复时重新发额度；不新增 pins/call 表或 Agent 生命周期。目标接 DSH 原生 MCP、父子会话及取消；本存储片不实现或改动其生命周期。原生会话不持有 AllRice 记忆 revision、当前 SaaS 权限和外部原子预算，因此这些业务事实必须由记忆 owner 持久保存。
 
-该最小方案由用户于 **2026-11-22 UTC** 明确答复“批准最小方案，按正式接口继续实施”，原问题 `call_d0935e72e3c14c94a8157f07d22f5451`，记录见 `~/allrice-dev/qa/codex/met283-memory-business-20261122/CARRIER-APPROVAL.md`。本登记只把已批准薄表纳入核对；真实 B/来源/身份资格、事务撤权 fence、scope FK 与一致恢复仍待正式合同，不以登记代替门禁通过或生产接线验收。
+本条于 **2026-11-22 UTC** 登记；用户已明确答复“批准最小方案，按正式接口继续实施”，批准原答复时间未核，原问题 `call_d0935e72e3c14c94a8157f07d22f5451`，记录见 `~/allrice-dev/qa/codex/met283-memory-business-20261122/CARRIER-APPROVAL.md`。本登记只把已批准薄表纳入核对；真实 B/来源/身份资格、事务撤权 fence、scope FK 与一致恢复仍待正式合同，不以登记代替门禁通过或生产接线验收。
 
 实际出现基线没有的项会失败；实际已删除但基线还留着也会失败，错误会列出类型、名称和更新方式。比较及登记校验是纯函数 `checkBaseline`，两步 CI 共用。
 
