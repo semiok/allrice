@@ -1622,29 +1622,53 @@ describe('v1 recovery contracts with unbound-owner test substitutes', () => {
           cancel.signal,
         ),
       );
-      void pending.then(() => {
-        settled = true;
-      });
-      await entered.promise;
       const reason = new DataAccessError('authorization_denied');
-      if (scope === 'request') cancel.abort(reason);
-      else {
-        // Test-only 271/config authority: no production config notification
-        // interface is invented. The owner must revoke its real resource signal.
-        if (scope === 'config')
-          f.bindingPort.mockResolvedValue({
-            ...f.binding,
-            configurationDigest: hostHistoryDigest({ changed: true }),
-          });
-        f.revoked.abort(reason);
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      try {
+        await entered.promise;
+        if (scope === 'request') cancel.abort(reason);
+        else {
+          // Test-only 271/config authority: no production config notification
+          // interface is invented. The owner must revoke its real resource signal.
+          if (scope === 'config')
+            f.bindingPort.mockResolvedValue({
+              ...f.binding,
+              configurationDigest: hostHistoryDigest({ changed: true }),
+            });
+          f.revoked.abort(reason);
+        }
+        await aborted.promise;
+        expect(settled).toBe(false);
+        expect(f.owner.close).not.toHaveBeenCalled();
+        acquired.release();
+        await closing.promise;
+        // A check-phase barrier lets the entire download Promise chain settle
+        // if cleanup called close without joining it. Keep close blocked.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(
+          settled,
+          'acquire: download settled before owner.close joined',
+        ).toBe(false);
+      } finally {
+        cancel.abort(reason);
+        acquired.release();
+        closed.release();
+        await Promise.allSettled([pending]);
+        // A faulty caller may already have settled; still join the actual mock
+        // close operation, without replacing the primary assertion failure.
+        await Promise.allSettled(
+          f.owner.close.mock.results.map((result) =>
+            result.type === 'return' ? result.value : undefined,
+          ),
+        );
       }
-      await aborted.promise;
-      expect(settled).toBe(false);
-      expect(f.owner.close).not.toHaveBeenCalled();
-      acquired.release();
-      await closing.promise;
-      expect(settled).toBe(false);
-      closed.release();
       expect((await pending).status).toBe(403);
       expect(f.owner.open).not.toHaveBeenCalled();
       expect(f.owner.close).toHaveBeenCalledTimes(1);
@@ -1715,34 +1739,59 @@ describe('v1 recovery contracts with unbound-owner test substitutes', () => {
         closing.release();
         await closed.promise;
       });
+      const cancel = new AbortController();
       let settled = false;
       const pending = f.handlers.download(
-        f.request({
-          snapshotDigest: saved.digest,
-          objectId: f.object.id,
-        }),
+        f.request(
+          {
+            snapshotDigest: saved.digest,
+            objectId: f.object.id,
+          },
+          cancel.signal,
+        ),
       );
-      void pending.then(() => {
-        settled = true;
-      });
-      await entered.promise;
       const reason = new DataAccessError('authorization_denied');
-      if (scope === 'object') f.objectRevoked.abort(reason);
-      else {
-        if (scope === 'config')
-          f.bindingPort.mockResolvedValue({
-            ...f.binding,
-            configurationDigest: hostHistoryDigest({ changed: true }),
-          });
-        f.revoked.abort(reason);
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      try {
+        await entered.promise;
+        if (scope === 'object') f.objectRevoked.abort(reason);
+        else {
+          if (scope === 'config')
+            f.bindingPort.mockResolvedValue({
+              ...f.binding,
+              configurationDigest: hostHistoryDigest({ changed: true }),
+            });
+          f.revoked.abort(reason);
+        }
+        await aborted.promise;
+        expect(settled).toBe(false);
+        expect(f.owner.close).not.toHaveBeenCalled();
+        drained.release();
+        await closing.promise;
+        // Give a missing close await an independent event-loop settlement turn.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(
+          settled,
+          'reauthorize: download settled before owner.close joined',
+        ).toBe(false);
+      } finally {
+        cancel.abort(reason);
+        drained.release();
+        closed.release();
+        await Promise.allSettled([pending]);
+        await Promise.allSettled(
+          f.owner.close.mock.results.map((result) =>
+            result.type === 'return' ? result.value : undefined,
+          ),
+        );
       }
-      await aborted.promise;
-      expect(settled).toBe(false);
-      expect(f.owner.close).not.toHaveBeenCalled();
-      drained.release();
-      await closing.promise;
-      expect(settled).toBe(false);
-      closed.release();
       expect((await pending).status).toBe(403);
       expect(f.owner.open).not.toHaveBeenCalled();
       expect(f.owner.close).toHaveBeenCalledTimes(1);
