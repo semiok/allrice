@@ -51,6 +51,14 @@ const phases = [
   'native-layout',
   'native-transform-return',
 ] as const;
+const evidenceScope =
+  'reversible observed pixels under public positioning methods';
+const layerEvidence = {
+  collection: 'passive raw events only',
+  compositingReasons: 'not requested',
+  internalCause: 'not assessed',
+  fullLayerDiagnosticSatisfied: false,
+} as const;
 const expectedPngs = labels
   .flatMap((label) =>
     ['frame', 'element', 'panel-window'].map((kind) => `${label}-${kind}.png`),
@@ -300,7 +308,7 @@ async function nativeHost(page: Page, offset: { x: number; y: number }) {
 }
 
 suite(
-  'diagnostic-only fixed-origin native placement; no acceptance claim',
+  'diagnostic-only public native placement pixels; no internal cause claim',
   () => {
     let browser: Browser, artifacts: string;
     beforeAll(async () => {
@@ -324,6 +332,8 @@ suite(
           {
             diagnosticOnly: true,
             acceptanceSatisfied: false,
+            evidenceScope,
+            layerEvidence,
             cases: 1,
             phases,
             expectedPngs,
@@ -354,7 +364,7 @@ suite(
       await browser?.close();
     });
 
-    it('D: compares transform and layout placement of the same native host at a fixed final origin', async () => {
+    it('D: observes reversible pixels under public native placement at a fixed final origin', async () => {
       const out = join(artifacts, 'd');
       await mkdir(out);
       const save = (name: string, value: unknown) =>
@@ -503,11 +513,11 @@ suite(
               includePaintOrder: true,
             }),
           );
-          journal.record(
-            observer.side,
-            label + '-compositingReasons',
-            await observer.layers(),
-          );
+          await observer.flush();
+          journal.record(observer.side, label + '-protocol-flush', {
+            acknowledged: true,
+            evidence: 'Runtime.evaluate acknowledgement only',
+          });
         }
         return { value, frame, window, element, owner: ownerBefore };
       }
@@ -868,6 +878,8 @@ suite(
         await save('result.json', {
           diagnosticOnly: true,
           acceptanceSatisfied: false,
+          evidenceScope,
+          layerEvidence,
           valid,
           effect,
           wrapperIdentity,
@@ -878,7 +890,7 @@ suite(
           actualPngs,
           cleanup,
           measuredScope:
-            'One native 1440/light/list/experience panel. Fixed-final-origin placement mechanism only; discrete sampling, not whole-domain visibility or product repair. Current baseline required; no historical pixels used.',
+            'One native 1440/light/list/experience panel. Reversible observed pixels under public positioning methods only; discrete sampling, not whole-domain visibility or product repair. Internal compositing/raster cause and full layer diagnostics not assessed. Current baseline required; no historical pixels used.',
           failures: failures.map((error) => ({
             message: String(error),
             stack: error instanceof Error ? error.stack : null,
