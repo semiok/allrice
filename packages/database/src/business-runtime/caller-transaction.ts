@@ -1,4 +1,4 @@
-import type { Sql, TransactionSql } from 'postgres';
+import type { ReservedSql, Sql, TransactionSql } from 'postgres';
 import type {
   CompanyAssetMutation,
   EmployeeContentMutation,
@@ -212,7 +212,7 @@ export async function joinCallerSave<T>(
   return result as T;
 }
 
-/** @internal Own this dedicated max:1 client's explicit transaction and end.
+/** @internal Pin a session in this dedicated client's transaction until end.
  * No shared-pool reservation or native begin/scope is used.
  * The existing callers use ordinary queries/fragments, not cursors/streams. */
 export async function withDedicatedCallerTransaction<T>(
@@ -222,12 +222,14 @@ export async function withDedicatedCallerTransaction<T>(
 ): Promise<T> {
   signal?.throwIfAborted();
   const dedicated = createDedicatedDatabase(db);
+  let session: ReservedSql | undefined;
   let accepting = true,
     began = false,
     committing = false,
-    uncertain = false;
+    uncertain = false,
+    knownIdle = false;
   let outcome: { value: T } | { error: unknown };
-  let endFailure: { error: unknown } | null = null;
+  const cleanupFailures: unknown[] = [];
   const pending = new Set<Promise<unknown>>();
   const failures: unknown[] = [];
   const check = () => {
@@ -308,44 +310,49 @@ export async function withDedicatedCallerTransaction<T>(
     });
     return guarded;
   }
-  const tx = new Proxy(dedicated, {
-    apply(target, receiver, args) {
-      check();
-      return wrap(Reflect.apply(target, receiver, args));
-    },
-    get(target, key) {
-      check();
-      if (
-        !['unsafe', 'file', 'json', 'array', 'typed', 'types'].includes(
-          String(key),
+  const guardedSession = (session: ReservedSql) =>
+    new Proxy(session, {
+      apply(target, receiver, args) {
+        check();
+        return wrap(Reflect.apply(target, receiver, args));
+      },
+      get(target, key) {
+        check();
+        if (
+          !['unsafe', 'file', 'json', 'array', 'typed', 'types'].includes(
+            String(key),
+          )
         )
-      )
-        throw new DataAccessError('authorization_denied');
-      const member: unknown = Reflect.get(target, key);
-      return typeof member === 'function'
-        ? (...args: unknown[]) => {
-            check();
-            return wrap(Reflect.apply(member, target, args));
-          }
-        : member;
-    },
-  });
+          throw new DataAccessError('authorization_denied');
+        const member: unknown = Reflect.get(target, key);
+        return typeof member === 'function'
+          ? (...args: unknown[]) => {
+              check();
+              return wrap(Reflect.apply(member, target, args));
+            }
+          : member;
+      },
+    });
   const includes = (error: unknown, item: unknown): boolean =>
     error === item ||
     (error instanceof AggregateError &&
       error.errors.some((child: unknown) => includes(child, item)));
   try {
+    session = await dedicated.reserve();
+    knownIdle = true;
     signal?.throwIfAborted();
-    await dedicated`begin`;
+    knownIdle = false;
+    await session`begin`;
     began = true;
     signal?.throwIfAborted();
-    const result = await work(tx);
+    const result = await work(guardedSession(session));
     accepting = false;
     await drain();
     if (failures.length) throw failures[0];
     signal?.throwIfAborted();
     committing = true;
-    await dedicated`commit`;
+    await session`commit`;
+    knownIdle = true;
     outcome = { value: result };
   } catch (error) {
     accepting = false;
@@ -354,9 +361,10 @@ export async function withDedicatedCallerTransaction<T>(
       error,
       ...failures.filter((item) => !includes(error, item)),
     ];
-    if (began && !committing && !uncertain) {
+    if (session && began && !committing && !uncertain) {
       try {
-        await dedicated`rollback`;
+        await session`rollback`;
+        knownIdle = true;
       } catch (rollbackError) {
         errors.push(rollbackError);
       }
@@ -375,21 +383,29 @@ export async function withDedicatedCallerTransaction<T>(
     // rollback. A bounded end cannot turn an unknown commit into rollback.
   } finally {
     accepting = false;
+    // Only confirmed-idle sessions of this wholly owned client are released.
+    try {
+      if (knownIdle) session?.release();
+    } catch (error) {
+      cleanupFailures.push(error);
+    }
     try {
       await dedicated.end({ timeout: 5 });
     } catch (error) {
-      endFailure = { error };
+      cleanupFailures.push(error);
     }
   }
   if ('error' in outcome) {
-    if (endFailure)
+    if (cleanupFailures.length)
       throw new AggregateError(
-        [outcome.error, endFailure.error],
+        [outcome.error, ...cleanupFailures],
         'caller_end_failed',
         { cause: outcome.error },
       );
     throw outcome.error;
   }
-  if (endFailure) throw endFailure.error;
+  if (cleanupFailures.length === 1) throw cleanupFailures[0];
+  if (cleanupFailures.length)
+    throw new AggregateError(cleanupFailures, 'caller_end_failed');
   return outcome.value;
 }

@@ -1,6 +1,6 @@
 /** Public-driver-shaped substitutes only; no test here proves a real disconnect. */
 import { setImmediate as turn } from 'node:timers/promises';
-import postgres, { type Sql } from 'postgres';
+import postgres, { type ReservedSql, type Sql } from 'postgres';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDedicatedDatabase } from '../core/client.ts';
 import { withDedicatedCallerTransaction } from './caller-transaction.ts';
@@ -30,6 +30,7 @@ function fixture(run: (sql: string) => unknown = () => []) {
   const operations: string[] = [];
   const cancel = vi.fn<() => void | null>(() => null);
   const end = vi.fn(async () => {});
+  const release = vi.fn();
   function query(text: string) {
     let started: Promise<unknown> | undefined;
     return {
@@ -44,10 +45,14 @@ function fixture(run: (sql: string) => unknown = () => []) {
     };
   }
   // This is deliberately a partial driver substitute, never a production source.
-  const dedicated = Object.assign(
+  const session = Object.assign(
     (parts: TemplateStringsArray) => query(parts.join('$')),
-    { end, unsafe: query, json: (value: unknown) => value },
-  ) as unknown as Sql;
+    { release, unsafe: query, json: (value: unknown) => value },
+  ) as unknown as ReservedSql;
+  const dedicated = {
+    reserve: vi.fn(async () => session),
+    end,
+  } as unknown as Sql;
   const db = {
     options: {},
     reserve: vi.fn(),
@@ -55,7 +60,7 @@ function fixture(run: (sql: string) => unknown = () => []) {
     PostgresError: postgres.PostgresError,
   } as unknown as Sql;
   vi.mocked(createDedicatedDatabase).mockReturnValueOnce(dedicated);
-  return { db, operations, cancel, end, dedicated };
+  return { db, operations, cancel, end, dedicated, release };
 }
 
 describe('caller-owned dedicated transaction', () => {
@@ -82,6 +87,14 @@ describe('caller-owned dedicated transaction', () => {
       expect(dedicated.options.ssl).toBe(source.options.ssl);
       expect(dedicated.options.types).toBe(source.options.types);
       expect(dedicated.options.transform).toBe(source.options.transform);
+      for (const field of ['shared', 'parameters', 'parsers', 'serializers'])
+        expect(Reflect.get(dedicated.options, field)).not.toBe(
+          Reflect.get(source.options, field),
+        );
+      const arrayMap = (options: object) =>
+        (Reflect.get(options, 'shared') as { typeArrayMap: object })
+          .typeArrayMap;
+      expect(arrayMap(dedicated.options)).not.toBe(arrayMap(source.options));
     } finally {
       await dedicated.end({ timeout: 5 });
       await source.end({ timeout: 5 });
@@ -102,6 +115,8 @@ describe('caller-owned dedicated transaction', () => {
     ).toBe('committed receipt');
     expect(f.operations).toEqual(['begin', 'select 1 $', 'commit']);
     expect(f.end).toHaveBeenCalledTimes(1);
+    expect(f.dedicated.reserve).toHaveBeenCalledTimes(1);
+    expect(f.release).toHaveBeenCalledTimes(1);
     if (!saved || !lazy) throw new Error('Actual callback handles required');
     const captured = saved;
     expect(() => captured`select after end`).toThrow('authorization_denied');
@@ -199,6 +214,7 @@ describe('caller-owned dedicated transaction', () => {
     await turn();
     expect(finished).toBe(false);
     expect(f.end).toHaveBeenCalledWith({ timeout: 5 });
+    expect(f.release).toHaveBeenCalledTimes(1);
     ended.resolve();
     expect(await saving).toBe('receipt');
     expect(f.end).toHaveBeenCalledTimes(1);
@@ -260,23 +276,32 @@ describe('caller-owned dedicated transaction', () => {
     expect(f.end).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['rollback', 'end'] as const)(
+  it.each(['rollback', 'release', 'end'] as const)(
     'retains original and %s errors together',
     async (stage) => {
       const primary = new Error('caller refusal'),
-        cleanup = new Error(stage + ' rejected');
+        cleanup = new Error(stage + ' rejected'),
+        ending = new Error('end rejected after release');
       const f = fixture((sql) => {
         if (stage === 'rollback' && sql === 'rollback') throw cleanup;
         return [];
       });
       if (stage === 'end') f.end.mockRejectedValueOnce(cleanup);
+      if (stage === 'release') {
+        f.release.mockImplementationOnce(() => {
+          throw cleanup;
+        });
+        f.end.mockRejectedValueOnce(ending);
+      }
       const error = await withDedicatedCallerTransaction(f.db, async () => {
         throw primary;
       }).catch((failure: unknown) => failure);
       expect(error).toBeInstanceOf(AggregateError);
       if (!(error instanceof AggregateError)) throw error;
       expect(error.cause).toBe(primary);
-      expect(error.errors).toEqual([primary, cleanup]);
+      expect(error.errors).toEqual(
+        stage === 'release' ? [primary, cleanup, ending] : [primary, cleanup],
+      );
       expect(f.operations).toEqual(['begin', 'rollback']);
       expect(f.end).toHaveBeenCalledTimes(1);
     },
@@ -302,6 +327,7 @@ describe('caller-owned dedicated transaction', () => {
     expect(createDedicatedDatabase).toHaveBeenCalledWith(f.db);
     expect(f.db.reserve).not.toHaveBeenCalled();
     expect(f.db.end).not.toHaveBeenCalled();
+    expect(f.release).not.toHaveBeenCalled();
     expect(f.end).toHaveBeenCalledTimes(1);
     const other = fixture();
     expect(

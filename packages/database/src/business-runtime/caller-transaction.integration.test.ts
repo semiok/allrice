@@ -1,6 +1,9 @@
 /** Real baseline callers/PG/Storage only. No native module/B/VM producer. */
 import { createHash, randomUUID } from 'node:crypto';
-import { setImmediate as turn } from 'node:timers/promises';
+import {
+  setImmediate as turn,
+  setTimeout as delay,
+} from 'node:timers/promises';
 import postgres, { type Sql } from 'postgres';
 import {
   afterAll,
@@ -208,7 +211,7 @@ suite('host caller transaction bindings with original SQL owners', () => {
     });
     return sql;
   }
-  async function ownClient() {
+  async function ownClient(idle_timeout?: number) {
     const value = process.env.ALLRICE_TEST_DATABASE_URL;
     if (!value) throw new Error('Dedicated fixture database required');
     const [settings] = await f.db<{ path: string }[]>`
@@ -216,6 +219,7 @@ suite('host caller transaction bindings with original SQL owners', () => {
     if (!settings?.path) throw new Error('Actual fixture search path required');
     const sql = postgres(value, {
       max: 1,
+      idle_timeout,
       connection: {
         application_name: 'caller_dedicated_' + randomUUID(),
         search_path: settings.path,
@@ -593,7 +597,7 @@ suite('host caller transaction bindings with original SQL owners', () => {
   }, 30000);
 
   it('commits and rolls back on owned dedicated connections, then rejects closed handles', async () => {
-    const sql = await ownClient(),
+    const sql = await ownClient(0.05),
       committed = randomUUID(),
       rejected = randomUUID();
     let saved: Sql | undefined,
@@ -605,8 +609,8 @@ suite('host caller transaction bindings with original SQL owners', () => {
         saved = tx;
         lazy = tx`insert into caller_dedicated_probe values(${randomUUID()})`;
         const [row] = await tx<
-          { pid: number }[]
-        >`select pg_backend_pid() as pid`;
+          { pid: number; xid: string }[]
+        >`select pg_backend_pid() as pid,txid_current()::text as xid`;
         if (!row) throw new Error('Actual backend required');
         pid = row.pid;
         const elapsedMs = performance.now() - startedAt;
@@ -619,6 +623,10 @@ suite('host caller transaction bindings with original SQL owners', () => {
           }),
         );
         await tx`insert into caller_dedicated_probe values(${committed})`;
+        await delay(100);
+        expect(
+          await tx`select pg_backend_pid() as pid,txid_current()::text as xid`,
+        ).toEqual([row]);
         const fragment = tx`marker=${committed}`;
         expect(
           await tx`select marker from caller_dedicated_probe where ${fragment}`,
