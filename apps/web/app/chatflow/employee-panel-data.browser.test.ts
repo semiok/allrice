@@ -37,6 +37,36 @@ const control = (
     },
     { state, kind },
   );
+const readLayout = (page: Page) =>
+  root(page).evaluate((node) => {
+    const inspect = (selector: string) => {
+      const element = node.querySelector<HTMLElement>(selector);
+      if (!element) return null;
+      const box = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return {
+        tag: element.tagName,
+        className: element.className,
+        width: box.width,
+        height: box.height,
+        display: style.display,
+        visibility: style.visibility,
+        cssWidth: style.width,
+        minWidth: style.minWidth,
+        flex: style.flex,
+      };
+    };
+    return {
+      select: inspect('[data-select-field]'),
+      search: inspect('[data-search-field]'),
+      input: inspect('input[type="search"]'),
+      root: { width: node.clientWidth, scrollWidth: node.scrollWidth },
+      stylesheets: [...document.styleSheets].map((sheet) => ({
+        href: sheet.href,
+        disabled: sheet.disabled,
+      })),
+    };
+  });
 const firstFile = '第四季度销售口径说明.pdf';
 const uid = (n: number) =>
   `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
@@ -61,6 +91,7 @@ suite(
         splitting: true,
         platform: 'browser',
         write: false,
+        metafile: true,
         outdir: '/unused-employee-panel-data',
         jsx: 'automatic',
         loader: {
@@ -71,6 +102,16 @@ suite(
         },
         define: { 'process.env.NODE_ENV': '"production"' },
       });
+      await mkdir(join(output, 'fixture-assets'), { recursive: true });
+      for (const file of built.outputFiles)
+        await writeFile(
+          join(output, 'fixture-assets', file.path.split('/').at(-1)!),
+          file.contents,
+        );
+      await writeFile(
+        join(output, 'fixture-build.json'),
+        JSON.stringify(built.metafile, null, 2),
+      );
       const assets = new Map<string, Uint8Array>(
         built.outputFiles.map(
           (file: { path: string; contents: Uint8Array }) => [
@@ -157,10 +198,31 @@ suite(
             path: join(output, `${env.width}-${env.theme}-${name}.png`),
             fullPage: true,
           });
+        const checkSearch = async (kind: 'files' | 'materials') => {
+          const layout = await readLayout(page);
+          await writeFile(
+            join(output, `${env.width}-${env.theme}-${kind}-layout.json`),
+            JSON.stringify(layout, null, 2),
+          );
+          const input = root(page).getByRole('searchbox', {
+            name:
+              kind === 'files' ? '查找文件' : '查找资料（文件名、用途、正文）',
+            exact: true,
+          });
+          expect(await input.isVisible()).toBe(true);
+          expect(await input.isEditable()).toBe(true);
+          expect(layout.input!.width).toBeGreaterThan(0);
+          expect(layout.input!.height).toBeGreaterThan(0);
+          if (kind === 'files')
+            expect(Math.abs(layout.select!.width - 126)).toBeLessThanOrEqual(
+              0.5,
+            );
+        };
         try {
           await page.goto(origin + '/?theme=' + env.theme);
           await page.waitForFunction(() => !!window.__panelDataFixture);
           await root(page).getByText(firstFile, { exact: true }).waitFor();
+          await checkSearch('files');
           expect(
             await root(page)
               .getByRole('combobox', { name: '按员工筛选' })
@@ -317,6 +379,7 @@ suite(
             .getByText(firstFile, { exact: true })
             .first()
             .waitFor();
+          await checkSearch('materials');
           await root(page)
             .getByRole('searchbox', { name: '查找资料（文件名、用途、正文）' })
             .fill('销售');
@@ -398,6 +461,7 @@ suite(
                 ...env,
                 legacyRequests,
                 failures,
+                layout: await readLayout(page).catch(() => null),
                 evidence: await evidence(page).catch(() => null),
               },
               null,
