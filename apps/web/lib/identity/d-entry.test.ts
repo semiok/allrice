@@ -31,7 +31,7 @@ import type {
   PersonVmAdmissionBoundary,
   PersonVmAdmissionPort,
   PersonVmBinding,
-} from '@allrice/person-vm';
+} from '@allrice/person-vm/admission';
 
 const ports = vi.hoisted(() => ({
   context: vi.fn(),
