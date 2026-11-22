@@ -321,9 +321,16 @@ suite('installed employee topbar and native Start', () => {
           shortMetrics.clientWidth,
         );
         // Exercise native log-backed title projection, never patch title DOM.
-        await command('renameSession', longTitle);
-        await nativeHeader(longTitle, width);
-        const longMetrics = await title(longTitle).evaluate((node) => {
+        // The Host may truncate input; exact matching follows its accepted title.
+        const renamed = await page.evaluate(
+          (value) => window.__allricePanelsIntegration!.renameSession(value),
+          longTitle,
+        );
+        if (!renamed.ok)
+          throw Error(`Native title rename failed: ${renamed.error.code}`);
+        const acceptedLongTitle = renamed.value.title;
+        await nativeHeader(acceptedLongTitle, width);
+        const longMetrics = await title(acceptedLongTitle).evaluate((node) => {
           const style = getComputedStyle(node);
           return {
             clientWidth: node.clientWidth,
