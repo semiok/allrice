@@ -374,8 +374,9 @@ suite(
             try {
               blocker?.release();
             } finally {
-              // Also join closure if termination happened but its ACK failed.
-              await target.end();
+              // Queries are joined; immediately destroy this exclusive fault victim.
+              // This public cleanup mode leaves the test timeout unchanged.
+              await target.end({ timeout: 0 });
             }
           }
         }
