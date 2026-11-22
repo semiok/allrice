@@ -1392,11 +1392,16 @@ suite(
         signal,
       );
       expect(found.fullTextCoverage).toEqual({ ready: 1, unavailable: 0 });
-      expect(found.matches[0]).toMatchObject({
-        revisionId: published.revisionId,
-        content: companyText,
-        locations: [{ label: '正文' }],
-      });
+      expect(found.matches).toEqual([
+        {
+          revisionId: published.revisionId,
+          content: '回款出处。',
+          start: 6,
+          end: 11,
+          locations: [{ unit: 0, label: '正文', start: 0, end: 11 }],
+          warnings: [],
+        },
+      ]);
       const selected = await port.captureSelection(
         t.a,
         { workspaceId: t.a.workspaceId!, revisionId: published.revisionId },
@@ -1407,6 +1412,18 @@ suite(
         revisionId: published.revisionId,
         checksum: claim!.object.checksum,
       });
+      const publishedFile = await getReferenceFile(
+        t.a,
+        t.a.workspaceId!,
+        published.revisionId,
+      );
+      expect(publishedFile.sourceId).toBe(published.sourceId);
+      expect(publishedFile.object.checksum).toBe(selected.selection.checksum);
+      expect(
+        await new Response(
+          await actualStorage.get(publishedFile.object),
+        ).text(),
+      ).toBe(companyText);
       const department = await port.publishUpload(
         t.owner,
         {
