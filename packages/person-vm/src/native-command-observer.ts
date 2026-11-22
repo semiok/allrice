@@ -183,6 +183,8 @@ const bindingKey = (binding: PersonVmBinding) =>
     binding.instanceId,
     binding.leaseEpoch,
   ]);
+const record = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
 const decimal = (value: unknown): value is string =>
   typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value);
 const path = (value: unknown): value is string =>
@@ -240,30 +242,101 @@ export function createPersonVmCommandMemoryObserver(input: {
     receiptDirectory: input.receiptDirectory,
   });
 
+  function releasedChild(
+    output: string,
+    execution: PersonVmNativeCommandExecution & { pid: number },
+  ): NonNullable<PersonVmCommandMemoryCompletion['child']> {
+    const data: unknown = JSON.parse(output);
+    if (!record(data) || !record(data.receipt))
+      throw new Error('exact-child-release-unconfirmed');
+    const receipt = data.receipt;
+    const identity = receipt.child;
+    const childPath = posix.join(
+      roots.commandsGroup,
+      `command-${execution.pid}`,
+    );
+    const { bootId, startTicks } = receipt;
+    if (
+      data.version !== 1 ||
+      data.childJoined !== true ||
+      data.childReleased !== true ||
+      receipt.version !== 1 ||
+      receipt.executionRef !== execution.executionRef ||
+      receipt.pid !== execution.pid ||
+      receipt.stage !== 'admitted' ||
+      !record(identity) ||
+      identity.path !== childPath ||
+      !decimal(identity.device) ||
+      !decimal(identity.inode) ||
+      receipt.beforeMembership !==
+        roots.dshGroup.slice(roots.cgroupRoot.length) ||
+      receipt.admittedMembership !== childPath.slice(roots.cgroupRoot.length) ||
+      typeof bootId !== 'string' ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+        bootId,
+      ) ||
+      !decimal(startTicks)
+    )
+      throw new Error('exact-child-release-unconfirmed');
+    const events = (input: unknown): Events => {
+      if (!record(input) || !decimal(input.oom) || !decimal(input.oomKill))
+        throw new Error('exact-child-events-unavailable');
+      return Object.freeze({ oom: input.oom, oomKill: input.oomKill });
+    };
+    const baseline = events(receipt.baseline),
+      after = events(data.after);
+    const oom = BigInt(after.oom) - BigInt(baseline.oom),
+      oomKill = BigInt(after.oomKill) - BigInt(baseline.oomKill);
+    if (oom < 0n || oomKill < 0n) throw new Error('counter-reset');
+    return Object.freeze({
+      path: childPath,
+      device: identity.device,
+      inode: identity.inode,
+      bootId,
+      startTicks,
+      baseline,
+      after,
+      delta: Object.freeze({ oom: String(oom), oomKill: String(oomKill) }),
+      joined: true,
+      released: true,
+    });
+  }
+
   async function probe(
     execution: PersonVmNativeCommandExecution & { pid: number },
     signal: AbortSignal,
-  ) {
-    const job = await probes.launch(
-      {
-        executable: nodeExecutable,
-        args: [
-          '-e',
-          PERSON_VM_COMMAND_MEMORY_PROGRAM,
-          JSON.stringify({
-            ...roots,
-            executionRef: execution.executionRef,
-            pid: execution.pid,
-          }),
-          'complete-and-release',
-        ],
-      },
-      signal,
-    );
+  ): Promise<NonNullable<PersonVmCommandMemoryCompletion['child']>> {
+    let job: PersonVmManagedProbeJob;
+    try {
+      job = await probes.launch(
+        {
+          executable: nodeExecutable,
+          args: [
+            '-e',
+            PERSON_VM_COMMAND_MEMORY_PROGRAM,
+            JSON.stringify({
+              ...roots,
+              executionRef: execution.executionRef,
+              pid: execution.pid,
+            }),
+            'complete-and-release',
+          ],
+        },
+        signal,
+      );
+    } catch (cause) {
+      // Dispatch may be ambiguous, and no child/receipt release is certified.
+      throw new PersonVmError('CLEANUP_INCOMPLETE', { cause });
+    }
     // A foreign returned handle cannot be killed to hide an ownership failure.
-    if (bindingKey(job.binding) !== expectedBinding)
+    if (
+      !job ||
+      !record(job.binding) ||
+      bindingKey(job.binding) !== expectedBinding
+    )
       throw new PersonVmError('CLEANUP_INCOMPLETE');
     let joined = false;
+    let releaseConfirmed = false;
     try {
       signal.throwIfAborted();
       if (!job.jobId || typeof job.stdout !== 'function')
@@ -276,21 +349,14 @@ export function createPersonVmCommandMemoryObserver(input: {
         throw new PersonVmError('PROVIDER_FAILED');
       joined = true;
       const output = await job.stdout(signal);
+      if (result.exitCode !== 0 || result.timedOut)
+        throw new Error('release-probe-did-not-succeed');
+      const child = releasedChild(output, execution);
+      releaseConfirmed = true;
+      // A fully validated certificate may arrive alongside cancellation. Keep
+      // its release proof before propagating the caller's original reason.
       signal.throwIfAborted();
-      if (result.exitCode !== 0 || result.timedOut) {
-        let failedStage: unknown;
-        try {
-          failedStage = JSON.parse(output)?.stage;
-        } catch {
-          /* Unknown cleanup cannot be certified. */
-        }
-        throw new PersonVmError(
-          failedStage === 'read' && !result.timedOut
-            ? 'PROVIDER_FAILED'
-            : 'CLEANUP_INCOMPLETE',
-        );
-      }
-      return output;
+      return child;
     } catch (cause) {
       if (!joined) {
         try {
@@ -300,12 +366,17 @@ export function createPersonVmCommandMemoryObserver(input: {
             typeof result?.timedOut !== 'boolean'
           )
             throw new Error('unconfirmed-probe-cleanup');
+          joined = true;
         } catch (cleanup) {
           throw new PersonVmError('CLEANUP_INCOMPLETE', {
             cause: new AggregateError([cause, cleanup]),
           });
         }
       }
+      // Joining this probe does not prove its rmdir AND unlink completed. Do
+      // not mask uncertain artifacts as unknown/abort or launch cleanup again.
+      if (!releaseConfirmed)
+        throw new PersonVmError('CLEANUP_INCOMPLETE', { cause });
       signal.throwIfAborted();
       throw cause;
     }
@@ -395,67 +466,15 @@ export function createPersonVmCommandMemoryObserver(input: {
           timedOut: result.timedOut,
           signal: signalValue,
         });
-        const data = JSON.parse(
-          await probe({ ...execution, pid: before.pid }, signal),
-        );
-        const receipt = data?.receipt,
-          baseline = receipt?.baseline,
-          after = data?.after;
-        const childPath = posix.join(
-          roots.commandsGroup,
-          `command-${before.pid}`,
-        );
-        if (
-          data?.version !== 1 ||
-          data?.childJoined !== true ||
-          data?.childReleased !== true ||
-          receipt?.version !== 1 ||
-          receipt?.executionRef !== execution.executionRef ||
-          receipt?.pid !== before.pid ||
-          receipt?.stage !== 'admitted' ||
-          receipt?.child?.path !== childPath ||
-          receipt?.beforeMembership !==
-            roots.dshGroup.slice(roots.cgroupRoot.length) ||
-          receipt?.admittedMembership !==
-            childPath.slice(roots.cgroupRoot.length) ||
-          !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
-            receipt?.bootId,
-          ) ||
-          ![
-            receipt?.startTicks,
-            receipt?.child?.device,
-            receipt?.child?.inode,
-            baseline?.oom,
-            baseline?.oomKill,
-            after?.oom,
-            after?.oomKill,
-          ].every(decimal)
-        )
-          throw new Error('exact-child-evidence-unavailable');
-        const oom = BigInt(after.oom) - BigInt(baseline.oom),
-          oomKill = BigInt(after.oomKill) - BigInt(baseline.oomKill);
-        if (oom < 0n || oomKill < 0n) throw new Error('counter-reset');
-        child = Object.freeze({
-          path: childPath,
-          device: receipt.child.device,
-          inode: receipt.child.inode,
-          bootId: receipt.bootId,
-          startTicks: receipt.startTicks,
-          baseline: Object.freeze({
-            oom: baseline.oom,
-            oomKill: baseline.oomKill,
-          }),
-          after: Object.freeze({ oom: after.oom, oomKill: after.oomKill }),
-          delta: Object.freeze({ oom: String(oom), oomKill: String(oomKill) }),
-          joined: true,
-          released: true,
-        });
+        child = await probe({ ...execution, pid: before.pid }, signal);
+        const oom = BigInt(child.delta.oom),
+          oomKill = BigInt(child.delta.oomKill);
         if (signalValue === 'unknown')
           reason = 'managed-terminating-signal-unavailable';
         else if (result.timedOut) reason = 'managed-timeout-cause-not-oom';
-        else if (signalValue === 9 && oomKill > 0n)
-          outcome =
-            oom > 0n ? 'command-memory-limit' : 'oom-killed-cause-unknown';
+        else if (oom > 0n || oomKill > 0n)
+          // Group events do not name a victim or tie its death to this exit.
+          reason = 'group-oom-events-do-not-identify-command-victim';
         else if (signalValue === null && oomKill === 0n && oom === 0n)
           outcome = 'no-oom-evidence';
         else reason = 'completion-does-not-establish-oom';

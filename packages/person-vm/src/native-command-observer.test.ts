@@ -76,6 +76,8 @@ function guest() {
   let inode = 27n;
   let cgroupType = 0x63677270n;
   let cleanupFails = false;
+  let cleanupStep:
+    ((step: 'before-rmdir' | 'before-unlink') => void) | undefined;
   const missing = () =>
     Object.assign(new Error('synthetic missing file'), { code: 'ENOENT' });
   const stat = (p: string) => {
@@ -128,6 +130,7 @@ function guest() {
       files.set(target, contents);
     },
     rmdirSync: (p: string) => {
+      cleanupStep?.('before-rmdir');
       if (
         cleanupFails ||
         p !== childPath ||
@@ -140,6 +143,7 @@ function guest() {
         if (key.startsWith(p + '/')) files.delete(key);
     },
     unlinkSync: (p: string) => {
+      cleanupStep?.('before-unlink');
       if (p !== receiptPath || !files.delete(p)) throw missing();
     },
   };
@@ -199,6 +203,9 @@ function guest() {
     },
     failCleanup: () => {
       cleanupFails = true;
+    },
+    onCleanup: (step: NonNullable<typeof cleanupStep>) => {
+      cleanupStep = step;
     },
   };
 }
@@ -394,8 +401,9 @@ describe('command memory observer (synthetic kernel/native sources; not DSH/VM a
       new AbortController().signal,
     );
     expect(result).toMatchObject({
-      state: 'complete',
-      outcome: 'command-memory-limit',
+      state: 'unknown',
+      outcome: 'unknown',
+      reason: 'group-oom-events-do-not-identify-command-victim',
       completion: { joined: true, signal: 9 },
       child: {
         path: childPath,
@@ -403,6 +411,7 @@ describe('command memory observer (synthetic kernel/native sources; not DSH/VM a
         after: { oom: '5', oomKill: '3' },
         delta: { oom: '1', oomKill: '1' },
         joined: true,
+        released: true,
       },
       boundary: 'guest-root-cooperative',
     });
@@ -472,29 +481,29 @@ describe('command memory observer (synthetic kernel/native sources; not DSH/VM a
     });
   });
 
-  it('keeps native join separate from surviving descendants and missing pre-dispatch receipt', async () => {
+  it('hands surviving descendants or missing receipts to the owner instead of equating native join with release', async () => {
     const h = fixture();
     h.g.files.set(`${childPath}/cgroup.procs`, '77');
-    expect(
-      await h.observer.observeCompletion(
+    await expect(
+      h.observer.observeCompletion(
         binding,
         h.execution,
         new AbortController().signal,
       ),
-    ).toMatchObject({
-      state: 'unknown',
-      outcome: 'unknown',
-      completion: { joined: true },
-      child: null,
-    });
+    ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
+    expect(h.job.wait).toHaveBeenCalledOnce();
+    expect(h.g.directories.has(childPath)).toBe(true);
+    expect(h.g.files.has(receiptPath)).toBe(true);
     h.g.files.delete(receiptPath);
-    expect(
-      await h.observer.observeCompletion(
+    await expect(
+      h.observer.observeCompletion(
         binding,
         h.execution,
         new AbortController().signal,
       ),
-    ).toMatchObject({ state: 'unknown', child: null });
+    ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
+    expect(h.g.directories.has(childPath)).toBe(true);
+    expect(h.job.cancelAndWait).not.toHaveBeenCalled();
   });
 
   it('does not treat a normal exit137 or unrelated SIGKILL as local OOM', async () => {
@@ -527,7 +536,80 @@ describe('command memory observer (synthetic kernel/native sources; not DSH/VM a
         global.execution,
         new AbortController().signal,
       ),
-    ).toMatchObject({ outcome: 'oom-killed-cause-unknown' });
+    ).toMatchObject({
+      state: 'unknown',
+      outcome: 'unknown',
+      reason: 'group-oom-events-do-not-identify-command-victim',
+      child: { delta: { oom: '0', oomKill: '1' }, released: true },
+    });
+  });
+
+  it('retains the no-OOM-evidence result for a known normal exit with unchanged independent child counters', async () => {
+    const h = fixture(null);
+    h.g.finish('4', '2');
+    h.info.exit_code = 0;
+    h.job.wait.mockImplementation(async () => ({
+      exitCode: 0,
+      timedOut: false,
+      signal: null,
+    }));
+    const result = await h.observer.observeCompletion(
+      binding,
+      h.execution,
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({
+      state: 'complete',
+      outcome: 'no-oom-evidence',
+      reason: null,
+      completion: { exitCode: 0, signal: null, joined: true },
+      child: {
+        delta: { oom: '0', oomKill: '0' },
+        joined: true,
+        released: true,
+      },
+    });
+    expect(h.job.cancelAndWait).not.toHaveBeenCalled();
+  });
+
+  it('keeps earlier helper OOM facts without blaming a later independent SIGKILL of the still-running main job', async () => {
+    const h = fixture(9);
+    // The helper has already died and incremented this exact child, while its
+    // main process is still alive. A separate actor later kills that main job.
+    h.g.directories.add(`${cfg.procRoot}/${cfg.pid}`);
+    h.g.files.set(`${childPath}/cgroup.procs`, String(cfg.pid));
+    h.g.files.set(`${childPath}/cgroup.events`, 'populated 1\nfrozen 0');
+    h.command.mockResolvedValueOnce(
+      JSON.stringify({ ...h.info, state: 'running', exit_code: null }),
+    );
+    h.job.wait.mockImplementation(async () => {
+      expect(h.g.directories.has(`${cfg.procRoot}/${cfg.pid}`)).toBe(true);
+      expect(h.g.files.get(`${childPath}/memory.events`)).toBe(
+        'oom 5\noom_kill 3',
+      );
+      h.g.finish('5', '3');
+      return { exitCode: 137, timedOut: false, signal: 9 };
+    });
+    const result = await h.observer.observeCompletion(
+      binding,
+      h.execution,
+      new AbortController().signal,
+    );
+    expect(result).toMatchObject({
+      state: 'unknown',
+      outcome: 'unknown',
+      reason: 'group-oom-events-do-not-identify-command-victim',
+      completion: { signal: 9, exitCode: 137, joined: true },
+      child: {
+        baseline: { oom: '4', oomKill: '2' },
+        delta: { oom: '1', oomKill: '1' },
+        joined: true,
+        released: true,
+      },
+    });
+    expect(h.g.files.has(receiptPath)).toBe(false);
+    expect(h.g.directories.has(childPath)).toBe(false);
+    expect(h.job.cancelAndWait).not.toHaveBeenCalled();
   });
 
   it('rejects wrong binding before waiting or probing', async () => {
@@ -612,7 +694,10 @@ describe('command memory observer (synthetic kernel/native sources; not DSH/VM a
         h.execution,
         cancel.signal,
       );
-      const assertion = expect(observing).rejects.toBe(reason);
+      const assertion = expect(observing).rejects.toMatchObject({
+        code: 'CLEANUP_INCOMPLETE',
+        cause: reason,
+      });
       await admitted.promise;
       cancel.abort(reason);
       launched.resolve();
@@ -631,6 +716,8 @@ describe('command memory observer (synthetic kernel/native sources; not DSH/VM a
       await assertion;
       expect(probe.cancelAndWait).toHaveBeenCalledOnce();
       expect(probe.stdout).not.toHaveBeenCalled();
+      expect(h.g.directories.has(childPath)).toBe(true);
+      expect(h.g.files.has(receiptPath)).toBe(true);
       expect(h.job.cancelAndWait).not.toHaveBeenCalled();
     },
   );
@@ -664,6 +751,8 @@ describe('command memory observer (synthetic kernel/native sources; not DSH/VM a
   it('reports actual empty-child cleanup failure to the owner after the probe has joined', async () => {
     const h = fixture();
     h.g.failCleanup();
+    const releaseStep = vi.fn();
+    h.g.onCleanup(releaseStep);
     await expect(
       h.observer.observeCompletion(
         binding,
@@ -671,6 +760,207 @@ describe('command memory observer (synthetic kernel/native sources; not DSH/VM a
         new AbortController().signal,
       ),
     ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
+    expect(releaseStep).toHaveBeenCalledWith('before-rmdir');
+    expect(h.g.directories.has(childPath)).toBe(true);
+    expect(h.g.files.has(receiptPath)).toBe(true);
+    expect(h.job.cancelAndWait).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])(
+    'does not lose failed release when its joined probe output fails (timedOut=%s)',
+    async (timedOut) => {
+      const h = fixture();
+      h.g.failCleanup();
+      const releaseStep = vi.fn();
+      h.g.onCleanup(releaseStep);
+      const outputFailure = new Error('retained probe stdout unavailable');
+      const launch = h.launch.getMockImplementation()!;
+      h.launch.mockImplementationOnce(async (...args) => {
+        const job = await launch(...args);
+        job.wait = vi.fn(async () => ({ exitCode: 1, timedOut }));
+        job.stdout = vi.fn(async () => {
+          throw outputFailure;
+        });
+        return job;
+      });
+      await expect(
+        h.observer.observeCompletion(
+          binding,
+          h.execution,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({
+        code: 'CLEANUP_INCOMPLETE',
+        cause: outputFailure,
+      });
+      expect(releaseStep).toHaveBeenCalledWith('before-rmdir');
+      expect(h.probeJobs[0]!.wait).toHaveBeenCalledOnce();
+      expect(h.probeJobs[0]!.stdout).toHaveBeenCalledOnce();
+      expect(h.probeJobs[0]!.cancelAndWait).not.toHaveBeenCalled();
+      expect(h.g.directories.has(childPath)).toBe(true);
+      expect(h.g.files.has(receiptPath)).toBe(true);
+      expect(h.job.cancelAndWait).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves unconfirmed release when stdout is cancelled after the probe wait already joined', async () => {
+    const h = fixture();
+    h.g.failCleanup();
+    const releaseStep = vi.fn();
+    h.g.onCleanup(releaseStep);
+    const cancel = new AbortController(),
+      entered = gate();
+    const reason = new Error('cancel after guest wait');
+    const launch = h.launch.getMockImplementation()!;
+    h.launch.mockImplementationOnce(async (...args) => {
+      const job = await launch(...args);
+      job.stdout = vi.fn(async (signal) => {
+        entered.resolve();
+        if (!signal.aborted)
+          await new Promise<void>((resolve) =>
+            signal.addEventListener('abort', () => resolve(), { once: true }),
+          );
+        signal.throwIfAborted();
+        return '';
+      });
+      return job;
+    });
+    const observing = h.observer.observeCompletion(
+      binding,
+      h.execution,
+      cancel.signal,
+    );
+    const assertion = expect(observing).rejects.toMatchObject({
+      code: 'CLEANUP_INCOMPLETE',
+      cause: reason,
+    });
+    await entered.promise;
+    expect(releaseStep).toHaveBeenCalledWith('before-rmdir');
+    expect(h.probeJobs[0]!.wait).toHaveBeenCalledOnce();
+    cancel.abort(reason);
+    await assertion;
+    expect(h.probeJobs[0]!.cancelAndWait).not.toHaveBeenCalled();
+    expect(h.g.directories.has(childPath)).toBe(true);
+    expect(h.g.files.has(receiptPath)).toBe(true);
+    expect(h.job.cancelAndWait).not.toHaveBeenCalled();
+  });
+
+  it.each(['before-rmdir', 'before-unlink'] as const)(
+    'probe cancel/join at %s does not certify both artifacts were released',
+    async (interruption) => {
+      const h = fixture();
+      const cancel = new AbortController();
+      const reason = new Error('interrupt release phase');
+      const releaseStep = vi.fn((step: 'before-rmdir' | 'before-unlink') => {
+        if (step === interruption) {
+          cancel.abort(reason);
+          throw reason;
+        }
+      });
+      h.g.onCleanup(releaseStep);
+      await expect(
+        h.observer.observeCompletion(binding, h.execution, cancel.signal),
+      ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE', cause: reason });
+      expect(releaseStep).toHaveBeenCalledWith(interruption);
+      expect(h.probeJobs[0]!.cancelAndWait).toHaveBeenCalledOnce();
+      expect(h.probeJobs[0]!.stdout).not.toHaveBeenCalled();
+      expect(h.g.directories.has(childPath)).toBe(
+        interruption === 'before-rmdir',
+      );
+      expect(h.g.files.has(receiptPath)).toBe(true);
+      expect(h.job.cancelAndWait).not.toHaveBeenCalled();
+    },
+  );
+
+  it('cannot certify release with lost or mismatched output even when the synthetic program actually removed its artifacts', async () => {
+    for (const failure of [
+      'stdout',
+      'json',
+      'foreign-receipt',
+      'release-flag',
+    ] as const) {
+      const h = fixture();
+      const launch = h.launch.getMockImplementation()!;
+      h.launch.mockImplementationOnce(async (...args) => {
+        const job = await launch(...args);
+        const stdout = job.stdout;
+        job.stdout = vi.fn(async (signal) => {
+          if (failure === 'stdout') throw new Error('stdout lost');
+          if (failure === 'json') return 'not-json';
+          const data = JSON.parse(await stdout(signal));
+          if (failure === 'foreign-receipt')
+            data.receipt.executionRef = 'foreign';
+          if (failure === 'release-flag') data.childReleased = false;
+          return JSON.stringify(data);
+        });
+        return job;
+      });
+      await expect(
+        h.observer.observeCompletion(
+          binding,
+          h.execution,
+          new AbortController().signal,
+        ),
+      ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
+      expect(h.g.directories.has(childPath)).toBe(false);
+      expect(h.g.files.has(receiptPath)).toBe(false);
+      expect(h.probeJobs[0]!.cancelAndWait).not.toHaveBeenCalled();
+      expect(h.job.cancelAndWait).not.toHaveBeenCalled();
+    }
+  });
+
+  it('preserves the original abort only after a matching successful release certificate was obtained', async () => {
+    const h = fixture();
+    const cancel = new AbortController();
+    const reason = new Error('cancel alongside confirmed output');
+    const launch = h.launch.getMockImplementation()!;
+    h.launch.mockImplementationOnce(async (...args) => {
+      const job = await launch(...args);
+      const stdout = job.stdout;
+      job.stdout = vi.fn(async (signal) => {
+        const output = await stdout(signal);
+        cancel.abort(reason);
+        return output;
+      });
+      return job;
+    });
+    await expect(
+      h.observer.observeCompletion(binding, h.execution, cancel.signal),
+    ).rejects.toBe(reason);
+    expect(h.g.directories.has(childPath)).toBe(false);
+    expect(h.g.files.has(receiptPath)).toBe(false);
+    expect(h.probeJobs[0]!.cancelAndWait).not.toHaveBeenCalled();
+    expect(h.job.cancelAndWait).not.toHaveBeenCalled();
+  });
+
+  it('keeps ambiguous probe dispatch and a foreign retained handle as owner cleanup failures', async () => {
+    const h = fixture();
+    const admission = new Error('probe dispatch acknowledgement lost');
+    h.launch.mockRejectedValueOnce(admission);
+    await expect(
+      h.observer.observeCompletion(
+        binding,
+        h.execution,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE', cause: admission });
+    const foreign = {
+      binding: { ...binding, leaseEpoch: 2 },
+      jobId: 'foreign-probe',
+      wait: vi.fn(async () => ({ exitCode: 0, timedOut: false })),
+      stdout: vi.fn(async () => ''),
+      cancelAndWait: vi.fn(async () => ({ exitCode: 137, timedOut: false })),
+    };
+    h.launch.mockResolvedValueOnce(foreign);
+    await expect(
+      h.observer.observeCompletion(
+        binding,
+        h.execution,
+        new AbortController().signal,
+      ),
+    ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
+    expect(foreign.wait).not.toHaveBeenCalled();
+    expect(foreign.cancelAndWait).not.toHaveBeenCalled();
     expect(h.g.directories.has(childPath)).toBe(true);
     expect(h.g.files.has(receiptPath)).toBe(true);
     expect(h.job.cancelAndWait).not.toHaveBeenCalled();
