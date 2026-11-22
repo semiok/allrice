@@ -1,6 +1,6 @@
 # MET-281：资料与个人成果的业务 Port 首片
 
-离完整迁入还差可信身份/模块资格与 4.0 执行载体装配、完整 MCP 工具注册、余下跨 owner 公开口、受影响运行验证及呈现。本片实现两个后端 Port 的具名子集，不表示 MET-281 ready。首片起点为 272 v1 `13c1b201da4f04acdf35359785f59b4f0cedd3f8`；固定交付 head/tree 由任务 QA 回执绑定。PR 目标仍为 `batch/4.0-n3`。
+离完整迁入还差可信身份/模块资格与 4.0 执行载体装配、完整 MCP 工具注册、余下跨 owner 公开口、受影响运行验证及呈现。本片实现两个后端 Port 的具名子集，不表示 MET-281 ready。首片起点为 272 v1 `13c1b201da4f04acdf35359785f59b4f0cedd3f8`；固定交付 head/tree 由任务 QA 回执绑定。当前批次目标为 `batch/4.0-n4`。
 
 ## DSH 对照与边界
 
@@ -23,6 +23,7 @@ AllRice 只补已批准的现权门卫、资料/成果存储后端与业务幂�
 | contracts | `MaterialsSelectionQueryProjectionSchema`, `MaterialsSaveInputProjectionSchema`, `MaterialsUploadPublicationInputProjectionSchema`   | 当前选择、新增资料、现 upload publication 分支                       |
 | contracts | `MaterialsPublicationCommandProjectionSchema`, `MaterialsActionCommandProjectionSchema`, `MaterialsActionResultProjectionSchema`     | 原配置 CAS/维护动作、真实 sourceId 回执                              |
 | database  | `createDeliverablesPort`, `DeliverablesPortOptions`, `DeliverableReadError`                                                          | 真实 owner 实现和既有文件读取错误码                                  |
+| database  | `createDeliverablesMcpReadPort`                                                                                                      | 仅捕获公开 `DeliverablesPort.readExact` 的无状态原生 MCP 结果适配    |
 | database  | `createEnterpriseMaterialsPort`, `EnterpriseMaterialsPortOptions`                                                                    | 真实资料 owner 实现                                                  |
 
 `readPersonalWorkbenchFile` 是原件 owner 内部原语；虽随现有 star barrel 可见，**不列为跨模块入口**。其他 owner 应调用 `DeliverablesPort.authorizedResource`，不能引用该 SQL helper 或读其表。
@@ -67,19 +68,33 @@ Port 方法的 `RequestContext` 仅在 host 参数位置；不能把模型/guest
 
 取消/失权发生在保存提交后，调用可能拒绝但业务已提交；按原 requestId/对象/动作账本对账，不能换新键重放。新 Port 未另造事务/处理状态。
 
+## 成果文本读取 MCP 业务适配（T08）
+
+`createDeliverablesMcpReadPort(owner: Pick<DeliverablesPort, 'readExact'>)` 返回 `readExact(context, input, signal)`。输入沿公开 `DeliverableReadInputProjectionSchema`，结果沿 `DeliverableReadMcpProjectionSchema`；API v1 / ContractVersion 1 / rolling [1] 不变，没有新默认、限额或字段。它只是业务适配，不创建 MCP server、host authority、Run、registry 或事务，也不引入 SDK 依赖。
+
+适配 await 真实 owner 完成原件权限、全源 size/hash、UTF-8/有界页与交付现权检查，再将同一投影放入原生 `content.text`（JSON）和 `structuredContent`。downloadUrl 仍是 locator，不替代真实正文；不重复读取存储、不把普通文本接口当 PDF/Office parser。缺失 `requireCurrentAccess` 仍由 owner 拒绝；测试 qualification substitute 不是生产接线。
+
+DataAccessError 保现有具名 ApiError 投影；DeliverableReadError 保现工具码的原生 isError，不扩 ApiError enum。未知异常交唯一 MCP server 的协议边界处理，不序列化 SQL/stack。适配前后检查 signal，但取消后的 owner 异常原样抛出，特别保留原取消原因与 upstream cleanup 失败的 AggregateError；不将取消转成普通 isError，也不吞清理失败。
+
+返回的 Promise 覆盖真实 owner/流 read 与 cancel 收尾，无 Promise.race 或 detached I/O。关闭、撤权、目录与连接独立性仍归272 lifecycle；适配不拥有 model permit。只读重连需对原 objectId/checksum 重新现权校验，不换“最新文件”、不触发生成/发布。已交本人域的字节不能召回。
+
+本树未注册 `deliverable_read`：272 owner 独立补 callback/tool/schema dispatch，消费此 factory 与281既有输入投影；不能占用 `deliverable_document_read` 或搭第二个 server。271/273 当前身份/模块资格与主动撤权还须正式绑定，未接不启用。281/283 来源事务 factory 属独立未封版缺口，本适配不实现它。
+
+新增真实 owner/Storage 回归追加在 workbench-files.integration.test.ts：完整原生投影、BOM/中文/UTF-16页、缺 qualification/他人/跨租户/假checksum、预先取消不进 owner、未知存储异常与损坏字节、真实存储读取/取消门闩等待、撤权后不披露晚结果和原取消+清理双失败。原断言、fixture与时限保留；新增源码不等于已运行。
+
 ## 五面与未完成范围
 
-| 面               | 本期状态                                                                                                            |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------- |
-| 后端/私有数据    | 两个具名 Port 的 16 方法及原件独立命名/固定受权文本与流已写；无 DB 迁移；运行未验证                                 |
-| MCP              | 只读消费 272 v1 公开合同。完整 business adapter、额外工具注册及 4.0 receipt/publisher 载体未装配；没有第二个 server |
-| 员工 UI          | present 需求归 282；本片未改 apps/web 或原生 slot                                                                   |
-| 后台             | present 需求归 288 等；既有明确授权 inspection/公司规矩范本保留，新公开子 Port 与 route 仍待接                      |
-| 企业/员工/资源权 | 资源权限复用现 owner，资格依赖未绑定 fail closed；真实 271/273 配置/撤权装配未验                                    |
+| 面               | 本期状态                                                                                                                           |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 后端/私有数据    | 两个具名 Port 的 16 方法及原件独立命名/固定受权文本与流已写；无 DB 迁移；运行未验证                                                |
+| MCP              | 成果文本业务适配已写；272 tool 注册与可信宿主装配仍待接，资料及 create/document 与 4.0 receipt/publisher 未装配；没有第二个 server |
+| 员工 UI          | present 需求归 282；本片未改 apps/web 或原生 slot                                                                                  |
+| 后台             | present 需求归 288 等；既有明确授权 inspection/公司规矩范本保留，新公开子 Port 与 route 仍待接                                     |
+| 企业/员工/资源权 | 资源权限复用现 owner，资格依赖未绑定 fail closed；真实 271/273 配置/撤权装配未验                                                   |
 
 仍待：资料 text/image/archive 实际读取 receipt 与下载流的公开口；成果 create/readDocument/原生 preview；origin=file 通过公开 authorizedResource 复制；公司规矩范本公开子 Port；成果 feedback/admin inspection 的公开投影；共享 policy/binding/Run/audit/身份/存储依赖的唯一物理 owner 拆封。旧内部跨 owner 联查仍存在，本片具名包装不证明它们已经退出。没有删旧数据或旧业务通道；新版 history/compare/sync/archive/sharing 管理方法未加入 allowlist。
 
-272 v1 只有 referenceRead/memoryRead/deliverableCreate；还缺 reference_search/read_image/archive_list/archive_read 与 deliverable_read/document_read 的 callback/注册。由 272 owner 在同一原生服务补具名公开口，281 不改封版文件。create 的技术出处/changeset 与已退版链管理需分别无损映射，不能一概拒绝或吞字段。
+本树继承272 v1仅 referenceRead/memoryRead/deliverableCreate。root已收272六口扩展67d09b0d的正式83项通过交接；该来源不自动并入本树，不当本片已运行。deliverable_read第七口由272另一唯一作者补；281只交此业务适配，不修改其server。create 的技术出处/changeset 与已退版链管理需分别无损映射，不能一概拒绝或吞字段。
 
 现 origin=file canonical 只复用同一 immutable object 的 active 出版件，同用途/归一受众的新请求可复用；不同用途/受众拒绝并走 CAS。revoke 后原请求仍回原 ID，新请求可新 source。0237 索引与这段行为本期均未改。r2 新保存独立是否要求破除此同原件防重复，交 root 结合 PLAN 与既有测试核定，不预认必须迁移。
 

@@ -377,6 +377,7 @@ export {
   DeliverableReadError,
   type DeliverablesPortOptions,
 } from './deliverables-port.ts';
+export { createDeliverablesMcpReadPort } from './deliverables-mcp-read-port.ts';
 export {
   createEnterpriseMaterialsPort,
   type EnterpriseMaterialsPortOptions,

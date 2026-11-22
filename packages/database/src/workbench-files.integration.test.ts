@@ -7,6 +7,7 @@ import {
 import { legacyReferenceFixture } from './legacy-reference.fixture.ts';
 import { allocateWorkbenchFileName } from './workbench-file-name.ts';
 import { createDeliverablesPort } from './deliverables-port.ts';
+import { createDeliverablesMcpReadPort } from './deliverables-mcp-read-port.ts';
 import { createEnterpriseMaterialsPort } from './enterprise-materials-port.ts';
 import {
   claimReferenceProcessing,
@@ -1280,6 +1281,307 @@ suite(
           cancelGate.resolve();
           await outcome;
           reader.releaseLock();
+        }
+      },
+      30000,
+    );
+    it('returns native MCP text and the exact verified owner projection without a second storage read', async () => {
+      const t = await setup();
+      const actualStorage = storage();
+      const body = '\ufeff验收🙂\n回款出处。';
+      const uploaded = await uploadWorkbenchFile(
+        t.owner,
+        {
+          ...uploadInput(t.owner),
+          contentBase64: Buffer.from(body).toString('base64'),
+        },
+        actualStorage,
+      );
+      const stored = await readWorkbenchFile(t.owner, uploaded.objectId);
+      const get = vi.fn(actualStorage.get.bind(actualStorage));
+      const adapter = createDeliverablesMcpReadPort(
+        createDeliverablesPort({
+          storage: { ...boundStorage(actualStorage), get },
+          requireCurrentAccess: async () => {}, // Explicit test qualification only.
+        }),
+      );
+      const source = {
+        objectId: uploaded.objectId,
+        checksum: stored.object.checksum,
+      };
+      const signal = new AbortController().signal;
+      const expected = {
+        id: uploaded.objectId,
+        checksum: source.checksum,
+        downloadUrl: `/api/v1/files/${uploaded.objectId}/download?name=%E6%94%B6%E5%85%A5%E5%8F%A3%E5%BE%84.txt`,
+        fileName: '收入口径.txt',
+        mediaType: 'text/plain',
+        content: '\ufeff验收🙂\n回款出处。',
+        offset: 0,
+        totalCharacters: 11,
+        truncated: false,
+        nextOffset: null,
+      };
+      expect(await adapter.readExact(t.owner, source, signal)).toEqual({
+        content: [{ type: 'text', text: JSON.stringify(expected) }],
+        structuredContent: expected,
+      });
+      const page = {
+        ...expected,
+        content: '回款出处。',
+        offset: 6,
+        truncated: true,
+      };
+      expect(
+        await adapter.readExact(
+          t.owner,
+          { ...source, offset: 6, limit: 5 },
+          signal,
+        ),
+      ).toEqual({
+        content: [{ type: 'text', text: JSON.stringify(page) }],
+        structuredContent: page,
+      });
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(
+        await new Response(await actualStorage.get(stored.object)).text(),
+      ).toBe(body);
+    }, 30000);
+    it('keeps MCP owner qualification, private-resource refusals and unknown storage failures distinct', async () => {
+      const t = await setup();
+      const other = await setup();
+      const actualStorage = storage();
+      const uploaded = await uploadWorkbenchFile(
+        t.owner,
+        uploadInput(t.owner),
+        actualStorage,
+      );
+      const source = {
+        objectId: uploaded.objectId,
+        checksum: (await readWorkbenchFile(t.owner, uploaded.objectId)).object
+          .checksum,
+      };
+      const signal = new AbortController().signal;
+      const owner = createDeliverablesPort({
+        storage: actualStorage,
+        requireCurrentAccess: async () => {}, // Explicit test qualification only.
+      });
+      const adapter = createDeliverablesMcpReadPort(owner);
+      for (const [context, reader, input, code, message] of [
+        [
+          t.owner,
+          createDeliverablesMcpReadPort(
+            createDeliverablesPort({ storage: actualStorage }),
+          ),
+          source,
+          'AUTHORIZATION_DENIED',
+          'authorization_denied',
+        ],
+        [t.maintainer, adapter, source, 'RESOURCE_NOT_FOUND', 'not_found'],
+        [other.owner, adapter, source, 'RESOURCE_NOT_FOUND', 'not_found'],
+        [
+          t.owner,
+          adapter,
+          { ...source, checksum: `sha256:${'0'.repeat(64)}` },
+          'RESOURCE_NOT_FOUND',
+          'not_found',
+        ],
+      ] as const) {
+        expect(await reader.readExact(context, input, signal)).toEqual({
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                error: {
+                  code,
+                  message,
+                  requestId: context.requestId,
+                  retryable: false,
+                },
+              }),
+            },
+          ],
+        });
+      }
+      const preCanceled = new AbortController();
+      const reason = new Error('native request canceled before owner entry');
+      const read = vi.spyOn(owner, 'readExact');
+      preCanceled.abort(reason);
+      await expect(
+        adapter.readExact(t.owner, source, preCanceled.signal),
+      ).rejects.toBe(reason);
+      expect(read).not.toHaveBeenCalled();
+      const failure = new Error(
+        'private storage failure stays inside protocol redaction',
+      );
+      const broken = createDeliverablesMcpReadPort(
+        createDeliverablesPort({
+          requireCurrentAccess: async () => {}, // Explicit test qualification only.
+          storage: {
+            ...boundStorage(actualStorage),
+            get: async () => {
+              throw failure;
+            },
+          },
+        }),
+      );
+      await expect(broken.readExact(t.owner, source, signal)).rejects.toBe(
+        failure,
+      );
+      const corrupt = createDeliverablesMcpReadPort(
+        createDeliverablesPort({
+          requireCurrentAccess: async () => {}, // Explicit test qualification only.
+          storage: {
+            ...boundStorage(actualStorage),
+            get: async () => new Blob(['corrupt']).stream(),
+          },
+        }),
+      );
+      expect(await corrupt.readExact(t.owner, source, signal)).toEqual({
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              code: 'TOOL_FILE_CHECKSUM_MISMATCH',
+              message: 'TOOL_FILE_CHECKSUM_MISMATCH',
+              retryable: false,
+            }),
+          },
+        ],
+      });
+    }, 30000);
+    it.each(['abort', 'revoke', 'cleanup-failure'] as const)(
+      'MCP read joins actual storage and cancellation before settling (%s)',
+      async (mode) => {
+        const t = await setup();
+        const actualStorage = storage();
+        const uploaded = await uploadWorkbenchFile(
+          t.owner,
+          uploadInput(t.owner),
+          actualStorage,
+        );
+        const source = {
+          objectId: uploaded.objectId,
+          checksum: (await readWorkbenchFile(t.owner, uploaded.objectId)).object
+            .checksum,
+        };
+        const readEntered = readPathSignal();
+        const readGate = readPathSignal();
+        const cancelEntered = readPathSignal();
+        const cancelGate = readPathSignal();
+        const cleanup = new Error('actual storage cleanup failed');
+        let enabled = true;
+        let upstream: ReadableStream<Uint8Array> | undefined;
+        const get = vi.fn(async (object: Parameters<StoragePort['get']>[0]) => {
+          const reader = (await actualStorage.get(object)).getReader();
+          let stopped = false;
+          let work: Promise<void> | undefined;
+          upstream = new ReadableStream<Uint8Array>(
+            {
+              pull(controller) {
+                work = (async () => {
+                  const chunk = await reader.read(); // Real stored bytes, not a fabricated source.
+                  readEntered.resolve();
+                  await readGate.promise;
+                  if (!stopped) {
+                    if (chunk.done) controller.close();
+                    else controller.enqueue(chunk.value);
+                  }
+                })();
+                return work;
+              },
+              async cancel(reason) {
+                stopped = true;
+                cancelEntered.resolve();
+                await cancelGate.promise;
+                try {
+                  await Promise.all([work, reader.cancel(reason)]);
+                } finally {
+                  reader.releaseLock();
+                }
+                if (mode === 'cleanup-failure') throw cleanup;
+              },
+            },
+            { highWaterMark: 0 },
+          );
+          return upstream;
+        });
+        const adapter = createDeliverablesMcpReadPort(
+          createDeliverablesPort({
+            storage: { ...boundStorage(actualStorage), get },
+            requireCurrentAccess: async () => {
+              // Explicit host qualification substitute; live resource SQL remains real.
+              if (!enabled) throw new DataAccessError('authorization_denied');
+            },
+          }),
+        );
+        const cancellation = new AbortController();
+        const reason = new Error('native MCP request canceled');
+        let settled = false;
+        const outcome = adapter
+          .readExact(t.owner, source, cancellation.signal)
+          .then(
+            (value) => ({ value, error: undefined }),
+            (error: unknown) => ({ value: undefined, error }),
+          )
+          .finally(() => {
+            settled = true;
+          });
+        try {
+          await readEntered.promise;
+          if (mode === 'revoke') {
+            enabled = false;
+            readGate.resolve();
+          } else cancellation.abort(reason);
+          await cancelEntered.promise;
+          await nextTurn();
+          expect(settled).toBe(false);
+          expect(upstream!.locked).toBe(true);
+          cancelGate.resolve();
+          if (mode !== 'revoke') {
+            await nextTurn();
+            expect(settled).toBe(false); // Real entered storage work still held.
+            readGate.resolve();
+          }
+          const result = await outcome;
+          expect(get).toHaveBeenCalledTimes(1);
+          expect(upstream!.locked).toBe(false);
+          if (mode === 'revoke')
+            expect(result).toEqual({
+              error: undefined,
+              value: {
+                isError: true,
+                content: [
+                  {
+                    type: 'text',
+                    text: JSON.stringify({
+                      error: {
+                        code: 'AUTHORIZATION_DENIED',
+                        message: 'authorization_denied',
+                        requestId: t.owner.requestId,
+                        retryable: false,
+                      },
+                    }),
+                  },
+                ],
+              },
+            });
+          else {
+            expect(result.value).toBeUndefined();
+            if (mode === 'cleanup-failure') {
+              expect(result.error).toBeInstanceOf(AggregateError);
+              expect(result.error).toMatchObject({
+                cause: reason,
+                errors: [reason, cleanup],
+              });
+            } else expect(result.error).toBe(reason);
+          }
+        } finally {
+          readGate.resolve();
+          cancelGate.resolve();
+          await outcome;
         }
       },
       30000,
