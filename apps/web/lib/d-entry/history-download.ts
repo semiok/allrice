@@ -41,6 +41,8 @@ export async function prepareHistoryAttachment(input: {
   context: RequestContext;
   attachment: HostHistoryAttachment;
   signal: AbortSignal;
+  /** Joins the independent current-history subscription, never object ACL I/O. */
+  closeAuthority?(): Promise<void>;
   authorize(
     owner: DEntryHistoryAttachmentHandle,
     signal: AbortSignal,
@@ -85,6 +87,7 @@ export async function prepareHistoryAttachment(input: {
           async () =>
             directory && rm(directory, { recursive: true, force: true }),
           async () => owner?.close(),
+          async () => input.closeAuthority?.(),
         ].map(async (release) => release()),
       );
       const failed = results.find((result) => result.status === 'rejected');

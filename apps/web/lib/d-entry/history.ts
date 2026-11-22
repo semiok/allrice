@@ -61,6 +61,15 @@ function query(request: Request) {
   return Object.fromEntries(values);
 }
 
+export function parseDEntryHistoryRequest(
+  request: Request,
+  method: 'history' | 'download',
+) {
+  return (method === 'history' ? pageInput : attachmentInput).parse(
+    query(request),
+  );
+}
+
 function matches(
   binding: HostHistoryBinding,
   resource: DEntryNativeResource,
@@ -125,6 +134,9 @@ export interface DEntryHistoryPorts {
   /** Requires a real object-permission revocation subscription. Without an
    * owner binding downloads fail closed with 503; history remains readable. */
   files?: DEntryHistoryAttachmentPort;
+  /** Per-request history authority only. Distinct from attachment owner close;
+   * a streamed download owns this join until EOF, cancellation or failure. */
+  closeAuthority?(): Promise<void>;
 }
 
 /** Read-only BFF composition. It has no VM, model auth, Agent or execution port.
@@ -277,6 +289,7 @@ export function createDEntryHistoryHandlers(ports: DEntryHistoryPorts) {
           context: stored.context,
           attachment,
           signal: stored.signal,
+          closeAuthority: ports.closeAuthority,
           async authorize(owner, signal) {
             exactObject(owner.object, attachment, stored.binding);
             const resource = await authorizeDEntryNativeResource({

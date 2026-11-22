@@ -1,8 +1,8 @@
 # MET-274 宿主历史 v1 装配清单
 
-离当前目标还差什么：271 的真实持久 root/现权/route、273 的冷 source、历史配置
-pin 与 checkpoint producer，以及附件对象 ACL owner 尚未绑定。核心工厂和合同
-测试不构成生产装配；未绑定时保持不可用。UI 与真实 VM 联验另由对应 owner 负责。
+离当前目标还差什么：273 的冷 source、历史配置 pin/checkpoint/恢复存储根，以及
+附件对象 ACL owner 仍未绑定。271 正式持久 root/现权已消费，独有 history GET 已注册；
+生产缺 273 时鉴权后关闭订阅并返回 503。测试替身不构成完整生产装配或真实 VM 验收。
 
 ## 已有公开接缝与本轮修正
 
@@ -13,7 +13,7 @@ pin 与 checkpoint producer，以及附件对象 ACL owner 尚未绑定。核心
 | 原生单向投影 | `captureHostHistory` 只消费锁定 rc.2 公开 `SessionController.inspect`、`dsh-session` append-origin/closer；不调用 resolveAgent、prompt、repair 或 retry |
 | 固定数据合同 | `@allrice/contracts` 的 `HostHistoryBinding/Attachment/Entry/Snapshot/Page` 及对应 Schema、`HostHistoryStorePort`；无新增权限或执行状态                 |
 | 宿主存储     | `@allrice/storage` 的 `HostHistoryStore`、`hostHistoryDigest`、`HostHistoryIntegrityError`；不可变文件、完整前缀、摘要固定分页，损坏/回退/分叉拒绝      |
-| BFF          | `createDEntryHistoryHandlers` 返回 history/download 工厂；生产 route 尚未注册。冷读只经宿主存储和当前现权，不依赖 VM、模型或认证刷新                    |
+| BFF          | `createDEntryHistoryRouteHandlers` 消费 271 正式 root/watch，组合既有 history/download 工厂；冷读不进入 live owner、VM、模型或认证刷新                  |
 | 附件 owner   | 现有 `DEntryHistoryAttachmentPort/Handle` 的 acquire/reauthorize/revoked/open/close；没有真正通知和 join 的 owner 时下载 503，历史仍可读                |
 
 本轮将 source 的 header/hash/throughSeq 在等待附件导出前固定，保证与同次同步
@@ -31,9 +31,11 @@ MET-225 由 root 核对该既有行；本文不声称已在线更新。
 
 1. 收齐各 owner 的具名公开出口、exact SHA/tree/blob、参数/错误、撤权覆盖范围及
    实际 I/O join 说明；无具体 v1 签名的口先由 owner 封版，274 不深导入内部实现。
-2. 271 绑定当前本人/成员/员工/线程和完整 root-parent 祖先，使用持久历史 pin，
-   提供覆盖权限与历史配置撤销的真实 resource signal。浏览器选择器不授予权力；
-   不能用运行中的 VM admission 作为离线历史的必要条件。
+2. 已消费 271 `3dcde5079ede7c023c466073828ff8c612e3e046` 的数据库 barrel 公口
+   `getDEntryHistoryRootPin` / `watchDEntryHistoryAuthority`。可信当前登录取得 RequestContext，
+   LISTEN/register 先于现权重核；后续读再次核同 identity/root/origin digest/birth binding。
+   无 root/claim-only 返回 404，不创建或重放。271 只提供 root；273 冷子会话祖先未交时
+   不信浏览器 parent，也不借 live VM admission/rollout 作为历史门槛。
 3. 273 提供与同线程历史 instance/profile/session/root/config release+digest 匹配的
    冷 inspect source，以及受权 checkpoint/停机导出顺序。当前 roster、启动 config、
    controlReady 都不能充当历史 pin。不能为读历史调用 prepare/start/open/resolveAgent
@@ -45,9 +47,11 @@ MET-225 由 root 核对该既有行；本文不声称已在线更新。
    变化，不能复用身份信号代替。pending acquire 失败前自行清理，open/reauthorize
    取消后等待真实操作收敛，close 释放并 join。继续使用不可变 ID/checksum/size/mediaType
    与私有 spool 完整验证；单次 getStoredFile 查询不满足通知合同。
-6. 271 route owner 注册现有 history/download 工厂，保留可信登录上下文和现权。
-   缺 source/config/root 或对象 owner 时沿现有错误 fail closed，不注册伪可用入口。
-   页面接线归 UI owner，历史不提供 execute/continue 方法。
+6. 已注册本卡独有 `/api/v1/d-entry/history` 与 `/history/download` GET；生产不注入测试
+   feed。只复用既有 binding/store/files 组合口，未提供 273 时明确 503，无默认存储或
+   配置猜测。JSON 返回前、流 EOF/cancel/error、部分初始化失败均 await subscription.close；
+   下载通过独立 closeAuthority 回调等待它，仍分别等待对象 owner，不混淆两种权限或 join。
+   共享通知 feed 的进程生命周期仍归 271。页面接线归 UI owner，历史不提供 execute/continue。
 7. 单列恢复 manifest：宿主快照/schema/digest/完整 source cursor、原生
    DSH_HOME/DSH_AGENTS_HOME/JSONL/附件/工作区、历史配置 release/digest、真实对象
    pins 与字节，以及 VM 盘/外部存储边界。业务 operation/approval/receipt 和模型账本
@@ -64,8 +68,9 @@ checkpoint/route 具体生产签名如超出 v1，须先由对应 owner 与 root
 
 ## 合同测试及未证明的内容
 
-新增测试仍在现有 `apps/web/lib/d-entry/history.test.ts`，由正常 unit 收集；
-无新资源环境分支、manual tag 或 collector 例外。既有 27 条测试保留。
+原 `history.test.ts` 的 48 例（含已完成原版/变异检出的两个 close 屏障组）原字节保留。
+新增 `history-authority.test.ts` 为合同 unit，`history-authority.integration.test.ts` 沿
+`ALLRICE_RUN_DB_INTEGRATION` / 原 collector，登记单个 db 资源文件；无新 manual 例外。
 
 - 用真实 `HostHistoryStore` 文件及新实例/BFF 验证固定快照重开、分页、工具结果与
   附件 pin 不被后续 capture 升级，及恢复文件集合冲突拒绝。
@@ -75,7 +80,10 @@ checkpoint/route 具体生产签名如超出 v1，须先由对应 owner 与 root
   实际 Promise join，分别覆盖 binding、inspect/export、acquire、reauthorize。
 - 无 v1 execute/业务 receipt 具体接口，因此显式新执行及业务 commit-before-ack
   仅为测试局部替身；不宣称真实 VM kill、对象权限通知、业务对账或生产不重复通过。
+- 新 PG 套件复用既有隔离 fixture，以真实 cookie、公共 root/watch、默认 PG LISTEN/NOTIFY
+  验证历史现权及 pending 读撤销；273 配置/宿主投影和对象 ACL 仍明确为替身。fixture
+  建立初始 root 使用原 owner 服务，不复制 claim/pin SQL，不作为生产创建装配。
 
 本轮不运行正式测试。root 必须整文件运行新增及既有 history 测试，再跑直接受影响
-的既有 D-entry/storage 套件；命令、完整文件列表与首败保留要求在本轮 QA
-`independent-v1-20261122/IMPLEMENTATION.md` 和执行包中。
+的既有 D-entry 套件；命令、完整文件列表与首败保留要求在本轮 QA
+`consume-271-20261122/IMPLEMENTATION.md` 和执行包中。静态准备不算测试通过。
