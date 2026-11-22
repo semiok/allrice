@@ -1200,6 +1200,12 @@ suite('installed native employee panels with synthetic business owner', () => {
                 prefix,
                 error: String(error),
                 evidence: await evidence().catch(String),
+                referenceOpenedInventory: [...opened],
+                referenceEvidence: await baseline
+                  .evaluate(
+                    () => window.__allricePanelsReference?.evidence() ?? null,
+                  )
+                  .catch(String),
               };
               comparisons.push(failure);
               await writeFile(

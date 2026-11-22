@@ -170,13 +170,18 @@ function installReference(ctx: Context) {
       if (
         !ready ||
         ctx.sidebarRight.mounted.getSnapshot() !== sessionId ||
-        opened.at(-1) !== kind ||
+        !opened.includes(kind) ||
         new Set(opened).size !== opened.length ||
         opened.some((key) => !referenceKinds.includes(key))
       )
         throw Error('Reference native session/tab inventory is not ready');
       for (const key of opened)
         ctx.sidebarRight.openTab(`allrice-employee-panels.${key}`);
+      // This list preserves native tab creation order across the state's
+      // replay. Reopening an existing public page selects it without changing
+      // that inventory; its final item need not be the requested active kind.
+      if (opened.at(-1) !== kind)
+        ctx.sidebarRight.openTab(`allrice-employee-panels.${kind}`);
     },
   };
   ctx.effect(() => {

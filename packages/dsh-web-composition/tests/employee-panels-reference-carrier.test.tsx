@@ -33,6 +33,7 @@ import {
 } from './fixtures/employee-panels/reference';
 import { nativeClientModule } from './native-client-module.mjs';
 import { installedFixtureComposition } from './installed-profile';
+import { panelStates, type PanelsState } from './fixtures/employee-panels/data';
 
 const hash = (value: string) =>
   createHash('sha256').update(value).digest('hex');
@@ -206,7 +207,12 @@ function referenceContext() {
   return ctx;
 }
 
-async function publicRetention(listed = true, deferOpening = false) {
+async function publicRetention(
+  listed = true,
+  deferOpening = false,
+  kind: (typeof referenceKinds)[number] = 'files',
+  state: PanelsState = 'list',
+) {
   // Actual published Session Controller apply/retain/list/ready/release. Only
   // Remote payloads and the other UI service faces are synthetic; no Host/DOM.
   const ctx = referenceContext();
@@ -318,7 +324,7 @@ async function publicRetention(listed = true, deferOpening = false) {
   vi.stubGlobal('window', {});
   vi.stubGlobal('document', documentDouble());
   vi.stubGlobal('location', {
-    search: '?kind=files&state=list&theme=light&paneWidth=647&paneHeight=962',
+    search: `?kind=${kind}&state=${state}&theme=light&paneWidth=647&paneHeight=962`,
   });
   const retainNative = ctx.sessions.retain.bind(ctx.sessions);
   const retain = vi.spyOn(ctx.sessions, 'retain');
@@ -448,6 +454,46 @@ it('releases a pending real reference and preserves rejection evidence without o
     b.ctx.sessions.retainInfo(b.id as never).getSnapshot().referenceCount,
   ).toBe(0);
   expect(window.__allricePanelsReference).toBeUndefined();
+});
+
+it('replays an existing native tab inventory and selects each requested kind in every original state', async () => {
+  // The formal page retains creation order after its first list traversal.
+  // Inventory order does not describe the subsequently selected native tab.
+  for (const state of panelStates)
+    for (const kind of referenceKinds) {
+      const b = await publicRetention(true, false, kind, state);
+      const fork = b.ctx.plugin(createReferenceFixture());
+      await fork;
+      await b.opened.promise;
+      const control = window.__allricePanelsReference!;
+      expect(control.evidence().retainedReady).toBe(true);
+      expect(control.evidence().sessionId).toBe(b.id);
+      const openTab = vi.mocked(b.ctx.sidebarRight.openTab);
+      control.open([...referenceKinds]);
+      const ids = referenceKinds.map(
+        (value) => 'allrice-employee-panels.' + value,
+      );
+      expect(openTab.mock.calls.map(([id]) => id)).toEqual(
+        kind === 'workflow' ? ids : [...ids, 'allrice-employee-panels.' + kind],
+      );
+      const calls = openTab.mock.calls.length;
+      for (const invalid of [
+        referenceKinds.filter((value) => value !== kind),
+        [kind, kind],
+        [kind, 'unregistered'],
+      ])
+        expect(() =>
+          control.open(invalid as Parameters<typeof control.open>[0]),
+        ).toThrow('inventory');
+      expect(openTab).toHaveBeenCalledTimes(calls);
+      expect(b.retain).toHaveBeenCalledTimes(1);
+      expect(b.errors).not.toHaveBeenCalled();
+      await fork.dispose();
+      await b.ctx.fiber.dispose();
+      contexts.splice(contexts.indexOf(b.ctx), 1);
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    }
 });
 
 it('keeps the four real component constructors and original synthetic state props', () => {
