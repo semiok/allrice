@@ -24,6 +24,9 @@ export default defineConfig({
       '@allrice/model-gateway': fileURLToPath(
         new URL('./packages/model-gateway/src/index.ts', import.meta.url),
       ),
+      '@allrice/person-vm/admission': fileURLToPath(
+        new URL('./packages/person-vm/src/admission.ts', import.meta.url),
+      ),
       '@allrice/person-vm': fileURLToPath(
         new URL('./packages/person-vm/src/index.ts', import.meta.url),
       ),

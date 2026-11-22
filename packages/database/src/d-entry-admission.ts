@@ -6,7 +6,7 @@ import {
   type PersonVmAdmissionPermit,
   type PersonVmAdmissionPort,
   type PersonVmBinding,
-} from '@allrice/person-vm';
+} from '@allrice/person-vm/admission';
 
 /** Preparation only: production must inject the final reviewed producer and
  * its entry participant from the same model-host composition. No SQL here. */

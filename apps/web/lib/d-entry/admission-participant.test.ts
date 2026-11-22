@@ -7,7 +7,7 @@ import {
   type PersonVmAdmissionPermit,
   type PersonVmAdmissionPort,
   type PersonVmBinding,
-} from '@allrice/person-vm';
+} from '@allrice/person-vm/admission';
 import {
   runDEntryAdmittedActivity,
   type DEntryOwnedActivity,
