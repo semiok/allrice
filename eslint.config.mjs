@@ -27,6 +27,23 @@ export default tseslint.config(
     },
   },
   {
+    files: [
+      'packages/vm-memory/guest/initialize.cjs',
+      'packages/vm-memory/guest/sample.cjs',
+    ],
+    languageOptions: {
+      sourceType: 'commonjs',
+      globals: {
+        require: 'readonly',
+        module: 'readonly',
+        process: 'readonly',
+      },
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+    },
+  },
+  {
     files: ['**/*.ts', '**/*.tsx'],
     rules: {
       '@typescript-eslint/consistent-type-imports': 'error',
