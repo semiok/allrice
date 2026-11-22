@@ -3,8 +3,8 @@ import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 
 // Consume the published native module-table artifact, without copying its code.
-export function nativeClientModule(name) {
-  const resolve = createRequire(import.meta.url);
+export function nativeClientModule(name, from = import.meta.url) {
+  const resolve = createRequire(from);
   const file = resolve.resolve(`${name}/client`);
   let factory;
   runInNewContext(
@@ -18,6 +18,9 @@ export function nativeClientModule(name) {
         },
       },
       queueMicrotask: globalThis.queueMicrotask,
+      AbortController: globalThis.AbortController,
+      AbortSignal: globalThis.AbortSignal,
+      console: globalThis.console,
     },
     { filename: file },
   );

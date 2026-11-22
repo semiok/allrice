@@ -40,6 +40,7 @@ const roots: string[] = [],
   contexts: Context[] = [];
 afterEach(async () => {
   for (const ctx of contexts.splice(0)) await ctx.fiber.dispose();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
@@ -172,6 +173,282 @@ const documentDouble = () => {
     styles,
   };
 };
+
+function referenceContext() {
+  const ctx = new Context();
+  contexts.push(ctx);
+  const { SlotRegistry } = nativeClientModule(
+    '@deepseek-ai/dsh-client-ui-renderer',
+  );
+  new SlotRegistry(ctx);
+  ctx.slots.register(
+    {
+      name: 'root',
+      children: {
+        'sidebar.right.pane.tab': {
+          kind: 'keyed',
+          scope: 'session',
+          inject: {
+            hooks: {
+              tabInfo: () => () => {
+                throw Error('Unit never mounts a native renderer');
+              },
+            },
+          },
+        },
+      },
+    },
+    ({ renderSlot }: PropsRenderSlots<'sidebar.right.pane.tab'>) => {
+      void renderSlot;
+      return null;
+    },
+  );
+  return ctx;
+}
+
+async function publicRetention(listed = true, deferOpening = false) {
+  // Actual published Session Controller apply/retain/list/ready/release. Only
+  // Remote payloads and the other UI service faces are synthetic; no Host/DOM.
+  const ctx = referenceContext();
+  const from = new URL('../../../apps/worker/package.json', import.meta.url)
+    .href;
+  const api = nativeClientModule(
+    '@deepseek-ai/dsh-api-session-controller',
+    from,
+  );
+  const apiRequire = createRequire(
+    createRequire(from).resolve(
+      '@deepseek-ai/dsh-api-session-controller/client',
+    ),
+  );
+  const { createSnapshotStore } = apiRequire('@deepseek-ai/dsh-client-store');
+  const { RemoteStream } = apiRequire('@deepseek-ai/dsh-api-gateway/client');
+  const { SESSION_FORMAT_VERSION } = apiRequire(
+    '@deepseek-ai/dsh-session/types',
+  );
+  const connection = { generation: createSnapshotStore(undefined) };
+  let startOpening!: () => void, onOpened!: () => void;
+  const opening = new Promise<void>((resolve) => {
+    startOpening = resolve;
+  });
+  const opened = new Promise<void>((resolve) => {
+    onOpened = resolve;
+  });
+  const id = 'session-00000000-0000-4000-8000-000000000036';
+  let mounted: string | undefined;
+  let catalogListed = listed;
+  const follow = vi.fn(async function* (
+    _request: unknown,
+    signal: AbortSignal,
+  ) {
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => reject(signal.reason);
+      signal.addEventListener('abort', abort, { once: true });
+      void opening
+        .then(resolve, reject)
+        .finally(() => signal.removeEventListener('abort', abort));
+      if (signal.aborted) abort();
+    });
+    signal.throwIfAborted();
+    yield {
+      type: 'snapshot',
+      header: {
+        version: SESSION_FORMAT_VERSION,
+        id,
+        createdAt: 0,
+        isSeeded: false,
+      },
+      cursor: -1,
+      records: [],
+      hasMore: false,
+      projections: { asOfSeq: -1, values: {} },
+      assistantStream: { revision: 0 },
+    };
+    await new Promise<void>((resolve) => {
+      if (signal.aborted) resolve();
+      else signal.addEventListener('abort', () => resolve(), { once: true });
+    });
+  });
+  const remote = {
+    $on: () => () => {},
+    $stream: (options: unknown) => new RemoteStream(connection, options),
+    session: {
+      list: async () => ({
+        ok: true,
+        value: {
+          items: catalogListed
+            ? [
+                {
+                  sessionId: id,
+                  updatedAt: 1,
+                  running: false,
+                  blank: false,
+                  agentAvailable: true,
+                },
+              ]
+            : [],
+        },
+      }),
+      follow,
+    },
+    commands: {},
+    subagents: {},
+  };
+  ctx.provide('connection', connection);
+  ctx.provide('remote', remote);
+  ctx.provide('fileUpload', {});
+  ctx.provide('typert', { contexts: { registerClient: () => () => {} } });
+  api.apply(ctx);
+  await ctx.sessions.refresh();
+  expect(ctx.sessions.list.getSnapshot().phase).toBe('ready');
+  ctx.provide('workspaces', { list: createSnapshotStore({ phase: 'ready' }) });
+  ctx.provide('sidebarRightTabs', { register: () => () => {} });
+  ctx.provide('sidebarRight', {
+    mounted: { getSnapshot: () => mounted },
+    active: () => undefined,
+    isExpanded: () => false,
+    openTab: vi.fn(),
+  });
+  const openSession = vi.fn((value: string) => {
+    mounted = value;
+    onOpened();
+  });
+  ctx.provide('uiWorkspace', { openSession });
+  ctx.provide('theme', { setTheme: vi.fn() });
+  vi.stubGlobal('window', {});
+  vi.stubGlobal('document', documentDouble());
+  vi.stubGlobal('location', {
+    search: '?kind=files&state=list&theme=light&paneWidth=647&paneHeight=962',
+  });
+  const retainNative = ctx.sessions.retain.bind(ctx.sessions);
+  const retain = vi.spyOn(ctx.sessions, 'retain');
+  const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+  if (!deferOpening) startOpening();
+  return {
+    ctx,
+    id,
+    retain,
+    retainNative,
+    errors,
+    openSession,
+    opening: { resolve: startOpening },
+    opened: { promise: opened },
+    follow,
+    addSession: () => {
+      catalogListed = true;
+    },
+  };
+}
+
+it('opens once through real synchronous retention publications, cleans up and rebuilds without stale control', async () => {
+  const b = await publicRetention();
+  let inRetain = false;
+  b.retain.mockImplementation((...args) => {
+    inRetain = true;
+    try {
+      return b.retainNative(...args);
+    } finally {
+      inRetain = false;
+    }
+  });
+  const synchronousPublications: number[] = [];
+  const stop = b.ctx.sessions.list.subscribe(() => {
+    if (inRetain)
+      synchronousPublications.push(
+        b.ctx.sessions.retainInfo(b.id as never).getSnapshot().referenceCount,
+      );
+  });
+  const fork = b.ctx.plugin(createReferenceFixture());
+  await fork;
+  expect(b.retain).toHaveBeenCalledTimes(1);
+  expect(synchronousPublications).toEqual([1]);
+  await b.opened.promise;
+  const control = window.__allricePanelsReference!;
+  expect(control.evidence().retainedReady).toBe(true);
+  expect(b.openSession).toHaveBeenCalledTimes(1);
+  const firstBinding = b.retain.mock.results[0]!.value.binding;
+  expect(firstBinding.session.getSnapshot().openState).toBe('open');
+  await fork.dispose();
+  expect(
+    b.ctx.sessions.retainInfo(b.id as never).getSnapshot().referenceCount,
+  ).toBe(0);
+  expect(window.__allricePanelsReference).toBeUndefined();
+  expect(() => control.open(['files'])).toThrow('not ready');
+  await b.ctx.sessions.refresh();
+  expect(b.retain).toHaveBeenCalledTimes(1);
+  const rebuilt = b.ctx.plugin(createReferenceFixture());
+  await rebuilt;
+  const secondReference = b.retain.mock.results[1]!.value;
+  await secondReference.ready;
+  await Promise.resolve();
+  expect(b.retain).toHaveBeenCalledTimes(2);
+  expect(b.openSession).toHaveBeenCalledTimes(2);
+  expect(secondReference.binding).not.toBe(firstBinding);
+  expect(secondReference.binding.session.getSnapshot().openState).toBe('open');
+  expect(b.ctx.slots.entries('sidebar.right.pane.tab')).toHaveLength(4);
+  await rebuilt.dispose();
+  stop();
+  expect(
+    b.ctx.sessions.retainInfo(b.id as never).getSnapshot().referenceCount,
+  ).toBe(0);
+  expect(b.errors).not.toHaveBeenCalled();
+});
+
+it('keeps a real synchronous retain refusal visible, does not retry, and remains cleanable', async () => {
+  const b = await publicRetention(false);
+  const fork = b.ctx.plugin(createReferenceFixture());
+  await fork;
+  expect(b.retain).toHaveBeenCalledTimes(1);
+  expect(b.errors).toHaveBeenCalledWith(
+    'Pinned reference native session failed',
+    expect.objectContaining({
+      message: expect.stringContaining('unknown session'),
+    }),
+  );
+  expect(window.__allricePanelsReference?.evidence().retainedReady).toBe(false);
+  expect(() => window.__allricePanelsReference!.open(['files'])).toThrow(
+    'not ready',
+  );
+  b.addSession();
+  await b.ctx.sessions.refresh();
+  expect(b.retain).toHaveBeenCalledTimes(1);
+  expect(b.openSession).not.toHaveBeenCalled();
+  await fork.dispose();
+  expect(window.__allricePanelsReference).toBeUndefined();
+  expect(b.ctx.slots.entries('sidebar.right.pane.tab')).toHaveLength(0);
+  const rebuilt = b.ctx.plugin(createReferenceFixture());
+  await rebuilt;
+  await b.opened.promise;
+  expect(b.retain).toHaveBeenCalledTimes(2);
+  expect(b.openSession).toHaveBeenCalledTimes(1);
+  expect(window.__allricePanelsReference?.evidence().retainedReady).toBe(true);
+  expect(b.errors).toHaveBeenCalledTimes(1);
+  await rebuilt.dispose();
+  expect(
+    b.ctx.sessions.retainInfo(b.id as never).getSnapshot().referenceCount,
+  ).toBe(0);
+});
+
+it('releases a pending real reference and preserves rejection evidence without opening after disposal', async () => {
+  const b = await publicRetention(true, true);
+  const fork = b.ctx.plugin(createReferenceFixture());
+  await fork;
+  expect(b.retain).toHaveBeenCalledTimes(1);
+  const reference = b.retain.mock.results[0]!.value;
+  await fork.dispose();
+  await expect(reference.ready).rejects.toBeDefined();
+  b.opening.resolve();
+  await Promise.resolve();
+  expect(b.openSession).not.toHaveBeenCalled();
+  expect(b.errors).toHaveBeenCalledWith(
+    'Pinned reference native session failed',
+    expect.anything(),
+  );
+  expect(
+    b.ctx.sessions.retainInfo(b.id as never).getSnapshot().referenceCount,
+  ).toBe(0);
+  expect(window.__allricePanelsReference).toBeUndefined();
+});
 
 it('keeps the four real component constructors and original synthetic state props', () => {
   const types = {

@@ -181,26 +181,35 @@ function installReference(ctx: Context) {
   };
   ctx.effect(() => {
     let reference: ReturnType<Context['sessions']['retain']> | undefined;
+    let started = false;
+    const failed = (error: unknown) => {
+      console.error('Pinned reference native session failed', error);
+    };
     const open = () => {
       if (
-        reference ||
+        stopped ||
+        started ||
         ctx.sessions.list.getSnapshot().phase !== 'ready' ||
         ctx.workspaces.list.getSnapshot().phase !== 'ready'
       )
         return;
-      reference = ctx.sessions.retain(sessionId, {
-        source: 'workspaceOperation',
-      });
-      void reference.ready.then(
-        () => {
+      // retain publishes to the same list synchronously before it returns.
+      // Claim this one startup attempt first; failures remain visible, without
+      // subscription-driven retries. A fresh fixture owns a fresh attempt.
+      started = true;
+      try {
+        reference = ctx.sessions.retain(sessionId, {
+          source: 'workspaceOperation',
+        });
+        void reference.ready.then(() => {
           if (stopped) return;
           ready = true;
           ctx.uiWorkspace.openSession(sessionId);
-        },
-        (error: unknown) => {
-          console.error('Pinned reference native session failed', error);
-        },
-      );
+        }, failed);
+      } catch (error) {
+        // Keep cleanup registered even for an immediate public retain refusal.
+        failed(error);
+      }
     };
     window.__allricePanelsReference = test;
     const stopSessions = ctx.sessions.list.subscribe(open),
@@ -208,6 +217,7 @@ function installReference(ctx: Context) {
     open();
     return () => {
       stopped = true;
+      ready = false;
       stopSessions();
       stopWorkspaces();
       reference?.release();
