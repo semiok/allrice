@@ -356,7 +356,7 @@ it('the concrete installer binds real readonly producer calls; catalog installat
   cleanups.push(installed.close);
   const server = await nativeEntryServer(f.base, {
     ...f.base.deps,
-    owner: dEntryNativeOwnerPort,
+    owners: dEntryNativeOwnerPort,
     data: () => undefined,
   });
   cleanups.push(server.close);
