@@ -40,7 +40,6 @@ import { nativeMemorySource } from './memory-native-source.ts';
 import type * as MemoryRuntimeBinding from './memory-runtime-binding.ts';
 import type {
   MemoryRuntimeAssembly,
-  MemoryRuntimeExecution,
   MemoryRuntimeOwnerReads,
 } from './memory-runtime-binding.ts';
 import {
@@ -184,8 +183,8 @@ suite(
       readonly applicationName = `memory-runtime-contract:${randomUUID()}`;
       readonly pids: number[] = [];
       readonly businessScope;
-      readonly root: MemoryRuntimeExecution;
-      readonly observations: Record<string, MemoryRuntimeExecution>;
+      readonly root: z.infer<typeof ExecutionSchema>;
+      readonly observations: Record<string, z.infer<typeof ExecutionSchema>>;
       readonly port = createEmployeeMemoryPort({
         qualification: {
           requireCurrentAccess: async (_context, _target, signal) => {
@@ -267,7 +266,7 @@ suite(
       }
       async install() {
         await database.db`insert into memory_runtime_owner_contract_fixture(id,owner_id,config_ref,facts,observations)
-        values(${this.id},${this.scope.ownerId},'fixture-config-1',${JSON.stringify(this.root)}::jsonb,${JSON.stringify(this.observations)}::jsonb)`;
+        values(${this.id},${this.scope.ownerId},'fixture-config-1',${database.db.json(this.root)},${database.db.json(this.observations)})`;
         await database.db`insert into memory_runtime_source_contract_fixture(id) values(${this.id})`;
         ownerFixture.assembly = this;
         return this;
@@ -565,7 +564,7 @@ suite(
             },
           },
         };
-        await database.db`update memory_runtime_owner_contract_fixture set observations=${JSON.stringify(this.observations)}::jsonb where id=${this.id}`;
+        await database.db`update memory_runtime_owner_contract_fixture set observations=${database.db.json(this.observations)} where id=${this.id}`;
         return request;
       }
     }
