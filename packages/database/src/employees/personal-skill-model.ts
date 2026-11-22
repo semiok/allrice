@@ -2,6 +2,7 @@ import {
   PersonalSkillPackageSchema,
   PersonalSkillItemSchema,
   type PersonalSkillPackage,
+  type PersonalSkillPin,
 } from '@allrice/contracts';
 import { DataAccessError } from '../data.ts';
 import type { ContentIdentity } from '../content-maintenance.ts';
@@ -52,6 +53,23 @@ export function validPackage(
   )
     return unavailable();
   return manifest;
+}
+
+/** Owner-only compact check. Return the actual pending query so a caller that
+ * owns cancellation can cancel and join it inside its existing transaction. */
+export function personalSkillPinState(
+  context: ContentIdentity,
+  pin: PersonalSkillPin,
+  sql: ContentSql,
+) {
+  return sql<
+    { definition_checksum: string; package_checksum: string | null }[]
+  >`select v.definition_checksum,v.package_checksum from allrice_personal_skill_bindings b
+      join allrice_personal_skill_installations i on i.id=b.installation_id and i.state='installed'
+      join allrice_personal_skill_versions v on v.installation_id=i.id and v.id=${pin.versionId}
+      where b.id=${pin.bindingId} and b.instance_id=${pin.instanceId} and b.installation_id=${pin.installationId}
+        and b.organization_id=${context.organizationId} and b.workspace_id=${context.workspaceId} and b.owner_id=${owner(context)}
+        and b.enabled and b.epoch=${pin.bindingEpoch}`;
 }
 
 export async function personalSkillItems(

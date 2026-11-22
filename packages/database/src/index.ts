@@ -402,3 +402,7 @@ export { checkReferenceImageSignal } from './reference-image-read.ts';
 export * from './brand-media/server-wiring.ts';
 export * from './employees/employee-module-bindings.ts';
 export * from './capabilities/native-schedule-observation-ledger.ts';
+export {
+  createPostgresPersonalSkillPackageSource,
+  type PersonalSkillPackageRead,
+} from './capabilities/personal-skill-package-source.ts';

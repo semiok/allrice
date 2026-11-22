@@ -70,6 +70,7 @@ import {
   owner,
   packageVersionChecksum,
   validPackage,
+  personalSkillPinState,
   personalSkillItems as items,
 } from './personal-skill-model.ts';
 export async function listPersonalSkills(context: ContentIdentity) {
@@ -1041,13 +1042,7 @@ export async function assertPersonalSkillsReadable(
       pin.instanceId !== snapshot.instanceId
     )
       return unavailable();
-    const [row] =
-      await sql`select v.definition_checksum,v.package_checksum from allrice_personal_skill_bindings b
-      join allrice_personal_skill_installations i on i.id=b.installation_id and i.state='installed'
-      join allrice_personal_skill_versions v on v.installation_id=i.id and v.id=${pin.versionId}
-      where b.id=${pin.bindingId} and b.instance_id=${pin.instanceId} and b.installation_id=${pin.installationId}
-        and b.organization_id=${context.organizationId} and b.workspace_id=${context.workspaceId} and b.owner_id=${owner(context)}
-        and b.enabled and b.epoch=${pin.bindingEpoch}`;
+    const [row] = await personalSkillPinState(context, pin, sql);
     if (
       !row ||
       row.definition_checksum !== pin.definitionChecksum ||
