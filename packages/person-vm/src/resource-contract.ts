@@ -75,7 +75,10 @@ export interface PersonVmResourceLifecyclePort {
 
 export interface PersonVmResourceWatch {
   read(): PersonVmNativeResourceFacts | null;
-  /** Notification is not readiness or a lasting permit. */
+  /** Buffered notification, never readiness or a lasting permit. Recoverable
+   * null does not terminate the watch. Terminal closure rejects wait with
+   * RUNTIME_NOT_READY; abort preserves its signal reason. Await close separately
+   * to join cleanup; wait must not await a barrier which joins its own pump. */
   wait(): Promise<void>;
   /** Invalidate synchronously; cancel and join all owned I/O/subscriptions. */
   close(): Promise<void>;

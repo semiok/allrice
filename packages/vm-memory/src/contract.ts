@@ -73,7 +73,9 @@ export interface VmMemorySourceWatch {
   /** Synchronous current observation; null/unavailable must not mean idle. */
   read(): VmMemoryObservation | null;
   /** Buffered notification: subscribe before read; a prior pulse is retained.
-   * A source disconnect/reconnect/invalid observation must also notify. */
+   * A source disconnect/reconnect/invalid observation must also notify.
+   * Recoverable null does not terminate the watch. Terminal closure rejects
+   * wait; abort preserves its signal reason. Await close separately for join. */
   wait(): Promise<void>;
   /** Idempotent; detach, settle any waiter and release owned resources. */
   close(): Promise<void>;

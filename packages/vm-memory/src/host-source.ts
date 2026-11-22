@@ -21,7 +21,9 @@ export type VmMemoryHostPressureObservation = Readonly<{
 export interface VmMemoryHostPressureWatch {
   /** Null immediately on disconnect, loss of attribution or policy availability. */
   read(): VmMemoryHostPressureObservation | null;
-  /** Buffered source notifications, including invalidation/reconnect. */
+  /** Buffered source notifications, including recoverable null/reconnect.
+   * A terminal input must reject wait rather than repeatedly fulfill it.
+   * Await close separately for actual cleanup/join. */
   wait(): Promise<void>;
   /** Cancel, detach, settle wait and join actual owned work. */
   close(): Promise<void>;
