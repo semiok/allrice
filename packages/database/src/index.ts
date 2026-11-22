@@ -196,6 +196,13 @@ export {
   ServiceBuildManifestSchema,
   type ServiceBuildIdentity,
 } from './service-build-identity.ts';
+export {
+  builtinModules,
+  readApplicationBuiltinModules,
+  createApplicationBuiltinModuleAuthority,
+  type BuiltinModuleId,
+  type BuiltinModuleAuthority,
+} from './builtin-modules.ts';
 
 export { readDevMaintenance, DevMaintenanceError } from './dev-maintenance.ts';
 export {

@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { randomUUID, createHash } from 'node:crypto';
 import { once } from 'node:events';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
+import { DataAccessError, type BuiltinModuleId } from '@allrice/database';
 import * as database from '../../../../packages/database/src/core/client.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -716,6 +717,208 @@ suite(
       );
       expect(preview).toMatchObject({ kind: 'text' });
     });
+    it('uses the application all-enabled policy without B, Run, VM or old module binding and ignores browser release claims', async () => {
+      const p = await person();
+      await release(p);
+      expect(
+        await f.db`select module_id from allrice_employee_module_bindings where instance_id=${p.selection.employeeInstanceId}`,
+      ).toEqual([]);
+      const headers = {
+        'x-allrice-release-sha': 'f'.repeat(40),
+        'x-allrice-builtin-modules': 'none',
+        'x-allrice-module-enabled': 'false',
+      };
+      const listing = await raw(p, '/deliverables', { headers });
+      expect(listing.status).toBe(200);
+      expect(await listing.json()).toMatchObject({
+        viewerId: p.context.actor.id,
+        files: [],
+      });
+      const object = await p.client.uploadDeliverable(uploadInput(p), signal());
+      // Adversarial old carrier rows are not the newly approved builtin policy.
+      for (const moduleId of ['deliverables', 'enterprise-materials'])
+        await f.db`insert into allrice_employee_module_bindings
+          (organization_id,workspace_id,owner_id,instance_id,module_id,contract_version,content_version,digest,enabled_at,revoked_at)
+          values(${p.context.organizationId},${p.selection.workspaceId},${p.context.actor.id},${p.selection.employeeInstanceId},${moduleId},1,'0.0.0',${'sha256:' + '0'.repeat(64)},'2000-01-01','2000-01-02')`;
+      const published = await p.client.publishFile(
+        {
+          origin: 'file',
+          workspaceId: p.selection.workspaceId,
+          objectId: object.objectId,
+          requestId: randomUUID(),
+          purpose: '',
+          audience: { scope: 'personal', departmentIds: [] },
+        },
+        signal(),
+      );
+      expect(
+        (
+          await p.client.queryMaterials(
+            {
+              workspaceId: p.selection.workspaceId,
+              query: { sourceId: published.sourceId },
+            },
+            signal(),
+          )
+        ).references[0]?.sourceId,
+      ).toBe(published.sourceId);
+      const before =
+        await f.db`select id from allrice_storage_objects where owner_id=${p.context.actor.id} order by id`;
+      const forged = await raw(p, '/deliverables', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...uploadInput(p),
+          applicationBuild: { sourceSha: 'a'.repeat(40) },
+          builtinModules: { deliverables: true },
+        }),
+      });
+      expect(forged.status).toBe(400);
+      await forged.text();
+      expect(
+        await f.db`select id from allrice_storage_objects where owner_id=${p.context.actor.id} order by id`,
+      ).toEqual(before);
+      expect(
+        await f.db`select id from allrice_runs where organization_id=${p.context.organizationId}`,
+      ).toHaveLength(0);
+      expect(
+        await f.db`select id from allrice_jobs where organization_id=${p.context.organizationId}`,
+      ).toHaveLength(0);
+      await f.db`update allrice_memberships set active=false where user_id=${p.context.actor.id} and organization_id=${p.context.organizationId}`;
+      const denied = await raw(p, '/deliverables', {
+        headers: { ...headers, 'x-allrice-builtin-modules': 'all-enabled' },
+      });
+      expect([401, 403]).toContain(denied.status);
+      await denied.text();
+    });
+    it('checks each Port named authority independently and both modules for a file-origin publication', async () => {
+      const p = await person();
+      await release(p);
+      const platform = employeePanelsDependencies.builtinModules;
+      let blocked: BuiltinModuleId | null = 'enterprise-materials';
+      const checked: BuiltinModuleId[] = [];
+      handlers = createEmployeePanelsHandlers({
+        ...employeePanelsDependencies,
+        storage: () => runtimeFixtureStorage(f.db),
+        builtinModules: {
+          async require(input, currentSignal) {
+            checked.push(input.moduleId);
+            expect(input.context.actor.id).toBe(p.context.actor.id);
+            expect(input.identity).toMatchObject({
+              personId: p.context.actor.id,
+              organizationId: p.context.organizationId,
+              employeeInstanceId: p.selection.employeeInstanceId,
+            });
+            await platform.require(input, currentSignal);
+            if (input.moduleId === blocked)
+              throw new DataAccessError('authorization_denied');
+          },
+        },
+      });
+      try {
+        const file = await p.client.uploadDeliverable(uploadInput(p), signal());
+        expect(new Set(checked)).toEqual(new Set(['deliverables']));
+        const denied = await raw(p, '/materials/options');
+        expect(denied.status).toBe(403);
+        await denied.text();
+        blocked = null;
+        checked.length = 0;
+        const publication = {
+          origin: 'file' as const,
+          workspaceId: p.selection.workspaceId,
+          objectId: file.objectId,
+          requestId: randomUUID(),
+          purpose: '',
+          audience: { scope: 'personal' as const, departmentIds: [] },
+        };
+        await p.client.publishFile(publication, signal());
+        expect(new Set(checked)).toEqual(
+          new Set(['deliverables', 'enterprise-materials']),
+        );
+        const before =
+          await f.db`select * from allrice_knowledge_save_requests where actor_id=${p.context.actor.id} order by request_id`;
+        for (const moduleId of [
+          'deliverables',
+          'enterprise-materials',
+        ] as const) {
+          blocked = moduleId;
+          await expect(
+            p.client.publishFile(
+              { ...publication, requestId: randomUUID() },
+              signal(),
+            ),
+          ).rejects.toBeInstanceOf(EmployeePanelsWriteUnknownError);
+        }
+        expect(
+          await f.db`select * from allrice_knowledge_save_requests where actor_id=${p.context.actor.id} order by request_id`,
+        ).toEqual(before);
+      } finally {
+        handlers = createEmployeePanelsHandlers({
+          ...employeePanelsDependencies,
+          storage: () => runtimeFixtureStorage(f.db),
+        });
+      }
+    });
+    it.each(['membership', 'resource'] as const)(
+      'rejects %s withdrawal during real byte acquisition despite static builtin availability',
+      async (kind) => {
+        const p = await person();
+        await release(p);
+        const saved = await p.client.publishUpload(
+          {
+            ...uploadInput(p),
+            origin: 'upload',
+            purpose: '',
+            audience: { scope: 'personal', departmentIds: [] },
+          },
+          signal(),
+        );
+        const revision = (
+          await p.client.queryMaterials(
+            {
+              workspaceId: p.selection.workspaceId,
+              query: { sourceId: saved.sourceId },
+            },
+            signal(),
+          )
+        ).references[0]!;
+        const storage = runtimeFixtureStorage(f.db),
+          get = storage.get.bind(storage);
+        const reading = vi
+          .spyOn(storage, 'get')
+          .mockImplementationOnce(async (object) => {
+            const bytes = await get(object);
+            if (kind === 'membership')
+              await f.db`update allrice_memberships set active=false where user_id=${p.context.actor.id} and organization_id=${p.context.organizationId}`;
+            else
+              await p.client.changePublication(
+                {
+                  sourceId: saved.sourceId,
+                  body: {
+                    workspaceId: p.selection.workspaceId,
+                    requestId: randomUUID(),
+                    expectedRevision: revision.publication!.audienceRevision,
+                    action: 'revoke',
+                  },
+                },
+                signal(),
+              );
+            return bytes;
+          });
+        try {
+          const response = await raw(
+            p,
+            `/materials/revisions/${saved.revisionId}/download`,
+          );
+          expect([401, 403, 404]).toContain(response.status);
+          expect(response.headers.get('content-disposition')).toBeNull();
+          await response.text();
+          expect(reading).toHaveBeenCalledTimes(1);
+        } finally {
+          reading.mockRestore();
+        }
+      },
+    );
     it('enforces server default-off without creating a thread or generation pin', async () => {
       const p = await person();
       await f.db`delete from allrice_settings where scope_type='system' and key='d_entry_rollout_policy'`;

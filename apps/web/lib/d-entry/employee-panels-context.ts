@@ -10,6 +10,9 @@ import {
   DataAccessError,
   ReferenceLibraryError,
   requireEmployeePanelsAccess,
+  createApplicationBuiltinModuleAuthority,
+  type BuiltinModuleAuthority,
+  type BuiltinModuleId,
 } from '@allrice/database';
 import { getRequestContext } from '../identity/session';
 import { sameOriginBrowserWrite } from '../identity/request-origin';
@@ -19,11 +22,13 @@ export interface EmployeePanelsDependencies {
   context(request: Request): Promise<RequestContext | null>;
   authorize: typeof requireEmployeePanelsAccess;
   storage(): StoragePort;
+  builtinModules: BuiltinModuleAuthority;
 }
 export const employeePanelsDependencies: EmployeePanelsDependencies = {
   context: getRequestContext,
   authorize: requireEmployeePanelsAccess,
   storage: getStorageAdapter,
+  builtinModules: createApplicationBuiltinModuleAuthority('web'),
 };
 
 /** Each call resolves the original Cookie again. Expected viewer is a stale
@@ -63,14 +68,21 @@ export async function requireEmployeePanelsContext(
       candidate.workspaceId !== selection.workspaceId
     )
       throw new DataAccessError('authorization_denied');
-    if (
-      !sameDEntryIdentity(
-        identity,
-        await dependencies.authorize(fresh, selection),
-      )
-    )
+    const next = await dependencies.authorize(fresh, selection);
+    if (!sameDEntryIdentity(identity, next))
       throw new DataAccessError('authorization_denied');
     signal.throwIfAborted();
+    return { context: fresh, identity: next };
+  }
+  async function currentModule(
+    moduleId: BuiltinModuleId,
+    candidate: RequestContext,
+    signal: AbortSignal,
+  ) {
+    const fresh = await current(candidate, signal);
+    await dependencies.builtinModules.require({ moduleId, ...fresh }, signal);
+    // A pending policy/build read never freezes Cookie or membership authority.
+    await current(candidate, signal);
   }
   await current(context, request.signal);
   // Metadata-only management does not depend on opening the byte backend.
@@ -87,11 +99,13 @@ export async function requireEmployeePanelsContext(
     current: () => current(context, request.signal),
     materials: createEnterpriseMaterialsPort({
       storage,
-      requireCurrentAccess: current,
+      requireCurrentAccess: (candidate, signal) =>
+        currentModule('enterprise-materials', candidate, signal),
     }),
     deliverables: createDeliverablesPort({
       storage,
-      requireCurrentAccess: current,
+      requireCurrentAccess: (candidate, signal) =>
+        currentModule('deliverables', candidate, signal),
     }),
   };
 }
