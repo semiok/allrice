@@ -8,7 +8,15 @@ import {
 } from './contract.ts';
 import { privateDirectory } from './encrypted-disk.ts';
 import { hostEnvironment, runCommand, type CommandRunner } from './process.ts';
-import { bootstrapMicrosandbox } from './microsandbox-bootstrap.ts';
+import {
+  bootstrapMicrosandbox,
+  spawnMicrosandboxManagedProbe,
+} from './microsandbox-bootstrap.ts';
+import {
+  createPersonVmCommandMemoryObserver,
+  type PersonVmManagedProbePort,
+} from './native-command-observer.ts';
+import { createPersonVmGuestMemoryReader } from './native-resource.ts';
 import {
   assertReadonlyArtifactInspection,
   checkedReadonlyDshDirectory,
@@ -72,6 +80,21 @@ export interface PersonVmNativePort extends PersonVmGuestBootstrapPort {
     receipt: PersonVmWebEndpointReceipt,
     signal: AbortSignal,
   ): Promise<void>;
+  /** Guest cgroup controls only, not MSB physical RAM evidence. */
+  memoryGuestReader?(
+    scope: PersonVmStartingScope,
+    configuration: Omit<
+      Parameters<typeof createPersonVmGuestMemoryReader>[0],
+      'binding' | 'probes' | 'cleanupSignal'
+    >,
+  ): ReturnType<typeof createPersonVmGuestMemoryReader>;
+  memoryCommandObserver?(
+    scope: PersonVmStartingScope,
+    configuration: Omit<
+      Parameters<typeof createPersonVmCommandMemoryObserver>[0],
+      'binding' | 'probes' | 'native' | 'cleanupSignal'
+    >,
+  ): ReturnType<typeof createPersonVmCommandMemoryObserver>;
   start(binding: PersonVmBinding, signal: AbortSignal): Promise<void>;
   stop(binding: PersonVmBinding, signal: AbortSignal): Promise<void>;
   ping(binding: PersonVmBinding, signal: AbortSignal): Promise<void>;
@@ -147,6 +170,79 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
         MSB_HOME: paths.home,
         MSB_CONFIG_PATH: paths.config,
       },
+    });
+  }
+  /** Requires a live operation fence; never retain an expired startup scope. */
+  private managedMemoryProbes(
+    scope: PersonVmStartingScope,
+    cleanupTimeoutMs: number,
+  ): PersonVmManagedProbePort {
+    const binding = Object.freeze({ ...scope.binding });
+    return {
+      launch: (spec, signal) =>
+        spawnMicrosandboxManagedProbe(
+          {
+            scope: {
+              ...scope,
+              binding,
+              signal: AbortSignal.any([scope.signal, signal]),
+            },
+            name: this.name(binding),
+            cleanupTimeoutMs,
+            command: (args, running, nonzero) =>
+              this.command(binding, args, running, nonzero),
+          },
+          spec,
+        ),
+    };
+  }
+  memoryGuestReader(
+    scope: PersonVmStartingScope,
+    configuration: Omit<
+      Parameters<typeof createPersonVmGuestMemoryReader>[0],
+      'binding' | 'probes' | 'cleanupSignal'
+    >,
+  ): ReturnType<typeof createPersonVmGuestMemoryReader> {
+    const cleanupTimeoutMs = this.options.jobCleanupTimeoutMs;
+    if (cleanupTimeoutMs === undefined)
+      throw new PersonVmError('PROVIDER_FAILED');
+    return createPersonVmGuestMemoryReader({
+      ...configuration,
+      binding: Object.freeze({ ...scope.binding }),
+      probes: this.managedMemoryProbes(scope, cleanupTimeoutMs),
+      cleanupSignal: () => AbortSignal.timeout(cleanupTimeoutMs),
+    });
+  }
+  memoryCommandObserver(
+    scope: PersonVmStartingScope,
+    configuration: Omit<
+      Parameters<typeof createPersonVmCommandMemoryObserver>[0],
+      'binding' | 'probes' | 'native' | 'cleanupSignal'
+    >,
+  ): ReturnType<typeof createPersonVmCommandMemoryObserver> {
+    const cleanupTimeoutMs = this.options.jobCleanupTimeoutMs;
+    if (cleanupTimeoutMs === undefined)
+      throw new PersonVmError('PROVIDER_FAILED');
+    const binding = Object.freeze({ ...scope.binding });
+    return createPersonVmCommandMemoryObserver({
+      ...configuration,
+      binding,
+      probes: this.managedMemoryProbes(scope, cleanupTimeoutMs),
+      native: {
+        name: this.name(binding),
+        command: async (args, signal, nonzero) => {
+          const running = AbortSignal.any([scope.signal, signal]);
+          running.throwIfAborted();
+          await scope.assertCurrent();
+          running.throwIfAborted();
+          const result = await this.command(binding, args, running, nonzero);
+          running.throwIfAborted();
+          await scope.assertCurrent();
+          running.throwIfAborted();
+          return result;
+        },
+      },
+      cleanupSignal: () => AbortSignal.timeout(cleanupTimeoutMs),
     });
   }
   private async artifact(

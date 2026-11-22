@@ -26,6 +26,8 @@ import { PersonVmService } from './person-vm.ts';
 import type { ReadonlyDshDirectory } from './readonly-artifact.ts';
 import type { PersonVmMemoryGuestPlan } from './guest-bootstrap.ts';
 import type { PersonVmWebRoster, PersonVmWebStartup } from './web-endpoints.ts';
+import { PERSON_VM_GUEST_CONTROL_READER } from './native-resource.ts';
+import { PERSON_VM_COMMAND_MEMORY_PROGRAM } from './native-command-observer.ts';
 
 const temporary: string[] = [];
 const readonlyRoots: string[] = [];
@@ -58,6 +60,7 @@ async function socketDirectory() {
 async function bootstrapFixture(
   mode = 'ok',
   readonlyDshDirectory?: ReadonlyDshDirectory,
+  jobCleanupTimeoutMs?: number,
 ) {
   const root = await directory(),
     mount = join(root, 'mount');
@@ -79,6 +82,10 @@ else if(a[0]==='create'){
  v.ports=a.flatMap((arg,i)=>arg==='-p'?[a[i+1].split(':')]:[]).map(([host_bind,h,g])=>({host_bind,host_port:Number(h),guest_port:Number(g),protocol:'tcp'}));
 }
 else if(a[0]==='inspect'){
+ if(a.includes('--job')){
+  const id=a[a.indexOf('--job')+1],job=v.jobs[id];
+  console.log(JSON.stringify({version:1,id,pid:4242,runtime_boot_id:'fixture-native-boot',state:job.state??'running',exit_code:job.code,timed_out:false}));return;
+ }
  const ports=v.ports??[],active=mode.startsWith('web-inspect')?[]:ports;
  const mounts=v.mounts??[],activeMounts=mode==='artifact-inspect-drift'?mounts.map(m=>({...m,options:{...m.options,readonly:false}})):mounts;
  console.log(JSON.stringify({name:v.name,status:v.status,config:{network:{ports},mounts},active_config:{network:{ports:active},mounts:activeMounts},pending_changes:[]}));
@@ -105,12 +112,20 @@ else if(a[0]==='exec'){
  if(!(init&&mode.startsWith('lost-id')))console.log(id);
 }
 else if(a[0]==='kill')v.jobs[a[a.indexOf('--job')+1]].code=137;
+else if(a[0]==='logs'){
+ const id=a[a.indexOf('--job')+1],cmd=v.jobs[id].cmd,config=JSON.parse(cmd[3]);
+ const childPath=config.commandsGroup+'/command-'+config.pid;
+ const output=config.targets?{version:1,scope:'guest-cgroup',groups:config.targets.map(t=>({...t,device:'1',inode:'2',values:['32','64','128']}))}:
+ {version:1,childJoined:true,childReleased:true,receipt:{version:1,executionRef:config.executionRef,pid:config.pid,stage:'admitted',child:{path:childPath,device:'1',inode:'2'},beforeMembership:config.dshGroup.slice(config.cgroupRoot.length),admittedMembership:childPath.slice(config.cgroupRoot.length),bootId:'00000000-0000-0000-0000-000000000001',startTicks:'1',baseline:{oom:'0',oomKill:'0'}},after:{oom:'0',oomKill:'0'}};
+ console.log(JSON.stringify({id,s:'stdout',e:null,d:JSON.stringify(output)}));
+}
 else if(a[0]==='wait'){
  const job=v.jobs[a[a.indexOf('--job')+1]];
  if(mode==='unknown-wait'){console.log('{}');save();process.exit(0);}
- if(mode==='cancel-init'&&job.cmd.includes('/work/memory/init.cjs')&&job.code===0){
+ if(((mode==='cancel-init'&&job.cmd.includes('/work/memory/init.cjs'))||(mode==='cancel-memory-probe'&&job.cmd[1]==='-e'))&&job.code===0){
   save();fs.writeFileSync(p.join(home,'waiting'),String(process.pid));setInterval(()=>{},1000);return;
  }
+ job.state='exited';
  console.log(JSON.stringify({code:job.code,success:job.code===0,timed_out:false}));save();process.exit(job.code);
 } else process.exit(43);
 save();
@@ -125,6 +140,7 @@ save();
       ? readonlyImage
       : 'registry/node@sha256:' + 'a'.repeat(64),
     readonlyDshDirectory,
+    jobCleanupTimeoutMs,
     rootDiskGiB: 20,
     socketRoot: await socketDirectory(),
   });
@@ -261,6 +277,189 @@ async function readonlyFixture() {
 }
 
 describe('Microsandbox public CLI protocol through real child processes (no actual VM)', () => {
+  const readerConfiguration = {
+    nodeExecutable: '/fixed-node/bin/node',
+    cgroupRoot: '/sys/fs/cgroup',
+    targets: [
+      {
+        target: 'commands' as const,
+        path: '/sys/fs/cgroup/allrice-commands',
+        high: 32,
+        max: 64,
+        swapMax: 128,
+      },
+    ],
+  };
+  const observerConfiguration = {
+    nodeExecutable: readerConfiguration.nodeExecutable,
+    cgroupRoot: readerConfiguration.cgroupRoot,
+    commandsGroup: readerConfiguration.targets[0]!.path,
+    dshGroup: '/sys/fs/cgroup/allrice-dsh',
+    procRoot: '/proc',
+    receiptDirectory: '/work/memory/receipts',
+  };
+  it('provider memory ports必须显式清理预算，缺失时不派发CLI', async () => {
+    const f = await bootstrapFixture();
+    f.h.runtime.start = async (_binding, _signal, scope) => {
+      expect(() =>
+        f.native.memoryGuestReader(scope, readerConfiguration),
+      ).toThrow('PROVIDER_FAILED');
+      expect(() =>
+        f.native.memoryCommandObserver(scope, observerConfiguration),
+      ).toThrow('PROVIDER_FAILED');
+    };
+    await f.service.prewarm(f.rc, { trigger: 'page' }, signal());
+    expect((await f.calls()).filter((a) => a[0] === 'exec')).toHaveLength(2); // mkdir/init only
+  });
+  it('实际provider memory reader/observer映射固定node/roots/binding与exact job；retained wait不继承已关闭scope', async () => {
+    const f = await bootstrapFixture('ok', undefined, 5000);
+    let scope!: PersonVmBootstrapScope;
+    let job!: Awaited<ReturnType<PersonVmBootstrapScope['launch']>>;
+    f.h.runtime.start = async (_binding, _signal, current) => {
+      scope = current;
+      const result = await f.native
+        .memoryGuestReader(scope, readerConfiguration)
+        .read(scope.binding, signal());
+      expect(result).toMatchObject({
+        binding: scope.binding,
+        state: 'verified',
+        scope: 'guest-cgroup',
+        boundary: 'guest-root-cooperative',
+        groups: [
+          {
+            path: readerConfiguration.targets[0]!.path,
+            observed: { high: 32, max: 64, swapMax: 128 },
+          },
+        ],
+      });
+      job = await scope.launch({ executable: 'node', args: ['native-dsh'] });
+      const observed = await f.native
+        .memoryCommandObserver(scope, observerConfiguration)
+        .observeCompletion(
+          scope.binding,
+          { job, executionRef: 'provider-command' },
+          signal(),
+        );
+      expect(observed).toMatchObject({
+        binding: scope.binding,
+        jobId: job.jobId,
+        outcome: 'unknown',
+        reason: 'managed-terminating-signal-unavailable',
+        completion: { joined: true, signal: 'unknown' },
+        child: { joined: true, released: true },
+      });
+    };
+    await f.service.prewarm(f.rc, { trigger: 'page' }, signal());
+    await expect(job.wait(signal())).resolves.toEqual({
+      exitCode: 0,
+      timedOut: false,
+    });
+    const calls = await f.calls(),
+      name = `allrice-${scope.binding.vmId}`;
+    const probes = calls.filter((a) => a[0] === 'exec' && a.includes('-e'));
+    expect(probes).toHaveLength(2);
+    for (const [i, program] of [
+      PERSON_VM_GUEST_CONTROL_READER,
+      PERSON_VM_COMMAND_MEMORY_PROGRAM,
+    ].entries()) {
+      expect(probes[i]!.slice(0, 8)).toEqual([
+        'exec',
+        name,
+        '--detach',
+        '--no-stdin',
+        '--no-tty',
+        '--',
+        readerConfiguration.nodeExecutable,
+        '-e',
+      ]);
+      expect(probes[i]![8]).toBe(program);
+    }
+    expect(JSON.parse(probes[0]![9]!)).toEqual({
+      cgroupRoot: readerConfiguration.cgroupRoot,
+      targets: readerConfiguration.targets.map(({ target, path }) => ({
+        target,
+        path,
+      })),
+    });
+    expect(JSON.parse(probes[1]![9]!)).toEqual({
+      cgroupRoot: observerConfiguration.cgroupRoot,
+      commandsGroup: observerConfiguration.commandsGroup,
+      dshGroup: observerConfiguration.dshGroup,
+      procRoot: '/proc',
+      receiptDirectory: '/work/memory/receipts',
+      executionRef: 'provider-command',
+      pid: 4242,
+    });
+    expect(probes[1]![10]).toBe('complete-and-release');
+    expect(
+      calls.filter((a) => a[0] === 'inspect' && a.includes('--job')),
+    ).toEqual(
+      Array(2).fill(['inspect', name, '--job', job.jobId, '--format', 'json']),
+    );
+    await expect(
+      f.native
+        .memoryGuestReader(scope, readerConfiguration)
+        .read(scope.binding, signal()),
+    ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
+    expect(
+      await f.native
+        .memoryCommandObserver(scope, observerConfiguration)
+        .observeCompletion(
+          scope.binding,
+          { job, executionRef: 'closed-operation' },
+          signal(),
+        ),
+    ).toMatchObject({ state: 'unknown', completion: null });
+    expect(await f.calls()).toEqual(calls); // Closed scope dispatches no ordinary exec/wait/logs/inspect.
+  });
+  it('provider probe取消后CLI真实退出，过期scope仍用独立signal exact kill/wait再stop/status', async () => {
+    const f = await bootstrapFixture('cancel-memory-probe', undefined, 5000),
+      controller = new AbortController();
+    f.h.runtime.start = async (_binding, _signal, scope) => {
+      await f.native
+        .memoryGuestReader(scope, readerConfiguration)
+        .read(scope.binding, signal());
+    };
+    const starting = f.service.prewarm(
+      f.rc,
+      { trigger: 'page' },
+      controller.signal,
+    );
+    const failure = expect(starting).rejects.toMatchObject({
+      code: 'PROVIDER_FAILED',
+    });
+    try {
+      let pid = 0;
+      await vi.waitFor(
+        async () => {
+          pid = Number(
+            await readFile(join(f.mount, 'host-home/waiting'), 'utf8'),
+          );
+          expect(pid).toBeGreaterThan(0);
+        },
+        { timeout: 5000 },
+      );
+      controller.abort();
+      await failure;
+      expect(() => process.kill(pid, 0)).toThrow();
+      const calls = await f.calls(),
+        kill = calls.findIndex((a) => a[0] === 'kill');
+      expect(kill).toBeGreaterThan(0);
+      expect(calls[kill + 1]).toEqual([
+        'wait',
+        calls[kill]![1],
+        '--job',
+        calls[kill]![3],
+        '--format',
+        'json',
+      ]);
+      expect(calls.findIndex((a) => a[0] === 'stop')).toBeGreaterThan(kill + 1);
+      expect(f.h.mounts.size).toBe(0);
+    } finally {
+      controller.abort();
+      await starting.catch(() => {});
+    }
+  });
   it('readonly code首次create走真实provider/child入口；准确mount及active inspect，stop后原绑定start对账同版密封manifest', async () => {
     const c = await readonlyFixture(),
       f = await bootstrapFixture('ok', c);
