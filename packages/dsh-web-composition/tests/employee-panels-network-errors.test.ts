@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { PanelsNetworkErrors } from './employee-panels-network-errors';
+import {
+  PanelsNetworkErrors,
+  isPanelsCatalogResponse,
+} from './employee-panels-network-errors';
 
 const url = 'http://fixture.invalid/api/v1/workbench/files?employee=rice';
 const denied =
@@ -268,4 +271,36 @@ describe('test-only network error attribution', () => {
       expect(evidence.audit().unexpectedDiagnostics).toHaveLength(1);
     }
   });
+});
+
+it('waits for the panel GET catalog, never its same-path options counter or a foreign/native request', () => {
+  const origin = 'http://fixture.invalid';
+  const materials =
+    origin + '/api/v1/references/publications?category=all&query=&limit=20';
+  const files =
+    origin + '/api/v1/workbench/files?view=deliverables&category=all';
+  expect(isPanelsCatalogResponse(materials, 'GET', origin, 'materials')).toBe(
+    true,
+  );
+  expect(isPanelsCatalogResponse(files, 'GET', origin, 'files')).toBe(true);
+  for (const wrong of [
+    materials.replace('limit=20', 'limit=1'),
+    materials.replace('query=&', ''),
+    materials.replace(origin, 'http://native.invalid'),
+    files,
+  ])
+    expect(isPanelsCatalogResponse(wrong, 'GET', origin, 'materials')).toBe(
+      false,
+    );
+  expect(isPanelsCatalogResponse(materials, 'POST', origin, 'materials')).toBe(
+    false,
+  );
+  expect(
+    isPanelsCatalogResponse(
+      files.replace('deliverables', 'all'),
+      'GET',
+      origin,
+      'files',
+    ),
+  ).toBe(false);
 });

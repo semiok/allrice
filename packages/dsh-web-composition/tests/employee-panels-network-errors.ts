@@ -5,6 +5,28 @@ export const fixtureAbortCode = 'aborted';
 const deniedText =
   'Failed to load resource: the server responded with a status of 403 (Forbidden)';
 const abortedText = 'Failed to load resource: net::ERR_ABORTED';
+
+/** The materials path also serves the independent limit=1 publication-options
+ * read. That response is not completion of the visible panel's catalog. */
+export function isPanelsCatalogResponse(
+  url: string,
+  method: string,
+  origin: string,
+  kind: string,
+) {
+  const value = new URL(url);
+  return (
+    method === 'GET' &&
+    value.origin === origin &&
+    (kind === 'materials'
+      ? value.pathname === '/api/v1/references/publications' &&
+        value.searchParams.get('limit') === '20' &&
+        value.searchParams.has('query')
+      : kind === 'files' &&
+        value.pathname === '/api/v1/workbench/files' &&
+        value.searchParams.get('view') === 'deliverables')
+  );
+}
 type FixtureRequest = {
   id: string;
   page: string;

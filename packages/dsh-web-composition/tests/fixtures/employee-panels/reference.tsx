@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis';
-import { useMemo } from 'react';
+import { useMemo, useSyncExternalStore } from 'react';
 import type {
   PropsRuntime,
   SessionIdOf,
@@ -141,6 +141,18 @@ function installReference(ctx: Context) {
   )
     throw Error('Invalid pinned reference carrier options');
   ctx.theme.setTheme(theme as 'light' | 'dark');
+  // A fresh carrier can observe the session's previous native tab before the
+  // explicit replay inventory is selected. Do not start its business effects
+  // during that preparation; native tab/session state is still authoritative.
+  let renderEnabled = false;
+  const renderListeners = new Set<() => void>();
+  const subscribeRender = (listener: () => void) => {
+    renderListeners.add(listener);
+    return () => {
+      renderListeners.delete(listener);
+    };
+  };
+  const rendering = () => renderEnabled;
   for (const key of referenceKinds) {
     const id = `allrice-employee-panels.${key}`;
     ctx.effect(() =>
@@ -155,12 +167,17 @@ function installReference(ctx: Context) {
         { name: 'sidebar.right.pane.tab', key: id },
         (props: PropsRuntime<'sidebar.right.pane.tab'>) => {
           const { tab } = props.useTabInfo();
+          const enabled = useSyncExternalStore(
+            subscribeRender,
+            rendering,
+            rendering,
+          );
           const active = tab.visible && !tab.signal.aborted;
           const content = useMemo(
             () => renderReferenceContent(key, state, active),
             [key, state, active],
           );
-          if (!active) return null;
+          if (!active || !enabled) return null;
           return renderReferenceSurface(
             content,
             theme as 'light' | 'dark',
@@ -183,6 +200,7 @@ function installReference(ctx: Context) {
       height,
       sessionId: ctx.sidebarRight.mounted.getSnapshot() ?? null,
       retainedReady: ready,
+      renderEnabled,
       activeKind: ctx.sidebarRight.active()?.kind ?? null,
       expanded: ctx.sidebarRight.isExpanded(),
       panelEntries: ctx.slots
@@ -207,6 +225,8 @@ function installReference(ctx: Context) {
       // that inventory; its final item need not be the requested active kind.
       if (opened.at(-1) !== kind)
         ctx.sidebarRight.openTab(`allrice-employee-panels.${kind}`);
+      renderEnabled = true;
+      for (const listener of renderListeners) listener();
     },
   };
   ctx.effect(() => {
@@ -248,6 +268,8 @@ function installReference(ctx: Context) {
     return () => {
       stopped = true;
       ready = false;
+      renderEnabled = false;
+      renderListeners.clear();
       stopSessions();
       stopWorkspaces();
       reference?.release();

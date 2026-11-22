@@ -6,6 +6,7 @@ import { runInNewContext } from 'node:vm';
 import { createRequire } from 'node:module';
 import { parse } from 'yaml';
 import * as React from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
 import * as Jsx from 'react/jsx-runtime';
 import * as Primitives from '@deepseek-ai/dsh-client-ui-primitives';
 import * as Zod from 'zod';
@@ -482,7 +483,12 @@ it('replays an existing native tab inventory and selects each requested kind in 
       expect(control.evidence().retainedReady).toBe(true);
       expect(control.evidence().sessionId).toBe(b.id);
       const openTab = vi.mocked(b.ctx.sidebarRight.openTab);
+      expect(control.evidence().renderEnabled).toBe(false);
+      openTab.mockImplementation(() => {
+        expect(control.evidence().renderEnabled).toBe(false);
+      });
       control.open([...referenceKinds]);
+      expect(control.evidence().renderEnabled).toBe(true);
       const ids = referenceKinds.map(
         (value) => 'allrice-employee-panels.' + value,
       );
@@ -964,3 +970,50 @@ it.each(['light', 'dark'] as const)(
     expect(body.props.style).toBeUndefined();
   },
 );
+
+it('withholds the registered real reference tree through inventory preparation and publishes only after final selection', async () => {
+  const b = await publicRetention(true, false, 'experience', 'empty');
+  const fork = b.ctx.plugin(createReferenceFixture());
+  await fork;
+  await b.opened.promise;
+  const control = window.__allricePanelsReference!;
+  const component = b.ctx.slots
+    .entries('sidebar.right.pane.tab')
+    .find(
+      (entry) => entry.options.key === 'allrice-employee-panels.experience',
+    )!.component as React.ComponentType<{
+    useTabInfo: () => { tab: { visible: boolean; signal: AbortSignal } };
+  }>;
+  const render = () =>
+    renderToStaticMarkup(
+      React.createElement(component, {
+        useTabInfo: () => ({
+          tab: { visible: true, signal: new AbortController().signal },
+        }),
+      }),
+    );
+  expect(render()).toBe('');
+  vi.mocked(b.ctx.sidebarRight.openTab).mockImplementation(() => {
+    expect(render()).toBe('');
+  });
+  control.open([...referenceKinds]);
+  expect(render()).toContain('还没有记忆');
+  await fork.dispose();
+  expect(window.__allricePanelsReference).toBeUndefined();
+});
+
+it('keeps reference rendering disabled when a public inventory command fails, without swallowing the failure', async () => {
+  const b = await publicRetention(true);
+  const fork = b.ctx.plugin(createReferenceFixture());
+  await fork;
+  await b.opened.promise;
+  const control = window.__allricePanelsReference!;
+  vi.mocked(b.ctx.sidebarRight.openTab).mockImplementation(() => {
+    throw Error('public open refused');
+  });
+  expect(() => control.open([...referenceKinds])).toThrow(
+    'public open refused',
+  );
+  expect(control.evidence().renderEnabled).toBe(false);
+  await fork.dispose();
+});

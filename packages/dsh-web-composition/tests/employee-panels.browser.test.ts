@@ -48,6 +48,7 @@ import type { PanelsIntegration } from './fixtures/employee-panels/client';
 import type { SessionIdOf } from '@deepseek-ai/dsh-client-ui-slots';
 import {
   fixtureAbortCode,
+  isPanelsCatalogResponse,
   observePanelsNetwork,
   PanelsNetworkErrors,
 } from './employee-panels-network-errors';
@@ -91,12 +92,13 @@ const catalogResponse = (page: Page, kind: Kind, state: PanelsState) =>
   state === 'loading' || (kind !== 'materials' && kind !== 'files')
     ? Promise.resolve()
     : page
-        .waitForResponse(
-          (response) =>
-            new URL(response.url()).pathname ===
-            (kind === 'materials'
-              ? '/api/v1/references/publications'
-              : '/api/v1/workbench/files'),
+        .waitForResponse((response) =>
+          isPanelsCatalogResponse(
+            response.url(),
+            response.request().method(),
+            new URL(page.url()).origin,
+            kind,
+          ),
         )
         .then(async (response) => {
           // Headers alone precede the completed network outcome. A subsequent
@@ -1148,6 +1150,7 @@ suite('installed native employee panels with synthetic business owner', () => {
                   state: value,
                   theme,
                   retainedReady: true,
+                  renderEnabled: true,
                   sessionId: sessions[0],
                   activeKind: `allrice-employee-panels.${kind}`,
                   expanded: true,
@@ -1271,6 +1274,11 @@ suite('installed native employee panels with synthetic business owner', () => {
             await appendFile(
               join(artifacts, `${width}-${theme}-progress.jsonl`),
               JSON.stringify({ prefix, recorded: comparisons.length }) + '\n',
+            );
+            // Keep completed pairs even if a later preparation step fails.
+            await writeFile(
+              join(artifacts, `${width}-${theme}-comparisons.json`),
+              JSON.stringify(comparisons, null, 2),
             );
           }
         await writeFile(
