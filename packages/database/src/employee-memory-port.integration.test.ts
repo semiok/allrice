@@ -1,11 +1,26 @@
 import { randomUUID } from 'node:crypto';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import type { EmployeeMemoryRecord, RequestContext } from '@allrice/contracts';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
+import {
+  MemoryDetailQueryProjectionSchema,
+  EmployeeMemoryWriteResponseSchema,
+  type EmployeeMemoryRecord,
+  type RequestContext,
+} from '@allrice/contracts';
 import * as client from './core/client.ts';
 import { DataAccessError } from './data.ts';
 import {
   createEmployeeMemoryPort,
+  EmployeeMemoryWriteOutcomeUnknown,
   type EmployeeMemoryModuleQualification,
+  type EmployeeMemoryPort,
 } from './employee-memory-port.ts';
 import {
   authenticateSession,
@@ -26,6 +41,13 @@ const signal = () => new AbortController().signal;
 suite('memory public management port: real transactions without a Run', () => {
   let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let admin: RequestContext;
+  type ClientModule =
+    typeof import('../../../apps/web/lib/memory/employee-memory-client.ts');
+  let employeeMemoryClient: ClientModule['employeeMemoryClient'];
+  let storageErrorResponse: (
+    error: unknown,
+    options: { onUnexpectedError: (error: unknown) => void },
+  ) => Response;
   beforeAll(async () => {
     fixture = await createRuntimeFixtureDatabase();
     vi.spyOn(client, 'getDatabase').mockReturnValue(fixture.db);
@@ -42,7 +64,14 @@ suite('memory public management port: real transactions without a Run', () => {
     admin = (await authenticateSession(
       (await createSession(principal.user.id)).token,
     ))!;
+    const clientPath = '../../../apps/web/lib/memory/employee-memory-client.ts';
+    const responsePath = '../../../apps/web/lib/storage/responses.ts';
+    ({ employeeMemoryClient } = (await import(clientPath)) as ClientModule);
+    ({ storageErrorResponse } = (await import(responsePath)) as {
+      storageErrorResponse: typeof storageErrorResponse;
+    });
   }, 120000);
+  afterEach(() => vi.unstubAllGlobals());
   afterAll(async () => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
@@ -121,6 +150,106 @@ suite('memory public management port: real transactions without a Run', () => {
       'receipts',(select jsonb_agg(to_jsonb(o) order by operation_key) from allrice_employee_memory_operations o where memory_id=${id}),
       'audit',(select jsonb_agg(to_jsonb(a) order by id) from allrice_audit_events a where resource_id=${id})) value`;
     return row!.value;
+  }
+
+  function httpConsumer(
+    f: Scope,
+    port: EmployeeMemoryPort,
+    requestSignal = signal,
+  ) {
+    const writes: Parameters<ClientModule['employeeMemoryClient']>[1] =
+      new Map();
+    const requests: Array<Record<string, unknown>> = [];
+    const replies: Array<{ status: number; text: string }> = [];
+    const unexpected: unknown[] = [];
+    // Only the HTTP routing boundary is substituted. The production client,
+    // storage error mapping, facade and PostgreSQL transactions are real.
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (address: unknown, init?: RequestInit) => {
+        const url = new URL(String(address), 'http://localhost');
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        requests.push(body);
+        let response: Response;
+        try {
+          if (url.pathname === '/api/v1/memories') {
+            response = Response.json(
+              await port.create(
+                f.context,
+                body as Parameters<EmployeeMemoryPort['create']>[1],
+                requestSignal(),
+              ),
+              { status: 201 },
+            );
+          } else {
+            const target = {
+              workspaceId: url.searchParams.get('workspaceId')!,
+              memoryId: decodeURIComponent(url.pathname.split('/')[4]!),
+            };
+            if (init?.method === 'PATCH') {
+              response = Response.json(
+                await port.correct(
+                  f.context,
+                  {
+                    target,
+                    body: body as Parameters<
+                      EmployeeMemoryPort['correct']
+                    >[1]['body'],
+                  },
+                  requestSignal(),
+                ),
+              );
+            } else if (init?.method === 'DELETE') {
+              await port.withdraw(
+                f.context,
+                {
+                  target,
+                  body: body as Parameters<
+                    EmployeeMemoryPort['withdraw']
+                  >[1]['body'],
+                },
+                requestSignal(),
+              );
+              response = new Response(null, { status: 204 });
+            } else {
+              response = Response.json(
+                await port.confirm(
+                  f.context,
+                  {
+                    target,
+                    body: body as Parameters<
+                      EmployeeMemoryPort['confirm']
+                    >[1]['body'],
+                  },
+                  requestSignal(),
+                ),
+              );
+            }
+          }
+        } catch (error) {
+          response = storageErrorResponse(error, {
+            onUnexpectedError: (failure) => {
+              unexpected.push(failure);
+            },
+          });
+        }
+        replies.push({
+          status: response.status,
+          text: await response.clone().text(),
+        });
+        return response;
+      }),
+    );
+    return {
+      client: employeeMemoryClient(
+        { scopeId: f.context.sessionId, ...query(f), headers: {} },
+        writes,
+      ),
+      writes,
+      requests,
+      replies,
+      unexpected,
+    };
   }
 
   it('saves an owner-requested complete pair, reads it, clears details explicitly and withdraws by CAS', async () => {
@@ -339,27 +468,195 @@ suite('memory public management port: real transactions without a Run', () => {
     expect(await snapshot(saved.memory.id)).toEqual(before);
   });
 
-  it('retains a committed receipt when qualification is revoked before delivery', async () => {
+  it.each(['create', 'edit', 'confirm', 'withdraw'] as const)(
+    'retains the real client %s key and CAS through post-commit revocation, a later denial and recovery',
+    async (action) => {
+      const f = await setup(),
+        { port: current } = permitted();
+      let row: EmployeeMemoryRecord | null = null;
+      if (action === 'confirm') {
+        row = await seedPersonalMemoryPair(fixture.db, f.context, {
+          ...query(f),
+          summary: '待确认周报偏好',
+          details: '仅当前员工',
+        });
+      } else if (action !== 'create') {
+        row = (await current.create(f.context, createInput(f), signal()))
+          .memory;
+      }
+      const originalCas = row && {
+        expectedRevision: row.revision,
+        pairDigest: row.pairDigest,
+      };
+      let enabled = true,
+        revoke = true,
+        checks = 0;
+      const denied = new DataAccessError('authorization_denied');
+      const port = createEmployeeMemoryPort({
+        qualification: {
+          async requireCurrentAccess() {
+            if (!enabled) throw denied;
+            if (++checks === 2 && revoke) {
+              enabled = false;
+              throw denied;
+            }
+          },
+        },
+      });
+      const consumer = httpConsumer(f, port);
+      const pair = {
+        summary: '周报先给风险与下一步',
+        details: '限定为当前员工工作周报',
+      };
+      const invoke = () =>
+        action === 'confirm'
+          ? consumer.client.confirm(row!)
+          : action === 'withdraw'
+            ? consumer.client.remove(row!)
+            : consumer.client.save(pair, row);
+      await expect(invoke()).rejects.toMatchObject({ definitive: false });
+      expect(consumer.requests).toHaveLength(1); // No automatic retry.
+      expect(consumer.writes.size).toBe(1);
+      expect(consumer.replies[0]!.status).toBe(500);
+      expect(JSON.parse(consumer.replies[0]!.text)).toMatchObject({
+        error: { code: 'INTERNAL_ERROR' },
+      });
+      expect(consumer.replies[0]!.text).not.toContain(pair.summary);
+      expect(consumer.replies[0]!.text).not.toContain('authorization_denied');
+      expect(consumer.unexpected[0]).toBeInstanceOf(
+        EmployeeMemoryWriteOutcomeUnknown,
+      );
+      expect((consumer.unexpected[0] as Error).cause).toBe(denied);
+      const key = consumer.requests[0]!.idempotencyKey;
+      const [receipt] =
+        await fixture.db`select memory_id from allrice_employee_memory_operations where organization_id=${f.organizationId} and operation_key=${String(key)}`;
+      expect(receipt).toBeDefined();
+      const committed = await snapshot(receipt!.memory_id);
+      await expect(invoke()).rejects.toMatchObject({ definitive: true });
+      expect(consumer.replies[1]!.status).toBe(403);
+      expect(consumer.writes.size).toBe(1); // Earlier unknown cannot be disproved.
+      enabled = true;
+      revoke = false;
+      if (action === 'edit' || action === 'confirm') {
+        row = (
+          await current.detail(
+            f.context,
+            { ...query(f), memoryId: row!.id },
+            signal(),
+          )
+        ).memory;
+      }
+      await invoke();
+      expect(consumer.requests).toHaveLength(3);
+      expect(consumer.requests.map((body) => body.idempotencyKey)).toEqual([
+        key,
+        key,
+        key,
+      ]);
+      if (originalCas)
+        for (const body of consumer.requests)
+          expect(body).toMatchObject(originalCas);
+      expect(await snapshot(receipt!.memory_id)).toEqual(committed);
+      expect(consumer.writes.size).toBe(0);
+      expect(consumer.replies[2]!.status).toBe(
+        action === 'create' ? 201 : action === 'withdraw' ? 204 : 200,
+      );
+    },
+  );
+
+  it('keeps a pre-admission denial definitive for the real client and performs zero writes', async () => {
     const f = await setup();
-    let checks = 0;
+    let enabled = false;
     const port = createEmployeeMemoryPort({
       qualification: {
         async requireCurrentAccess() {
-          if (++checks === 2) throw new DataAccessError('authorization_denied');
+          if (!enabled) throw new DataAccessError('authorization_denied');
         },
       },
     });
-    const input = createInput(f);
-    await expect(port.create(f.context, input, signal())).rejects.toMatchObject(
-      { code: 'authorization_denied' },
+    const consumer = httpConsumer(f, port);
+    const pair = { summary: '周报先给风险', details: null };
+    await expect(consumer.client.save(pair, null)).rejects.toMatchObject({
+      definitive: true,
+    });
+    expect(consumer.replies[0]!.status).toBe(403);
+    expect(consumer.writes.size).toBe(0);
+    const [before] = await fixture.db`select
+      (select count(*)::int from allrice_memories where organization_id=${f.organizationId}) memories,
+      (select count(*)::int from allrice_employee_memory_operations where organization_id=${f.organizationId}) receipts`;
+    expect(before).toEqual({ memories: 0, receipts: 0 });
+    enabled = true;
+    await consumer.client.save(pair, null);
+    expect(consumer.requests[1]!.idempotencyKey).not.toBe(
+      consumer.requests[0]!.idempotencyKey,
     );
-    const [saved] =
-      await fixture.db`select memory_id from allrice_employee_memory_operations where organization_id=${f.organizationId} and operation_key=${input.idempotencyKey}`;
-    expect(saved).toBeDefined();
-    const { port: restored } = permitted();
-    expect((await restored.create(f.context, input, signal())).memory.id).toBe(
-      saved!.memory_id,
-    );
+    expect(consumer.writes.size).toBe(0);
+  });
+
+  it('does not label a post-commit response-schema failure as definitive request validation', async () => {
+    const f = await setup(),
+      { port } = permitted();
+    const consumer = httpConsumer(f, port);
+    const pair = { summary: '保留完整配对回执', details: '条件不能丢失' };
+    const invalid = MemoryDetailQueryProjectionSchema.safeParse({});
+    if (invalid.success) throw Error('validation_fault_fixture_missing');
+    // Fault only the final response validation boundary. The actual owner
+    // write/commit/receipt remains real and has already completed at this call.
+    const validation = vi
+      .spyOn(EmployeeMemoryWriteResponseSchema, 'parse')
+      .mockImplementationOnce(() => {
+        throw invalid.error;
+      });
+    try {
+      await expect(consumer.client.save(pair, null)).rejects.toMatchObject({
+        definitive: false,
+      });
+    } finally {
+      validation.mockRestore();
+    }
+    expect(consumer.replies[0]!.status).toBe(500);
+    expect((consumer.unexpected[0] as Error).cause).toBe(invalid.error);
+    expect(consumer.writes.size).toBe(1);
+    const key = consumer.requests[0]!.idempotencyKey;
+    const [receipt] =
+      await fixture.db`select memory_id from allrice_employee_memory_operations where organization_id=${f.organizationId} and operation_key=${String(key)}`;
+    const committed = await snapshot(receipt!.memory_id);
+    await consumer.client.save(pair, null);
+    expect(consumer.requests.map((body) => body.idempotencyKey)).toEqual([
+      key,
+      key,
+    ]);
+    expect(await snapshot(receipt!.memory_id)).toEqual(committed);
+  });
+
+  it('keeps the native abort cause on a committed delivery failure while the real client retains its operation', async () => {
+    const f = await setup();
+    let requestController = new AbortController(),
+      checks = 0;
+    const cancelReason = new DataAccessError('authorization_denied');
+    const port = createEmployeeMemoryPort({
+      qualification: {
+        async requireCurrentAccess() {
+          if (++checks === 2) requestController.abort(cancelReason);
+        },
+      },
+    });
+    const consumer = httpConsumer(f, port, () => requestController.signal);
+    const pair = { summary: '取消不代表回滚', details: null };
+    await expect(consumer.client.save(pair, null)).rejects.toMatchObject({
+      definitive: false,
+    });
+    expect(requestController.signal.reason).toBe(cancelReason);
+    expect((consumer.unexpected[0] as Error).cause).toBe(cancelReason);
+    expect(consumer.replies[0]!.status).toBe(500);
+    expect(consumer.writes.size).toBe(1);
+    const key = consumer.requests[0]!.idempotencyKey;
+    requestController = new AbortController();
+    await consumer.client.save(pair, null);
+    expect(consumer.requests.map((body) => body.idempotencyKey)).toEqual([
+      key,
+      key,
+    ]);
     const [count] =
       await fixture.db`select count(*)::int n from allrice_memories where organization_id=${f.organizationId}`;
     expect(count!.n).toBe(1);
@@ -413,9 +710,16 @@ suite('memory public management port: real transactions without a Run', () => {
       expect(settled).toBe(false);
       release();
       await blocker;
-      // The core commits after its lock clears; the facade joins and throws
-      // the native signal reason instead of delivering a late success.
-      expect(await outcome).toEqual({ error: cancelReason });
+      // The core commits after its lock clears. Join completes before the
+      // delivery-failure error retains the original native cancellation cause.
+      expect(await outcome).toEqual({
+        error: expect.any(EmployeeMemoryWriteOutcomeUnknown),
+      });
+      const failure = await outcome;
+      expect('error' in failure && (failure.error as Error).cause).toBe(
+        cancelReason,
+      );
+      expect(controller.signal.reason).toBe(cancelReason);
       const replay = await port.create(f.context, input, signal());
       const [count] =
         await fixture.db`select count(*)::int n from allrice_employee_memory_operations where organization_id=${f.organizationId} and operation_key=${input.idempotencyKey}`;

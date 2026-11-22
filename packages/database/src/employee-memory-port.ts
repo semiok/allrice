@@ -96,6 +96,18 @@ export interface EmployeeMemoryPort {
   ): Promise<DetailResult>;
 }
 
+/** The owner write has completed, but its result was not delivered. Retain the
+ * original operation key for reconciliation; this is not a definitive denial.
+ * The ordinary Error maps through existing HTTP INTERNAL_ERROR (500), while
+ * cause preserves the original validation/access/cancellation failure locally.
+ * Native cancellation remains on the caller's unchanged AbortSignal. */
+export class EmployeeMemoryWriteOutcomeUnknown extends Error {
+  constructor(cause: unknown) {
+    super('employee_memory_write_outcome_unknown', { cause });
+    this.name = 'EmployeeMemoryWriteOutcomeUnknown';
+  }
+}
+
 /** Await the actual owner transaction even when the caller has canceled. An
  * abort suppresses delivery; it cannot undo a committed operation receipt. */
 async function joinOwner<T>(signal: AbortSignal, operation: () => Promise<T>) {
@@ -119,11 +131,10 @@ function writeResult(
 export function createEmployeeMemoryPort(
   options: { qualification?: EmployeeMemoryModuleQualification } = {},
 ): EmployeeMemoryPort {
-  async function employee<T>(
+  async function qualify(
     context: RequestContext,
     target: ListQuery,
     signal: AbortSignal,
-    operation: () => Promise<T>,
   ) {
     signal.throwIfAborted();
     const qualification = options.qualification;
@@ -134,10 +145,46 @@ export function createEmployeeMemoryPort(
       instanceId: target.instanceId,
     };
     await qualification.requireCurrentAccess(context, selected, signal);
+    signal.throwIfAborted();
+    return { qualification, selected };
+  }
+
+  async function employee<T>(
+    context: RequestContext,
+    target: ListQuery,
+    signal: AbortSignal,
+    operation: () => Promise<T>,
+  ) {
+    const { qualification, selected } = await qualify(context, target, signal);
     const result = await joinOwner(signal, operation);
     await qualification.requireCurrentAccess(context, selected, signal);
     signal.throwIfAborted();
     return result;
+  }
+
+  async function write<T, R>(
+    context: RequestContext,
+    target: ListQuery,
+    signal: AbortSignal,
+    operation: () => Promise<T>,
+    project: (value: T) => R,
+  ) {
+    const { qualification, selected } = await qualify(context, target, signal);
+    // Input and admission failures above have no write effect. The owner's
+    // transaction rejection keeps its existing rollback/domain-error contract.
+    signal.throwIfAborted();
+    const committed = await operation();
+    try {
+      signal.throwIfAborted();
+      const result = project(committed);
+      await qualification.requireCurrentAccess(context, selected, signal);
+      signal.throwIfAborted();
+      return result;
+    } catch (cause) {
+      // Neither a post-commit ZodError nor a revoked/canceled delivery can
+      // prove that no write occurred. Do not expose the now-unauthorized result.
+      throw new EmployeeMemoryWriteOutcomeUnknown(cause);
+    }
   }
 
   return {
@@ -168,53 +215,55 @@ export function createEmployeeMemoryPort(
     },
     async create(context, input, signal) {
       const command = CreatePersonalEmployeeMemoryInputSchema.parse(input);
-      return employee(context, command, signal, async () =>
-        writeResult(await createManagedEmployeeMemory(context, command)),
+      return write(
+        context,
+        command,
+        signal,
+        () => createManagedEmployeeMemory(context, command),
+        writeResult,
       );
     },
     async correct(context, input, signal) {
       const command = MemoryCorrectCommandProjectionSchema.parse(input);
-      return employee(
+      return write(
         context,
         {
           workspaceId: command.target.workspaceId,
           instanceId: command.body.instanceId,
         },
         signal,
-        async () =>
-          writeResult(
-            await correctManagedEmployeeMemory(
-              context,
-              command.target.workspaceId,
-              command.target.memoryId,
-              command.body,
-            ),
+        () =>
+          correctManagedEmployeeMemory(
+            context,
+            command.target.workspaceId,
+            command.target.memoryId,
+            command.body,
           ),
+        writeResult,
       );
     },
     async confirm(context, input, signal) {
       const command = MemoryMutationCommandProjectionSchema.parse(input);
-      return employee(
+      return write(
         context,
         {
           workspaceId: command.target.workspaceId,
           instanceId: command.body.instanceId,
         },
         signal,
-        async () =>
-          writeResult(
-            await promoteManagedEmployeeMemory(
-              context,
-              command.target.workspaceId,
-              command.target.memoryId,
-              command.body,
-            ),
+        () =>
+          promoteManagedEmployeeMemory(
+            context,
+            command.target.workspaceId,
+            command.target.memoryId,
+            command.body,
           ),
+        writeResult,
       );
     },
     async withdraw(context, input, signal) {
       const command = MemoryMutationCommandProjectionSchema.parse(input);
-      return employee(
+      return write(
         context,
         {
           workspaceId: command.target.workspaceId,
@@ -228,6 +277,7 @@ export function createEmployeeMemoryPort(
             command.target.memoryId,
             command.body,
           ),
+        () => undefined,
       );
     },
     async listAdmin(context, input, signal) {
