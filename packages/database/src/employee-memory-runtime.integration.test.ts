@@ -37,6 +37,7 @@ import {
   type NativeMemoryTarget,
 } from './employee-memory-runtime.ts';
 import { nativeMemorySource } from './memory-native-source.ts';
+import type * as MemoryRuntimeBinding from './memory-runtime-binding.ts';
 import type {
   MemoryRuntimeAssembly,
   MemoryRuntimeExecution,
@@ -57,7 +58,7 @@ const ownerFixture = vi.hoisted(() => ({
   assembly: null as MemoryRuntimeAssembly | null,
 }));
 vi.mock('./memory-runtime-binding.ts', async (original) => {
-  const actual = await original<typeof import('./memory-runtime-binding.ts')>();
+  const actual = await original<typeof MemoryRuntimeBinding>();
   return {
     ...actual,
     requireMemoryRuntimeAssembly: () =>
