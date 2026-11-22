@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { PersonVmBinding } from '@allrice/person-vm';
 import { createVmMemoryAdmission } from './admission.ts';
 import { VM_PHYSICAL_MEMORY_BYTES, VmMemoryError } from './contract.ts';
@@ -277,6 +277,53 @@ describe.sequential('external VM memory admission', () => {
       await watch.close();
     }
     expect(source.subscribers.size).toBe(0);
+  });
+
+  it('重复pressure只唤醒通知不放行，无通知不空转，取消仅释放观察不发kill', async () => {
+    const source = new FixtureMemorySource(binding, 'pressure');
+    const controller = new AbortController();
+    const watch = await createVmMemoryAdmission(source).watch(
+      binding,
+      controller.signal,
+    );
+    const kill = vi.spyOn(process, 'kill').mockReturnValue(true);
+    let pending: Promise<unknown> | undefined;
+    try {
+      for (let pulse = 0; pulse < 3; pulse++) {
+        let notified = false;
+        pending = watch.wait().then(
+          () => {
+            notified = true;
+          },
+          (error: unknown) => error,
+        );
+        await Promise.resolve();
+        expect(notified).toBe(false);
+        expect(source.waitCalls).toBe(pulse + 1);
+        expect(watch.read()).toBe('queued');
+        source.publish(memoryObservation(binding, 'pressure'));
+        await pending;
+        expect(notified).toBe(true);
+        expect(watch.read()).toBe('queued');
+      }
+      pending = watch.wait().catch((error: unknown) => error);
+      expect(source.waitCalls).toBe(4);
+      const reason = new Error('synthetic-pressure-wait-cancel');
+      controller.abort(reason);
+      expect(await pending).toBe(reason);
+      await watch.close();
+      expect(source.closeCalls).toBe(1);
+      expect(source.subscribers.size).toBe(0);
+      expect(kill).not.toHaveBeenCalled();
+    } finally {
+      try {
+        controller.abort();
+        await watch.close();
+        await pending;
+      } finally {
+        kill.mockRestore();
+      }
+    }
   });
 
   it('host计量未知用显式null；漏字段不能冒称完整观察', async () => {

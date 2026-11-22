@@ -40,6 +40,7 @@ export class FixtureMemorySource implements VmMemorySource {
   setupGate?: Promise<void>;
   detachGate?: Promise<void>;
   closeCalls = 0;
+  waitCalls = 0;
   constructor(
     binding: PersonVmBinding,
     pressure: VmMemoryObservation['pressure'] = 'normal',
@@ -80,6 +81,7 @@ export class FixtureMemorySource implements VmMemorySource {
     return {
       read: () => this.observation,
       wait: async () => {
+        this.waitCalls++;
         this.waiting.resolve();
         signal.throwIfAborted();
         if (closed) throw Error('synthetic_watch_closed');

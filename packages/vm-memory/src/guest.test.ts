@@ -292,11 +292,15 @@ describe.sequential(
       ).toThrow();
     });
 
-    it.each(['mismatch', 'unreadable'] as const)(
-      '初始化限额写入后回读%s仍失败，不能返回设置成功',
-      async (kind) => {
+    it.each(
+      (['memory.high', 'memory.max'] as const).flatMap((limit) =>
+        (['mismatch', 'unreadable'] as const).map((kind) => ({ limit, kind })),
+      ),
+    )(
+      '初始化$limit写入后回读$kind仍失败，不能返回设置成功',
+      async ({ limit, kind }) => {
         const f = await virtualGuest();
-        const target = join(f.config.commandsGroup, 'memory.max');
+        const target = join(f.config.commandsGroup, limit);
         const io = {
           ...f.io,
           readFileSync(file: string) {
@@ -314,7 +318,11 @@ describe.sequential(
         );
         expect(f.io.writeFileSync).toHaveBeenCalledWith(
           target,
-          String(f.config.policy.commandMaxBytes),
+          String(
+            limit === 'memory.high'
+              ? f.config.policy.commandHighBytes
+              : f.config.policy.commandMaxBytes,
+          ),
         );
       },
     );
@@ -512,6 +520,54 @@ describe.sequential(
       expect(result?.stderr).toContain('COMMAND_MEMORY_SETUP_FAILED');
     });
 
+    it.each(
+      (['memory.high', 'memory.max'] as const).flatMap((limit) =>
+        (['mismatch', 'unreadable'] as const).map((kind) => ({ limit, kind })),
+      ),
+    )(
+      '首次child的$limit已写但回读$kind时拒绝入组和执行',
+      async ({ limit, kind }) => {
+        const f = await bashGuest();
+        const cat = join(f.directory, 'bin/cat');
+        const original = await readFile(cat, 'utf8');
+        await writeFile(
+          cat,
+          `#!/bin/sh
+case "$1" in
+  */${limit})
+    /bin/cat "$1" > "$ALLRICE_MEMORY_CGROUP_ROOT/readback-written" || exit 99
+    printf '%s' "\${1%/*}" > "$ALLRICE_MEMORY_CGROUP_ROOT/readback-child"
+    ${kind === 'mismatch' ? "printf '0\\n'" : 'exit 1'}
+    exit;;
+esac
+${original.replace('#!/bin/sh\n', '')}`,
+        );
+        const result = await f.run('printf "must-not-run\\n"');
+        expect(result.code).toBe(75);
+        expect(result.signal).toBe(null);
+        expect(result.stdout).toBe('');
+        expect(result.stderr).toContain('COMMAND_MEMORY_SETUP_FAILED');
+        expect(
+          await readFile(join(f.directory, 'readback-written'), 'utf8'),
+        ).toBe(
+          String(
+            limit === 'memory.high'
+              ? VM_MEMORY_PHASE4_REFERENCE_POLICY.commandHighBytes
+              : VM_MEMORY_PHASE4_REFERENCE_POLICY.commandMaxBytes,
+          ) + '\n',
+        );
+        const child = await readFile(
+          join(f.directory, 'readback-child'),
+          'utf8',
+        );
+        await expect(
+          readFile(join(child, 'cgroup.procs')),
+        ).rejects.toMatchObject({
+          code: 'ENOENT',
+        });
+      },
+    );
+
     it.each(['-c', 'script'] as const)(
       'exec bash %s保持同PID受管命令的合法原生语义',
       async (kind) => {
@@ -605,6 +661,7 @@ describe.sequential(
         text: 'COMMAND_OOM_KILLED',
       },
       { events: 'oom 0\noom_kill 0\n', exit: 137, expected: 137, text: '' },
+      { events: 'oom 0\noom_kill 0\n', exit: 9, expected: 9, text: '' },
       { events: 'oom 0\noom_kill 0\n', exit: 0, expected: 0, text: '' },
     ])(
       '原生bash入口自动映射合成计数 $text / $exit；没有手工拼错误或重放命令',
@@ -657,8 +714,14 @@ describe.sequential(
         }
         expect(result.code ?? 0).toBe(scenario.expected);
         expect(result.stdout).toBe('ran-once\n');
-        if (scenario.text) expect(result.stderr).toContain(scenario.text);
-        else expect(result.stderr).not.toContain('COMMAND_');
+        if (scenario.text) {
+          expect(result.stderr).toContain(scenario.text);
+          expect(result.stderr).toBe(
+            scenario.text === 'COMMAND_MEMORY_LIMIT'
+              ? 'COMMAND_MEMORY_LIMIT: 该命令内存/交换额度不足，请分批处理，会话保留\n'
+              : 'COMMAND_OOM_KILLED: 该命令被内存回收终止，原因需核实，会话保留\n',
+          );
+        } else expect(result.stderr).not.toContain('COMMAND_');
         // Regular files emulate cgroup control files, so teardown removes them here.
         expect(await readFile(join(dsh, 'cgroup.procs'), 'utf8')).toMatch(
           /^\d+\n$/,

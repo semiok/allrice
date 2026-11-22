@@ -39,6 +39,10 @@ else
   printf '%s\n' "${ALLRICE_MEMORY_COMMAND_MAX:?}" > "$allrice_memory_child/memory.max" || allrice_memory_fail
   printf '%s\n' "${ALLRICE_MEMORY_COMMAND_SWAP_MAX:?}" > "$allrice_memory_child/memory.swap.max" || allrice_memory_fail
   printf '%s\n' 0 > "$allrice_memory_child/memory.oom.group" || allrice_memory_fail
+  allrice_memory_limit=$(cat "$allrice_memory_child/memory.high") && [ "$allrice_memory_limit" = "${ALLRICE_MEMORY_COMMAND_HIGH:?}" ] || allrice_memory_fail
+  allrice_memory_limit=$(cat "$allrice_memory_child/memory.max") && [ "$allrice_memory_limit" = "${ALLRICE_MEMORY_COMMAND_MAX:?}" ] || allrice_memory_fail
+  allrice_memory_limit=$(cat "$allrice_memory_child/memory.swap.max") && [ "$allrice_memory_limit" = "${ALLRICE_MEMORY_COMMAND_SWAP_MAX:?}" ] || allrice_memory_fail
+  allrice_memory_limit=$(cat "$allrice_memory_child/memory.oom.group") && [ "$allrice_memory_limit" = 0 ] || allrice_memory_fail
   allrice_memory_oom_before=$(awk '$1=="oom_kill" {print $2}' "$allrice_memory_child/memory.events.local") || allrice_memory_fail
   allrice_memory_local_before=$(awk '$1=="oom" {print $2}' "$allrice_memory_child/memory.events.local") || allrice_memory_fail
 fi
