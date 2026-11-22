@@ -14,10 +14,16 @@ import {
   ApiErrorSchema,
   ExecutionGenerationSchema,
   MemoryOrdinalInputSchema,
+  ReferenceArchiveListInputSchema,
+  ReferenceArchiveReadInputSchema,
+  ReferenceReadImageInputSchema,
   ReferenceReadInputSchema,
+  ReferenceSearchInputSchema,
   ReferenceSelectionErrorSchema,
+  RememberPersonalMemoryInputSchema,
   RequestContextSchema,
   UuidSchema,
+  WorkspaceDocumentReadArgsSchema,
   type DeliveryFormat,
   type ExecutionGeneration,
   type NativeOfficeExportSchema,
@@ -98,6 +104,36 @@ export interface AllriceMcpServices {
     input: AllriceMcpDeliverableInput,
     signal: AbortSignal,
   ): Promise<CallToolResult>;
+  referenceSearch?(
+    scope: AllriceMcpScope,
+    input: z.input<typeof ReferenceSearchInputSchema>,
+    signal: AbortSignal,
+  ): Promise<CallToolResult>;
+  referenceReadImage?(
+    scope: AllriceMcpScope,
+    input: z.input<typeof ReferenceReadImageInputSchema>,
+    signal: AbortSignal,
+  ): Promise<CallToolResult>;
+  referenceArchiveList?(
+    scope: AllriceMcpScope,
+    input: z.input<typeof ReferenceArchiveListInputSchema>,
+    signal: AbortSignal,
+  ): Promise<CallToolResult>;
+  referenceArchiveRead?(
+    scope: AllriceMcpScope,
+    input: z.input<typeof ReferenceArchiveReadInputSchema>,
+    signal: AbortSignal,
+  ): Promise<CallToolResult>;
+  deliverableDocumentRead?(
+    scope: AllriceMcpScope,
+    input: z.input<typeof WorkspaceDocumentReadArgsSchema>,
+    signal: AbortSignal,
+  ): Promise<CallToolResult>;
+  memoryRemember?(
+    scope: AllriceMcpScope,
+    input: z.input<typeof RememberPersonalMemoryInputSchema>,
+    signal: AbortSignal,
+  ): Promise<CallToolResult>;
 }
 
 /** Public host callbacks for MET-281/283 adapters. These are the exact existing
@@ -110,6 +146,25 @@ export type AllriceMcpMemoryRead = NonNullable<
 >;
 export type AllriceMcpDeliverableCreate = NonNullable<
   AllriceMcpServices['deliverableCreate']
+>;
+/** Optional M2 callbacks, with native SDK results and no business carrier. */
+export type AllriceMcpReferenceSearch = NonNullable<
+  AllriceMcpServices['referenceSearch']
+>;
+export type AllriceMcpReferenceReadImage = NonNullable<
+  AllriceMcpServices['referenceReadImage']
+>;
+export type AllriceMcpReferenceArchiveList = NonNullable<
+  AllriceMcpServices['referenceArchiveList']
+>;
+export type AllriceMcpReferenceArchiveRead = NonNullable<
+  AllriceMcpServices['referenceArchiveRead']
+>;
+export type AllriceMcpDeliverableDocumentRead = NonNullable<
+  AllriceMcpServices['deliverableDocumentRead']
+>;
+export type AllriceMcpMemoryRemember = NonNullable<
+  AllriceMcpServices['memoryRemember']
 >;
 /** Only these existing thrown payloads are validated and disclosed. Native
  * CallToolResult.isError remains the owner's ordinary tool-failure channel. */
@@ -152,6 +207,13 @@ const validateDelivery =
   new AjvJsonSchemaValidator().getValidator<AllriceMcpDeliverableInput>(
     deliverySchema,
   );
+const rememberSourceSchema = riceToolDefinitions.find(
+  (tool) => tool.name === 'workspace.memory.remember',
+)!.inputSchema;
+const rememberWireSchema: unknown = JSON.parse(
+  JSON.stringify(rememberSourceSchema),
+);
+const rememberSchema = ToolSchema.shape.inputSchema.parse(rememberWireSchema);
 const tools: Tool[] = [
   {
     name: 'identity_read',
@@ -185,11 +247,63 @@ const tools: Tool[] = [
       'Save generated deliverable bytes and return its real version.',
     inputSchema: deliverySchema,
   },
+  {
+    name: 'reference_search',
+    description: 'Search currently authorized enterprise materials.',
+    inputSchema: z.toJSONSchema(ReferenceSearchInputSchema, {
+      io: 'input',
+    }) as Tool['inputSchema'],
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: 'reference_read_image',
+    description: 'Read an authorized exact enterprise-material image.',
+    inputSchema: z.toJSONSchema(ReferenceReadImageInputSchema, {
+      io: 'input',
+    }) as Tool['inputSchema'],
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: 'reference_archive_list',
+    description: 'List the directory of an authorized exact reference archive.',
+    inputSchema: z.toJSONSchema(ReferenceArchiveListInputSchema, {
+      io: 'input',
+    }) as Tool['inputSchema'],
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: 'reference_archive_read',
+    description: 'Read one member of an authorized exact reference archive.',
+    inputSchema: z.toJSONSchema(ReferenceArchiveReadInputSchema, {
+      io: 'input',
+    }) as Tool['inputSchema'],
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: 'deliverable_document_read',
+    description: 'Read a currently authorized deliverable document.',
+    inputSchema: z.toJSONSchema(WorkspaceDocumentReadArgsSchema, {
+      io: 'input',
+    }) as Tool['inputSchema'],
+    annotations: { readOnlyHint: true },
+  },
+  {
+    name: 'memory_remember',
+    description:
+      'Save current human-message content as a candidate requiring confirmation.',
+    inputSchema: rememberSchema,
+  },
 ];
 const moduleForTool = {
   reference_read: 'enterprise-materials',
   memory_read: 'employee-memory',
   deliverable_create: 'deliverables',
+  reference_search: 'enterprise-materials',
+  reference_read_image: 'enterprise-materials',
+  reference_archive_list: 'enterprise-materials',
+  reference_archive_read: 'enterprise-materials',
+  deliverable_document_read: 'deliverables',
+  memory_remember: 'employee-memory',
 } as const;
 type BusinessTool = keyof typeof moduleForTool;
 const bindingSchema = z.object({
@@ -309,14 +423,38 @@ export function createAllriceMcpServer(
     const services = options.services;
     if (!services || services.executionGeneration !== scope.executionGeneration)
       return false;
-    const method =
-      name === 'reference_read'
-        ? services.referenceRead
-        : name === 'memory_read'
-          ? services.memoryRead
-          : services.deliverableCreate;
+    let bound = false;
+    switch (name) {
+      case 'reference_read':
+        bound = !!services.referenceRead;
+        break;
+      case 'memory_read':
+        bound = !!services.memoryRead;
+        break;
+      case 'deliverable_create':
+        bound = !!services.deliverableCreate;
+        break;
+      case 'reference_search':
+        bound = !!services.referenceSearch;
+        break;
+      case 'reference_read_image':
+        bound = !!services.referenceReadImage;
+        break;
+      case 'reference_archive_list':
+        bound = !!services.referenceArchiveList;
+        break;
+      case 'reference_archive_read':
+        bound = !!services.referenceArchiveRead;
+        break;
+      case 'deliverable_document_read':
+        bound = !!services.deliverableDocumentRead;
+        break;
+      case 'memory_remember':
+        bound = !!services.memoryRemember;
+        break;
+    }
     return (
-      !!method &&
+      bound &&
       scope.enabledModules.includes(moduleForTool[name as BusinessTool])
     );
   }
@@ -383,7 +521,43 @@ export function createAllriceMcpServer(
             MemoryOrdinalInputSchema.parse(args),
             signal,
           );
-        } else {
+        } else if (name === 'reference_search') {
+          result = await services!.referenceSearch!(
+            scope,
+            ReferenceSearchInputSchema.parse(args),
+            signal,
+          );
+        } else if (name === 'reference_read_image') {
+          result = await services!.referenceReadImage!(
+            scope,
+            ReferenceReadImageInputSchema.parse(args),
+            signal,
+          );
+        } else if (name === 'reference_archive_list') {
+          result = await services!.referenceArchiveList!(
+            scope,
+            ReferenceArchiveListInputSchema.parse(args),
+            signal,
+          );
+        } else if (name === 'reference_archive_read') {
+          result = await services!.referenceArchiveRead!(
+            scope,
+            ReferenceArchiveReadInputSchema.parse(args),
+            signal,
+          );
+        } else if (name === 'deliverable_document_read') {
+          result = await services!.deliverableDocumentRead!(
+            scope,
+            WorkspaceDocumentReadArgsSchema.parse(args),
+            signal,
+          );
+        } else if (name === 'memory_remember') {
+          result = await services!.memoryRemember!(
+            scope,
+            RememberPersonalMemoryInputSchema.parse(args),
+            signal,
+          );
+        } else if (name === 'deliverable_create') {
           const validated = validateDelivery(args);
           if (!validated.valid)
             throw new McpError(
@@ -395,6 +569,8 @@ export function createAllriceMcpServer(
             validated.data,
             signal,
           );
+        } else {
+          throw new McpError(ErrorCode.InvalidParams, 'Invalid tool arguments');
         }
       } catch (error) {
         signal.throwIfAborted();
@@ -407,7 +583,12 @@ export function createAllriceMcpServer(
         const selection = ReferenceSelectionErrorSchema.safeParse(error);
         if (
           selection.success &&
-          (name !== 'reference_read' ||
+          (![
+            'reference_read',
+            'reference_read_image',
+            'reference_archive_list',
+            'reference_archive_read',
+          ].includes(name) ||
             selection.data.error.referenceRevisionIds.some(
               (id) => id !== args.revisionId,
             ))
@@ -417,7 +598,7 @@ export function createAllriceMcpServer(
             'Invalid module selection error',
           );
         if (known.success || selection.success)
-          return {
+          result = {
             isError: true,
             content: [
               {
@@ -428,10 +609,11 @@ export function createAllriceMcpServer(
               },
             ],
           };
-        throw new McpError(
-          ErrorCode.InternalError,
-          'AllRice business service failed',
-        );
+        else
+          throw new McpError(
+            ErrorCode.InternalError,
+            'AllRice business service failed',
+          );
       }
       signal.throwIfAborted();
       // A current host cutoff also prevents a stale, completed read being
@@ -447,7 +629,9 @@ export function createAllriceMcpServer(
           'AUTHORIZATION_DENIED',
           name === 'deliverable_create'
             ? 'Current access is unavailable. Publication may already be committed; reconcile the original call before retrying.'
-            : 'Current access is unavailable.',
+            : name === 'memory_remember'
+              ? 'Current access is unavailable. Candidate may already be committed; reconcile the original call before retrying.'
+              : 'Current access is unavailable.',
         );
       return CallToolResultSchema.parse(result);
     }),
