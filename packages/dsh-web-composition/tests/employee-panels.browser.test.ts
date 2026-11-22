@@ -29,7 +29,10 @@ import {
   startInstalledProfile,
 } from './installed-profile';
 import { writeEmployeePanelsFixture } from './employee-panels-fixture';
-import { writeEmployeePanelsReferenceCarrier } from './employee-panels-reference-carrier';
+import {
+  compareNativePanelsHostBudget,
+  writeEmployeePanelsReferenceCarrier,
+} from './employee-panels-reference-carrier';
 import {
   panelsRev2Head,
   writeEmployeePanelsBaseline,
@@ -230,9 +233,71 @@ const inspectContent = (page: Page, kind: Kind, includePaint = false) =>
         parent = parent.parentElement
       )
         ancestors.push(paintNode(parent));
+    // Official SidebarRight renders these public DOM markers outside the
+    // contribution wrapper. Read the real pane and its ancestor clip budget;
+    // never infer native room from the replay's copied width/height props.
+    const nativeTab = node.closest(
+      'div[data-sidebar-right-tab][data-sidebar-right-occurrence]',
+    );
+    const nativePanel = nativeTab?.closest('[data-sidebar-right-panel]');
+    const available = { x: 0, y: 0, width: innerWidth, height: innerHeight };
+    const clips: { rect: typeof available; css: string[] }[] = [];
+    for (let parent = nativeTab; parent; parent = parent.parentElement) {
+      const s = getComputedStyle(parent);
+      if (s.display === 'contents') continue;
+      const clipX = s.overflowX !== 'visible';
+      const clipY = s.overflowY !== 'visible';
+      if (!clipX && !clipY && s.clipPath === 'none' && s.maskImage === 'none')
+        continue;
+      const bounds = parent.getBoundingClientRect();
+      const rect = {
+        x: bounds.x + parent.clientLeft,
+        y: bounds.y + parent.clientTop,
+        width: parent.clientWidth,
+        height: parent.clientHeight,
+      };
+      clips.push({
+        rect,
+        css: [
+          s.overflowX,
+          s.overflowY,
+          s.clipPath,
+          s.maskImage,
+          s.borderRadius,
+          s.getPropertyValue('corner-shape'),
+          s.transform,
+        ],
+      });
+      const right = Math.min(
+        available.x + available.width,
+        rect.x + rect.width,
+      );
+      const bottom = Math.min(
+        available.y + available.height,
+        rect.y + rect.height,
+      );
+      if (clipX) {
+        available.x = Math.max(available.x, rect.x);
+        available.width = Math.max(0, right - available.x);
+      }
+      if (clipY) {
+        available.y = Math.max(available.y, rect.y);
+        available.height = Math.max(0, bottom - available.y);
+      }
+    }
     return {
       root: box(node),
       parent: box(node.parentElement!),
+      nativeHost: {
+        tab: nativeTab ? box(nativeTab) : null,
+        panel: nativePanel ? box(nativePanel) : null,
+        available,
+        clips,
+        mode: nativePanel?.getAttribute('data-sidebar-right-panel') ?? null,
+        session:
+          nativePanel?.getAttribute('data-sidebar-right-session') ?? null,
+        open: nativePanel?.hasAttribute('data-sidebar-right-open') ?? false,
+      },
       elements: [...node.querySelectorAll('h2,p,input,button,strong')]
         .filter((item) => item.getBoundingClientRect().width > 0)
         .slice(0, 30)
@@ -970,6 +1035,15 @@ suite('installed native employee panels with synthetic business owner', () => {
               });
               // Original globals are document-wide on reference only. Keep the
               // real public Host's resulting budget/clip/placement accountable.
+              expect
+                .soft(
+                  compareNativePanelsHostBudget(
+                    actual.nativeHost,
+                    expected.nativeHost,
+                  ),
+                  prefix + ' independent native pane/clip budget',
+                )
+                .toEqual([]);
               for (const key of ['x', 'y', 'width', 'height'] as const) {
                 expect
                   .soft(

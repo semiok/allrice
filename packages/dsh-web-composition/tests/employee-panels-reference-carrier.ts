@@ -59,6 +59,56 @@ const canonical = (value: Record<string, string>) =>
     Object.entries(value).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
   );
 
+type Rect = { x: number; y: number; width: number; height: number };
+export type NativePanelsHostBudget = {
+  tab: Rect | null;
+  panel: Rect | null;
+  available: Rect;
+  clips: { rect: Rect; css: string[] }[];
+  mode: string | null;
+  session: string | null;
+  open: boolean;
+};
+
+/** Compare only native DOM outside either component wrapper. The wrapper's
+ * copied replay dimensions are deliberately not an input to this guard. */
+export function compareNativePanelsHostBudget(
+  actual: NativePanelsHostBudget,
+  expected: NativePanelsHostBudget,
+) {
+  const differences: string[] = [];
+  const rect = (name: string, a: Rect | null, b: Rect | null) => {
+    if (!a || !b) {
+      differences.push(name + ' missing');
+      return;
+    }
+    if (a.width <= 0 || a.height <= 0 || b.width <= 0 || b.height <= 0)
+      differences.push(name + ' empty');
+    for (const key of ['x', 'y', 'width', 'height'] as const)
+      if (
+        !Number.isFinite(a[key]) ||
+        !Number.isFinite(b[key]) ||
+        Math.abs(a[key] - b[key]) > 0.5
+      )
+        differences.push(name + '.' + key);
+  };
+  for (const key of ['mode', 'session', 'open'] as const)
+    if (actual[key] !== expected[key]) differences.push(key);
+  rect('native tab', actual.tab, expected.tab);
+  rect('native panel', actual.panel, expected.panel);
+  rect('available clip', actual.available, expected.available);
+  if (actual.clips.length !== expected.clips.length)
+    differences.push('native clipping ancestor count');
+  actual.clips.forEach((clip, index) => {
+    const other = expected.clips[index];
+    if (!other) return;
+    rect(`native clipping ancestor ${index}`, clip.rect, other.rect);
+    if (JSON.stringify(clip.css) !== JSON.stringify(other.css))
+      differences.push(`native clipping ancestor ${index} CSS`);
+  });
+  return differences;
+}
+
 /** Historical bytes remain a separate authority; this does not execute or
  * rewrite the old IIFE. The full 283-source map is fixed, not only six leaves. */
 export function referenceAuthority(html: string, metadata: string) {

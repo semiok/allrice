@@ -18,10 +18,12 @@ import { EmployeeMemorySidebar } from '../../../apps/web/app/chatflow/employee-m
 import { EmployeeCapabilitiesPanel } from '../../../apps/web/app/chatflow/employee-capabilities-panel';
 import { panelsRev2Head, panelsRev2Sources } from './employee-panels-baseline';
 import {
+  compareNativePanelsHostBudget,
   panelsReferenceCarrierId,
   referenceAuthority,
   validateReferenceCarrier,
 } from './employee-panels-reference-carrier';
+import type { NativePanelsHostBudget } from './employee-panels-reference-carrier';
 import type { writeEmployeePanelsReferenceCarrier } from './employee-panels-reference-carrier';
 import { writeEmployeePanelsFixture } from './employee-panels-fixture';
 import {
@@ -41,6 +43,66 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true });
+});
+
+// Captured-shape controls only, not a DOM/layout simulation. The formal file
+// reads official native markers outside the wrapper and retains raw frames.
+const nativeBudget = (): NativePanelsHostBudget => ({
+  tab: { x: 793, y: 38, width: 647, height: 962 },
+  panel: { x: 792, y: 0, width: 648, height: 1000 },
+  available: { x: 793, y: 38, width: 647, height: 962 },
+  clips: [
+    {
+      rect: { x: 793, y: 38, width: 647, height: 962 },
+      css: ['hidden', 'hidden', 'none', 'none', '0px', 'round', 'none'],
+    },
+  ],
+  mode: 'push',
+  session: 'native-session-A',
+  open: true,
+});
+it('accepts equal independent native pane and clip budgets', () => {
+  expect(compareNativePanelsHostBudget(nativeBudget(), nativeBudget())).toEqual(
+    [],
+  );
+});
+it.each([
+  'outer-width',
+  'outer-height',
+  'outer-position',
+  'clip',
+  'clip-css',
+  'missing-tab',
+  'empty-clip',
+] as const)(
+  'rejects %s changes even while both replay wrapper dimensions remain unchanged',
+  (mutation) => {
+    const actual = nativeBudget(),
+      expected = nativeBudget();
+    const actualWrapper = { width: 647, height: 962 };
+    const expectedWrapper = { ...actualWrapper };
+    if (mutation === 'outer-width') expected.tab!.width -= 3;
+    else if (mutation === 'outer-height') expected.tab!.height -= 5;
+    else if (mutation === 'outer-position') expected.panel!.x += 1;
+    else if (mutation === 'clip') expected.available.width -= 2;
+    else if (mutation === 'clip-css') expected.clips[0]!.css[0] = 'visible';
+    else if (mutation === 'missing-tab') expected.tab = null;
+    else expected.available.width = 0;
+    expect(actualWrapper).toEqual(expectedWrapper);
+    expect(
+      compareNativePanelsHostBudget(actual, expected).length,
+    ).toBeGreaterThan(0);
+  },
+);
+it('keeps the original 0.5px geometry boundary for the actual native pane', () => {
+  const actual = nativeBudget(),
+    expected = nativeBudget();
+  expected.tab!.width += 0.5;
+  expect(compareNativePanelsHostBudget(actual, expected)).toEqual([]);
+  expected.tab!.width += 0.001;
+  expect(compareNativePanelsHostBudget(actual, expected)).toContain(
+    'native tab.width',
+  );
 });
 
 it('leaves default profile injection unchanged and disables the actual declared product entry only on the independent reference profile', async () => {
