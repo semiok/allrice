@@ -192,7 +192,7 @@ suite(
             .getByRole('combobox', { name: '按员工筛选' })
             .selectOption('');
           await root(page)
-            .getByRole('textbox', { name: '查找文件', exact: true })
+            .getByRole('searchbox', { name: '查找文件', exact: true })
             .fill('第四季度');
           await root(page).getByText(firstFile, { exact: true }).waitFor();
           await root(page)
@@ -318,7 +318,7 @@ suite(
             .first()
             .waitFor();
           await root(page)
-            .getByRole('textbox', { name: '查找资料（文件名、用途、正文）' })
+            .getByRole('searchbox', { name: '查找资料（文件名、用途、正文）' })
             .fill('销售');
           await root(page).locator('mark').first().waitFor();
           expect(
