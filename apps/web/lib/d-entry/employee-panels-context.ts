@@ -41,21 +41,31 @@ export async function requireEmployeePanelsContext(
 ) {
   if (write && !sameOriginBrowserWrite(request))
     throw new DataAccessError('authorization_denied');
-  const context = await dependencies.context(request);
-  if (!context) throw new DataAccessError('authentication_required');
+  const authenticated = await dependencies.context(request);
+  if (!authenticated) throw new DataAccessError('authentication_required');
   const params = new URL(request.url).searchParams;
   const selection = DEntrySelectionInputSchema.parse({
-    workspaceId: params.get('workspaceId') ?? context.workspaceId,
+    workspaceId: params.get('workspaceId') ?? authenticated.workspaceId,
     employeeInstanceId: panelEmployeeInstanceId,
     ...(params.has('threadId') ? { threadId: params.get('threadId') } : {}),
   });
+  // A Cookie may be tenant-wide. The selected workspace still needs the real
+  // current membership, employee ownership and release checks below.
+  const context = {
+    ...authenticated,
+    workspaceId: authenticated.workspaceId ?? selection.workspaceId,
+  };
   const identity = await dependencies.authorize(context, selection);
   const expected = request.headers.get('x-allrice-expected-viewer-id');
   if (expected !== null && expected !== context.actor.id)
     throw new ReferenceLibraryError('request_conflict');
   async function current(candidate: RequestContext, signal: AbortSignal) {
     signal.throwIfAborted();
-    const fresh = await dependencies.context(request);
+    const authenticated = await dependencies.context(request);
+    const fresh = authenticated && {
+      ...authenticated,
+      workspaceId: authenticated.workspaceId ?? selection.workspaceId,
+    };
     if (
       !fresh ||
       fresh.sessionId !== context!.sessionId ||

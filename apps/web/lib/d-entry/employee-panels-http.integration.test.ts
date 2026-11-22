@@ -717,6 +717,38 @@ suite(
       );
       expect(preview).toMatchObject({ kind: 'text' });
     });
+    it('checks the selected workspace of an unscoped Cookie against current membership without replacing an explicit scope', async () => {
+      const p = await person();
+      await release(p);
+      expect(await authenticateSession(p.login.token)).toMatchObject({
+        workspaceId: null,
+      });
+      const first = await raw(p, '/deliverables');
+      expect(first.status).toBe(200);
+      expect(await first.json()).toMatchObject({
+        viewerId: p.context.actor.id,
+      });
+      const otherWorkspaceId = randomUUID();
+      await f.db`insert into allrice_workspaces(id,organization_id,slug,name)
+        values(${otherWorkspaceId},${p.context.organizationId},${otherWorkspaceId},'Other workspace')`;
+      const explicit = await raw(p, '/deliverables', {
+        headers: { 'x-allrice-workspace-id': otherWorkspaceId },
+      });
+      expect(explicit.status).toBe(403);
+      await explicit.text();
+      await f.db`update allrice_memberships set workspace_id=${p.selection.workspaceId}
+        where user_id=${p.context.actor.id} and organization_id=${p.context.organizationId}`;
+      const permitted = await raw(p, '/deliverables');
+      expect(permitted.status).toBe(200);
+      expect(await permitted.json()).toMatchObject({
+        viewerId: p.context.actor.id,
+      });
+      await f.db`update allrice_memberships set workspace_id=${otherWorkspaceId}
+        where user_id=${p.context.actor.id} and organization_id=${p.context.organizationId}`;
+      const removed = await raw(p, '/deliverables');
+      expect(removed.status).toBe(403);
+      await removed.text();
+    });
     it('uses the application all-enabled policy without B, Run, VM or old module binding and ignores browser release claims', async () => {
       const p = await person();
       await release(p);
