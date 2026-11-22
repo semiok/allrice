@@ -1,5 +1,9 @@
 import { employeePersonaAdmission } from '../employees/employee-instances.ts';
 import {
+  assertChatExecutionGeneration,
+  assertLegacyJobExecutionGeneration,
+} from '../conversation/execution-generation.ts';
+import {
   modelFailureText,
   RunMemoryContextV2StateSchema,
   ReferenceSelectionsSchema,
@@ -1010,6 +1014,22 @@ async function enqueueRunInTransaction(
     instanceIdentity,
   } = parsed;
   let { availableAt, timeoutAt } = parsed;
+  // This is the 3.x enqueue lane, including internal automation producers and
+  // idempotent retries. A 4.0 thread never falls back into this queue.
+  const chatSessionId =
+    options.employeeBinding?.sessionId ??
+    options.conversationDelivery?.sessionId;
+  if (chatSessionId)
+    await assertChatExecutionGeneration(
+      transaction,
+      {
+        organizationId: context.organizationId,
+        workspaceId,
+        ownerId,
+        sessionId: chatSessionId,
+      },
+      '3.x',
+    );
   if (
     admission.kind === 'maintenance_repair' ||
     admission.kind === 'maintenance_repository'
@@ -2004,6 +2024,13 @@ export async function claimNextJob(workerIdInput: string, leaseMs: number) {
     const rows = await transaction<JobRow[]>`
       select candidate.* from allrice_jobs candidate
       where candidate.status = 'queued'
+        and not exists (
+          select 1 from allrice_employee_runs e
+          join allrice_chat_sessions s on s.id=e.session_id
+            and s.organization_id=e.organization_id and s.workspace_id=e.workspace_id
+            and s.owner_id=e.owner_id
+          where e.run_id=candidate.run_id and s.execution_generation<>'3.x'
+        )
         and coalesce(candidate.payload->>'type','') not like 'allrice.platform.dev.%'
         and (candidate.available_at <= ${scanNow}::text::timestamptz or exists (
           -- A terminal Run may never have acquired its runtime, or an older
@@ -2552,6 +2579,7 @@ export async function startClaimedJob(
       }
       if (await stopUnauthorizedTechnicalJob(transaction, job))
         return { execution: null, denied: true };
+      await assertLegacyJobExecutionGeneration(transaction, job);
       const policies = await transaction<PolicyRow[]>`
       select p.*
       from allrice_policy_snapshots p

@@ -13,6 +13,7 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
+import { withDedicatedCallerTransaction } from '../business-runtime/caller-transaction.ts';
 import { DataAccessError } from '../data.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
@@ -30,7 +31,7 @@ import {
 import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
 import {
   EmployeeContentError,
-  type ContentTx,
+  type ContentSql,
 } from './employee-content-model.ts';
 
 function humanContext(context: RequestContext, workspaceId: string) {
@@ -66,7 +67,7 @@ async function previewPersonalSceneFileInTransaction(
   context: RequestContext,
   instanceId: string,
   file: PersonalSceneFile,
-  tx: ContentTx,
+  tx: ContentSql,
 ) {
   if (!('skillPackage' in file.procedure))
     throw new DataAccessError('not_found');
@@ -245,7 +246,7 @@ export async function restorePersonalSceneFile(
 ) {
   const input = RestorePersonalSceneFileSchema.parse(raw);
   const context = humanContext(contextInput, input.workspaceId);
-  return db.begin((tx) =>
+  return withDedicatedCallerTransaction(db, (tx) =>
     savePersonalSceneSkillInTransaction(context, instanceId, input, tx),
   );
 }

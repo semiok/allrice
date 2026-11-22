@@ -7,7 +7,7 @@ import {
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import {
   EmployeeContentError,
-  type ContentTx,
+  type ContentSql,
 } from './employee-content-model.ts';
 import { validateSceneSkillPackage } from './employee-scene-skill-package.ts';
 
@@ -91,7 +91,7 @@ export async function assertEmployeeContentRetirement(
   before: EmployeeContentManifest,
   after: Manifest,
   textEdits: Save['textEdits'],
-  tx: ContentTx,
+  tx: ContentSql,
 ) {
   const refs = [before, after]
     .flatMap((manifest) => [

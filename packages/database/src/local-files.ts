@@ -24,6 +24,7 @@ import {
   type Membership,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
+import { assertChatExecutionGeneration } from './conversation/execution-generation.ts';
 import { bridgeDeviceStatus, BridgeDataError } from './bridge.ts';
 import { bridgeCapabilityReadinessView } from './bridge-settings.ts';
 import {
@@ -43,7 +44,7 @@ import {
   abandonStorageMetadata,
 } from './data.ts';
 import {
-  authorizeSessionOwner,
+  authorizeLegacySessionWrite,
   linkFileToSession,
 } from './workspace/service.ts';
 
@@ -86,7 +87,11 @@ export async function enqueueLocalFileCommand(
   )
     throw new DataAccessError('authorization_denied');
   if (input.sessionId)
-    await authorizeSessionOwner(context, input.workspaceId, input.sessionId);
+    await authorizeLegacySessionWrite(
+      context,
+      input.workspaceId,
+      input.sessionId,
+    );
   const key = `local-file-user:${context.actor.id}:${input.idempotencyKey}`,
     fingerprint = digest(input);
   const [prior] = await db<
@@ -199,6 +204,17 @@ export async function enqueueLocalFileCommand(
     );
     if (['unsupported', 'paused', 'offline'].includes(readiness.state))
       throw new BridgeDataError('command_unavailable');
+    if (input.sessionId)
+      await assertChatExecutionGeneration(
+        tx,
+        {
+          organizationId: context.organizationId,
+          workspaceId: input.workspaceId,
+          ownerId: context.actor.id,
+          sessionId: input.sessionId,
+        },
+        '3.x',
+      );
     const [row] = await tx<{ id: string; request_digest: string }[]>`
       insert into allrice_bridge_commands(organization_id,workspace_id,owner_id,device_id,folder_grant_id,folder_grant_version,session_id,capability,arguments,idempotency_key,request_digest,folder_event_id,timeout_at)
       values(${context.organizationId},${input.workspaceId},${context.actor.id},${input.deviceId},${input.folderGrantId},${target.runtime_generation},${input.sessionId},${payload.capability},${tx.json(payload.arguments)},${key},${fingerprint},${options.folderEventId ?? null},clock_timestamp()+interval '5 minutes')
@@ -317,7 +333,7 @@ export async function localFileTransferAuthority(
         and t.state='online' and coalesce((t.metadata->'environment'->>'paused')::boolean,false)=false
         and c.capability=any(${device.capabilities})
         and (c.session_id is null or exists(select 1 from allrice_chat_sessions s where s.id=c.session_id and s.organization_id=c.organization_id
-          and s.workspace_id=c.workspace_id and s.owner_id=c.owner_id and s.archived_at is null))`;
+          and s.workspace_id=c.workspace_id and s.owner_id=c.owner_id and s.archived_at is null and s.execution_generation='3.x'))`;
     if (!row) throw new BridgeDataError('lease_lost');
     folderEventId = row.folder_event_id;
     if (folderEventId) {
@@ -350,6 +366,17 @@ export async function localFileTransferAuthority(
         and lease_expires_at>clock_timestamp() and snapshot->>'status'='running' and snapshot->>'cancelRequestId' is null`;
     if (!row) throw new BridgeDataError('lease_lost');
     const snapshot = RuntimeOperationSnapshotSchema.parse(row.snapshot);
+    if (snapshot.binding.task.chatSessionId)
+      await assertChatExecutionGeneration(
+        db,
+        {
+          organizationId: device.organizationId,
+          workspaceId: device.workspaceId,
+          ownerId: device.ownerId,
+          sessionId: snapshot.binding.task.chatSessionId,
+        },
+        '3.x',
+      );
     const renewed = await createGovernedBridgeOperationLedger(device).heartbeat(
       {
         scope: snapshot.binding.task.scope,
