@@ -82,7 +82,24 @@ suite(
     beforeAll(async () => {
       vi.stubEnv('ALLRICE_PORTAL_AUTH_ENABLED', '0');
       vi.stubEnv('ALLRICE_LOCAL_PORTAL', 'unified');
-      f = await createRuntimeFixtureDatabase({ ownSchemaOnly: true });
+      // The real processor retains its legacy vector column write. Match the
+      // reference PG fixtures: owned relations first, existing public types last.
+      f = await createRuntimeFixtureDatabase();
+      const [fixtureScope] = await f.db`select current_schema() as schema,
+        exists(select 1 from pg_catalog.pg_extension e
+          join pg_catalog.pg_namespace n on n.oid=e.extnamespace
+          where e.extname='vector'
+            and to_regtype(format('%I.vector',n.nspname))=to_regtype('vector')) as vector_visible,
+        (select count(*)>0 and bool_and(to_regclass(quote_ident(c.relname))::oid=c.oid)
+          from pg_catalog.pg_class c
+          join pg_catalog.pg_namespace n on n.oid=c.relnamespace
+          where n.nspname=current_schema() and starts_with(c.relname,'allrice_')
+            and c.relkind in ('r','p','v','m','S','f')) as relations_owned`;
+      expect(fixtureScope).toMatchObject({
+        vector_visible: true,
+        relations_owned: true,
+      });
+      expect(fixtureScope!.schema).toMatch(/^p25_[a-f0-9]{32}$/);
       vi.spyOn(database, 'getDatabase').mockReturnValue(f.db);
       handlers = createEmployeePanelsHandlers({
         ...employeePanelsDependencies,
