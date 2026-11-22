@@ -124,6 +124,61 @@ suite(
         await admin`select pg_terminate_backend(${rows[0]!.pid}) as killed`;
       expect(killed!.killed).toBe(true);
     }
+    it('真实PG物理owner持有至confirmed-stop runtime退役实际join，再释放并允许新代重试', async () => {
+      const h = harness(store),
+        rc = context();
+      let entered!: () => void, release!: () => void;
+      const inside = new Promise<void>((done) => {
+        entered = done;
+      });
+      const joined = new Promise<void>((done) => {
+        release = done;
+      });
+      let retired = false;
+      h.runtime.retireAfterNativeStop = async (binding, current) => {
+        expect(h.states.get(binding.vmId)).toBe('stopped');
+        expect(current.aborted).toBe(false);
+        entered();
+        await joined;
+        retired = true;
+      };
+      await h.service.create(rc, signal());
+      h.setReadiness({
+        authenticated: true,
+        editorReady: false,
+        canSend: false,
+      });
+      const starting = h.service
+        .start(rc, signal())
+        .catch((error: unknown) => error);
+      try {
+        await inside;
+        const row = (await store.read(rc.actor.id))!;
+        expect(row.leaseOwner).not.toBe(null);
+        const external = harness(new PostgresPersonVmStore(openWorker));
+        await expect(
+          external.service.start(rc, signal()),
+        ).rejects.toMatchObject({ code: 'LEASE_CONFLICT' });
+        expect(retired).toBe(false);
+        expect(h.mounts.size).toBe(1);
+        release();
+        expect(await starting).toBeInstanceOf(PersonVmError);
+        expect(retired).toBe(true);
+        expect((await store.read(rc.actor.id))!.leaseOwner).toBe(null);
+        h.setReadiness({
+          authenticated: true,
+          editorReady: true,
+          canSend: true,
+        });
+        expect((await h.service.start(rc, signal())).ready).toBe(true);
+        expect((await h.service.resolve(rc, signal())).instanceId).not.toBe(
+          row.instanceId,
+        );
+      } finally {
+        release();
+        await starting;
+      }
+    });
     it('starting scope使用实际PG owner guard：断线立即失效，bootstrap实际join前不释放/停机', async () => {
       const h = harness(store),
         rc = context();

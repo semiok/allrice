@@ -920,3 +920,9 @@ instance/profile、线程配置和导出时机须由MET-273/原生route owner绑
 没有猜测环境变量或默认实例，也没有新增Agent恢复器/状态表、自动重放、VM启动或模型
 授权刷新。样机phase5的rc.5真杀结论不充当本代产品验收；真实关机/继续、附件及UI验收
 仍由合批门禁完成。MET-225应登记该ID的门卫/账本/存储差异，原生恢复语义不改。
+
+## MET273：Native Web 宿主认证与控制
+
+`allrice-native-web-local-auth-v1` 复用 rc.2 的公开 `connection.authenticatedUrl`、`/connect`、Node Connection/Gateway/SessionController 和 Cordis Fiber lifecycle。Host 插件只原子投送0600、宿主 nonce 指定的 native local auth；Microsandbox 固定有界 reader 私下读取。Worker 固定已声明 endpoint 和 VM binding/epoch，独立长期 lifetime，关闭 join 自有 HTTP/WS/iterator 与 exact Job；无私有DSH接口、stdio桥、Agent状态或PG权威。该门卫/租约片不启用4.0流量，不代表 editor-ready、发送许可、完整idle或Linux工件已交付；新增员工端口的三方冻结安全重启另片实现。
+
+rc.2 的 Web runtime config 整块替换，须同时保留 `openBrowser:false`、可信 `publicUrl`、`surfaceContext:true` 和 `printUrl:false`。v0.7.16 exec 使用整秒参数并保留独立 host 毫秒预算；CLI close 不替代 guest stop/status。Node owner 通过公开 Agent/finishRequest 跟踪 WS 握手的真实 request/socket close，完整读操作含前后现权均纳入关闭 join。

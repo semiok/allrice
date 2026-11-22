@@ -18,6 +18,88 @@ import {
 } from './test-support.ts';
 
 describe('host lifecycle service entrypoints (synthetic runtime; not real VM acceptance)', () => {
+  it('nativeWeb必须事前具备confirmed-stop退役口；无副作用且旧无Web runtime仍可用', async () => {
+    const h = harness(),
+      rc = context(),
+      prepare = vi.fn();
+    h.native.prepareWebEndpoints = vi.fn();
+    h.native.assertWebEndpoints = vi.fn();
+    const web = new PersonVmService({ ...h.options, nativeWeb: { prepare } });
+    await web.create(rc, signal());
+    const before = h.log.length;
+    await expect(web.start(rc, signal())).rejects.toMatchObject({
+      code: 'RUNTIME_NOT_READY',
+    });
+    expect(prepare).not.toHaveBeenCalled();
+    expect(h.log.slice(before)).toEqual([]);
+    expect((await h.service.start(rc, signal())).ready).toBe(true);
+  });
+  it.each(['stopped', 'absent', 'unknown'] as const)(
+    'failure cleanup native=%s才可退役；未知不调用/不detach',
+    async (state) => {
+      const h = harness(),
+        rc = context(),
+        retire = vi.fn(async () => {});
+      h.runtime.retireAfterNativeStop = retire;
+      h.setReadiness({
+        authenticated: true,
+        editorReady: false,
+        canSend: false,
+      });
+      h.native.stop = async (binding) => {
+        h.log.push('native:stop');
+        h.states.set(binding.vmId, state);
+      };
+      await h.service.create(rc, signal());
+      await expect(h.service.start(rc, signal())).rejects.toBeInstanceOf(
+        PersonVmError,
+      );
+      if (state === 'unknown') {
+        expect(retire).not.toHaveBeenCalled();
+        expect(h.mounts.size).toBe(1);
+        expect(h.log).not.toContain('disk:detach');
+      } else {
+        expect(retire).toHaveBeenCalledTimes(1);
+        expect(h.mounts.size).toBe(0);
+      }
+    },
+  );
+  it('confirmed-stop退役拒绝不detach，failed仍释放既有lease；显式start重核join后可恢复', async () => {
+    const h = harness(),
+      rc = context(),
+      retire = vi
+        .fn()
+        .mockRejectedValueOnce(new PersonVmError('CLEANUP_INCOMPLETE'))
+        .mockResolvedValue(undefined);
+    h.runtime.retireAfterNativeStop = retire;
+    h.setReadiness({ authenticated: true, editorReady: false, canSend: false });
+    await h.service.create(rc, signal());
+    await expect(h.service.start(rc, signal())).rejects.toMatchObject({
+      code: 'CLEANUP_INCOMPLETE',
+    });
+    const failed = (await h.store.read(rc.actor.id))!;
+    expect(failed.phase).toBe('failed');
+    expect(failed.diskRetained).toBe(true);
+    expect(failed.leaseOwner).toBe(null); // Existing store release policy is unchanged.
+    expect(h.states.get(failed.vmId)).toBe('stopped');
+    expect(h.mounts.has(failed.vmId)).toBe(true);
+    expect(h.log).not.toContain('disk:detach');
+    expect(retire).toHaveBeenCalledTimes(1);
+    h.setReadiness({ authenticated: true, editorReady: true, canSend: true });
+    const restored = await h.service.start(rc, signal());
+    expect(restored.ready).toBe(true);
+    expect(restored.vmId).toBe(failed.vmId);
+    expect(restored.diskRetained).toBe(true);
+    expect(retire).toHaveBeenCalledTimes(2);
+    expect(retire.mock.calls[1]![0]).toEqual(retire.mock.calls[0]![0]);
+    expect(h.log.filter((entry) => entry === 'disk:detach')).toHaveLength(1);
+    expect((await h.store.read(rc.actor.id))!.leaseOwner).toBe(null);
+    const current = await h.service.resolve(rc, signal());
+    expect(current.instanceId).not.toBe(failed.instanceId);
+    expect(current.leaseEpoch).toBeGreaterThan(failed.leaseEpoch);
+    expect(h.log.filter((entry) => entry === 'disk:create')).toHaveLength(1);
+    expect(h.log).not.toContain('disk:delete');
+  });
   it('admission qualification fails closed without a formally composed shared host', async () => {
     const h = harness(),
       { rc, binding } = await running(h);
@@ -134,6 +216,42 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
     await h.service.start(rc, signal());
     expect(h.log.filter((item) => item === 'native:bootstrap')).toHaveLength(1);
   });
+  it.each(['authority', 'egress'] as const)(
+    'starting失去%s后launch零派发，callback捕获拒绝也不得ready',
+    async (lost) => {
+      const h = harness(),
+        rc = context();
+      const bootstrap = h.native.bootstrap;
+      const dispatch = vi.fn(async () => {
+        throw new Error('revoked starting scope must not dispatch');
+      });
+      const readiness = vi.spyOn(h.runtime, 'readiness');
+      h.native.bootstrap = async (...args) => ({
+        ...(await bootstrap(...args)),
+        launch: dispatch,
+      });
+      h.runtime.start = async (_binding, _signal, scope) => {
+        if (lost === 'authority') h.authorize(false);
+        else h.active.clear();
+        await expect(
+          scope.launch({ executable: 'node', args: ['must-not-dispatch'] }),
+        ).rejects.toMatchObject({
+          code:
+            lost === 'authority'
+              ? 'AUTHORIZATION_DENIED'
+              : 'EGRESS_UNAVAILABLE',
+        });
+      };
+      await expect(
+        h.service.prewarm(rc, { trigger: 'page' }, signal()),
+      ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(readiness).not.toHaveBeenCalled();
+      expect(h.log.slice(-2)).toEqual(['native:stop', 'disk:detach']);
+      expect(h.mounts.size).toBe(0);
+      expect((await h.store.read(rc.actor.id))!.diskRetained).toBe(true);
+    },
+  );
   it('callback不await的launch仍abort并join后才允许stop/detach；不把父callback退出作收尾', async () => {
     const h = harness(),
       rc = context();
@@ -173,6 +291,50 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
     release();
     await failure;
     expect(joined).toBe(true);
+    expect(h.log.slice(-2)).toEqual(['native:stop', 'disk:detach']);
+  });
+  it('未await的auth读取仍join；callback结束后不再泄露资格，也不能先stop/detach', async () => {
+    const h = harness(),
+      rc = context();
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>((done) => {
+      enter = done;
+    });
+    const joined = new Promise<void>((done) => {
+      release = done;
+    });
+    const bootstrap = h.native.bootstrap;
+    h.native.bootstrap = async (scope) => ({
+      ...(await bootstrap(
+        scope,
+        await h.runtime.memoryGuestPlan(scope.binding, scope.signal),
+      )),
+      readNativeWebAuth: async () => {
+        enter();
+        await joined;
+        return { authenticatedUrl: 'must not escape' };
+      },
+    });
+    let reading!: Promise<unknown>;
+    h.runtime.start = async (_binding, _signal, scope) => {
+      reading = scope.readNativeWebAuth!({
+        dshHome: '/work/person',
+        nonce: randomUUID(),
+        origin: 'http://127.0.0.1:32179/',
+        timeoutMs: 3000,
+      });
+      void reading.catch(() => {});
+      await entered;
+    };
+    const start = h.service.prewarm(rc, { trigger: 'page' }, signal());
+    const failed = expect(start).rejects.toMatchObject({
+      code: 'CLEANUP_INCOMPLETE',
+    });
+    await entered;
+    expect(h.log).not.toContain('native:stop');
+    release();
+    await failed;
+    await expect(reading).rejects.toMatchObject({ code: 'LEASE_LOST' });
     expect(h.log.slice(-2)).toEqual(['native:stop', 'disk:detach']);
   });
   it('缺实际bootstrap依赖在egress/attach/create前拒绝', async () => {

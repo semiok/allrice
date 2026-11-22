@@ -1,3 +1,4 @@
+import type { PersonVmManagedProbeJob } from './native-command-observer.ts';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, posix } from 'node:path';
 import { PersonVmError } from './contract.ts';
@@ -9,6 +10,12 @@ import type {
   PersonVmMemoryGuestPlan,
   PersonVmStartingScope,
 } from './guest-bootstrap.ts';
+import {
+  nativeWebAuthArtifact,
+  NATIVE_WEB_AUTH_READER,
+  parseNativeWebAuth,
+  type PersonVmNativeWebAuthRequest,
+} from './native-web-auth.ts';
 
 type NativeCommand = (
   args: string[],
@@ -40,6 +47,173 @@ function commandInput(command: PersonVmGuestCommand) {
   if (command.workdir) guestPath(command.workdir);
 }
 
+/** The existing managed-job executor, extracted for the same owner to reuse.
+ * Scope must be a live operation fence, never a fabricated/expired start scope. */
+export async function spawnMicrosandboxManagedProbe(
+  input: {
+    scope: PersonVmStartingScope;
+    name: string;
+    cleanupTimeoutMs: number;
+    command: NativeCommand;
+  },
+  commandSpec: PersonVmGuestCommand,
+): Promise<PersonVmManagedProbeJob> {
+  return spawnMicrosandboxJob(input, commandSpec, 'probe-operation');
+}
+
+function operationScopedProbe(
+  scope: PersonVmStartingScope,
+  job: PersonVmManagedProbeJob,
+): PersonVmManagedProbeJob {
+  async function ordinary<T>(
+    signal: AbortSignal,
+    operation: (running: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const running = AbortSignal.any([scope.signal, signal]);
+    running.throwIfAborted();
+    await scope.assertCurrent();
+    running.throwIfAborted();
+    const result = await operation(running);
+    running.throwIfAborted();
+    await scope.assertCurrent();
+    running.throwIfAborted();
+    return result;
+  }
+  return Object.freeze({
+    ...job,
+    wait: (signal: AbortSignal) => ordinary(signal, job.wait),
+    stdout: (signal: AbortSignal) => ordinary(signal, job.stdout),
+  });
+}
+
+/** One exact native exec/wait/logs/cleanup kernel. Only the probe view binds
+ * ordinary reads to an operation scope; bootstrap transfers the retained job
+ * to its runtime owner, whose caller signal controls the long-lived wait. */
+async function spawnMicrosandboxJob(
+  input: Parameters<typeof spawnMicrosandboxManagedProbe>[0],
+  commandSpec: PersonVmGuestCommand,
+  lifetime: 'bootstrap-retained' | 'probe-operation',
+): Promise<PersonVmManagedProbeJob> {
+  const { scope, name, command } = input;
+  commandInput(commandSpec);
+  scope.signal.throwIfAborted();
+  await scope.assertCurrent();
+  scope.signal.throwIfAborted();
+  const args = ['exec', name, '--detach', '--no-stdin', '--no-tty'];
+  for (const [key, value] of Object.entries(commandSpec.env ?? {}))
+    args.push('--env', `${key}=${value}`);
+  if (commandSpec.workdir) args.push('--workdir', commandSpec.workdir);
+  let jobId: string;
+  try {
+    jobId = (
+      await command(
+        [...args, '--', commandSpec.executable, ...commandSpec.args],
+        scope.signal,
+      )
+    ).trim();
+  } catch (cause) {
+    // Bootstrap retains its existing service-owned stop/status classification.
+    // Probe dispatch without a retained ID must report owner cleanup failure.
+    if (lifetime === 'bootstrap-retained') throw cause;
+    throw new PersonVmError('CLEANUP_INCOMPLETE', { cause });
+  }
+  if (!jobId || /[\s\0]/.test(jobId))
+    throw new PersonVmError(
+      lifetime === 'bootstrap-retained'
+        ? 'PROVIDER_FAILED'
+        : 'CLEANUP_INCOMPLETE',
+    );
+  // Cleanup uses only its independent owner budget, even after scope loss.
+  async function nativeWait(signal: AbortSignal): Promise<PersonVmJobExit> {
+    signal.throwIfAborted();
+    const result: unknown = JSON.parse(
+      await command(
+        ['wait', name, '--job', jobId, '--format', 'json'],
+        signal,
+        true,
+      ),
+    );
+    if (
+      !result ||
+      typeof result !== 'object' ||
+      !('code' in result) ||
+      typeof result.code !== 'number' ||
+      !Number.isInteger(result.code) ||
+      !('success' in result) ||
+      result.success !== (result.code === 0) ||
+      !('timed_out' in result) ||
+      typeof result.timed_out !== 'boolean'
+    )
+      throw new PersonVmError('CLEANUP_INCOMPLETE');
+    signal.throwIfAborted();
+    return Object.freeze({
+      exitCode: result.code,
+      timedOut: result.timed_out,
+    });
+  }
+  const job: PersonVmManagedProbeJob = Object.freeze({
+    binding: scope.binding,
+    jobId,
+    wait: nativeWait,
+    stdout: async (signal: AbortSignal) => {
+      signal.throwIfAborted();
+      const records = await command(
+        ['logs', name, '--job', jobId, '--source', 'stdout', '--json'],
+        signal,
+      );
+      signal.throwIfAborted();
+      return records
+        .split(/\r?\n/)
+        .filter((line) => line.length > 0)
+        .map((line) => {
+          const entry: unknown = JSON.parse(line);
+          if (
+            !entry ||
+            typeof entry !== 'object' ||
+            !('id' in entry) ||
+            entry.id !== jobId ||
+            !('s' in entry) ||
+            entry.s !== 'stdout' ||
+            !('e' in entry) ||
+            entry.e !== null ||
+            !('d' in entry) ||
+            typeof entry.d !== 'string'
+          )
+            throw new PersonVmError('PROVIDER_FAILED');
+          return entry.d;
+        })
+        .join('');
+    },
+    cancelAndWait: async (signal: AbortSignal) => {
+      signal.throwIfAborted();
+      try {
+        await command(['kill', name, '--job', jobId], signal);
+      } catch {
+        /* A completed job can refuse kill; only wait can certify it. */
+      }
+      return nativeWait(signal);
+    },
+  });
+  try {
+    scope.signal.throwIfAborted();
+    await scope.assertCurrent();
+    scope.signal.throwIfAborted();
+  } catch (error) {
+    try {
+      await job.cancelAndWait(AbortSignal.timeout(input.cleanupTimeoutMs));
+    } catch (cleanup) {
+      if (lifetime === 'bootstrap-retained') throw cleanup;
+      throw new PersonVmError('CLEANUP_INCOMPLETE', {
+        cause: new AggregateError([error, cleanup]),
+      });
+    }
+    throw error;
+  }
+  return lifetime === 'probe-operation'
+    ? operationScopedProbe(scope, job)
+    : job;
+}
+
 /** Pinned public cp/managed-job protocol. No DSH executor, shell interpolation,
  * private runtime DB, or assumption that terminating msb terminates its guest. */
 export async function bootstrapMicrosandbox(input: {
@@ -49,7 +223,7 @@ export async function bootstrapMicrosandbox(input: {
   name: string;
   cleanupTimeoutMs: number;
   command: NativeCommand;
-}): Promise<Pick<PersonVmBootstrapScope, 'launch'>> {
+}): Promise<Pick<PersonVmBootstrapScope, 'launch' | 'readNativeWebAuth'>> {
   const { scope, name, command } = input;
   const plan = structuredClone(input.plan); // Trusted configuration snapshot, not guest authority.
   const paths = new Set<string>();
@@ -78,66 +252,17 @@ export async function bootstrapMicrosandbox(input: {
   async function spawn(
     commandSpec: PersonVmGuestCommand,
   ): Promise<PersonVmManagedJob> {
-    commandInput(commandSpec);
-    await scope.assertCurrent();
-    const args = ['exec', name, '--detach', '--no-stdin', '--no-tty'];
-    for (const [key, value] of Object.entries(commandSpec.env ?? {}))
-      args.push('--env', `${key}=${value}`);
-    if (commandSpec.workdir) args.push('--workdir', commandSpec.workdir);
-    const jobId = (
-      await command(
-        [...args, '--', commandSpec.executable, ...commandSpec.args],
-        scope.signal,
-      )
-    ).trim();
-    // Native exec prints just its opaque ID. Lost/ambiguous admission is cleaned
-    // by the service's whole-VM stop/status, never by discovering another job.
-    if (!jobId || /[\s\0]/.test(jobId))
-      throw new PersonVmError('PROVIDER_FAILED');
-    async function wait(signal: AbortSignal): Promise<PersonVmJobExit> {
-      const result: unknown = JSON.parse(
-        await command(
-          ['wait', name, '--job', jobId, '--format', 'json'],
-          signal,
-          true,
-        ),
-      );
-      if (
-        !result ||
-        typeof result !== 'object' ||
-        !('code' in result) ||
-        !Number.isInteger(result.code) ||
-        !('success' in result) ||
-        result.success !== (result.code === 0) ||
-        !('timed_out' in result) ||
-        typeof result.timed_out !== 'boolean'
-      )
-        throw new PersonVmError('CLEANUP_INCOMPLETE');
-      return Object.freeze({
-        exitCode: result.code as number,
-        timedOut: result.timed_out,
-      });
-    }
-    const job: PersonVmManagedJob = Object.freeze({
-      binding: scope.binding,
-      jobId,
-      wait,
-      cancelAndWait: async (signal: AbortSignal) => {
-        try {
-          await command(['kill', name, '--job', jobId], signal);
-        } catch {
-          /* A completed job can refuse kill; only wait can certify it. */
-        }
-        return wait(signal);
-      },
+    const job = await spawnMicrosandboxJob(
+      input,
+      commandSpec,
+      'bootstrap-retained',
+    );
+    return Object.freeze({
+      binding: job.binding,
+      jobId: job.jobId,
+      wait: job.wait,
+      cancelAndWait: job.cancelAndWait,
     });
-    try {
-      await scope.assertCurrent();
-    } catch (error) {
-      await job.cancelAndWait(AbortSignal.timeout(input.cleanupTimeoutMs));
-      throw error;
-    }
-    return job;
   }
   async function run(commandSpec: PersonVmGuestCommand) {
     const job = await spawn(commandSpec);
@@ -179,6 +304,30 @@ export async function bootstrapMicrosandbox(input: {
     await rm(stage, { recursive: true, force: true });
   }
   return Object.freeze({
+    readNativeWebAuth: async (request: PersonVmNativeWebAuthRequest) => {
+      const { path, maxBytes } = nativeWebAuthArtifact(request);
+      await scope.assertCurrent();
+      const text = await command(
+        [
+          'exec',
+          name,
+          '--no-stdin',
+          '--no-tty',
+          '--timeout',
+          `${Math.ceil(request.timeoutMs / 1000)}s`,
+          '--',
+          'node',
+          '-e',
+          NATIVE_WEB_AUTH_READER,
+          path,
+          String(maxBytes),
+        ],
+        // exec accepts whole seconds; keep the host's exact millisecond budget.
+        AbortSignal.any([scope.signal, AbortSignal.timeout(request.timeoutMs)]),
+      );
+      await scope.assertCurrent();
+      return parseNativeWebAuth(text, request);
+    },
     launch: async (spec: PersonVmGuestCommand) => {
       commandInput(spec);
       if (

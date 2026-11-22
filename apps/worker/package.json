@@ -13,6 +13,7 @@
   "dependencies": {
     "@allrice/browser-control": "workspace:*",
     "@allrice/contracts": "workspace:*",
+    "@allrice/person-vm": "workspace:*",
     "@allrice/database": "workspace:*",
     "@allrice/office-runtime": "workspace:*",
     "@allrice/storage": "workspace:*",
