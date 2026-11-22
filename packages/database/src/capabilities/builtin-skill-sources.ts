@@ -19,6 +19,8 @@ export type BuiltinSkillSourceDescriptor = Pick<
   | 'reviewStatus'
   | 'reviewedByLabel'
   | 'createdByLabel'
+  | 'modelInvocable'
+  | 'userInvocable'
 > & {
   selector: BuiltinSkillSourceSelector;
   /** Source catalog flag, never an enterprise/employee enablement decision. */
@@ -89,6 +91,8 @@ function describeSource(
     reviewStatus: skill.reviewStatus,
     reviewedByLabel: skill.reviewedByLabel,
     createdByLabel: skill.createdByLabel,
+    modelInvocable: skill.modelInvocable,
+    userInvocable: skill.userInvocable,
     sourceEnabled: skill.enabled,
     declaredToolRefs: [...skill.requiredToolRefs],
     resources: (skill.bundle?.resources ?? []).map(

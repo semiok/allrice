@@ -62,6 +62,17 @@ describe('builtin Skill sources public port', () => {
       17,
     );
     expect(catalog.catalogChecksum).toMatch(/^sha256:[a-f0-9]{64}$/);
+    const rawCatalog = JSON.parse(
+      await readFile(join(repositoryRoot, 'skills/catalog.json'), 'utf8'),
+    );
+    for (const entry of rawCatalog.skills) {
+      expect(
+        catalog.sources.find((source) => source.name === entry.name),
+      ).toMatchObject({
+        modelInvocable: entry.modelInvocable,
+        userInvocable: entry.userInvocable,
+      });
+    }
     for (const source of catalog.sources) {
       expect(source).not.toHaveProperty('content');
       expect(source).not.toHaveProperty('contentFile');
