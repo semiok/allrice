@@ -1,9 +1,9 @@
 /** Memory-owned storage primitives, deliberately absent from the public barrel.
  * These locators/drafts are NOT authority or a proposed 271/273 API. A future
- * qualified owner transaction must supply the COMPLETE ordinary active set and
- * source qualification, then retain its current-authority/disclosure fence.
- * No production entrypoint or default qualification is installed here. */
-import type { TransactionSql } from 'postgres';
+ * qualified owner transaction supplies the COMPLETE ordinary active set and
+ * bound source qualification, retaining authority locks through outer commit.
+ * No default qualification or production assembly is installed here. */
+import type { Sql, TransactionSql } from 'postgres';
 import { z } from 'zod';
 import {
   EmployeeModuleReleaseSchema,
@@ -19,6 +19,13 @@ import { renderNativeMemoryIndexV2 } from './memory-context-render.ts';
 import { MemoryContextError } from './run-memory-context.ts';
 import { runtimePolicyDigest } from './runtime-policy-digest.ts';
 import { memoryPairDigest } from './workspace/employee-memory-primitives.ts';
+
+type MemorySql = Sql | TransactionSql;
+export type MemoryContextOriginQualifier = (origin: {
+  source_type: string;
+  source_id: string | null;
+  metadata: unknown;
+}) => Promise<boolean>;
 
 // PostgreSQL canonicalizes UUIDs. Normalize once before scope/order/B locks and
 // stored-identity comparisons; opaque budget/native references remain exact.
@@ -88,7 +95,7 @@ function parseState(raw: unknown, document: string) {
 }
 
 async function lockContext(
-  tx: TransactionSql,
+  tx: MemorySql,
   keyInput: MemoryContextStorageKey,
   signal: AbortSignal,
 ) {
@@ -120,17 +127,18 @@ async function lockContext(
   return { key, row };
 }
 
-/** Checks ONLY memory-owned row qualification and every issued historical pair.
- * Ordinary/source classification and current principal/module qualification
- * remain the upstream owner's missing transaction dependency. In particular,
+/** Checks memory-owned row qualification and every issued historical pair,
+ * then the caller's bound ordinary/source callback when provided. Current
+ * principal/module qualification stays with the original caller. In particular,
  * this never queries shared Run/checkpoint/identity tables as a substitute. */
 async function currentPairs(
-  tx: TransactionSql,
+  tx: MemorySql,
   key: MemoryContextStorageKey,
   state: RunMemoryContextV2State,
   document: string,
   signal: AbortSignal,
   issuing = false,
+  qualifyOrigin?: MemoryContextOriginQualifier,
 ) {
   signal.throwIfAborted();
   const rows = state.pins.length
@@ -143,9 +151,12 @@ async function currentPairs(
           revision: number;
           summary: string | null;
           details: string | null;
+          source_type: string;
+          source_id: string | null;
+          metadata: unknown;
         }[]
       >`select m.id,m.revision current_revision,m.summary current_summary,
-          m.details current_details,r.revision,r.summary,r.details
+          m.details current_details,r.revision,r.summary,r.details,m.source_type,m.source_id,m.metadata
         from unnest(${state.pins.map((pin) => pin.id)}::uuid[],
           ${state.pins.map((pin) => pin.revision)}::integer[]) p(id,revision)
         join allrice_memories m on m.id=p.id
@@ -162,6 +173,11 @@ async function currentPairs(
     : [];
   signal.throwIfAborted();
   if (rows.length !== state.pins.length) return unavailable();
+  // Check every issued pin, including when a different ordinal is requested.
+  // The callback is bound inside this caller transaction, never guest authority.
+  if (qualifyOrigin)
+    for (const row of rows)
+      if (!(await qualifyOrigin(row))) return unavailable();
   const byId = new Map(rows.map((row) => [row.id, row]));
   const pairs = state.pins.map((pin) => {
     const row = byId.get(pin.id);
@@ -196,10 +212,11 @@ async function currentPairs(
 }
 
 async function validateStored(
-  tx: TransactionSql,
+  tx: MemorySql,
   key: MemoryContextStorageKey,
   row: StoredRow,
   signal: AbortSignal,
+  qualifyOrigin?: MemoryContextOriginQualifier,
 ) {
   const origin = MemoryContextStorageOriginSchema.safeParse({
     executionGeneration: row.execution_generation,
@@ -211,7 +228,15 @@ async function validateStored(
   });
   if (!origin.success) return unavailable();
   const state = parseState(row.state, row.document);
-  const pairs = await currentPairs(tx, key, state, row.document, signal);
+  const pairs = await currentPairs(
+    tx,
+    key,
+    state,
+    row.document,
+    signal,
+    false,
+    qualifyOrigin,
+  );
   return {
     id: row.id,
     origin: origin.data,
@@ -225,10 +250,12 @@ async function validateStored(
  * draft/config/profile and restores the original pins and consumed budget.
  * The caller must await its real transaction commit before disclosing text. */
 export async function issueMemoryContextStorage(
-  tx: TransactionSql,
+  tx: MemorySql,
   keyInput: MemoryContextStorageKey,
-  draft: MemoryContextStorageDraft,
+  draftInput:
+    MemoryContextStorageDraft | (() => Promise<MemoryContextStorageDraft>),
   signal: AbortSignal,
+  qualifyOrigin?: MemoryContextOriginQualifier,
 ) {
   const { key, row } = await lockContext(tx, keyInput, signal);
   if (row) {
@@ -237,15 +264,27 @@ export async function issueMemoryContextStorage(
       key,
       row,
       signal,
+      qualifyOrigin,
     );
     signal.throwIfAborted();
     return { id, origin, document, state };
   }
+  // Recovery must not rebuild an old B from today's active rows or config.
+  const draft =
+    typeof draftInput === 'function' ? await draftInput() : draftInput;
   const origin = MemoryContextStorageOriginSchema.parse(draft.origin);
   const state = parseState(draft.state, draft.document);
   if (state.toolReads !== 0 || state.spentBytes !== state.initial.bytes)
     return unavailable();
-  await currentPairs(tx, key, state, draft.document, signal, true);
+  await currentPairs(
+    tx,
+    key,
+    state,
+    draft.document,
+    signal,
+    true,
+    qualifyOrigin,
+  );
   signal.throwIfAborted();
   const [inserted] = await tx<{ id: string }[]>`
     insert into allrice_employee_memory_contexts
@@ -265,15 +304,33 @@ export async function issueMemoryContextStorage(
  * successful repeated ordinal disclosure costs its complete decoded UTF-8 text.
  * tx is internal to memory; this is not a cross-owner participation API. */
 export async function readMemoryContextStorageOrdinal(
-  tx: TransactionSql,
+  tx: MemorySql,
   keyInput: MemoryContextStorageKey,
   input: unknown,
   signal: AbortSignal,
+  qualifyOrigin?: MemoryContextOriginQualifier,
+  expectedOrigin?: Pick<
+    MemoryContextStorageDraft['origin'],
+    'nativeOwnerRef' | 'nativeProfileRef' | 'rootNativeSessionRef'
+  >,
 ) {
   const { number } = MemoryOrdinalInputSchema.parse(input);
   const { key, row } = await lockContext(tx, keyInput, signal);
   if (!row) return unavailable();
-  const { state, pairs } = await validateStored(tx, key, row, signal);
+  const { state, pairs, origin } = await validateStored(
+    tx,
+    key,
+    row,
+    signal,
+    qualifyOrigin,
+  );
+  if (
+    expectedOrigin &&
+    (origin.nativeOwnerRef !== expectedOrigin.nativeOwnerRef ||
+      origin.nativeProfileRef !== expectedOrigin.nativeProfileRef ||
+      origin.rootNativeSessionRef !== expectedOrigin.rootNativeSessionRef)
+  )
+    return unavailable();
   const pair = pairs[number - 1];
   if (!pair) return unavailable();
   const text = renderMemoryDetailV2(number, pair);

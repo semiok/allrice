@@ -19,6 +19,12 @@ import {
 import type { z } from 'zod';
 import { DataAccessError } from './data.ts';
 import {
+  issueNativeEmployeeMemoryContext,
+  readNativeEmployeeMemoryOrdinal,
+  rememberNativeEmployeeMemory,
+  reconcileNativeEmployeeMemory,
+} from './employee-memory-runtime.ts';
+import {
   getAdminEmployeeMemory,
   getPersonalEmployeeMemory,
   listAdminEmployeeMemories,
@@ -50,10 +56,14 @@ export interface EmployeeMemoryModuleQualification {
   ): Promise<void>;
 }
 
-/** Implemented management slice of the approved EmployeeMemoryPort. Native
- * issued-context/readOrdinal/remember/source methods are absent until their
- * real dependencies are bound; no legacy Run or denial stub stands in for them. */
+/** Business-only surface. Native methods use the memory-owned original caller
+ * transaction. Their missing production current/B/call/source assembly is
+ * closed; no host-supplied SQL or test assembly appears in these options. */
 export interface EmployeeMemoryPort {
+  issueContext: typeof issueNativeEmployeeMemoryContext;
+  readOrdinal: typeof readNativeEmployeeMemoryOrdinal;
+  remember: typeof rememberNativeEmployeeMemory;
+  reconcileRemember: typeof reconcileNativeEmployeeMemory;
   list(
     context: RequestContext,
     input: ListQuery,
@@ -188,6 +198,25 @@ export function createEmployeeMemoryPort(
   }
 
   return {
+    issueContext: issueNativeEmployeeMemoryContext,
+    readOrdinal: readNativeEmployeeMemoryOrdinal,
+    async remember(context, target, input, signal) {
+      const receipt = await rememberNativeEmployeeMemory(
+        context,
+        target,
+        input,
+        signal,
+      );
+      try {
+        signal.throwIfAborted();
+        return receipt;
+      } catch (cause) {
+        // The actual outer transaction completed. A lost delivery does not
+        // authorize another key; reconcile this same original call instead.
+        throw new EmployeeMemoryWriteOutcomeUnknown(cause);
+      }
+    },
+    reconcileRemember: reconcileNativeEmployeeMemory,
     async list(context, input, signal) {
       const query = EmployeeMemoryListQuerySchema.parse(input);
       return employee(context, query, signal, async () =>

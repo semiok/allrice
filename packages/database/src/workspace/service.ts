@@ -67,6 +67,12 @@ import {
   type EmployeeMemoryScope,
 } from './employee-memory.ts';
 import { memoryPairContent } from './employee-memory-primitives.ts';
+import {
+  insertEmployeeMemoryPair,
+  insertMemoryRevision,
+  type MemoryRow,
+} from './employee-memory-mutation.ts';
+import { requirePendingNativeMemorySource } from '../memory-native-source.ts';
 import { assertEmployeeChatHumanSource } from '../employees/employee-chat-authority.ts';
 import { employeeAccessTransaction } from '../employees/employee-access-cancellation.ts';
 import { captureReferenceSelections } from '../reference-runtime.ts';
@@ -99,8 +105,6 @@ import {
   type RequestContext,
   type ExecutionContext,
   type Visibility,
-  type MemoryClass,
-  type MemoryLifecycleState,
 } from '@allrice/contracts';
 import { z } from 'zod';
 import { newCurrentEmployeeChatOrigin } from '../conversation/current-execution-binding.ts';
@@ -205,38 +209,6 @@ interface AttachmentRow {
   size_bytes: number | string;
   visibility: Visibility;
   state: 'pending' | 'ready' | 'deleted';
-}
-
-interface MemoryRow {
-  metadata?: Record<string, unknown>;
-  id: string;
-  organization_id: string;
-  workspace_id: string;
-  employee_id: string | null;
-  instance_id: string | null;
-  owner_id: string;
-  content: string;
-  summary: string | null;
-  details: string | null;
-  visibility: Visibility;
-  source_type:
-    'user' | 'file' | 'message' | 'checkpoint' | 'tool' | 'connector';
-  source_id: string | null;
-  lifecycle_state: MemoryLifecycleState;
-  memory_class: MemoryClass;
-  revision: number;
-  trust_level: 'user_confirmed' | 'derived';
-  confidence: number | string;
-  source_label: string;
-  captured_at: Date;
-  expires_at: Date | null;
-  last_verified_at: Date | null;
-  supersedes_memory_id: string | null;
-  last_recalled_at: Date | null;
-  recall_count: number;
-  created_at: Date;
-  updated_at: Date;
-  archived_at: Date | null;
 }
 
 function requireUser(context: ResourcePrincipal) {
@@ -2931,53 +2903,20 @@ async function createEmployeeMemoryRecord<
         }
         if (lifecycleState === 'durable' && trust === 'user_confirmed')
           await assertEmployeeMemoryAdmission(tx, scope);
-        const savedPair = pair;
-        const content = memoryPairContent(pair);
-        const [row] = await tx<MemoryRow[]>`
-          insert into allrice_memories(organization_id,workspace_id,employee_id,owner_id,instance_id,
-            content,summary,details,visibility,source_type,source_id,trust_level,confidence,source_label,
-            lifecycle_state,memory_class,expires_at,last_verified_at)
-          values(${scope.organizationId},${workspaceId},${scope.employeeId},${scope.ownerId},${scope.instanceId},
-            ${content},${savedPair.summary},${savedPair.details},'private',${memory.sourceType},${memory.sourceId},${trust},${memory.confidence},
-            ${memory.sourceLabel},${lifecycleState},${memory.memoryClass},null,
-            ${trust === 'user_confirmed' ? new Date() : null}) returning *`;
-        if (!row) throw new Error('memory creation failed');
-        await insertMemoryRevision(
-          tx,
-          context,
-          row,
-          `created from ${memory.sourceLabel}`,
-        );
-        await audit(
-          {
-            context,
-            workspaceId,
-            action: 'memory.create',
-            resourceType: 'memory',
-            resourceId: row.id,
-            reason: `explicit_${memory.sourceType}_source`,
-          },
-          tx,
-        );
+        const row = await insertEmployeeMemoryPair(tx, context, scope, pair, {
+          sourceType: memory.sourceType,
+          sourceId: memory.sourceId,
+          sourceLabel: memory.sourceLabel,
+          trust,
+          confidence: memory.confidence,
+          lifecycleState,
+          memoryClass: memory.memoryClass,
+        });
         return map(row, tx, scope);
       },
       responseSchema,
     );
   });
-}
-
-async function insertMemoryRevision(
-  tx: TransactionSql,
-  context: RequestContext,
-  row: MemoryRow,
-  reason: string,
-) {
-  await tx`insert into allrice_memory_revisions
-    (organization_id,workspace_id,memory_id,revision,content,summary,details,trust_level,lifecycle_state,memory_class,
-      confidence,expires_at,reason,changed_by)
-    values(${row.organization_id},${row.workspace_id},${row.id},${row.revision},${row.content},${row.summary},${row.details},
-      ${row.trust_level},${row.lifecycle_state},${row.memory_class},${row.confidence},${row.expires_at},
-      ${reason},${requireUser(context)})`;
 }
 
 async function lockPersonalMemory(
@@ -3012,6 +2951,8 @@ async function assertPendingMemorySource(
   scope: EmployeeMemoryScope,
   current: MemoryRow,
 ) {
+  if (await requirePendingNativeMemorySource(tx, context, scope, current))
+    return;
   if (['message', 'checkpoint'].includes(current.source_type)) {
     const [source] = await tx`select s.id from allrice_chat_sessions s
       where s.organization_id=${scope.organizationId} and s.workspace_id=${scope.workspaceId}
