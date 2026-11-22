@@ -39,14 +39,14 @@ const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
     ? describe
     : describe.skip;
-const labels = ['企业资料', '交付成果', '记忆', '能力'];
+const labels = ['交付成果', '企业资料', '记忆', '能力'];
 const descriptions = [
-  '公司、部门和你自己可用的参考资料',
   '员工交付的文件和你在对话中上传的文件',
+  '公司、部门和你自己可用的参考资料',
   '员工记住的你的偏好和工作习惯',
   '打开这位员工的业务工作台',
 ];
-const kinds = ['materials', 'files', 'experience', 'workflow'];
+const kinds = ['files', 'materials', 'experience', 'workflow'];
 const session = 'session-00000000-0000-4000-8000-000000000036';
 const settle = (page: Page) =>
   page.evaluate(
@@ -303,6 +303,9 @@ suite('installed employee topbar and native Start', () => {
           .getByRole('button')
           .filter({ has: page.locator('strong') });
         expect(await cards.locator('strong').allTextContents()).toEqual(labels);
+        expect(await cards.locator('small').allTextContents()).toEqual(
+          descriptions,
+        );
         for (const description of descriptions)
           expect(
             await right().getByText(description, { exact: true }).isVisible(),

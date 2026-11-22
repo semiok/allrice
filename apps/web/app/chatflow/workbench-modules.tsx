@@ -122,15 +122,13 @@ export function WorkbenchEntries(props: {
   onToggle: () => void;
   entryRef?: Ref<HTMLButtonElement>;
   showToggle?: boolean;
-  materialsFirst?: boolean;
 }) {
   return (
     <div className={css.entries} aria-label="工作台入口">
       {(
         [
-          ...(props.materialsFirst
-            ? ['materials', 'files']
-            : ['files', 'materials']),
+          'files',
+          'materials',
           ...(props.experience ? ['experience'] : []),
           ...(props.workflow ? ['workflow'] : []),
         ] as WorkbenchModule[]
@@ -198,8 +196,8 @@ export function WorkbenchStart(props: {
       <div className={css.cards}>
         {(
           [
-            'materials',
             'files',
+            'materials',
             ...(props.experience ? ['experience'] : []),
             ...(props.workflow ? ['workflow'] : []),
           ] as WorkbenchModule[]

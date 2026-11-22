@@ -126,7 +126,7 @@ it('removes only the preset label while ordering after the final native read-onl
   ]);
 });
 
-it('keeps all four launchers in materials-first order across closed/open/closed and opens the selected native page directly', () => {
+it('keeps all four launchers in files-first order across closed/open/closed and opens the selected native page directly', () => {
   const { ctx, right } = setup();
   const owner = syntheticPanelsOwner();
   let expanded = false;
@@ -136,7 +136,7 @@ it('keeps all four launchers in materials-first order across closed/open/closed 
     binding: owner.binding,
     sessionId: owner.sessionId,
   } as Parameters<typeof EmployeePanelsHeader>[0];
-  const labels = ['企业资料', '交付成果，2 项新增', '记忆', '能力'];
+  const labels = ['交付成果，2 项新增', '企业资料', '记忆', '能力'];
   for (const value of [false, true, false]) {
     expanded = value;
     const html = renderToStaticMarkup(
@@ -153,8 +153,8 @@ it('keeps all four launchers in materials-first order across closed/open/closed 
       snapshot: owner.snapshot(),
     })!;
     for (const kind of [
-      'materials',
       'files',
+      'materials',
       'experience',
       'workflow',
     ] as const)
@@ -162,8 +162,8 @@ it('keeps all four launchers in materials-first order across closed/open/closed 
   }
   expect(vi.mocked(right.openTab).mock.calls.map((call) => call[0])).toEqual(
     Array.from({ length: 3 }, () => [
-      'allrice-employee-panels.materials',
       'allrice-employee-panels.files',
+      'allrice-employee-panels.materials',
       'allrice-employee-panels.experience',
       'allrice-employee-panels.workflow',
     ]).flat(),
@@ -192,14 +192,15 @@ it('renders the four existing Start cards and descriptions and fails closed when
   const html = render();
   expect(
     [...html.matchAll(/<strong>(.*?)<\/strong>/g)].map((item) => item[1]),
-  ).toEqual(['企业资料', '交付成果', '记忆', '能力']);
-  for (const description of [
-    '公司、部门和你自己可用的参考资料',
+  ).toEqual(['交付成果', '企业资料', '记忆', '能力']);
+  expect(
+    [...html.matchAll(/<small>(.*?)<\/small>/g)].map((item) => item[1]),
+  ).toEqual([
     '员工交付的文件和你在对话中上传的文件',
+    '公司、部门和你自己可用的参考资料',
     '员工记住的你的偏好和工作习惯',
     '打开这位员工的业务工作台',
-  ])
-    expect(html).toContain(description);
+  ]);
   expect(html).not.toContain('新建终端');
   // Rendering above exercises hooks; assert the same owner fails closed once
   // invalidated rather than manufacturing an empty-success Start page.

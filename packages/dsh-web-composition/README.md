@@ -50,7 +50,7 @@ their existing zero values. An unknown files count hides the entries.
 The session header shades only the native `agent-preset` display entry. Native
 preset selection/settings, permission services and execution modes remain owned
 by DSH. The final native subagent catalog stays at order 10, followed by the
-materials/files/memory/capabilities launchers at order 20. The fixed MET-278 child
+files/materials/memory/capabilities launchers at order 20. The fixed MET-278 child
 contribution is bundled once with the native React instance; both catalog open
 gestures use the same native read-only right-pane resource.
 

@@ -195,7 +195,6 @@ export function EmployeePanelsEntries({
       }}
       experience
       workflow
-      materialsFirst
       open={ctx.sidebarRight.isExpanded()}
       showToggle={false}
       onToggle={() => ctx.sidebarRight.toggleExpanded()}
