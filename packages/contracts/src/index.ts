@@ -1,4 +1,5 @@
 export * from './personal-employee-memory.ts';
+export * from './employee-memory-port.ts';
 export * from './base-rice.ts';
 export * from './image-generation.ts';
 export * from './native-run-diagnostics.ts';
