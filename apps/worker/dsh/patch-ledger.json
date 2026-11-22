@@ -175,6 +175,14 @@
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-native-web-owner.mjs",
       "reason": "Host-only local-auth publication through public connection.authenticatedUrl and Cordis lifecycle. A host-minted nonce and exact predeclared loopback endpoint bind bounded private retrieval to the current VM bootstrap lease. Native Node Connection, Gateway and SessionController own protocol/control; the Worker joins its own HTTP/WS and exact native job without a stdio bridge, SaaS identity from guest claims, or editor/idle readiness inference."
+    },
+    {
+      "id": "allrice-vm-memory-v1",
+      "issue": "MET-267",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "packages/vm-memory/src/index.ts",
+      "reason": "Standalone, unassembled memory module uses public native bash BASH_ENV and pre-exec launcher artifacts; DSH retains execution, cancellation, output, exit and sessions. AllRice adds the authorized external SaaS resource gate and diagnostic projection with explicit trusted source and approved policy injection. Guest root cooperation is not isolation or an OOM survival guarantee. Current n3 gateway and VM owners are not connected. Actual global starting fence, exact child/OOM completion, trusted runtime hardcap readback, host pressure producer and real joint acceptance remain open. No new defaults, second executor, private DSH handle or automatic activation; upgrade checks and retirement boundaries are recorded in the reuse decision."
     }
   ]
 }
