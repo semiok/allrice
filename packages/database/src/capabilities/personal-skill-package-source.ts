@@ -37,14 +37,10 @@ type Host = {
 };
 type Pending<T> = PromiseLike<T> & { cancel(): void };
 
-/** Join actual queries and the whole driver's transaction. A callback error
- * must be recorded before a distinct rollback failure can replace it. */
+/** Join actual SELECT/current promises. No driver transaction scope is started. */
 async function joined<T>(
   signal: AbortSignal,
-  work: (
-    query: <R>(pending: Pending<R>) => Promise<R>,
-    recordFailure: (error: unknown) => void,
-  ) => Promise<T>,
+  work: (query: <R>(pending: Pending<R>) => Promise<R>) => Promise<T>,
 ): Promise<T> {
   signal.throwIfAborted();
   const failures: unknown[] = [];
@@ -64,7 +60,7 @@ async function joined<T>(
     }
   };
   try {
-    const result = await work(query, (error) => failures.push(error));
+    const result = await work(query);
     signal.throwIfAborted();
     return result;
   } catch (error) {
@@ -109,7 +105,7 @@ export function createPostgresPersonalSkillPackageSource(db: Sql, host: Host) {
       input: unknown,
       signal: AbortSignal,
     ): Promise<PersonalSkillPackageRead> {
-      return joined(signal, async (query, recordFailure) => {
+      return joined(signal, async (query) => {
         const pin = PersonalSkillPinSchema.parse(input);
         if (context.actor.type !== 'user')
           throw new DataAccessError('authentication_required');
@@ -128,78 +124,58 @@ export function createPostgresPersonalSkillPackageSource(db: Sql, host: Host) {
           return unavailable();
         await requireCurrent(signal);
         signal.throwIfAborted();
-        const prepared = await db.begin(
-          'isolation level repeatable read read only',
-          async (tx) => {
-            try {
-              const [binding] = await query(
-                personalSkillPinState(context, pin, tx),
-              );
-              assertPinState(binding, pin);
-              const [version] = await query(tx<
-                {
-                  version: number;
-                  definition: unknown;
-                  definition_checksum: string;
-                  resource_manifest: unknown;
-                  package_checksum: string | null;
-                }[]
-              >`select version,definition,definition_checksum,resource_manifest,package_checksum
-                from allrice_personal_skill_versions where id=${pin.versionId}
-                  and installation_id=${pin.installationId} and organization_id=${context.organizationId}
-                  and owner_id=${context.actor.id}`);
-              if (!version) return unavailable();
-              const definition = PersonalSkillDefinitionSchema.parse(
-                version.definition,
-              );
-              const bodyBytes = new TextEncoder().encode(definition.content);
-              const bodyChecksum = skillBytesChecksum(bodyBytes);
-              if (
-                version.definition_checksum !== pin.definitionChecksum ||
-                (version.package_checksum ?? undefined) !==
-                  pin.packageChecksum ||
-                runtimePolicyDigest(definition) !== pin.definitionChecksum ||
-                bodyChecksum !== definition.checksum
-              )
-                return unavailable();
-              const manifest =
-                validPackage(
-                  version.resource_manifest,
-                  version.package_checksum,
-                  version.definition_checksum,
-                ) ?? null;
-              return {
-                pin,
-                installationVersion: version.version,
-                definition,
-                bodyBytes,
-                bodyChecksum,
-                manifest,
-              };
-            } catch (error) {
-              recordFailure(error);
-              throw error;
-            }
-          },
+        // Binding eligibility and exact body share one statement snapshot.
+        // Retain the compact guard predicates and the prior body owner scope.
+        const [version] = await query(db<
+          {
+            version: number;
+            definition: unknown;
+            definition_checksum: string;
+            resource_manifest: unknown;
+            package_checksum: string | null;
+          }[]
+        >`select v.version,v.definition,v.definition_checksum,v.resource_manifest,v.package_checksum
+          from allrice_personal_skill_bindings b
+          join allrice_personal_skill_installations i on i.id=b.installation_id and i.state='installed'
+          join allrice_personal_skill_versions v on v.installation_id=i.id and v.id=${pin.versionId}
+          where b.id=${pin.bindingId} and b.instance_id=${pin.instanceId} and b.installation_id=${pin.installationId}
+            and b.organization_id=${context.organizationId} and b.workspace_id=${context.workspaceId} and b.owner_id=${context.actor.id}
+            and b.enabled and b.epoch=${pin.bindingEpoch}
+            and v.organization_id=${context.organizationId} and v.owner_id=${context.actor.id}
+            and v.installation_id=${pin.installationId}`);
+        if (!version) return unavailable();
+        assertPinState(version, pin);
+        const definition = PersonalSkillDefinitionSchema.parse(
+          version.definition,
         );
+        const bodyBytes = new TextEncoder().encode(definition.content);
+        const bodyChecksum = skillBytesChecksum(bodyBytes);
+        if (
+          runtimePolicyDigest(definition) !== pin.definitionChecksum ||
+          bodyChecksum !== definition.checksum
+        )
+          return unavailable();
+        const manifest =
+          validPackage(
+            version.resource_manifest,
+            version.package_checksum,
+            version.definition_checksum,
+          ) ?? null;
+        const prepared = {
+          pin,
+          installationVersion: version.version,
+          definition,
+          bodyBytes,
+          bodyChecksum,
+          manifest,
+        };
         signal.throwIfAborted();
         await requireCurrent(signal);
         signal.throwIfAborted();
-        // A new transaction sees revocation that happened during current IO.
-        await db.begin(
-          'isolation level repeatable read read only',
-          async (tx) => {
-            try {
-              const [binding] = await query(
-                personalSkillPinState(context, pin, tx),
-              );
-              assertPinState(binding, pin);
-            } catch (error) {
-              recordFailure(error);
-              throw error;
-            }
-          },
-        );
+        // A separate statement sees revocation during current IO, without a
+        // private begin()/rollback scope that can outlive its returned promise.
+        const [binding] = await query(personalSkillPinState(context, pin, db));
+        assertPinState(binding, pin);
         return prepared;
       });
     },

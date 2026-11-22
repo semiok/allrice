@@ -30,12 +30,14 @@ authorization and hash/null checks stay intact. An exact version need not be
 the installation's current pointer: ordinary updates retain authorized pins,
 while uninstall, disable and binding epoch changes still revoke them.
 
-Current authority is checked before and after the body read. The final binding
-check uses a new read-only transaction, so it can see intervening revocation.
-All actual query promises and transaction completion/rollback are joined.
-Cancellation cancels pending SQL and suppresses bytes; it never detaches work.
-Distinct query/callback, rollback and cancellation failures are retained, with
-the original business failure first. No retry or custom timeout is added.
+Current authority is checked before and after the body read. The first SELECT
+joins binding eligibility and the exact version/body in one statement snapshot.
+The final compact SELECT is independent and sees intervening revocation.
+Both actual query promises and current calls are joined. This read-only source
+starts no explicit transaction, so it creates no private begin/rollback scope
+that could outlive a rejected begin promise. Cancellation cancels pending SQL
+and suppresses bytes; original query/business errors and distinct cancellation
+reasons are retained. No retry or custom timeout is added.
 
 The result preserves the normalized definition, installation version and exact
 pin. `bodyBytes` are UTF-8 bytes of `definition.content`; `bodyChecksum` hashes

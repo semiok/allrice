@@ -3,7 +3,7 @@ import type {
   PersonalSkillDefinition,
   RequestContext,
 } from '@allrice/contracts';
-import type { Sql, TransactionSql } from 'postgres';
+import type { Sql } from 'postgres';
 import { describe, expect, it, vi } from 'vitest';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { packageVersionChecksum } from '../employees/personal-skill-model.ts';
@@ -86,16 +86,13 @@ function fixture(packaged = false) {
     signal.throwIfAborted();
   });
   const requests: ReturnType<typeof pending<unknown[]>>[] = [];
-  const tx = vi.fn(() => {
+  const select = vi.fn(() => {
     const result = pending<unknown[]>(Promise.resolve([version]));
     requests.push(result);
     return result;
   });
-  const begin = vi.fn(
-    async (_mode: string, run: (sql: TransactionSql) => Promise<unknown>) =>
-      run(tx as unknown as TransactionSql),
-  );
-  const db = Object.assign(vi.fn(), { begin }) as unknown as Sql;
+  const begin = vi.fn();
+  const db = Object.assign(select, { begin }) as unknown as Sql;
   const host = { context, scope, requireCurrent: current };
   const abort = new AbortController();
   const read = () =>
@@ -111,7 +108,7 @@ function fixture(packaged = false) {
     pin,
     current,
     requests,
-    tx,
+    select,
     begin,
     db,
     host,
@@ -140,7 +137,8 @@ describe('exact personal package core; current/SQL are explicit contract substit
         [f.abort.signal],
         [f.abort.signal],
       ]);
-      expect(f.begin).toHaveBeenCalledTimes(2);
+      expect(f.select).toHaveBeenCalledTimes(2);
+      expect(f.begin).not.toHaveBeenCalled();
       expect(
         f.requests.every((request) => request.cancel.mock.calls.length === 0),
       ).toBe(true);
@@ -155,6 +153,7 @@ describe('exact personal package core; current/SQL are explicit contract substit
       f.pin[key] = randomUUID();
       await expect(f.read()).rejects.toMatchObject({ code: 'unavailable' });
       expect(f.current).not.toHaveBeenCalled();
+      expect(f.select).not.toHaveBeenCalled();
       expect(f.begin).not.toHaveBeenCalled();
     },
   );
@@ -175,6 +174,7 @@ describe('exact personal package core; current/SQL are explicit contract substit
       ),
     ).rejects.toBeDefined();
     expect(f.current).not.toHaveBeenCalled();
+    expect(f.select).not.toHaveBeenCalled();
     expect(f.begin).not.toHaveBeenCalled();
   });
 
@@ -183,10 +183,11 @@ describe('exact personal package core; current/SQL are explicit contract substit
     f.context.workspaceId = null;
     expect((await f.read()).pin).toEqual(f.pin);
     f.context.actor = { type: 'system', id: 'allrice' };
-    f.begin.mockClear();
+    f.select.mockClear();
     await expect(f.read()).rejects.toMatchObject({
       code: 'authentication_required',
     });
+    expect(f.select).not.toHaveBeenCalled();
     expect(f.begin).not.toHaveBeenCalled();
   });
 
@@ -232,6 +233,7 @@ describe('exact personal package core; current/SQL are explicit contract substit
     gate.resolve();
     await expect(read).rejects.toBe(g.abort.signal.reason);
     await handled;
+    expect(g.select).not.toHaveBeenCalled();
     expect(g.begin).not.toHaveBeenCalled();
   });
 
@@ -259,113 +261,80 @@ describe('exact personal package core; current/SQL are explicit contract substit
     expect(error.errors).toEqual([denied, f.abort.signal.reason]);
     expect(error.errors[1]).toBe(f.abort.signal.reason);
     expect(error.cause).toBe(denied);
-    expect(f.begin).toHaveBeenCalledOnce();
+    expect(f.select).toHaveBeenCalledOnce();
+    expect(f.begin).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing joined row without starting transaction cleanup', async () => {
+    const f = fixture();
+    f.select.mockImplementation(() => pending(Promise.resolve([])));
+    await expect(f.read()).rejects.toMatchObject({ code: 'unavailable' });
+    expect(f.select).toHaveBeenCalledOnce();
+    expect(f.current).toHaveBeenCalledOnce();
+    expect(f.begin).not.toHaveBeenCalled();
   });
 
   it.each([false, true])(
-    'joins deferred rollback and preserves original callback errors (cancel=%s)',
+    'joins pending SQL and preserves its error object (cancel=%s)',
     async (cancel) => {
       const f = fixture(),
-        rollingBack = deferred<unknown>(),
-        cleanup = deferred<void>();
-      const rollbackError = Error('actual driver rollback rejection');
-      f.tx.mockImplementation(() => pending(Promise.resolve([])));
-      f.begin.mockImplementation(async (_mode, run) => {
-        try {
-          return await run(f.tx as unknown as TransactionSql);
-        } catch (original) {
-          rollingBack.resolve(original);
-          await cleanup.promise;
-          throw rollbackError;
-        }
+        started = deferred<void>(),
+        sql = deferred<unknown[]>();
+      const request = pending(sql.promise),
+        sqlError = Error('native SELECT connection failure');
+      f.select.mockImplementation(() => {
+        started.resolve();
+        return request;
       });
       const read = f.read(),
         settled = vi.fn(),
         handled = read.then(settled, settled);
-      const original = await rollingBack.promise;
-      expect(original).toMatchObject({ code: 'unavailable' });
+      await started.promise;
       if (cancel) f.abort.abort();
-      await Promise.resolve();
+      expect(request.cancel).toHaveBeenCalledTimes(cancel ? 1 : 0);
       expect(settled).not.toHaveBeenCalled();
-      cleanup.resolve();
-      const error = (await read.catch(
-        (reason: unknown) => reason,
-      )) as AggregateError;
+      sql.reject(sqlError);
+      const error = await read.catch((reason: unknown) => reason);
       await handled;
-      expect(error.cause).toBe(original);
-      expect(error.errors).toEqual(
-        cancel
-          ? [original, rollbackError, f.abort.signal.reason]
-          : [original, rollbackError],
-      );
-      expect(error.errors[0]).toBe(original);
-      expect(error.errors[1]).toBe(rollbackError);
-      if (cancel) expect(error.errors[2]).toBe(f.abort.signal.reason);
+      if (cancel) {
+        expect(error).toBeInstanceOf(AggregateError);
+        expect((error as AggregateError).errors).toEqual([
+          sqlError,
+          f.abort.signal.reason,
+        ]);
+        expect((error as AggregateError).errors[0]).toBe(sqlError);
+        expect((error as AggregateError).errors[1]).toBe(f.abort.signal.reason);
+        expect((error as Error).cause).toBe(sqlError);
+      } else expect(error).toBe(sqlError);
+      expect(f.select).toHaveBeenCalledOnce();
+      expect(f.begin).not.toHaveBeenCalled();
     },
   );
 
-  it('cancels actual pending SQL and joins both SQL and rollback before rejecting', async () => {
+  it('joins the final SELECT before suppressing a canceled successful read', async () => {
     const f = fixture(),
       started = deferred<void>(),
-      sql = deferred<unknown[]>(),
-      cleanup = deferred<void>();
-    const request = pending(sql.promise),
-      rollingBack = deferred<void>();
-    const sqlError = Error('SQL rejected after cancel');
-    f.tx.mockImplementation(() => {
-      started.resolve();
-      return request;
-    });
-    f.begin.mockImplementation(async (_mode, run) => {
-      try {
-        return await run(f.tx as unknown as TransactionSql);
-      } catch (original) {
-        rollingBack.resolve();
-        await cleanup.promise;
-        throw original;
-      }
-    });
+      sql = deferred<unknown[]>();
+    const request = pending(sql.promise);
+    f.select
+      .mockImplementationOnce(() => pending(Promise.resolve([f.version])))
+      .mockImplementationOnce(() => {
+        started.resolve();
+        return request;
+      });
     const read = f.read(),
       settled = vi.fn(),
       handled = read.then(settled, settled);
     await started.promise;
     f.abort.abort();
-    expect(request.cancel).toHaveBeenCalledOnce();
-    expect(settled).not.toHaveBeenCalled();
-    sql.reject(sqlError);
-    await rollingBack.promise;
-    expect(settled).not.toHaveBeenCalled();
-    cleanup.resolve();
-    const error = (await read.catch(
-      (reason: unknown) => reason,
-    )) as AggregateError;
-    await handled;
-    expect(error.errors).toEqual([sqlError, f.abort.signal.reason]);
-    expect(error.errors[0]).toBe(sqlError);
-    expect(error.errors[1]).toBe(f.abort.signal.reason);
-    expect(error.cause).toBe(sqlError);
-  });
-
-  it('joins transaction completion before suppressing cancellation of an otherwise successful read', async () => {
-    const f = fixture(),
-      completing = deferred<void>(),
-      completion = deferred<void>();
-    f.begin.mockImplementationOnce(async (_mode, run) => {
-      const result = await run(f.tx as unknown as TransactionSql);
-      completing.resolve();
-      await completion.promise;
-      return result;
-    });
-    const read = f.read(),
-      settled = vi.fn(),
-      handled = read.then(settled, settled);
-    await completing.promise;
-    f.abort.abort();
     await Promise.resolve();
     expect(settled).not.toHaveBeenCalled();
-    completion.resolve();
+    expect(request.cancel).toHaveBeenCalledOnce();
+    sql.resolve([f.version]);
     await expect(read).rejects.toBe(f.abort.signal.reason);
     await handled;
-    expect(f.current).toHaveBeenCalledOnce();
+    expect(f.current).toHaveBeenCalledTimes(2);
+    expect(f.select).toHaveBeenCalledTimes(2);
+    expect(f.begin).not.toHaveBeenCalled();
   });
 });

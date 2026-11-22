@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { getEventListeners } from 'node:events';
 import type { PersonalSkillDefinition } from '@allrice/contracts';
 import type { Sql } from 'postgres';
 import type * as DatabaseClient from '../core/client.ts';
@@ -258,7 +259,7 @@ suite(
       ).rejects.toMatchObject({ code: 'unavailable' });
     });
 
-    it('observes a real binding revocation during the second current check using a fresh transaction', async () => {
+    it('observes a real binding revocation during the second current check using a fresh SELECT', async () => {
       const x = await install();
       host.requireCurrent
         .mockImplementationOnce(async () => {})
@@ -267,6 +268,99 @@ suite(
         });
       await expect(x.read()).rejects.toMatchObject({ code: 'unavailable' });
       expect(host.requireCurrent).toHaveBeenCalledTimes(2);
+    });
+
+    it('joins the real pending SELECT when its own fixture backend is terminated', async () => {
+      const x = await install(),
+        target = await f.db.reserve();
+      let blocker: Awaited<ReturnType<Sql['reserve']>> | undefined;
+      let caught: Promise<unknown> | undefined;
+      const abort = new AbortController(),
+        fulfilled = vi.fn();
+      const queries: PromiseLike<unknown>[] = [];
+      try {
+        const [identity] = await target<
+          {
+            pid: number;
+            schema: string;
+            application_name: string;
+            backend_start: string;
+          }[]
+        >`select pg_backend_pid() pid,current_schema() schema,
+          current_setting('application_name') application_name,
+          (select backend_start::text from pg_stat_activity where pid=pg_backend_pid()) backend_start`;
+        if (
+          !identity ||
+          !/^p25_[a-f0-9]{32}$/.test(identity.schema) ||
+          identity.application_name !== identity.schema
+        )
+          throw Error('owned isolated fixture backend required');
+        blocker = await f.db.reserve();
+        await blocker`begin`;
+        await blocker`lock table allrice_personal_skill_bindings in access exclusive mode`;
+        // Forward the public tagged call unchanged; capture its actual native
+        // PendingQuery, without mocking its execution/cancel/settlement.
+        const observed = new Proxy(target, {
+          apply(sql, receiver, args) {
+            const query = Reflect.apply(
+              sql,
+              receiver,
+              args,
+            ) as PromiseLike<unknown>;
+            queries.push(query);
+            return query;
+          },
+        });
+        caught = createPostgresPersonalSkillPackageSource(observed, host)
+          .readPackage(x.pin, abort.signal)
+          .then(fulfilled, (error: unknown) => error);
+        await expect
+          .poll(async () => {
+            const [row] = await f.db<
+              { state: string; wait_event_type: string; query: string }[]
+            >`
+            select state,wait_event_type,query from pg_stat_activity
+            where pid=${identity.pid} and datname=current_database()
+              and application_name=${identity.application_name} and backend_start::text=${identity.backend_start}`;
+            return (
+              row?.state === 'active' &&
+              row.wait_event_type === 'Lock' &&
+              row.query.includes('select v.version,v.definition')
+            );
+          })
+          .toBe(true);
+        expect(queries).toHaveLength(1);
+        expect(fulfilled).not.toHaveBeenCalled();
+        expect(getEventListeners(abort.signal, 'abort')).toHaveLength(1);
+        const nativeFailure = Promise.resolve(queries[0]!).catch(
+          (error: unknown) => error,
+        );
+        // Exact PID/start/app from our reserved connection; never a shared or
+        // enumerated victim. The controller is another connection of this fixture.
+        const [termination] = await f.db<{ terminated: boolean }[]>`
+          select pg_terminate_backend(pid) terminated from pg_stat_activity
+          where pid=${identity.pid} and pid<>pg_backend_pid() and datname=current_database()
+            and application_name=${identity.application_name} and backend_start::text=${identity.backend_start}`;
+        expect(termination?.terminated).toBe(true);
+        const original = await nativeFailure;
+        expect(original).toBeInstanceOf(Error);
+        expect(await caught).toBe(original);
+        expect(fulfilled).not.toHaveBeenCalled();
+        expect(queries).toHaveLength(1);
+        expect(host.requireCurrent).toHaveBeenCalledOnce();
+        expect(getEventListeners(abort.signal, 'abort')).toHaveLength(0);
+      } finally {
+        try {
+          if (blocker) await blocker`rollback`;
+        } finally {
+          try {
+            await caught;
+          } finally {
+            blocker?.release();
+            target.release();
+          }
+        }
+      }
     });
 
     it('propagates the original failed current check without exposing prepared bytes', async () => {
