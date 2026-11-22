@@ -36,6 +36,8 @@ BEGIN
     SELECT 1 FROM pg_trigger WHERE tgrelid = actual AND NOT tgisinternal
   ) OR EXISTS (
     SELECT 1 FROM pg_policy WHERE polrelid = actual
+  ) OR EXISTS (
+    SELECT 1 FROM pg_rewrite WHERE ev_class = actual
   ) THEN
     RAISE EXCEPTION 'outbound approval schema mismatch; migration not recorded';
   END IF;

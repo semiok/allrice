@@ -29,7 +29,7 @@ owner 的具名错误用 `ApprovalOwnerError` 按既有 `ApiErrorSchema` 或 `Re
 
 唯一生效的 schema 定义在全局迁移 `packages/database/migrations/0252_approval_gateway_outbound_approvals.sql`，原模块的 `migrations/0001_outbound_approvals.sql` 已迁走，不保留第二份 SQL。`pnpm db:migrate` / `pnpm db:prepare` 沿用全局 runner 的事务、advisory lock 和 `allrice_schema_migrations` 账本执行并登记它；`db:verify` 与部署工具继续按全局迁移目录识别预期、待执行和未知迁移。数据库包现有 `migrations` 发布布局同时供源码和构建后的 runner 使用，无需导入审批网关或另加模块迁移入口。store 接收所属模块的 `Sql` 句柄，**不会自动建表**。不冒填旧 3.x runtime approval 所要求的 policySnapshot/Run/execution 字段。
 
-曾在隔离场景显式执行旧模块 0001、尚未登记全局迁移的表，可以由 runner 接管：迁移用同一建表定义生成事务内临时参照，持锁核对已有列、类型、空值要求、默认值、约束与索引，并拒绝额外的继承、行级策略或业务触发器。只有结构一致时才保留原行并由 runner 登记 0252；不覆盖已有表、不为结构不符的表补账本。失败时沿用 runner 的整笔事务回滚，包含本次 DDL 和账本写入。旧 0001 只执行 DDL，没有独立迁移账本；若有人另外手填未知迁移名，既有兼容门禁仍拒绝，不能将它加入 archive 绕过。
+曾在隔离场景显式执行旧模块 0001、尚未登记全局迁移的表，可以由 runner 接管：迁移用同一建表定义生成事务内临时参照，持锁核对已有列、类型、空值要求、默认值、约束与索引，并拒绝额外的继承、行级策略、业务触发器或重写规则。只有结构一致时才保留原行并由 runner 登记 0252；不覆盖已有表、不为结构不符的表补账本。失败时沿用 runner 的整笔事务回滚，包含本次 DDL 和账本写入。旧 0001 只执行 DDL，没有独立迁移账本；若有人另外手填未知迁移名，既有兼容门禁仍拒绝，不能将它加入 archive 绕过。
 
 实际部署仍须由发布主线通过迁移前 Dev 数据快照、隔离冒烟、停写、兼容性和恢复门禁。本次仅完成迁移接线，不执行共享 Dev 迁移。0252 执行后，缺少该迁移的旧版本会被 `db:verify` 和部署/回滚门禁拒绝；不能直接启动旧二进制，须按 `docs/runbooks/m1-database.md` 恢复经批准的迁移前快照或向前修复。审批业务账本已经产生外部效果时，仍遵守下文禁止回退后重发的恢复边界。
 

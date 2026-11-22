@@ -287,6 +287,33 @@ suite('outbound approval migration through the global CLI (PostgreSQL)', () => {
     180_000,
   );
 
+  it.each(['INSERT', 'UPDATE'])(
+    'refuses an existing %s rewrite rule without recording the migration',
+    async (event) => {
+      await runMigrations(previousRelease);
+      await db!.unsafe(legacyModuleSql);
+      await db!.unsafe(`
+        create rule incompatible_approval_write as
+        on ${event} to allrice_outbound_approvals do instead nothing
+      `);
+      const rewriteRules = () => db!<{ rulename: string }[]>`
+        select rulename from pg_rewrite
+        where ev_class = ${`${schema}.allrice_outbound_approvals`}::regclass
+        order by rulename
+      `;
+      const rules = await rewriteRules();
+      expect(rules).toEqual([{ rulename: 'incompatible_approval_write' }]);
+      const before = await ledger();
+      await expect(runMigrations()).rejects.toMatchObject({
+        code: 1,
+        stderr: expect.stringContaining('outbound approval schema mismatch'),
+      });
+      expect(await ledger()).toEqual(before);
+      expect(await rewriteRules()).toEqual(rules);
+    },
+    180_000,
+  );
+
   it('rolls back the new table if its ledger insertion fails', async () => {
     await runMigrations(previousRelease);
     const before = await ledger();
