@@ -2,6 +2,7 @@
  * The fixture is NOT a 271/273 producer, public transaction participation port,
  * or native root/child/source acceptance. No fixture enters production code. */
 import { randomUUID } from 'node:crypto';
+import postgres from 'postgres';
 import type { TransactionSql } from 'postgres';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
@@ -28,6 +29,7 @@ import {
 } from './memory-context-store.ts';
 import { MemoryContextError } from './run-memory-context.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
+import { assertRuntimeFixtureDatabase } from './runtime-fixture-database.ts';
 import { runtimePolicyDigest } from './runtime-policy-digest.ts';
 import {
   memoryPairContent,
@@ -261,6 +263,23 @@ suite(
       return f;
     }
 
+    async function openIsolatedMemoryConnection() {
+      const value = process.env.ALLRICE_TEST_DATABASE_URL;
+      if (!value) throw Error('Dedicated ALLRICE_TEST_DATABASE_URL required');
+      const url = new URL(value);
+      assertRuntimeFixtureDatabase(url);
+      const [row] = await database.db<{ schema: string }[]>`
+        select current_schema() schema`;
+      url.searchParams.set('options', `-csearch_path=${row!.schema}`);
+      return postgres(url.toString(), {
+        max: 1,
+        onnotice: () => {},
+        connection: {
+          application_name: `memory-context-recovery:${randomUUID()}`,
+        },
+      });
+    }
+
     it.each([0, 100, 101])(
       'persists the complete fixture set at %i, never crops',
       async (count) => {
@@ -303,6 +322,123 @@ suite(
         await database.db`select count(*)::int count from allrice_employee_memory_contexts
       where organization_id=${f.key.organizationId} and budget_ref=${f.key.budgetRef}`;
       expect(row!.count).toBe(1);
+    });
+
+    it('rolls back an issued row and its in-transaction spend when the caller transaction fails', async () => {
+      const f = await setup([
+        { summary: '发行后回滚', details: '尚未交付的完整说明' },
+      ]);
+      const rollback = new Error('fixture caller transaction rollback');
+      await expect(
+        f.transaction(f.rootSessionRef, live(), async (tx) => {
+          const issued = await issueMemoryContextStorage(
+            tx,
+            f.key,
+            await f.draft(tx),
+            live(),
+          );
+          await readMemoryContextStorageOrdinal(
+            tx,
+            f.key,
+            { number: 1 },
+            live(),
+          );
+          const [visible] = await tx<{ state: unknown }[]>`
+            select state from allrice_employee_memory_contexts where id=${issued.id}`;
+          const state = RunMemoryContextV2StateSchema.parse(visible!.state);
+          expect(state.toolReads).toBe(1);
+          expect(state.spentBytes).toBeGreaterThan(issued.state.initial.bytes);
+          throw rollback;
+        }),
+      ).rejects.toBe(rollback);
+      expect(await f.stored()).toBeNull();
+      await expect(f.read(1)).rejects.toMatchObject(refused);
+      expect(await f.stored()).toBeNull();
+    });
+
+    it('recovers the same issued pins and spend through a newly opened PG connection, and never reissues a missing row on read', async () => {
+      const pair = { summary: '跨连接恢复', details: '保留已发行的完整说明😀' };
+      // Retain only the explicit storage facts, not the authority fixture or a
+      // client/session object. These facts still are NOT production authority.
+      const { key, draft } = await (async () => {
+        const f = await setup([pair]);
+        return {
+          key: structuredClone(f.key),
+          draft: await f.transaction(f.rootSessionRef, live(), (tx) =>
+            f.draft(tx),
+          ),
+        };
+      })();
+      const text = renderMemoryDetailV2(1, pair);
+      const before = await (async () => {
+        const sql = await openIsolatedMemoryConnection();
+        try {
+          const [session] = await sql<
+            { pid: number }[]
+          >`select pg_backend_pid() pid`;
+          const issued = await sql.begin((tx) =>
+            issueMemoryContextStorage(tx, key, draft, live()),
+          );
+          expect(
+            await sql.begin((tx) =>
+              readMemoryContextStorageOrdinal(tx, key, { number: 1 }, live()),
+            ),
+          ).toBe(text);
+          const [stored] = await sql<{ state: unknown }[]>`
+            select state from allrice_employee_memory_contexts where id=${issued.id}`;
+          return {
+            pid: session!.pid,
+            issued,
+            state: RunMemoryContextV2StateSchema.parse(stored!.state),
+          };
+        } finally {
+          await sql.end({ timeout: 5 });
+        }
+      })();
+      const sql = await openIsolatedMemoryConnection();
+      try {
+        const [session] = await sql<
+          { pid: number }[]
+        >`select pg_backend_pid() pid`;
+        expect(session!.pid).not.toBe(before.pid);
+        // Existing-row reuse is tested here, not a production restore gate.
+        const restored = await sql.begin((tx) =>
+          issueMemoryContextStorage(tx, key, draft, live()),
+        );
+        expect(restored.id).toBe(before.issued.id);
+        expect(restored.document).toBe(before.issued.document);
+        expect(restored.state).toEqual(before.state);
+        expect(restored.state.pins).toEqual(before.issued.state.pins);
+        expect(
+          await sql.begin((tx) =>
+            readMemoryContextStorageOrdinal(tx, key, { number: 1 }, live()),
+          ),
+        ).toBe(text);
+        const [spent] = await sql<{ state: unknown }[]>`
+          select state from allrice_employee_memory_contexts where id=${restored.id}`;
+        expect(RunMemoryContextV2StateSchema.parse(spent!.state)).toEqual({
+          ...before.state,
+          toolReads: before.state.toolReads + 1,
+          spentBytes: before.state.spentBytes + Buffer.byteLength(text, 'utf8'),
+        });
+        // A partial-restore fault removes only this fixture's own issued row.
+        // Read the known old B afterward; never call issue on the missing row.
+        const removed = await sql`delete from allrice_employee_memory_contexts
+          where id=${restored.id} and organization_id=${key.organizationId}
+            and budget_ref=${key.budgetRef} returning id`;
+        expect(removed).toHaveLength(1);
+        await expect(
+          sql.begin((tx) =>
+            readMemoryContextStorageOrdinal(tx, key, { number: 1 }, live()),
+          ),
+        ).rejects.toMatchObject(refused);
+        const [missing] =
+          await sql`select count(*)::int count from allrice_employee_memory_contexts
+          where organization_id=${key.organizationId} and budget_ref=${key.budgetRef}`;
+        expect(missing!.count).toBe(0);
+      } finally {
+        await sql.end({ timeout: 5 });
+      }
     });
 
     it('restores and reads legal uppercase UUID keys while keeping budget/native references case-sensitive', async () => {
@@ -449,6 +585,7 @@ suite(
       );
       expect(await f.read(ordinal)).toBe(renderMemoryDetailV2(ordinal, pair));
       expect((await f.issue()).document).toBe(issued.document);
+      const beforeWithdrawal = await f.stored();
       await port.withdraw(
         f.context,
         {
@@ -464,6 +601,7 @@ suite(
       );
       await expect(f.read(ordinal)).rejects.toMatchObject(refused);
       await expect(f.issue()).rejects.toMatchObject(refused);
+      expect(await f.stored()).toEqual(beforeWithdrawal);
     });
 
     it('holds every memory-owned pin until the accounting transaction commits', async () => {
