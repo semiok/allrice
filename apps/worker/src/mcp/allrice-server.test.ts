@@ -5,8 +5,17 @@ import {
   ErrorCode,
   McpError,
   ToolListChangedNotificationSchema,
+  ToolSchema,
+  type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
-import { ReferenceSelectionErrorSchema } from '@allrice/contracts';
+import {
+  ApiErrorSchema,
+  DeliverableReadInputProjectionSchema,
+  DeliverableReadMcpProjectionSchema,
+  ReferenceArchiveReadInputSchema,
+  ReferenceSelectionErrorSchema,
+} from '@allrice/contracts';
+import { z } from 'zod';
 import { riceToolDefinitions } from '../tool-broker/definitions.js';
 import {
   ALLRICE_MCP_CONTRACT_VERSION,
@@ -16,6 +25,13 @@ import {
   type AllriceMcpServices,
   type AllriceMcpMemoryRead,
   type AllriceMcpServerPort,
+  type AllriceMcpReferenceSearch,
+  type AllriceMcpReferenceReadImage,
+  type AllriceMcpReferenceArchiveList,
+  type AllriceMcpReferenceArchiveRead,
+  type AllriceMcpDeliverableDocumentRead,
+  type AllriceMcpMemoryRemember,
+  type AllriceMcpDeliverableRead,
 } from './allrice-server.js';
 
 const id = (n: number) =>
@@ -94,6 +110,783 @@ async function connect(options: Parameters<typeof createAllriceMcpServer>[0]) {
 }
 afterEach(async () => {
   for (const close of opened.splice(0).reverse()) await close();
+});
+
+const extensionCases = [
+  {
+    name: 'reference_search',
+    method: 'referenceSearch',
+    input: { query: '  handbook  ' },
+    expected: { query: 'handbook', category: 'all', limit: 3 },
+  },
+  {
+    name: 'reference_read_image',
+    method: 'referenceReadImage',
+    input: pin,
+    expected: pin,
+  },
+  {
+    name: 'reference_archive_list',
+    method: 'referenceArchiveList',
+    input: pin,
+    expected: { ...pin, limit: 50 },
+  },
+  {
+    name: 'reference_archive_read',
+    method: 'referenceArchiveRead',
+    input: { ...pin, entryId: `entry:sha256:${'c'.repeat(64)}`, as: 'text' },
+    expected: {
+      ...pin,
+      entryId: `entry:sha256:${'c'.repeat(64)}`,
+      as: 'text',
+      offset: 0,
+      limit: 4000,
+    },
+  },
+  {
+    name: 'deliverable_document_read',
+    method: 'deliverableDocumentRead',
+    input: { objectId: id(30) },
+    expected: { objectId: id(30) },
+  },
+  {
+    name: 'memory_remember',
+    method: 'memoryRemember',
+    input: { summary: '  human\npreference  ' },
+    expected: {
+      summary: 'human preference',
+      details: null,
+      memoryClass: 'work_note',
+    },
+  },
+] as const;
+
+function extensionFixture() {
+  const f = fixture();
+  const result = async (): Promise<CallToolResult> => ({
+    content: [{ type: 'text', text: 'protocol fixture, no business carrier' }],
+  });
+  return {
+    ...f,
+    services: {
+      ...f.services,
+      referenceSearch: vi.fn<AllriceMcpReferenceSearch>(result),
+      referenceReadImage: vi.fn<AllriceMcpReferenceReadImage>(result),
+      referenceArchiveList: vi.fn<AllriceMcpReferenceArchiveList>(result),
+      referenceArchiveRead: vi.fn<AllriceMcpReferenceArchiveRead>(result),
+      deliverableDocumentRead: vi.fn<AllriceMcpDeliverableDocumentRead>(result),
+      memoryRemember: vi.fn<AllriceMcpMemoryRemember>(result),
+    },
+  };
+}
+
+describe('AllRice M2 six optional native SDK callbacks (protocol fixtures only)', () => {
+  it.each(extensionCases)(
+    'lists and dispatches $name with its exact input semantics',
+    async ({ name, method, input, expected }) => {
+      const f = extensionFixture();
+      const { client } = await connect(f);
+      const catalog = (await client.listTools()).tools;
+      expect(catalog.map((item) => item.name)).not.toContain(
+        'deliverable_read',
+      );
+      const tool = catalog.find((item) => item.name === name)!;
+      expect(tool.inputSchema.type).toBe('object');
+      if (name !== 'reference_archive_read')
+        expect(tool.inputSchema.additionalProperties).toBe(false);
+      if (name === 'memory_remember') {
+        expect(tool.inputSchema).toEqual(
+          JSON.parse(
+            JSON.stringify(
+              riceToolDefinitions.find(
+                (item) => item.name === 'workspace.memory.remember',
+              )!.inputSchema,
+            ),
+          ),
+        );
+        expect(tool.annotations?.readOnlyHint).not.toBe(true);
+      } else expect(tool.annotations?.readOnlyHint).toBe(true);
+      await expect(
+        client.callTool({ name, arguments: input }),
+      ).resolves.toMatchObject({
+        content: [{ text: 'protocol fixture, no business carrier' }],
+      });
+      const callback = f.services[method];
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(callback.mock.calls[0]).toEqual([
+        f.scope,
+        expected,
+        expect.any(AbortSignal),
+      ]);
+      expect(f.services.deliverableCreate).not.toHaveBeenCalled();
+      for (const other of extensionCases)
+        if (other.method !== method)
+          expect(f.services[other.method]).not.toHaveBeenCalled();
+    },
+  );
+
+  it('lists the archive union with a legal MCP object root and both complete strict branches', async () => {
+    const f = extensionFixture();
+    const { client } = await connect(f);
+    const tool = (await client.listTools()).tools.find(
+      (item) => item.name === 'reference_archive_read',
+    )!;
+    expect(
+      ToolSchema.shape.inputSchema.safeParse(tool.inputSchema).success,
+    ).toBe(true);
+    expect(tool.inputSchema).toEqual({
+      ...z.toJSONSchema(ReferenceArchiveReadInputSchema, { io: 'input' }),
+      type: 'object',
+    });
+    expect(tool.inputSchema).not.toHaveProperty('properties');
+    expect(tool.inputSchema).not.toHaveProperty('additionalProperties');
+    expect(tool.inputSchema).toMatchObject({
+      oneOf: ['text', 'image'].map((as) => ({
+        type: 'object',
+        properties: { as: { const: as } },
+        required: expect.arrayContaining([
+          'sourceId',
+          'revisionId',
+          'digest',
+          'checksum',
+          'entryId',
+          'as',
+        ]),
+        additionalProperties: false,
+      })),
+    });
+  });
+
+  it.each(['text', 'image'] as const)(
+    'keeps archive %s required pins, strict input and branch semantics over SDK calls',
+    async (as) => {
+      const f = extensionFixture();
+      const { client } = await connect(f);
+      const input = { ...pin, entryId: extensionCases[3].input.entryId, as };
+      await expect(
+        client.callTool({ name: 'reference_archive_read', arguments: input }),
+      ).resolves.toMatchObject({
+        content: [{ text: 'protocol fixture, no business carrier' }],
+      });
+      const callback = f.services.referenceArchiveRead;
+      expect(callback).toHaveBeenCalledExactlyOnceWith(
+        f.scope,
+        as === 'text' ? { ...input, offset: 0, limit: 4000 } : input,
+        expect.any(AbortSignal),
+      );
+      const invalid: Record<string, unknown>[] = [
+        { ...input, path: 'guest/member.txt' },
+        ...(as === 'text'
+          ? [
+              { ...input, offset: 1 },
+              { ...input, limit: 4001 },
+            ]
+          : [
+              { ...input, offset: 0 },
+              { ...input, expectedTextChecksum: pin.checksum },
+            ]),
+      ];
+      for (const key of [
+        'sourceId',
+        'revisionId',
+        'digest',
+        'checksum',
+        'entryId',
+        'as',
+      ]) {
+        const missing: Record<string, unknown> = { ...input };
+        delete missing[key];
+        invalid.push(missing);
+      }
+      for (const args of invalid)
+        await expect(
+          client.callTool({ name: 'reference_archive_read', arguments: args }),
+        ).rejects.toMatchObject({ code: ErrorCode.InvalidParams });
+      expect(callback).toHaveBeenCalledTimes(1);
+      if (as === 'text') {
+        const continuation = {
+          ...input,
+          offset: 1,
+          expectedTextChecksum: pin.checksum,
+        };
+        await expect(
+          client.callTool({
+            name: 'reference_archive_read',
+            arguments: continuation,
+          }),
+        ).resolves.toMatchObject({
+          content: [{ text: 'protocol fixture, no business carrier' }],
+        });
+        expect(callback).toHaveBeenCalledTimes(2);
+        expect(callback).toHaveBeenLastCalledWith(
+          f.scope,
+          { ...continuation, limit: 4000 },
+          expect.any(AbortSignal),
+        );
+      }
+    },
+  );
+
+  it.each(extensionCases)(
+    'does not list or call unbound $name',
+    async ({ name, input }) => {
+      const f = fixture();
+      const { client } = await connect(f);
+      expect(
+        (await client.listTools()).tools.map((tool) => tool.name),
+      ).not.toContain(name);
+      expect(await client.callTool({ name, arguments: input })).toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringContaining('DEPENDENCY_UNAVAILABLE') }],
+      });
+      expect(f.services.deliverableCreate).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['module disabled', 'wrong generation'])(
+    'refuses all extensions with %s',
+    async (reason) => {
+      const f = extensionFixture();
+      if (reason === 'module disabled') f.scope.enabledModules = [];
+      const services = {
+        ...f.services,
+        executionGeneration:
+          reason === 'wrong generation' ? ('3.x' as const) : ('4.0' as const),
+      };
+      const { client } = await connect({ host: f.host, services });
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(
+        ['identity_read'],
+      );
+      for (const { name, method, input } of extensionCases) {
+        expect(await client.callTool({ name, arguments: input })).toMatchObject(
+          { isError: true },
+        );
+        expect(f.services[method]).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each(extensionCases)(
+    'rejects guest authority in $name before dispatch',
+    async ({ name, method, input }) => {
+      const f = extensionFixture();
+      const { client } = await connect(f);
+      for (const field of [
+        'personId',
+        'tenantId',
+        'employeeInstanceId',
+        'worker',
+        'approved',
+        'nativeCallRef',
+      ])
+        await expect(
+          client.callTool({
+            name,
+            arguments: { ...input, [field]: 'guest authority' },
+          }),
+        ).rejects.toMatchObject({ code: ErrorCode.InvalidParams });
+      expect(f.services[method]).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps memory limits/source exclusion, archive continuation and document omission semantics', async () => {
+    const f = extensionFixture();
+    const { client } = await connect(f);
+    for (const args of [
+      {},
+      { summary: 'a'.repeat(41) },
+      { summary: 'fact', details: 'a'.repeat(2001) },
+      { summary: 'fact', sourceId: id(44) },
+    ])
+      await expect(
+        client.callTool({ name: 'memory_remember', arguments: args }),
+      ).rejects.toMatchObject({ code: ErrorCode.InvalidParams });
+    await expect(
+      client.callTool({
+        name: 'reference_archive_read',
+        arguments: { ...extensionCases[3].input, offset: 1 },
+      }),
+    ).rejects.toMatchObject({ code: ErrorCode.InvalidParams });
+    await expect(
+      client.callTool({
+        name: 'deliverable_document_read',
+        arguments: { objectId: id(30), pages: null },
+      }),
+    ).rejects.toMatchObject({ code: ErrorCode.InvalidParams });
+    expect(f.services.memoryRemember).not.toHaveBeenCalled();
+    expect(f.services.referenceArchiveRead).not.toHaveBeenCalled();
+    expect(f.services.deliverableDocumentRead).not.toHaveBeenCalled();
+  });
+
+  it('preserves native image, resource and structured content without a new envelope', async () => {
+    const f = extensionFixture();
+    const native: CallToolResult = {
+      content: [
+        { type: 'text', text: 'protocol image fixture' },
+        { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' },
+        {
+          type: 'resource',
+          resource: {
+            uri: 'allrice-fixture://reference',
+            mimeType: 'text/plain',
+            text: 'fixture bytes',
+          },
+        },
+      ],
+      structuredContent: { receipt: 'protocol-only' },
+    };
+    f.services.referenceReadImage.mockResolvedValue(native);
+    const { client } = await connect(f);
+    expect(
+      await client.callTool({ name: 'reference_read_image', arguments: pin }),
+    ).toEqual(native);
+  });
+
+  it('allows only exact-input selection errors on pinned reads and none on search', async () => {
+    const f = extensionFixture();
+    const selection = ReferenceSelectionErrorSchema.parse({
+      error: {
+        code: 'REFERENCE_SELECTION_UNAVAILABLE',
+        message: 'original selection refusal',
+        requestId: id(6),
+        retryable: false,
+        referenceRevisionIds: [pin.revisionId],
+      },
+    });
+    const { client } = await connect(f);
+    for (const { name, method, input } of extensionCases.slice(0, 4)) {
+      f.services[method].mockRejectedValue(selection);
+      if (name === 'reference_search')
+        await expect(
+          client.callTool({ name, arguments: input }),
+        ).rejects.toThrow('Invalid module selection error');
+      else {
+        const result = await client.callTool({ name, arguments: input });
+        expect(result).toMatchObject({
+          isError: true,
+          content: [{ text: JSON.stringify(selection) }],
+        });
+        f.services[method].mockRejectedValue({
+          error: { ...selection.error, referenceRevisionIds: [id(101)] },
+        });
+        await expect(
+          client.callTool({ name, arguments: input }),
+        ).rejects.toThrow('Invalid module selection error');
+      }
+    }
+  });
+
+  it.each(['api', 'selection'])(
+    'rechecks current access after a named thrown %s error',
+    async (kind) => {
+      const f = extensionFixture();
+      const payload =
+        kind === 'api'
+          ? ApiErrorSchema.parse({
+              error: {
+                code: 'AUTHORIZATION_DENIED',
+                message: 'original named business refusal',
+                requestId: id(6),
+                retryable: false,
+              },
+            })
+          : ReferenceSelectionErrorSchema.parse({
+              error: {
+                code: 'REFERENCE_SELECTION_UNAVAILABLE',
+                message: 'original named business refusal',
+                requestId: id(6),
+                retryable: false,
+                referenceRevisionIds: [pin.revisionId],
+              },
+            });
+      f.services.referenceReadImage.mockRejectedValue(payload);
+      const { client } = await connect(f);
+      expect(
+        await client.callTool({ name: 'reference_read_image', arguments: pin }),
+      ).toMatchObject({
+        isError: true,
+        content: [{ text: JSON.stringify(payload) }],
+      });
+      f.services.referenceReadImage.mockImplementation(async () => {
+        f.scope.enabledModules = [];
+        throw payload;
+      });
+      const denied = await client.callTool({
+        name: 'reference_read_image',
+        arguments: pin,
+      });
+      expect(denied).toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringContaining('AUTHORIZATION_DENIED') }],
+      });
+      expect(JSON.stringify(denied)).not.toContain(
+        'original named business refusal',
+      );
+    },
+  );
+
+  it.each(extensionCases)(
+    'native cancellation still joins $name without redispatch',
+    async ({ name, method, input }) => {
+      const f = extensionFixture();
+      const entered = gate(),
+        aborted = gate(),
+        finish = gate();
+      let joined = false;
+      f.services[method].mockImplementation(
+        async (
+          _scope: AllriceMcpScope,
+          _input: unknown,
+          signal: AbortSignal,
+        ) => {
+          signal.addEventListener('abort', () => aborted.resolve(), {
+            once: true,
+          });
+          entered.resolve();
+          try {
+            await finish.promise;
+            return {
+              content: [{ type: 'text' as const, text: 'late fixture result' }],
+            };
+          } finally {
+            joined = true;
+          }
+        },
+      );
+      const { client, controller } = await connect(f);
+      const abort = new AbortController();
+      const rejected = expect(
+        client.callTool({ name, arguments: input }, undefined, {
+          signal: abort.signal,
+        }),
+      ).rejects.toThrow();
+      try {
+        await entered.promise;
+        abort.abort();
+        await rejected;
+        await aborted.promise;
+        let idle = false;
+        const waiting = controller.whenIdle().then(() => {
+          idle = true;
+        });
+        await Promise.resolve();
+        expect(idle).toBe(false);
+        expect(joined).toBe(false);
+        finish.resolve();
+        await waiting;
+        expect(joined).toBe(true);
+        expect(f.services[method]).toHaveBeenCalledTimes(1);
+      } finally {
+        finish.resolve();
+        await controller.whenIdle();
+        await rejected;
+      }
+    },
+  );
+
+  it('withholds a candidate receipt after revocation without claiming rollback', async () => {
+    const f = extensionFixture();
+    f.services.memoryRemember.mockImplementation(async () => {
+      f.scope.moduleConfigRevisionRef = 'changed-after-candidate-fixture';
+      return {
+        content: [{ type: 'text', text: 'candidate fixture receipt withheld' }],
+      };
+    });
+    const { client } = await connect(f);
+    const result = await client.callTool({
+      name: 'memory_remember',
+      arguments: { summary: 'human preference' },
+    });
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain(
+      'Candidate may already be committed',
+    );
+    expect(JSON.stringify(result)).not.toContain(
+      'candidate fixture receipt withheld',
+    );
+    expect(f.services.memoryRemember).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AllRice M2 deliverable_read (protocol fixtures, no business carrier)', () => {
+  const input = { objectId: id(30), checksum: pin.checksum };
+  const projection = DeliverableReadMcpProjectionSchema.parse({
+    id: input.objectId,
+    checksum: input.checksum,
+    downloadUrl: 'allrice-fixture://deliverable',
+    fileName: 'protocol.txt',
+    mediaType: 'text/plain',
+    content: 'protocol fixture, no business carrier',
+    offset: 0,
+    totalCharacters: 37,
+    truncated: false,
+    nextOffset: null,
+  });
+  const native: CallToolResult = {
+    content: [
+      { type: 'text', text: JSON.stringify(projection) },
+      { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' },
+      {
+        type: 'resource',
+        resource: {
+          uri: 'allrice-fixture://deliverable',
+          text: projection.content,
+        },
+      },
+    ],
+    structuredContent: projection,
+  };
+  function readFixture() {
+    const f = fixture();
+    return {
+      ...f,
+      services: {
+        ...f.services,
+        deliverableRead: vi.fn<AllriceMcpDeliverableRead>(async () => native),
+      },
+    };
+  }
+
+  it('lists the exact input projection and preserves defaults, explicit paging and native output', async () => {
+    const f = readFixture();
+    const { client, controller } = await connect(f);
+    expect(controller.contractVersion).toBe(1);
+    const tool = (await client.listTools()).tools.find(
+      (item) => item.name === 'deliverable_read',
+    )!;
+    expect(tool.inputSchema).toEqual(
+      z.toJSONSchema(DeliverableReadInputProjectionSchema, { io: 'input' }),
+    );
+    expect(tool.inputSchema).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['objectId', 'checksum'],
+    });
+    expect(tool.annotations?.readOnlyHint).toBe(true);
+    for (const args of [input, { ...input, offset: 2_000_000, limit: 1 }]) {
+      expect(
+        await client.callTool({ name: 'deliverable_read', arguments: args }),
+      ).toEqual(native);
+      expect(f.services.deliverableRead).toHaveBeenLastCalledWith(
+        f.scope,
+        { offset: 0, limit: 4000, ...args },
+        expect.any(AbortSignal),
+      );
+    }
+    expect(f.services.deliverableRead).toHaveBeenCalledTimes(2);
+    expect(f.services.deliverableCreate).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing pins, invalid bounds and guest authority before dispatch', async () => {
+    const f = readFixture();
+    const { client } = await connect(f);
+    const invalid = [
+      {},
+      { objectId: input.objectId },
+      { checksum: input.checksum },
+      { ...input, checksum: 'changed' },
+      { ...input, objectId: 'not-a-uuid' },
+      { ...input, offset: -1 },
+      { ...input, offset: 2_000_001 },
+      { ...input, offset: 0.5 },
+      { ...input, limit: 0 },
+      { ...input, limit: 4001 },
+      { ...input, limit: null },
+      ...[
+        'personId',
+        'tenantId',
+        'employeeInstanceId',
+        'nativeCallRef',
+        'approved',
+        'key',
+        'seriesId',
+        'versionId',
+        'path',
+      ].map((key) => ({ ...input, [key]: 'guest authority' })),
+    ];
+    for (const args of invalid)
+      await expect(
+        client.callTool({ name: 'deliverable_read', arguments: args }),
+      ).rejects.toMatchObject({ code: ErrorCode.InvalidParams });
+    expect(f.services.deliverableRead).not.toHaveBeenCalled();
+    expect(f.services.deliverableCreate).not.toHaveBeenCalled();
+  });
+
+  it.each(['unbound', 'module disabled', 'generation mismatch'])(
+    'does not list or dispatch with %s and never borrows documentRead',
+    async (reason) => {
+      const f = readFixture();
+      const documentRead = vi.fn<AllriceMcpDeliverableDocumentRead>(
+        async () => native,
+      );
+      const services: AllriceMcpServices = {
+        ...f.services,
+        deliverableDocumentRead: documentRead,
+        executionGeneration: reason === 'generation mismatch' ? '3.x' : '4.0',
+      };
+      if (reason === 'unbound') delete services.deliverableRead;
+      if (reason === 'module disabled') f.scope.enabledModules = [];
+      const { client } = await connect({ host: f.host, services });
+      expect(
+        (await client.listTools()).tools.map((tool) => tool.name),
+      ).not.toContain('deliverable_read');
+      expect(
+        await client.callTool({ name: 'deliverable_read', arguments: input }),
+      ).toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringContaining('DEPENDENCY_UNAVAILABLE') }],
+      });
+      expect(f.services.deliverableRead).not.toHaveBeenCalled();
+      expect(documentRead).not.toHaveBeenCalled();
+      expect(f.services.deliverableCreate).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['module', 'config', 'native call', 'named error'])(
+    'withholds a completed read after the current %s changes',
+    async (change) => {
+      const f = readFixture();
+      f.services.deliverableRead.mockImplementation(async () => {
+        if (change === 'config') f.scope.moduleConfigRevisionRef = 'new-config';
+        else if (change === 'native call') f.scope.nativeCallRef = 'new-call';
+        else f.scope.enabledModules = [];
+        if (change === 'named error')
+          throw ApiErrorSchema.parse({
+            error: {
+              code: 'AUTHORIZATION_DENIED',
+              message: 'owner refusal withheld',
+              requestId: id(6),
+              retryable: false,
+            },
+          });
+        return native;
+      });
+      const { client } = await connect(f);
+      const result = await client.callTool({
+        name: 'deliverable_read',
+        arguments: input,
+      });
+      expect(result).toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringContaining('AUTHORIZATION_DENIED') }],
+      });
+      expect(JSON.stringify(result)).not.toContain(projection.content);
+      expect(JSON.stringify(result)).not.toContain('owner refusal withheld');
+      expect(f.services.deliverableRead).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('keeps named API errors but refuses reference IDs and redacts unknown failures', async () => {
+    const f = readFixture();
+    const payload = ApiErrorSchema.parse({
+      error: {
+        code: 'AUTHORIZATION_DENIED',
+        message: 'original owner refusal',
+        requestId: id(6),
+        retryable: false,
+      },
+    });
+    f.services.deliverableRead.mockRejectedValue(payload);
+    const { client } = await connect(f);
+    expect(
+      await client.callTool({ name: 'deliverable_read', arguments: input }),
+    ).toMatchObject({
+      isError: true,
+      content: [{ text: JSON.stringify(payload) }],
+    });
+    f.services.deliverableRead.mockRejectedValue(
+      ReferenceSelectionErrorSchema.parse({
+        error: {
+          code: 'REFERENCE_SELECTION_UNAVAILABLE',
+          message: 'private reference',
+          requestId: id(6),
+          retryable: false,
+          referenceRevisionIds: [id(99)],
+        },
+      }),
+    );
+    await expect(
+      client.callTool({ name: 'deliverable_read', arguments: input }),
+    ).rejects.toMatchObject({
+      code: ErrorCode.InternalError,
+      message: expect.stringContaining('Invalid module selection error'),
+    });
+    f.services.deliverableRead.mockRejectedValue(
+      new Error('SQL host key private stack'),
+    );
+    await expect(
+      client.callTool({ name: 'deliverable_read', arguments: input }),
+    ).rejects.toMatchObject({
+      code: ErrorCode.InternalError,
+      message: expect.stringContaining('AllRice business service failed'),
+    });
+  });
+
+  it.each(['client cancel', 'revoke', 'close'] as const)(
+    'joins the same callback after %s without redispatch',
+    async (mode) => {
+      const f = readFixture();
+      const entered = gate(),
+        aborted = gate(),
+        finish = gate();
+      let joined = false;
+      f.services.deliverableRead.mockImplementation(
+        async (_scope, _input, signal) => {
+          signal.addEventListener('abort', () => aborted.resolve(), {
+            once: true,
+          });
+          entered.resolve();
+          try {
+            await finish.promise;
+            return native;
+          } finally {
+            joined = true;
+          }
+        },
+      );
+      const { client, controller } = await connect(f);
+      const abort = new AbortController();
+      const rejected = expect(
+        client.callTool(
+          { name: 'deliverable_read', arguments: input },
+          undefined,
+          { signal: abort.signal },
+        ),
+      ).rejects.toThrow();
+      let ending = Promise.resolve();
+      let closed = false;
+      try {
+        await entered.promise;
+        if (mode === 'client cancel') {
+          abort.abort();
+          await rejected;
+        } else
+          ending = controller[mode]().then(() => {
+            closed = true;
+          });
+        await aborted.promise;
+        let idle = false;
+        const waiting = controller.whenIdle().then(() => {
+          idle = true;
+        });
+        await Promise.resolve();
+        expect(joined).toBe(false);
+        expect(idle).toBe(false);
+        expect(closed).toBe(false);
+        finish.resolve();
+        await waiting;
+        await ending;
+        await rejected;
+        expect(joined).toBe(true);
+        expect(f.services.deliverableRead).toHaveBeenCalledTimes(1);
+      } finally {
+        finish.resolve();
+        await controller.whenIdle();
+        await ending;
+        await rejected;
+      }
+    },
+  );
 });
 
 describe('AllRice native SDK MCP managed boundary (contract fixtures, no production gateway)', () => {
