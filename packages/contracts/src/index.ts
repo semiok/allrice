@@ -96,6 +96,7 @@ export * from './quality.ts';
 export * from './secrets.ts';
 export * from './skills.ts';
 export * from './skill-bundle.ts';
+export * from './builtin-skill-source.ts';
 export * from './mcp.ts';
 export * from './mcp-schema.ts';
 export * from './local-mcp.ts';

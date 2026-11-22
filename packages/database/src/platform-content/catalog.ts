@@ -224,14 +224,18 @@ export async function parsePlatformContentCatalog(
 
 export async function loadPlatformContentCatalog(
   rootDirectory = repositoryRoot,
+  signal?: AbortSignal,
 ): Promise<PlatformContentCatalog> {
+  signal?.throwIfAborted();
   const canonicalRoot = await realpath(rootDirectory);
+  signal?.throwIfAborted();
   const directory = resolve(canonicalRoot, 'skills');
   if ((await lstat(directory)).isSymbolicLink())
     throw Error('platform_skill_resource_symlink');
   const skillsRoot = `${directory}${sep}`;
 
   const readAsset = async (contentFile: string) => {
+    signal?.throwIfAborted();
     const absolutePath = resolve(canonicalRoot, contentFile);
     if (!absolutePath.startsWith(skillsRoot)) {
       throw new Error(`platform_skill_catalog_path_escaped:${contentFile}`);
@@ -247,11 +251,14 @@ export async function loadPlatformContentCatalog(
     const expected = await lstat(absolutePath);
     if (!expected.isFile() || expected.nlink !== 1 || expected.size > 900000)
       throw Error('platform_skill_resource_unsafe');
+    signal?.throwIfAborted();
     const handle = await open(
       absolutePath,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
+    let readFailures: unknown[] = [];
     try {
+      signal?.throwIfAborted();
       const stat = await handle.stat();
       if (
         !stat.isFile() ||
@@ -261,17 +268,36 @@ export async function loadPlatformContentCatalog(
         stat.ino !== expected.ino
       )
         throw Error('platform_skill_resource_unsafe');
-      return await handle.readFile();
+      signal?.throwIfAborted();
+      const bytes = await handle.readFile({ signal });
+      signal?.throwIfAborted();
+      return bytes;
+    } catch (error) {
+      const failure =
+        signal?.aborted && error instanceof Error && error.name === 'AbortError'
+          ? signal.reason
+          : error;
+      readFailures = [failure];
+      throw failure;
     } finally {
-      await handle.close();
+      try {
+        await handle.close();
+      } catch (error) {
+        throw new AggregateError(
+          [...readFailures, error],
+          'platform_skill_resource_close_failed',
+        );
+      }
     }
   };
   const input = JSON.parse(
     (await readAsset('skills/catalog.json')).toString('utf8'),
   ) as unknown;
-  return parsePlatformContentCatalog(
+  const catalog = await parsePlatformContentCatalog(
     input,
     async (file) => (await readAsset(file)).toString('utf8'),
     readAsset,
   );
+  signal?.throwIfAborted();
+  return catalog;
 }

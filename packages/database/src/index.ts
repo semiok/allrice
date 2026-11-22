@@ -69,6 +69,7 @@ export {
   NativeWaitAuthorityError,
 } from './task-native-wait.ts';
 export * from './skill-bundles.ts';
+export * from './capabilities/builtin-skill-sources.ts';
 export * from './message-feedback.ts';
 export * from './mcp-connections.ts';
 export * from './mcp-managed-connections.ts';
