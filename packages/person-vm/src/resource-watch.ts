@@ -292,10 +292,11 @@ export function createPersonVmResourcePort(input: {
         },
         async wait() {
           signal.throwIfAborted();
-          if (closed) return;
+          if (closed) throw new PersonVmError('RUNTIME_NOT_READY');
           if (pending) pending = false;
           else await new Promise<void>((resolve) => waiters.add(resolve));
           signal.throwIfAborted();
+          if (closed) throw new PersonVmError('RUNTIME_NOT_READY');
         },
         close,
       };

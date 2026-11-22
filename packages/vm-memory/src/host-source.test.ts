@@ -1,8 +1,11 @@
 import { setImmediate } from 'node:timers';
 import { describe, expect, it, vi } from 'vitest';
+import { createPersonVmResourcePort } from '@allrice/person-vm';
 import type {
   PersonVmBinding,
   PersonVmNativeResourceFacts,
+  PersonVmNativeResourcePort,
+  PersonVmResourceLiveness,
   PersonVmResourcePort,
 } from '@allrice/person-vm';
 import { createVmMemoryAdmission } from './admission.ts';
@@ -41,7 +44,7 @@ const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 /** Explicit test-only trusted input replacement; no native/pressure producer. */
 class Pulse<T> {
   private pending = false;
-  private waiters = new Set<() => void>();
+  private waiters = new Map<() => void, (cause: unknown) => void>();
   value: T | null;
   closed = false;
   activeWaits = 0;
@@ -54,7 +57,11 @@ class Pulse<T> {
   publish(value: T | null) {
     this.value = value;
     this.pending = this.waiters.size === 0;
-    for (const resolve of this.waiters) resolve();
+    for (const resolve of this.waiters.keys()) resolve();
+    this.waiters.clear();
+  }
+  fail(cause: unknown) {
+    for (const reject of this.waiters.values()) reject(cause);
     this.waiters.clear();
   }
   wait = vi.fn(async () => {
@@ -63,7 +70,10 @@ class Pulse<T> {
     try {
       if (this.closed) return;
       if (this.pending) this.pending = false;
-      else await new Promise<void>((resolve) => this.waiters.add(resolve));
+      else
+        await new Promise<void>((resolve, reject) =>
+          this.waiters.set(resolve, reject),
+        );
     } finally {
       this.activeWaits--;
     }
@@ -117,6 +127,56 @@ const fixture = () => {
     pressurePort,
     source,
   };
+};
+
+/** Real consumer composition. Only the upstream feeds are synthetic. */
+const combination = () => {
+  const lifecycle = new Pulse<PersonVmResourceLiveness>({
+    binding,
+    revision: 'life-1',
+    evidenceRef: 'synthetic-liveness',
+  });
+  const native = new Pulse('synthetic-resource-1');
+  const pressure = new Pulse(pressureFacts());
+  const nativePort: PersonVmNativeResourcePort = {
+    subscribe: async () => native,
+    read: vi.fn(async () => ({ ...resourceFacts(), revision: native.value! })),
+  };
+  const resources = createPersonVmResourcePort({
+    lifecycle: { watch: async () => lifecycle },
+    native: nativePort,
+  });
+  const state = {
+    waitCalls: 0,
+    guardTriggered: false,
+    errors: [] as unknown[],
+  };
+  const source = createVmMemoryHostSource({
+    context,
+    resources: {
+      async watch(...args) {
+        const actual = await resources.watch(...args);
+        return {
+          ...actual,
+          async wait() {
+            // Test-only guard makes the old infinite microtask loop fail safely.
+            if (++state.waitCalls > 8) {
+              state.guardTriggered = true;
+              throw new Error('TEST_ONLY_TERMINAL_SPIN_SENTINEL');
+            }
+            try {
+              await actual.wait();
+            } catch (cause) {
+              state.errors.push(cause);
+              throw cause;
+            }
+          },
+        };
+      },
+    },
+    pressure: { watch: async () => pressure },
+  });
+  return { source, lifecycle, native, nativePort, pressure, state };
 };
 
 describe('host memory source consumer (synthetic inputs; not VM acceptance)', () => {
@@ -367,12 +427,152 @@ describe('host memory source consumer (synthetic inputs; not VM acceptance)', ()
       h.pressure.publish(pressureFacts()); // Release the already pending wait.
       await turn();
       expect(watch.read()).toBe(null);
+      await expect(watch.wait()).rejects.toMatchObject({
+        code: 'MEMORY_OBSERVATION_UNAVAILABLE',
+      });
       await watch.close();
       expect(h.resources.close).toHaveBeenCalledOnce();
       expect(h.pressure.close).toHaveBeenCalledOnce();
       expect(h.resources.activeWaits).toBe(0);
       expect(h.pressure.activeWaits).toBe(0);
     } finally {
+      await watch.close();
+    }
+  });
+
+  it.each(['lifecycle', 'native'] as const)(
+    'real resource %s terminal failure propagates without spinning and joins detach',
+    async (input) => {
+      const h = combination();
+      const detached = gate();
+      h.native.closeGate = detached.promise;
+      const watch = await h.source.watch(binding, new AbortController().signal);
+      try {
+        await turn();
+        await watch.wait(); // Initial resource notification, not a terminal event.
+        const rejected = expect(watch.wait()).rejects.toMatchObject({
+          code: 'MEMORY_OBSERVATION_UNAVAILABLE',
+        });
+        void rejected.catch(() => {});
+        h[input].fail(new Error('synthetic input terminal failure'));
+        await turn(); // Old code reaches this only after the test guard trips.
+        await rejected;
+        expect(watch.read()).toBe(null);
+        await expect(watch.wait()).rejects.toMatchObject({
+          code: 'MEMORY_OBSERVATION_UNAVAILABLE',
+        });
+        expect(h.state.guardTriggered).toBe(false);
+        expect(h.state.errors).toEqual([
+          expect.objectContaining({ code: 'RUNTIME_NOT_READY' }),
+        ]);
+        const calls = h.state.waitCalls;
+        const closing = watch.close();
+        expect(watch.close()).toBe(closing);
+        let joined = false;
+        void closing.then(() => {
+          joined = true;
+        });
+        await turn();
+        expect(h.state.waitCalls).toBe(calls);
+        expect(joined).toBe(false);
+        expect(h.lifecycle.close).toHaveBeenCalledOnce();
+        expect(h.native.close).toHaveBeenCalledOnce();
+        expect(h.pressure.close).toHaveBeenCalledOnce();
+        detached.resolve();
+        await closing;
+        expect(
+          h.lifecycle.activeWaits +
+            h.native.activeWaits +
+            h.pressure.activeWaits,
+        ).toBe(0);
+      } finally {
+        detached.resolve();
+        await watch.close();
+      }
+    },
+  );
+
+  it('real resource null remains recoverable and does not masquerade as terminal close', async () => {
+    const h = combination();
+    const watch = await h.source.watch(binding, new AbortController().signal);
+    try {
+      await turn();
+      await watch.wait();
+      h.native.publish(null);
+      expect(watch.read()).toBe(null);
+      await turn();
+      await watch.wait();
+      let woke = false;
+      const waiting = watch.wait().then(() => {
+        woke = true;
+      });
+      void waiting.catch(() => {});
+      await turn();
+      expect(woke).toBe(false);
+      expect(h.native.close).not.toHaveBeenCalled();
+      expect(h.lifecycle.close).not.toHaveBeenCalled();
+      h.native.publish('resource-reconnected');
+      await waiting;
+      await turn();
+      expect(watch.read()?.pressure).toBe('normal');
+      expect(h.state.errors).toEqual([]);
+      expect(h.state.guardTriggered).toBe(false);
+    } finally {
+      await watch.close();
+    }
+  });
+
+  it('real composition abort cancels a late native read and joins it plus both detach operations', async () => {
+    const h = combination();
+    const controller = new AbortController();
+    const reason = new Error('abort real consumer composition');
+    const entered = gate(),
+      readDone = gate(),
+      detached = gate(),
+      pressureDetached = gate();
+    const watch = await h.source.watch(binding, controller.signal);
+    let readSignal: AbortSignal | undefined;
+    h.nativePort.read = vi.fn(async (_binding, signal) => {
+      readSignal = signal;
+      entered.resolve();
+      await readDone.promise;
+      return { ...resourceFacts(), revision: 'resource-2' };
+    });
+    h.native.closeGate = detached.promise;
+    h.pressure.closeGate = pressureDetached.promise;
+    try {
+      h.native.publish('resource-2');
+      await entered.promise;
+      controller.abort(reason);
+      expect(watch.read()).toBe(null);
+      await expect(watch.wait()).rejects.toBe(reason);
+      const closing = watch.close();
+      expect(watch.close()).toBe(closing);
+      let joined = false;
+      void closing.then(() => {
+        joined = true;
+      });
+      await turn();
+      expect(readSignal?.aborted).toBe(true);
+      expect(h.native.close).toHaveBeenCalledOnce();
+      expect(h.pressure.close).toHaveBeenCalledOnce();
+      expect(joined).toBe(false);
+      detached.resolve();
+      pressureDetached.resolve();
+      await turn();
+      expect(joined).toBe(false); // Detach alone cannot bypass the native read.
+      readDone.resolve();
+      await closing;
+      expect(watch.read()).toBe(null);
+      expect(h.lifecycle.close).toHaveBeenCalledOnce();
+      expect(
+        h.lifecycle.activeWaits + h.native.activeWaits + h.pressure.activeWaits,
+      ).toBe(0);
+      expect(h.state.guardTriggered).toBe(false);
+    } finally {
+      detached.resolve();
+      pressureDetached.resolve();
+      readDone.resolve();
       await watch.close();
     }
   });

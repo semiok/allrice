@@ -141,8 +141,14 @@ describe('resource consumer (synthetic sources; no native/VM acceptance)', () =>
       await turn();
       expect(woke).toBe(false);
       expect(h.read).toHaveBeenCalledOnce();
+      const rejected = expect(waiting).rejects.toMatchObject({
+        code: 'RUNTIME_NOT_READY',
+      });
       await watch.close();
-      await waiting;
+      await rejected;
+      await expect(watch.wait()).rejects.toMatchObject({
+        code: 'RUNTIME_NOT_READY',
+      });
     } finally {
       await watch.close();
     }

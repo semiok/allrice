@@ -240,10 +240,11 @@ export function createVmMemoryHostSource(input: {
         read: observation,
         async wait() {
           signal.throwIfAborted();
-          if (closed) return;
+          if (closed) throw new VmMemoryError('MEMORY_OBSERVATION_UNAVAILABLE');
           if (pending) pending = false;
           else await new Promise<void>((resolve) => waiters.add(resolve));
           signal.throwIfAborted();
+          if (closed) throw new VmMemoryError('MEMORY_OBSERVATION_UNAVAILABLE');
         },
         close,
       };
