@@ -365,10 +365,34 @@ suite(
         label: (typeof labels)[number],
         inspectOwner = false,
       ) {
-        const value = await snapshot(page),
-          ownerBefore = inspectOwner
-            ? await owner!.evaluate((handle) => handle.inspect())
-            : null;
+        const value = await snapshot(page);
+        const samplingBefore = {
+          label,
+          stage: 'snapshot-before-owner-inspection',
+          comparisonEligible: false,
+          beforeCapture: value,
+          ownerState: {
+            allocated: owner !== undefined,
+            inspectionRequested: inspectOwner,
+            inspectionCompleted: false,
+            value: null,
+          },
+        };
+        // A rejected precondition must retain its actual subjects/hits and owner
+        // state. This unvalidated record never enters the pixel comparisons.
+        await save(label + '-sampling.json', samplingBefore);
+        const ownerBefore = inspectOwner
+          ? await owner!.evaluate((handle) => handle.inspect())
+          : null;
+        await save(label + '-sampling.json', {
+          ...samplingBefore,
+          stage: 'before-sampling-assertion',
+          ownerState: {
+            ...samplingBefore.ownerState,
+            inspectionCompleted: inspectOwner,
+            value: ownerBefore,
+          },
+        });
         assertCausalSampling(value);
         const frame = await page.screenshot({
           path: join(out, label + '-frame.png'),
