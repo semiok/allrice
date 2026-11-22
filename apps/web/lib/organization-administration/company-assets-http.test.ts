@@ -12,6 +12,7 @@ const p = vi.hoisted(() => ({
   history: vi.fn(),
   sources: vi.fn(),
   mutate: vi.fn(),
+  caller: vi.fn(),
   preview: vi.fn(),
   bytes: vi.fn(),
   storage: {},
@@ -31,8 +32,7 @@ vi.mock('@allrice/database', async (original) => ({
   listCompanyTemplateRecommendations: p.recommendations,
   getCompanyAsset: p.detail,
   listCompanyAssetRevisions: p.history,
-  listCompanyRuleSources: p.sources,
-  mutateCompanyAsset: p.mutate,
+  createBusinessRuntimeCaller: p.caller,
   readArtifactBytes: p.bytes,
 }));
 import { companyAssetsHttp } from './company-assets-http';
@@ -83,6 +83,10 @@ describe('company publication HTTP authority and exact bytes', () => {
     p.list.mockResolvedValue({ assets: [] });
     p.recommendations.mockResolvedValue({ assets: [] });
     p.mutate.mockResolvedValue({ state: 'draft' });
+    p.caller.mockReturnValue({
+      listCompanyRuleSources: p.sources,
+      mutateCompanyAsset: p.mutate,
+    });
   });
   it('preserves the real reader, validates requested workspace and excludes other verbs/admin-only sources', async () => {
     expect((await companyAssetsHttp(request('', 'DELETE'))).status).toBe(405);
@@ -231,16 +235,33 @@ describe('company publication HTTP authority and exact bytes', () => {
       ).status,
     ).toBe(403);
     expect(p.mutate).not.toHaveBeenCalled();
-    expect(
-      (await companyAssetsHttp(request('', 'POST', { operation: 'save' })))
-        .status,
-    ).toBe(200);
+    const save = request('', 'POST', { operation: 'save' });
+    expect((await companyAssetsHttp(save)).status).toBe(200);
     expect(p.mutate).toHaveBeenCalledWith(
       context,
       org,
       { operation: 'save' },
       p.storage,
       false,
+      save.signal,
     );
+  });
+  it('composes the named source reader only after actual platform-admin admission', async () => {
+    const read = request('sources=1');
+    p.sources.mockResolvedValue({ sources: [{ id, revisionId: rev }] });
+    const response = await companyAssetsHttp(read, org);
+    expect(await response.json()).toEqual({
+      sources: [{ id, revisionId: rev }],
+    });
+    expect(p.admin).toHaveBeenCalledWith(read);
+    expect(p.member).not.toHaveBeenCalled();
+    expect(p.caller).toHaveBeenCalledTimes(1);
+    expect(p.sources).toHaveBeenCalledWith(context, org, read.signal);
+    p.admin.mockRejectedValueOnce(new DataAccessError('authorization_denied'));
+    expect((await companyAssetsHttp(request('sources=1'), org)).status).toBe(
+      403,
+    );
+    expect(p.caller).toHaveBeenCalledTimes(1);
+    expect(p.sources).toHaveBeenCalledTimes(1);
   });
 });
