@@ -12,6 +12,7 @@ import { EmployeeMemorySidebar } from '../../../apps/web/app/chatflow/employee-m
 import { EmployeeCapabilitiesPanel } from '../../../apps/web/app/chatflow/employee-capabilities-panel';
 import {
   WorkbenchEntries,
+  WorkbenchStart,
   moduleLabels,
 } from '../../../apps/web/app/chatflow/workbench-modules';
 import {
@@ -194,6 +195,7 @@ export function EmployeePanelsEntries({
       }}
       experience
       workflow
+      materialsFirst
       open={ctx.sidebarRight.isExpanded()}
       showToggle={false}
       onToggle={() => ctx.sidebarRight.toggleExpanded()}
@@ -203,6 +205,34 @@ export function EmployeePanelsEntries({
         ctx.sidebarRight.openTab(employeePanelKinds[kind]);
       }}
     />
+  );
+}
+
+/** Native guide tab/chrome remain the owner; reuse the existing four cards. */
+export function EmployeePanelsGuide({
+  ctx,
+  binding,
+  sessionId,
+  useTabInfo,
+}: PropsRuntime<'sidebar.right.tab.guide'> & {
+  ctx: Context;
+  binding: EmployeePanelsBinding;
+}) {
+  const snapshot = useOwner(binding, sessionId);
+  const { tab } = useTabInfo();
+  if (!snapshot || !tab.visible) return null;
+  return (
+    <div className={`${css.surface} ${css.body}`}>
+      <WorkbenchStart
+        experience
+        workflow
+        onOpen={(kind) => {
+          assertEmployeePanelSession(ctx, sessionId);
+          assertEmployeePanelsCurrent(binding, sessionId, snapshot, tab.signal);
+          tab.actions.openTab(employeePanelKinds[kind], { replaceTab: true });
+        }}
+      />
+    </div>
   );
 }
 
@@ -242,9 +272,18 @@ export function apply(ctx: Context) {
           {
             name: 'conversation.session.header.actions',
             id: 'allrice-employee-panels.header',
+            order: 20,
           },
           (props: PropsRuntime<'conversation.session.header.actions'>) => (
             <EmployeePanelsHeader {...props} ctx={scope} binding={binding} />
+          ),
+        ),
+      );
+      scope.slots.inject('sidebar.right.tab.guide', () =>
+        scope.slots.register(
+          { name: 'sidebar.right.tab.guide', select: () => ({}) },
+          (props: PropsRuntime<'sidebar.right.tab.guide'>) => (
+            <EmployeePanelsGuide {...props} ctx={scope} binding={binding} />
           ),
         ),
       );

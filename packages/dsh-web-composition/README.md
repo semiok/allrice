@@ -47,6 +47,32 @@ is no default business owner, replacement Dock, or management-main fallback.
 Files use the existing owner-provided unread count; the other three badges keep
 their existing zero values. An unknown files count hides the entries.
 
+The session header shades only the native `agent-preset` display entry. Native
+preset selection/settings, permission services and execution modes remain owned
+by DSH. The final native subagent catalog stays at order 10, followed by the
+materials/files/memory/capabilities launchers at order 20. The fixed MET-278 child
+contribution is bundled once with the native React instance; both catalog open
+gestures use the same native read-only right-pane resource.
+
+The corner reuses the native sidebar expand component, store, locale and
+shortcut injection, routing its open gesture through public `openTab('guide')`.
+The native guide tab hosts the existing `WorkbenchStart` cards with the four
+employee descriptions. Card selection replaces that guide through its own
+native tab action; the native multi-tab strip, add, split, fullscreen and close
+controls retain their owners. The native narrow/fullscreen panel still covers
+the parent header: four-icon pointer reachability in the open 390px layout is
+an unresolved layout requirement, explicitly asserted by the targeted browser
+suite rather than claimed complete.
+
+The employee profile disables both `ui-sidebar-terminal` and the separate Host
+`terminal-controller`, so interactive terminals are closed at the server as
+well as absent from Start. This does not disable Agent shell tools or change
+their permissions. There is no developer-role authority in this composition
+to re-enable the terminal service. Any future debug opt-in must use the
+authenticated owner's existing permission contract; a browser preference alone
+cannot grant it. This profile does not establish denial by the active 3.x
+workbench-terminal endpoints or the authenticated MET-271 Host.
+
 Panels props are derived from actual app `ComponentProps` in
 `src/employee-panels-port.ts`. That is a **monorepo source type boundary**, not a
 standalone packed DTO/SDK. The tarball exposes the runtime binder, and deliberately

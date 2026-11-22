@@ -10,6 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { Context } from '@deepseek-ai/cordis';
 import {
@@ -181,6 +182,52 @@ it('assembles the independent profile with native question/document/catalog and 
   expect(entry('ui-chat')?.config).toMatchObject({
     performanceUsage: 'compact',
   });
+  for (const id of ['terminal-controller', 'ui-sidebar-terminal'])
+    expect(entry(id)?.disabled, id).toBe(true);
+  for (const id of [
+    'agent-preset-registry',
+    'permission',
+    'sandbox',
+    'approval',
+  ]) {
+    expect(entry(id), id).toBeDefined();
+    expect(entry(id)?.disabled, id).not.toBe(true);
+  }
+  // A real native server dispatcher cannot invoke a controller that this
+  // profile never mounts, even for its owner. This does not assert the
+  // separate authenticated AllRice Host's tenant policy or old 3.x endpoints.
+  const hostRequire = createRequire(
+    require.resolve('@deepseek-ai/dsh/package.json'),
+  );
+  const load = (name: string) =>
+    import(pathToFileURL(hostRequire.resolve(name)).href);
+  const [
+    { TypertRegistry },
+    { RemoteAccessService },
+    { TypertGatewayService },
+  ] = await Promise.all([
+    load('@deepseek-ai/dsh-typert-registry'),
+    load('@deepseek-ai/dsh-api-remote-access'),
+    load('@deepseek-ai/dsh-api-gateway'),
+  ]);
+  const server = new Context();
+  contexts.push(server);
+  new TypertRegistry(server);
+  new RemoteAccessService(server);
+  const gateway = new TypertGatewayService(server, {});
+  expect(server.get('terminalController')).toBeUndefined();
+  const peer = {
+    id: 'terminal-disabled-profile-test',
+    ctx: server,
+    principal: { kind: 'owner' },
+    signal: new AbortController().signal,
+    interactions: 'none',
+    dispose: async () => {},
+  };
+  for (const method of ['environment', 'list', 'create', 'attach'])
+    await expect(
+      gateway.invoke({ namespace: 'terminal', method, args: {}, peer }),
+    ).rejects.toMatchObject({ code: 'gateway/invocation-unavailable' });
   expect(entry('allrice-web-composition')?.name).toBe(
     '@allrice/dsh-web-composition',
   );

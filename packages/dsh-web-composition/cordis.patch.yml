@@ -11,6 +11,12 @@
 # native settings-general continues to own the actual settings shell.
 - id: ui-sidebar
   disabled: true
+# Interactive user terminals are a separate Host API from Agent shell tools.
+# The employee profile has no developer-role authority to re-enable this API.
+- id: terminal-controller
+  disabled: true
+- id: ui-sidebar-terminal
+  disabled: true
 # Employee settings retain native General and all execution/Host services.
 # The inserted Host-only entries reuse native Config defaults and behavior;
 # native client-modules skips package subpaths. Retain the probe's Typert face.

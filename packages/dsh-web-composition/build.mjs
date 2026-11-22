@@ -18,7 +18,9 @@ const result = await build({
   stdin: {
     contents: `export * as sidebar from './src/employee-sidebar.tsx';
 export * as settings from './src/employee-settings.tsx';
-export * as panels from './src/employee-panels.tsx';`,
+export * as panels from './src/employee-panels.tsx';
+export * as topbar from './src/employee-topbar.tsx';
+export * as childPane from './src/child-pane.cjs';`,
     resolveDir: new URL('.', import.meta.url).pathname,
     sourcefile: 'allrice-employee-contributions.ts',
     loader: 'ts',
@@ -61,7 +63,7 @@ const artifact = `window.__ModuleLoader__.load({
   factory: (require) => {
     const exports = {};
 ${source}
-    const { sidebar, settings, panels } = (() => {
+    const { sidebar, settings, panels, topbar, childPane } = (() => {
       const module = { exports: {} };
       const exports = module.exports;
 ${js}
@@ -83,6 +85,10 @@ ${js}
         renderLauncher: sidebar.AllRiceSettingsLauncher,
       });
       panels.apply(ctx);
+      topbar.apply(ctx);
+      ctx.inject(['sidebarRight', 'sessions'], (scope) => {
+        childPane.registerChildPane(scope, require('react'));
+      });
     };
     exports.ChatSidebarFrame = sidebar.ChatSidebarFrame;
     exports.EmployeeSidebarView = sidebar.EmployeeSidebarView;

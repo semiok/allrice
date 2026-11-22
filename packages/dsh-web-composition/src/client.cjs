@@ -19,6 +19,13 @@ exports.apply = function apply(ctx) {
       ctx.slots.register({ name, priority: -100 }, Hidden),
     );
   }
+  const actions = 'conversation.session.header.actions';
+  ctx.slots.inject(actions, () =>
+    ctx.slots.register(
+      { name: actions, id: 'agent-preset', priority: -100 },
+      Hidden,
+    ),
+  );
   const utilities = 'conversation.session.header.utilities';
   ctx.slots.inject(utilities, () =>
     ctx.slots.register(

@@ -122,13 +122,15 @@ export function WorkbenchEntries(props: {
   onToggle: () => void;
   entryRef?: Ref<HTMLButtonElement>;
   showToggle?: boolean;
+  materialsFirst?: boolean;
 }) {
   return (
     <div className={css.entries} aria-label="工作台入口">
       {(
         [
-          'files',
-          'materials',
+          ...(props.materialsFirst
+            ? ['materials', 'files']
+            : ['files', 'materials']),
           ...(props.experience ? ['experience'] : []),
           ...(props.workflow ? ['workflow'] : []),
         ] as WorkbenchModule[]
@@ -196,6 +198,7 @@ export function WorkbenchStart(props: {
       <div className={css.cards}>
         {(
           [
+            'materials',
             'files',
             ...(props.experience ? ['experience'] : []),
             ...(props.workflow ? ['workflow'] : []),
@@ -213,11 +216,13 @@ export function WorkbenchStart(props: {
             <span>
               <strong>{moduleLabels[kind]}</strong>
               <small>
-                {kind === 'files'
-                  ? '员工交付的文件和你在对话中上传的文件'
-                  : kind === 'experience'
-                    ? '记忆'
-                    : '打开这位员工的业务工作台'}
+                {kind === 'materials'
+                  ? '公司、部门和你自己可用的参考资料'
+                  : kind === 'files'
+                    ? '员工交付的文件和你在对话中上传的文件'
+                    : kind === 'experience'
+                      ? '员工记住的你的偏好和工作习惯'
+                      : '打开这位员工的业务工作台'}
               </small>
             </span>
             <span className={css.chevron} aria-hidden="true">
