@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { setImmediate } from 'node:timers/promises';
 import type {
   PersonalSkillDefinition,
   PersonalSkillPin,
@@ -300,6 +301,57 @@ describe('actual native registry consuming AllRice sources; authority substitute
     expect(error.errors[1]).toBe(cancelled);
     expect(cleaned).toBe(true);
     expect(await f.ctx.skills.list()).toEqual([]);
+  });
+
+  it('reports a source failure settled after native caller abort but before owner disposal', async () => {
+    const f = await fixture();
+    await f.ctx.skills.list();
+    const entered = deferred<AbortSignal>();
+    const body = deferred<typeof f.stored>();
+    const cleaned = deferred<void>();
+    const unhandled = vi.fn();
+    // Observe without suppressing Vitest's own unhandled-rejection reporting.
+    process.on('unhandledRejection', unhandled);
+    try {
+      f.host.personal.readPackage.mockImplementationOnce(
+        async (_pin, signal) => {
+          entered.resolve(signal);
+          try {
+            return await body.promise;
+          } finally {
+            cleaned.resolve();
+          }
+        },
+      );
+      const caller = new AbortController();
+      const read = f.ctx.skills
+        .get('weekly-private', { signal: caller.signal })
+        .catch((error) => error);
+      const sourceSignal = await entered.promise;
+      const cancelled = Error('caller cancelled before source settled');
+      const failed = Error('late actual source close failed');
+      caller.abort(cancelled);
+      expect(await read).toBe(cancelled);
+      expect(sourceSignal.reason).toBe(cancelled);
+      body.reject(failed);
+      await cleaned.promise;
+      // Drain this local promise chain and Node's unhandled reporting before
+      // disposal starts; no wait duration or test timeout is added.
+      await setImmediate();
+      expect(unhandled).not.toHaveBeenCalled();
+      const error = await f.mounted.dispose().catch((error) => error);
+      expect(error).toBeInstanceOf(AggregateError);
+      expect(error.cause).toBe(failed);
+      expect(error.errors).toEqual([failed, cancelled]);
+      expect(error.errors[0]).toBe(failed);
+      expect(error.errors[1]).toBe(cancelled);
+      expect(await f.ctx.skills.list()).toEqual([]);
+      await setImmediate();
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', unhandled);
+      body.resolve(f.stored);
+    }
   });
 
   it('uses actual fiber disposal to abort and join a pending current call', async () => {

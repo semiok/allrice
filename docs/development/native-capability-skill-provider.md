@@ -67,8 +67,12 @@ does **not** prove source IO cleanup. The exact Cordis composite effect disposer
 first unregisters/aborts the native provider, then joins all in-flight provider
 promises. Await the returned `dispose()` before releasing sources. Actual plugin
 fiber disposal uses that same effect and also joins; Cordis retains its own
-cleanup-error logging semantics. Explicit disposal preserves original failures
-and distinct cancellation reasons, aggregating only when needed.
+cleanup-error logging semantics. Failures that settle after caller cancellation
+are retained by identity until owner disposal, even if their IO already left
+the pending set. Each actual operation records once; disposal joins pending IO,
+deduplicates the retained/joined failures, clears those references and preserves
+original failures and distinct cancellation reasons. Successful operations,
+pure caller cancellation and ordinary delivered failures are not accumulated.
 
 Only instruction bodies are exposed. The native `opaque` resource base says
 relative resource bytes are unavailable through this provider. No directory,

@@ -97,6 +97,7 @@ export function registerNativeCapabilitySkillProvider(
     return unavailable();
   let control: SkillProviderControl;
   const pending = new Set<Promise<unknown>>();
+  const settledFailures = new Set<unknown>();
   const configuration = async (signal: AbortSignal) => {
     await host.requireCurrent(signal);
     signal.throwIfAborted();
@@ -149,7 +150,13 @@ export function registerNativeCapabilitySkillProvider(
     // Observe without replacing the actual promise used by the caller/disposer.
     void task.then(
       () => pending.delete(task),
-      () => pending.delete(task),
+      (error) => {
+        // Native caller abort can hide a later source/close failure. Transfer
+        // that exact failure to disposal before releasing its pending record.
+        if (signal.aborted && error !== signal.reason)
+          settledFailures.add(error);
+        pending.delete(task);
+      },
     );
     return task;
   };
@@ -194,11 +201,14 @@ export function registerNativeCapabilitySkillProvider(
     // Cordis disposes in reverse order: native unregister/abort, then actual IO.
     yield async () => {
       const results = await Promise.allSettled([...pending]);
-      throwFailures(
-        results.flatMap((result) =>
+      const errors = [
+        ...settledFailures,
+        ...results.flatMap((result) =>
           result.status === 'rejected' ? [result.reason] : [],
         ),
-      );
+      ];
+      settledFailures.clear();
+      throwFailures(errors);
     };
     yield ctx.skills.registerProvider((nativeControl) => {
       control = nativeControl;
