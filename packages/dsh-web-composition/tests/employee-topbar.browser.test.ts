@@ -78,6 +78,11 @@ suite('installed employee topbar and native Start', () => {
     page.locator(
       `[data-sidebar-right-session="${session}"][data-sidebar-right-panel]`,
     );
+  // Native closable tabs include their close button in the accessible name.
+  const tab = (title: string) =>
+    right()
+      .getByRole('tab')
+      .filter({ has: page.getByText(title, { exact: true }) });
   const entries = () => page.locator('[aria-label="工作台入口"]');
   const collapse = () =>
     right().getByRole('button', { name: '收起右侧边栏', exact: true }).click();
@@ -85,7 +90,7 @@ suite('installed employee topbar and native Start', () => {
     await page
       .getByRole('button', { name: '打开右侧边栏', exact: true })
       .click();
-    await right().getByRole('tab', { name: '开始', exact: true }).waitFor();
+    await tab('开始').waitFor();
     await right().getByText(descriptions[0]!, { exact: true }).waitFor();
   };
   const card = (label: string) =>
@@ -318,9 +323,7 @@ suite('installed employee topbar and native Start', () => {
               `allrice-employee-panels.${kind}`,
             kind,
           );
-          await right()
-            .getByRole('tab', { name: labels[index], exact: true })
-            .waitFor();
+          await tab(labels[index]!).waitFor();
           if (index === 0) await shot(`topbar-open-${width}-${theme}`);
         }
         expect(
