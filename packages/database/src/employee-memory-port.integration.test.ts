@@ -14,6 +14,7 @@ import {
   type EmployeeMemoryRecord,
   type RequestContext,
 } from '@allrice/contracts';
+import type * as MemoryClientModule from '../../../apps/web/lib/memory/employee-memory-client.ts';
 import * as client from './core/client.ts';
 import { DataAccessError } from './data.ts';
 import {
@@ -41,8 +42,7 @@ const signal = () => new AbortController().signal;
 suite('memory public management port: real transactions without a Run', () => {
   let fixture: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>;
   let admin: RequestContext;
-  type ClientModule =
-    typeof import('../../../apps/web/lib/memory/employee-memory-client.ts');
+  type ClientModule = typeof MemoryClientModule;
   let employeeMemoryClient: ClientModule['employeeMemoryClient'];
   let storageErrorResponse: (
     error: unknown,
