@@ -106,8 +106,9 @@ async function dismissInitialNativeCatalog(page: Page, out: string) {
     { flag: 'wx' },
   );
   await trigger.press('Escape');
-  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
-  await expect(tree).toHaveCount(0);
+  await tree.waitFor({ state: 'detached' });
+  expect(await trigger.getAttribute('aria-expanded')).toBe('false');
+  expect(await tree.count()).toBe(0);
   await writeFile(
     join(out, 'native-initial-catalog-after.json'),
     JSON.stringify(await state(), null, 2),
