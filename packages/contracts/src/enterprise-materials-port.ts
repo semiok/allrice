@@ -1,17 +1,19 @@
 import { z } from 'zod';
 import type { RequestContext } from './authorization.ts';
 import { UuidSchema } from './common.ts';
+import type {
+  ReferenceInputSelectionResultSchema,
+  ReferenceSaveResultSchema,
+} from './reference-library.ts';
 import {
   ReferenceActionSchema,
-  ReferenceInputSelectionResultSchema,
   ReferenceLibraryOptionsSchema,
   ReferencePublicationActionSchema,
   ReferencePublishInputSchema,
   ReferenceRevisionSchema,
-  ReferenceSaveResultSchema,
   ReferenceUploadInputSchema,
 } from './reference-library.ts';
-import {
+import type {
   ReferencePublicationQueryResultSchema,
   ReferencePublicationQuerySchema,
 } from './reference-search.ts';

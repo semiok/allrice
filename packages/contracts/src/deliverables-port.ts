@@ -7,12 +7,12 @@ import {
   WorkbenchArtifactSchema,
   WorkbenchCursorSchema,
 } from './runtime-v2/artifact-review.ts';
-import {
+import type {
   WorkbenchDeliverablesCatalogSchema,
   WorkbenchDeliverablesFilterSchema,
-  WorkbenchFileFavoriteSchema,
   WorkbenchFileUploadSchema,
 } from './workbench-files.ts';
+import { WorkbenchFileFavoriteSchema } from './workbench-files.ts';
 
 /** Existing workspace.file.read bounds, now shared with the business Port.
  * These are UTF-16 offsets and UTF-8 source bytes, not an instructions budget. */
