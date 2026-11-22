@@ -440,7 +440,10 @@ suite(
       );
       if (!stored || !duplicateStored)
         throw Error('Both uploaded originals must remain readable.');
-      expect(stored.row.file_name).toBe(duplicateStored.row.file_name);
+      expect([stored.row.file_name, duplicateStored.row.file_name]).toEqual([
+        '收入口径.txt',
+        '收入口径（2）.txt',
+      ]);
       const names = await fixture.db.begin(async (tx) => {
         await lockWorkspaceStorageQuota(
           tx,
@@ -462,7 +465,7 @@ suite(
           ),
         );
       });
-      expect(names).toEqual(['收入口径（2）.txt', '收入口径.txt']);
+      expect(names).toEqual(['收入口径（3）.txt', '收入口径.txt']);
       await setWorkbenchFileFavorite(t.a, file.objectId, { favorite: true });
       await setWorkbenchFileFavorite(t.a, duplicate.objectId, {
         favorite: true,
@@ -697,6 +700,82 @@ suite(
         ),
       ).rejects.toMatchObject({ code: 'request_conflict' });
     });
+    it('saves each new same-name upload independently, reserves pending names and replays the original request', async () => {
+      const t = await setup();
+      const firstInput = uploadInput(t.owner);
+      const secondInput = {
+        ...firstInput,
+        requestId: randomUUID(),
+        contentBase64: Buffer.from('第二份独立文件。').toString('base64'),
+      };
+      const actualStorage = storage();
+      let releaseFirst!: () => void;
+      let firstPutStarted!: () => void;
+      const held = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        firstPutStarted = resolve;
+      });
+      const first = uploadWorkbenchFile(t.owner, firstInput, {
+        ...actualStorage,
+        async put(object, content) {
+          firstPutStarted();
+          await held;
+          await actualStorage.put(object, content);
+        },
+      });
+      try {
+        await started;
+        const second = await uploadWorkbenchFile(
+          t.owner,
+          secondInput,
+          actualStorage,
+        );
+        const secondFile = await readWorkbenchFile(t.owner, second.objectId);
+        expect(secondFile.row.file_name).toBe('收入口径（2）.txt');
+        releaseFirst();
+        const original = await first;
+        expect(original.objectId).not.toBe(second.objectId);
+        expect(
+          (await readWorkbenchFile(t.owner, original.objectId)).row.file_name,
+        ).toBe('收入口径.txt');
+        expect(
+          await uploadWorkbenchFile(t.owner, firstInput, actualStorage),
+        ).toEqual(original);
+        const third = await uploadWorkbenchFile(
+          t.owner,
+          { ...firstInput, requestId: randomUUID() },
+          actualStorage,
+        );
+        expect(
+          (await readWorkbenchFile(t.owner, third.objectId)).row.file_name,
+        ).toBe('收入口径（3）.txt');
+        const catalog = await readWorkbenchDeliverables(t.owner, {
+          workspaceId: t.owner.workspaceId,
+          query: '收入口径',
+        });
+        expect(catalog.files.map((file) => file.objectId).sort()).toEqual(
+          [original.objectId, second.objectId, third.objectId].sort(),
+        );
+        for (const [saved, value] of [
+          [original, firstInput],
+          [second, secondInput],
+        ] as const) {
+          const file = await readWorkbenchFile(t.owner, saved.objectId);
+          const stream = await actualStorage.get(file.object);
+          expect(await new Response(stream).text()).toBe(
+            Buffer.from(value.contentBase64, 'base64').toString('utf8'),
+          );
+          await expect(
+            readWorkbenchFile(t.maintainer, saved.objectId),
+          ).rejects.toMatchObject({ code: 'not_found' });
+        }
+      } finally {
+        releaseFirst();
+        await first;
+      }
+    }, 30000);
     it.each(['departments', 'company'] as const)(
       'keeps a legacy %s original owner-only without migrating its policy',
       async (scope) => {

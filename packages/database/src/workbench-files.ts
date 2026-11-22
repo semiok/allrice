@@ -38,6 +38,7 @@ import {
 import { assertWorkbenchSession } from './artifact-review.ts';
 import { readOwnedReferencePublications } from './reference-publication-projections.ts';
 import { personalInstanceNameSql } from './employees/employee-instance-policy.ts';
+import { allocateWorkbenchFileName } from './workbench-file-name.ts';
 import {
   readWorkbenchFilePolicy,
   workbenchFileAccess,
@@ -240,6 +241,16 @@ export async function uploadWorkbenchFile(
       };
     }
     const id = randomUUID();
+    const fileName = await allocateWorkbenchFileName(
+      tx,
+      {
+        organizationId: context.organizationId,
+        workspaceId: value.workspaceId,
+        ownerId: context.actor.id,
+      },
+      id,
+      value.fileName,
+    );
     await createStorageMetadata(
       context,
       {
@@ -257,7 +268,7 @@ export async function uploadWorkbenchFile(
     );
     await tx`insert into allrice_workbench_file_policies
       (object_id,organization_id,workspace_id,owner_id,file_name,scope,department_ids,upload_request_id,upload_digest)
-      values (${id},${context.organizationId},${value.workspaceId},${context.actor.id},${value.fileName},'personal','{}',${value.requestId},${requestDigest})`;
+      values (${id},${context.organizationId},${value.workspaceId},${context.actor.id},${fileName},'personal','{}',${value.requestId},${requestDigest})`;
     await auditFile(
       context,
       id,
