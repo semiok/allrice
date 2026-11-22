@@ -1,0 +1,102 @@
+[
+  {
+    "id": "INSTRUCTIONS",
+    "surface": "backend",
+    "requirement": "MET273：不迁3.x长prompt；每个实际父/子请求新增instructions≤2048 token。同DSH/model/tools/skills/context对照，固定tokenizer及版本，四段各自token/hash及实际请求hash留证。工具schema另列；不以字符估计、均值或运行时裁剪替代，超限停报。"
+  },
+  {
+    "id": "GATE",
+    "surface": "release",
+    "requirement": "固定组合SHA/tree，节点4四门/完整M5/Dev快照迁移原件；无开放P0/P1；部署与本人开关授权分别核验"
+  },
+  {
+    "id": "IDENTITY",
+    "surface": "backend+UI",
+    "requirement": "本人登录/企业/员工切换与3.x/4.0单写者；跨人/企业/旧epoch拒绝，HTTP/WS/附件均有后端证据"
+  },
+  {
+    "id": "VM",
+    "surface": "backend",
+    "requirement": "首次开通/真实ready、2GiB硬帽和swap实读；压力排队、局部/父组/全局OOM可读；真实空闲20分钟与继续同会话；原生日志/盘保留"
+  },
+  {
+    "id": "CHAT",
+    "surface": "UI+backend",
+    "requirement": "本人完整工作日真实聊天、取消、断线重连、长历史恢复；按原生call/日志旁证确认，不重放、不伪造完成"
+  },
+  {
+    "id": "ATTACHMENT",
+    "surface": "UI+backend",
+    "requirement": "上传合成文本/CSV/图；对象和引用字节摘要一致，实际工具读取与可见内容一致；失败分类原件"
+  },
+  {
+    "id": "REFERENCES",
+    "surface": "UI+backend",
+    "requirement": "企业资料各范围/用途/发布人/日期、搜索/预览/加号引用；撤权与旧选择后端拒绝，不泄露他人元数据"
+  },
+  {
+    "id": "DELIVERABLES",
+    "surface": "UI+backend",
+    "requirement": "成果预览/下载/加号引用/转企业资料；后端版本、内容摘要和当前权限一致，不将Run成功当交付成功"
+  },
+  {
+    "id": "MEMORY",
+    "surface": "UI+backend",
+    "requirement": "待确认与生效分开，新增/修改/确认/删除及并发冲突原件；模型注入仅active，精确版本可查"
+  },
+  {
+    "id": "CAPABILITIES",
+    "surface": "UI+backend",
+    "requirement": "已装原生技能/Workflow/插件正常；目录刷新且执行时现权复核，关闭/撤权不靠UI隐藏；自动化用原生页，不验M2外部叫醒"
+  },
+  {
+    "id": "SUBAGENT",
+    "surface": "UI+backend",
+    "requirement": "原生N个入口/原生列表→右栏只读任务名；one-shot/continuable/实时/重连；主会话草稿与窗口不变，伪造网页回复也被服务端拒绝"
+  },
+  {
+    "id": "EGRESS",
+    "surface": "backend",
+    "requirement": "真实guest root直连IP/DNS/私网/UDP/WS负向；白名单只读、包镜像、行情语义路由；新请求在冻结时按合同排队，VM内无真实上游凭据"
+  },
+  {
+    "id": "APPROVAL",
+    "surface": "UI+backend",
+    "requirement": "可信页面由本人核冻结目标/正文/附件；模型不能批准；现权复查/跨origin拒绝/幂等/未知对账不重发，收件方旁证"
+  },
+  {
+    "id": "MODEL",
+    "surface": "backend",
+    "requirement": "仅OAuth；本人跨网关8路及第9排队；每次实际上游账本，缺usage为null；真实取消/refresh收敛及当前执行绑定，无API key消费"
+  },
+  {
+    "id": "ADMIN",
+    "surface": "admin+backend",
+    "requirement": "现有组织管理新建/停用、员工配置/模块开关、非管理员API拒绝；后台原始usage/诊断/审计可查，不增价格财务功能"
+  },
+  {
+    "id": "RECOVERY",
+    "surface": "backend+UI",
+    "requirement": "受控故障仅隔离目标；关机历史不启动VM/refresh/Run；真崩溃/丢ACK不重放；恢复集合与精确版本/对象字节一致"
+  },
+  {
+    "id": "VISUAL",
+    "surface": "UI",
+    "requirement": "固定rev2逐屏1440/390亮暗对照，四面板七状态、加号、子会话、左栏/自动化/设置/后台；差异逐项处理，示意不冒充运行截图"
+  },
+  {
+    "id": "PERFORMANCE",
+    "surface": "backend+UI",
+    "requirement": "同DSH/model/context/数据与版本交错AB/BA，分开冷/暖与真实ready；每对额外等待≤1秒，原时间戳/请求关联；不以均值掩盖超限"
+  },
+  {
+    "id": "WORKDAY",
+    "surface": "user",
+    "requirement": "用户本人实际开始/结束时间、日间问题与恢复、完成任务清单和本人明确认可；脚本不能自动认定工作日完成"
+  },
+  {
+    "id": "CLEANUP",
+    "surface": "operations",
+    "requirement": "本人测试数据按许可处理，任务QA/VM/浏览器/预览/M5名额/锁/PID逐项收回；不关闭用户会话/他人任务"
+  }
+]

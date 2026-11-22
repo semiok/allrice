@@ -8,6 +8,8 @@ issue that first introduced them:
 - `routing/`: Provider selection and explicit fallback.
 - `ui/`: public SaaS surfaces and legacy-route boundaries.
 - `runtime/`: DSH process inventory and runtime-console behavior.
+- `workday/`: 4.0 workday evidence runner; fixture passes and missing production
+  sources remain distinct from authorized Dev acceptance.
 
 The historical `scripts/met*.{mjs,ts}` files remain as small compatibility
 entry points. New checks belong in the relevant capability folder and should
