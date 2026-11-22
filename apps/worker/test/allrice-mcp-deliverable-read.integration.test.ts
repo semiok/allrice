@@ -137,7 +137,7 @@ suite('SDK deliverable_read: real owners, test-only qualification', () => {
       organizationId: context.organizationId,
       workspaceId: context.workspaceId,
       employeeInstanceId: randomUUID(),
-      allriceThreadRef: 'test-only-thread',
+      allriceThreadRef: randomUUID(),
       nativeSessionRef: {
         instanceId: 'test',
         profileId: 'test',
@@ -151,7 +151,7 @@ suite('SDK deliverable_read: real owners, test-only qualification', () => {
     };
     const port = createAllriceMcpServer({
       host: { binding: scope, current: async () => scope },
-      services: { deliverableRead: read },
+      services: { executionGeneration: '4.0', deliverableRead: read },
     });
     const client = new Client({ name: 'real-owner-fixture', version: '1' });
     cleanup.push(async () => {
@@ -266,6 +266,7 @@ suite('SDK deliverable_read: real owners, test-only qualification', () => {
     const { input, object } = await seed('source.txt');
     const { client, read, get } = await connect();
     expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+      'identity_read',
       'deliverable_read',
     ]);
     await expect(
@@ -273,13 +274,14 @@ suite('SDK deliverable_read: real owners, test-only qualification', () => {
     ).rejects.toMatchObject({ code: ErrorCode.InvalidParams });
     expect(read).not.toHaveBeenCalled();
     const projection = expected(input.objectId, 'source.txt');
-    for (const [args, value] of [
+    const cases: [Record<string, unknown>, ReturnType<typeof expected>][] = [
       [input, projection],
       [
         { ...input, offset: 6, limit: 5 },
         { ...projection, content: '回款出处。', offset: 6, truncated: true },
       ],
-    ])
+    ];
+    for (const [args, value] of cases)
       expect(await call(client, args)).toEqual({
         content: [{ type: 'text', text: JSON.stringify(value) }],
         structuredContent: value,
