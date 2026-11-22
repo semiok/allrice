@@ -24,8 +24,12 @@ import {
   expect,
   it,
 } from 'vitest';
-import { startInstalledProfile } from './installed-profile';
+import {
+  installedFixtureComposition,
+  startInstalledProfile,
+} from './installed-profile';
 import { writeEmployeePanelsFixture } from './employee-panels-fixture';
+import { writeEmployeePanelsReferenceCarrier } from './employee-panels-reference-carrier';
 import {
   panelsRev2Head,
   writeEmployeePanelsBaseline,
@@ -44,12 +48,8 @@ import {
   observePanelsNetwork,
   PanelsNetworkErrors,
 } from './employee-panels-network-errors';
-import {
-  panelsReplayOrigin,
-  servePanelsReplay,
-  type PanelsReplayAssetReceipt,
-} from './employee-panels-replay-route';
 import { readPanelsRenderingDiagnostics } from './employee-panels-rendering-diagnostics';
+import type {} from './fixtures/employee-panels/reference';
 
 const suite =
   process.env.ALLRICE_RUN_BROWSER_INTEGRATION === '1'
@@ -159,6 +159,8 @@ const inspectContent = (page: Page, kind: Kind, includePaint = false) =>
         height,
         display: s.display,
         position: s.position,
+        styleAttribute: element.getAttribute('style'),
+        referenceCarrier: element.getAttribute('data-panels-reference-carrier'),
         boxSizing: s.boxSizing,
         fontFamily: s.fontFamily,
         fontSize: s.fontSize,
@@ -253,6 +255,19 @@ const inspectContent = (page: Page, kind: Kind, includePaint = false) =>
               .map(paintNode),
             activeElement: document.activeElement?.tagName,
             elementAtViewportOrigin: document.elementFromPoint(0, 0)?.tagName,
+            referenceStyle:
+              document
+                .querySelector('style[data-panels-reference-carrier]')
+                ?.getAttribute('data-panels-reference-carrier') ?? null,
+            currentProductStyles: document.querySelectorAll(
+              'style[data-allrice-employee-sidebar]',
+            ).length,
+            framework: document.documentElement.getAttribute(
+              'data-allrice-framework',
+            ),
+            subagentCatalogs: document.querySelectorAll(
+              '[role="tree"][aria-label="子智能体会话"]',
+            ).length,
           }
         : undefined,
     };
@@ -263,12 +278,13 @@ const inspectContent = (page: Page, kind: Kind, includePaint = false) =>
 suite('installed native employee panels with synthetic business owner', () => {
   let browser: Browser, context: BrowserContext, page: Page, artifacts: string;
   let host: Awaited<ReturnType<typeof startInstalledProfile>>;
-  let baselineHtml: string;
-  let baselineFavicon: Buffer;
+  let referenceHost: Awaited<ReturnType<typeof startInstalledProfile>>;
+  let reference: Awaited<
+    ReturnType<typeof writeEmployeePanelsReferenceCarrier>
+  >;
   let state: PanelsState = 'list';
   type Observation = Awaited<ReturnType<typeof observePanelsNetwork>>;
   const network = new PanelsNetworkErrors();
-  const replayAssets: PanelsReplayAssetReceipt[] = [];
   const observations = new Map<Page, Observation>();
   const pending: {
       route: Route;
@@ -409,13 +425,17 @@ suite('installed native employee panels with synthetic business owner', () => {
     await mkdir(parent, { recursive: true });
     artifacts = await mkdtemp(join(parent, 'employee-panels-'));
     console.info(`Synthetic-owner native panels evidence: ${artifacts}`);
-    const fixture = await writeEmployeePanelsFixture(artifacts);
-    const baseline = await writeEmployeePanelsBaseline(artifacts);
-    baselineHtml = await readFile(baseline, 'utf8');
-    baselineFavicon = await readFile(
-      new URL('../../../apps/web/public/favicon.ico', import.meta.url),
-    );
+    // Preserve the historical IIFE/metadata separately. Expected now uses a
+    // new callable executable with its own source/bundle/CSS/manifest identity.
+    await writeEmployeePanelsBaseline(artifacts);
+    reference = await writeEmployeePanelsReferenceCarrier(artifacts);
+    const fixture = await writeEmployeePanelsFixture(artifacts, reference);
     host = await startInstalledProfile(fixture);
+    // A separate isolated native profile excludes the current AllRice client:
+    // its body-inline token layer would override the original reference globals.
+    referenceHost = await startInstalledProfile(fixture, {
+      referenceOnly: true,
+    });
     browser = await chromium.launch({
       headless: true,
       ...(process.env.ALLRICE_BROWSER_EXECUTABLE
@@ -443,6 +463,12 @@ suite('installed native employee panels with synthetic business owner', () => {
           reducedMotion: 'reduce',
           businessOwner: 'synthetic only; no authenticated BFF/MCP or model',
           rev2Head: panelsRev2Head,
+          referenceCarrier: {
+            id: reference.id,
+            metadataSha256: reference.metadataSha256,
+            metadata: reference.metadata,
+            profile: installedFixtureComposition(true),
+          },
           productSha256: createHash('sha256')
             .update(
               await readFile(new URL('../dist/client.js', import.meta.url)),
@@ -532,7 +558,10 @@ suite('installed native employee panels with synthetic business owner', () => {
           requests: network.requests,
           logs: network.logs,
           audit: network.audit(),
-          replayAssets,
+          referenceCarrier: {
+            id: reference.id,
+            metadataSha256: reference.metadataSha256,
+          },
         },
         null,
         2,
@@ -544,7 +573,11 @@ suite('installed native employee panels with synthetic business owner', () => {
     try {
       await browser?.close();
     } finally {
-      await host?.close();
+      try {
+        await referenceHost?.close();
+      } finally {
+        await host?.close();
+      }
     }
   });
 
@@ -729,6 +762,25 @@ suite('installed native employee panels with synthetic business owner', () => {
       it(`compares original rev2 content at ${width}/${theme} across all applicable states`, async () => {
         await page.setViewportSize({ width, height: 1000 });
         await command('setTheme', theme);
+        // The public native token exchange redirects to './' and drops query
+        // parameters. Mint its real isolated cookie first (no browser JS), then
+        // navigate to a token-free carrier URL with its options intact.
+        const authenticated = await context.request.get(referenceHost.authUrl);
+        await writeFile(
+          join(artifacts, `${width}-${theme}-reference-auth.json`),
+          JSON.stringify(
+            {
+              status: authenticated.status(),
+              origin: new URL(authenticated.url()).origin,
+              method: 'GET',
+              source:
+                'real isolated native launch-token cookie exchange; token/cookie values not retained',
+            },
+            null,
+            2,
+          ),
+        );
+        expect(authenticated.status()).toBe(200);
         const baseline = await context.newPage();
         observations.set(
           baseline,
@@ -739,23 +791,17 @@ suite('installed native employee panels with synthetic business owner', () => {
             network,
           ),
         );
-        await baseline.route(panelsReplayOrigin + '/**', (route) =>
-          servePanelsReplay(
-            route,
-            baselineHtml,
-            baselineFavicon,
-            replayAssets,
-            businessRoute,
-          ),
-        );
+        await baseline.route('**/api/v1/**', businessRoute);
         await baseline.setViewportSize({ width, height: 1000 });
         const comparisons: unknown[] = [];
+        const opened: Kind[] = [];
         for (const value of panelStates)
           for (const kind of kinds) {
             const prefix = `${width}-${theme}-${value}-${kind}`;
             try {
               await changeState(value);
               await open(kind);
+              if (!opened.includes(kind)) opened.push(kind);
               const budget = await inspectContent(page, kind);
               const query = new URLSearchParams({
                 kind,
@@ -763,15 +809,118 @@ suite('installed native employee panels with synthetic business owner', () => {
                 theme,
                 paneWidth: String(budget.parent.width),
                 paneHeight: String(budget.parent.height),
+                allricePanelsReference: reference.id,
               });
+              const referenceUrl = new URL(referenceHost.origin);
+              for (const [key, value] of query)
+                referenceUrl.searchParams.set(key, value);
               await Promise.all([
                 catalogResponse(baseline, kind, value),
-                baseline.goto(panelsReplayOrigin + '/?' + query),
+                (async () => {
+                  await baseline.goto(referenceUrl.href);
+                  await baseline.waitForFunction(
+                    () =>
+                      !!window.__allricePanelsReference ||
+                      [...document.querySelectorAll('button')].some((button) =>
+                        /^(Continue|继续)$/.test(
+                          button.textContent?.trim() ?? '',
+                        ),
+                      ),
+                  );
+                  const proceed = baseline.getByRole('button', {
+                    name: /^(Continue|继续)$/,
+                  });
+                  if (await proceed.isVisible()) await proceed.click();
+                  await baseline.waitForFunction(
+                    () =>
+                      window.__allricePanelsReference?.evidence()
+                        .retainedReady &&
+                      window.__allricePanelsReference.evidence().sessionId !==
+                        null,
+                  );
+                  // Public native Escape clears the transient child catalog.
+                  // Never delete/hide its DOM or bypass an obstructed click.
+                  const trigger = baseline.getByRole('button', {
+                    name: '1 个子智能体',
+                    exact: true,
+                  });
+                  const initial = {
+                    expanded: await trigger.getAttribute('aria-expanded'),
+                    trees: await baseline
+                      .getByRole('tree', {
+                        name: '子智能体会话',
+                        includeHidden: true,
+                      })
+                      .count(),
+                  };
+                  await writeFile(
+                    join(artifacts, `${prefix}-reference-initial-catalog.json`),
+                    JSON.stringify(initial, null, 2),
+                  );
+                  await trigger.press('Escape');
+                  await baseline
+                    .getByRole('tree', {
+                      name: '子智能体会话',
+                      includeHidden: true,
+                    })
+                    .waitFor({ state: 'detached' });
+                  expect(await trigger.getAttribute('aria-expanded')).toBe(
+                    'false',
+                  );
+                  await baseline.evaluate(
+                    (opened) => window.__allricePanelsReference!.open(opened),
+                    opened,
+                  );
+                })(),
               ]);
               await body(baseline, kind).waitFor({ state: 'visible' });
               await contentReady(baseline, kind, value);
-              await page.mouse.move(0, 0);
-              await baseline.mouse.move(0, 0);
+              const pointer = await (async () => {
+                for (const point of [
+                  { x: Math.floor(width / 2), y: 0 },
+                  { x: 0, y: 0 },
+                  { x: width - 1, y: 0 },
+                ]) {
+                  const controls = await Promise.all(
+                    [page, baseline].map((view) =>
+                      view.evaluate(
+                        ({ point, name }) => {
+                          const root = [
+                            ...document.querySelectorAll('section'),
+                          ].find(
+                            (node) =>
+                              node.getAttribute('aria-label') === name &&
+                              node.getBoundingClientRect().width > 0,
+                          );
+                          const hit = document.elementFromPoint(
+                            point.x,
+                            point.y,
+                          );
+                          return {
+                            neutral:
+                              !!root &&
+                              !!hit &&
+                              !root.contains(hit) &&
+                              !hit.closest(
+                                'button,a,input,select,textarea,[role="button"],[aria-haspopup]',
+                              ),
+                            hit: hit?.tagName,
+                            label: hit?.getAttribute('aria-label'),
+                          };
+                        },
+                        { point, name: names[kind] },
+                      ),
+                    ),
+                  );
+                  if (controls.every((control) => control.neutral))
+                    return { point, controls };
+                }
+                throw Error(
+                  'No shared public neutral pointer point outside both panel contents',
+                );
+              })();
+              await page.mouse.move(pointer.point.x, pointer.point.y);
+              await baseline.mouse.move(pointer.point.x, pointer.point.y);
               for (const view of [page, baseline]) {
                 await view.evaluate(async () => {
                   if (document.activeElement instanceof HTMLElement)
@@ -798,6 +947,11 @@ suite('installed native employee panels with synthetic business owner', () => {
                 actual,
                 expected,
                 pixels,
+                pointer,
+                referenceCarrier: reference.metadataSha256,
+                referenceEvidence: await baseline.evaluate(() =>
+                  window.__allricePanelsReference!.evidence(),
+                ),
               };
               comparisons.push(result);
               // Preserve both screenshots, full frames and every detailed geometry
@@ -814,6 +968,86 @@ suite('installed native employee panels with synthetic business owner', () => {
                 path: join(artifacts, `${prefix}-rev2-frame.png`),
                 fullPage: true,
               });
+              // Original globals are document-wide on reference only. Keep the
+              // real public Host's resulting budget/clip/placement accountable.
+              for (const key of ['x', 'y', 'width', 'height'] as const) {
+                expect
+                  .soft(
+                    Math.abs(actual.parent[key] - expected.parent[key]),
+                    prefix + ' native slot budget ' + key,
+                  )
+                  .toBeLessThanOrEqual(0.5);
+                expect
+                  .soft(
+                    Math.abs(actual.root[key] - budget.root[key]),
+                    prefix + ' actual original placement ' + key,
+                  )
+                  .toBeLessThanOrEqual(0.5);
+              }
+              expect
+                .soft(
+                  actual.paintEvidence!.referenceStyle,
+                  prefix + ' no reference CSS on actual',
+                )
+                .toBeNull();
+              expect
+                .soft(
+                  expected.paintEvidence!.referenceStyle,
+                  prefix + ' reference CSS identity',
+                )
+                .toBe(reference.metadataSha256);
+              expect
+                .soft(
+                  actual.paintEvidence!.currentProductStyles,
+                  prefix + ' installed actual product',
+                )
+                .toBe(1);
+              expect
+                .soft(
+                  expected.paintEvidence!.currentProductStyles,
+                  prefix + ' independent pinned reference',
+                )
+                .toBe(0);
+              expect
+                .soft(actual.parent.referenceCarrier, prefix + ' actual owner')
+                .toBeNull();
+              expect
+                .soft(
+                  expected.parent.referenceCarrier,
+                  prefix + ' pinned reference owner',
+                )
+                .toBe(reference.id);
+              expect
+                .soft(
+                  result.referenceEvidence,
+                  prefix + ' actual reference registration',
+                )
+                .toMatchObject({
+                  carrier: reference.id,
+                  kind,
+                  state: value,
+                  theme,
+                  retainedReady: true,
+                  sessionId: sessions[0],
+                  activeKind: `allrice-employee-panels.${kind}`,
+                  expanded: true,
+                });
+              for (const side of [actual, expected]) {
+                expect
+                  .soft(
+                    side.paintEvidence!.subagentCatalogs,
+                    prefix + ' transient catalog closed',
+                  )
+                  .toBe(0);
+                expect
+                  .soft(
+                    side.paintEvidence!.nodes.some(
+                      (node) => node.hovered || node.focused,
+                    ),
+                    prefix + ' neutral real pointer/focus',
+                  )
+                  .toBe(false);
+              }
               expect
                 .soft(
                   Math.abs(actual.root.width - expected.root.width),

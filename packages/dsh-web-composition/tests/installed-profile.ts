@@ -190,11 +190,34 @@ export async function runInstalledProfilePnpm(
   }
 }
 
+/** Public test-profile difference only. Actual/default clients remain unchanged;
+ * the independent expected Host must not inherit current product inline tokens. */
+export function installedFixtureComposition(referenceOnly = false) {
+  return {
+    clientInject: [
+      '@deepseek-ai/dsh-api-session-controller',
+      '@deepseek-ai/dsh-api-workspace-controller',
+      '@deepseek-ai/dsh-client-ui-workspace',
+      '@deepseek-ai/dsh-client-ui-theme',
+      referenceOnly
+        ? '@deepseek-ai/dsh-client-ui-sidebar-right'
+        : '@allrice/dsh-web-composition',
+    ],
+    patch: referenceOnly
+      ? [{ id: 'allrice-web-composition', disabled: true }]
+      : [],
+  };
+}
+
 /** Installs a real product tarball into an isolated credential-free native Host. */
 export async function startInstalledProfile(
   fixtureClient = new URL('./fixtures/client.js', import.meta.url),
-  options: { fixtureGlobals?: Record<string, unknown> } = {},
+  options: {
+    fixtureGlobals?: Record<string, unknown>;
+    referenceOnly?: boolean;
+  } = {},
 ) {
+  const composition = installedFixtureComposition(options.referenceOnly);
   const root = await realpath(
     await mkdtemp(join(tmpdir(), 'allrice-composition-browser-')),
   );
@@ -298,13 +321,7 @@ export async function startInstalledProfile(
           manifestVersion: 1,
           client: {
             platform: 'web',
-            inject: [
-              '@deepseek-ai/dsh-api-session-controller',
-              '@deepseek-ai/dsh-api-workspace-controller',
-              '@deepseek-ai/dsh-client-ui-workspace',
-              '@deepseek-ai/dsh-client-ui-theme',
-              '@allrice/dsh-web-composition',
-            ],
+            inject: composition.clientInject,
           },
         },
       }),
@@ -346,6 +363,7 @@ export async function startInstalledProfile(
         },
         { id: 'session-title-llm', disabled: true },
         { id: 'agent-instructions', disabled: true },
+        ...composition.patch,
       ]),
     );
     await mkdir(join(dshHome, 'storages'), { recursive: true });

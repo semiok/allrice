@@ -3,10 +3,14 @@ import { writeFile } from 'node:fs/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { build } from 'esbuild';
+import type { writeEmployeePanelsReferenceCarrier } from './employee-panels-reference-carrier';
 
 /** Build only the separate synthetic owner package. Product is loaded from the
  * installed tarball through its actual public module-table export. */
-export async function writeEmployeePanelsFixture(artifacts: string) {
+export async function writeEmployeePanelsFixture(
+  artifacts: string,
+  reference?: Awaited<ReturnType<typeof writeEmployeePanelsReferenceCarrier>>,
+) {
   const result = await build({
     entryPoints: [
       fileURLToPath(
@@ -49,7 +53,14 @@ export async function writeEmployeePanelsFixture(artifacts: string) {
     throw Error(
       'Fixture bundled a product contribution or forbidden page controller',
     );
-  const client = `window.__ModuleLoader__.load({id:'@allrice/composition-test-fixture',factory:(require)=>{const module={exports:{}};const exports=module.exports;${js}\nconst fixture=module.exports.createFixture(require);const apply=fixture.apply;fixture.apply=(ctx)=>{ctx.effect(()=>{const style=document.createElement('style');style.dataset.syntheticPanelsOwner='';style.textContent=${JSON.stringify(css)};document.head.append(style);return()=>style.remove();});apply(ctx);};return fixture;}});\n`;
+  // Keep the default payload unchanged for historical A/B/C/D callers. Only
+  // the formal suite opts into a separately identified reference executable.
+  const client = reference
+    ? `window.__ModuleLoader__.load({id:'@allrice/composition-test-fixture',factory:(require)=>{
+const requestedReference=new URLSearchParams(location.search).get('allricePanelsReference');if(requestedReference!==null&&requestedReference!==${JSON.stringify(reference.id)})throw Error('Unknown reference carrier identity');const referenceMode=requestedReference!==null;
+const fixture=referenceMode?(()=>{const module={exports:{}};const exports=module.exports;${reference.javascript}\nreturn module.exports.createReferenceFixture();})():(()=>{const module={exports:{}};const exports=module.exports;${js}\nreturn module.exports.createFixture(require);})();
+const apply=fixture.apply;fixture.apply=(ctx)=>{ctx.effect(()=>{const style=document.createElement('style');const html=document.documentElement;const previous=html.getAttribute('data-allrice-framework');if(referenceMode){style.dataset.panelsReferenceCarrier=${JSON.stringify(reference.metadataSha256)};html.setAttribute('data-allrice-framework','v2');}else style.dataset.syntheticPanelsOwner='';style.textContent=referenceMode?${JSON.stringify(reference.globals + '\n' + reference.components)}:${JSON.stringify(css)};document.head.append(style);return()=>{style.remove();if(referenceMode){if(html.getAttribute('data-allrice-framework')!=='v2')throw Error('Reference framework attribute changed outside fixture');if(previous===null)html.removeAttribute('data-allrice-framework');else html.setAttribute('data-allrice-framework',previous);}};});apply(ctx);};return fixture;}});\n`
+    : `window.__ModuleLoader__.load({id:'@allrice/composition-test-fixture',factory:(require)=>{const module={exports:{}};const exports=module.exports;${js}\nconst fixture=module.exports.createFixture(require);const apply=fixture.apply;fixture.apply=(ctx)=>{ctx.effect(()=>{const style=document.createElement('style');style.dataset.syntheticPanelsOwner='';style.textContent=${JSON.stringify(css)};document.head.append(style);return()=>style.remove();});apply(ctx);};return fixture;}});\n`;
   const file = join(artifacts, 'panels-fixture-client.js');
   await writeFile(file, client);
   await writeFile(
@@ -61,6 +72,19 @@ export async function writeEmployeePanelsFixture(artifacts: string) {
         inputs,
         clientSha256: createHash('sha256').update(client).digest('hex'),
         cssBytes: Buffer.byteLength(css),
+        ...(reference
+          ? {
+              referenceCarrier: {
+                id: reference.id,
+                metadataSha256: reference.metadataSha256,
+                entrySha256: reference.metadata.entrySha256,
+                artifacts: reference.metadata.artifacts,
+                combinedCssSha256: createHash('sha256')
+                  .update(reference.globals + '\n' + reference.components)
+                  .digest('hex'),
+              },
+            }
+          : {}),
       },
       null,
       2,
