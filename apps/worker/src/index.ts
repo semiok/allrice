@@ -18,6 +18,8 @@ import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createNativeRunDiagnosticsHttpHandler } from './native-run-diagnostics-http.js';
+import { createDEntryHttpHandler } from './d-entry/http.js';
+import { createDEntryMuxHandler } from './d-entry/mux.js';
 import { createWorkerReadinessResponder } from './worker-readiness.js';
 
 import {
@@ -428,7 +430,10 @@ const nativeRunDiagnosticsHttp = createNativeRunDiagnosticsHttpHandler(
   httpAborter.signal,
 );
 const respondWorkerReadiness = createWorkerReadinessResponder();
+const dEntryHttp = createDEntryHttpHandler(undefined, httpAborter.signal);
+const dEntryMux = createDEntryMuxHandler(undefined, httpAborter.signal);
 const server = createServer(async (request, response) => {
+  if (await dEntryHttp(request, response, stopping)) return;
   if (await nativeRunDiagnosticsHttp(request, response, stopping)) return;
   response.setHeader('content-type', 'application/json; charset=utf-8');
   if (/^[a-f0-9]{40}$/.test(process.env.ALLRICE_RELEASE_SHA ?? ''))
@@ -809,6 +814,14 @@ const cloudPreviewTransport = process.env.ALLRICE_CLOUD_PREVIEW_SOCKET
     )
   : null;
 const httpListenObservation = startup.start('http_listen');
+server.on('upgrade', (request, socket, head) => {
+  if (dEntryMux.matches(request)) {
+    void dEntryMux.upgrade(request, socket, head).catch(() => {});
+  } else
+    socket.end(
+      'HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n',
+    );
+});
 server.listen(port, '0.0.0.0', () => {
   httpListenObservation.complete();
   startup.mark('http_listening');
@@ -841,6 +854,8 @@ function shutdown(signal: string) {
       { name: 'pressure_log', run: stopPressureLog },
       { name: 'queue_wakeup', run: () => queueWakeup?.stop() },
       { name: 'mcp_abort', run: () => mcpDiscoveryAborter.abort() },
+      { name: 'd_entry_mux', run: () => dEntryMux.close() },
+      { name: 'd_entry_http', run: () => dEntryHttp.close() },
       {
         name: 'maintenance_abort',
         run: () => maintenanceReportingAborter.abort(),

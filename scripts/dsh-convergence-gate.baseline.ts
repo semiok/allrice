@@ -436,6 +436,33 @@ export const baseline: readonly BaselineEntry[] = [
   },
   {
     kind: 'patch',
+    id: 'allrice-person-vm-entry-admission-v1',
+    category: '租约',
+    basis:
+      'MET-271 F4：入口只消费同一模型宿主公开 boundary/participant，当前身份及原生根门卫不变；真实 owner 关闭全部子操作后才返回业务 outcome，未知 close 直接拒绝，旧执行不换标签重放。DSH 不持有 AllRice 多租户/双宿主准入权威；本片不建 SQL、VM 或 Agent 状态机，最终 producer/实际 owner 仍未绑定。',
+    approvedBy:
+      '2026-11-21 用户批准 MET-271 F4 consumer 及最新 join 语义准备；本片不接生产、不运行真实 VM/模型/SQL，沿既有门卫/租约范围。',
+  },
+  {
+    kind: 'patch',
+    id: 'allrice-d-entry-native-root-v1',
+    category: '存储后端',
+    basis:
+      'MET-271：DSH 原生 session/create 持有根身份，AllRice 只在现有业务 Session 保存完整 scope/员工发布的不可变 at-most-once claim 与真实创建回执；claim 成功 ACK 前不 dispatch、未知结果不换键重放；0251 不造 Run/Job/Agent 状态，不改 legacy origin/binder，临时 lease/job 换代不重建 root。',
+    approvedBy:
+      '2026-11-21 用户已批准线程唯一 executionGeneration/可信本人员工入口；主线明确续做271自有4.0 root producer，0251由主线评论3e74a856协调。',
+  },
+  {
+    kind: 'patch',
+    id: 'allrice-native-web-entry-guard-v1',
+    category: '门卫',
+    basis:
+      'MET-271：原会话 Bearer 在现有 Worker listener 重新鉴权，复用平台 settings 默认关闭发布名单、不可变宿主 root pin、rc.2 生成 codec/Mux frame parser。逐方法/资源现权限制网页子会话只读，原生父指挥不变；0251事务内通知只提示现权SQL复核，先订阅后重核，真实session期限/断线取消并join，非Map/轮询权威。原生尾帧无效果丢弃；缺真实transport/envelope时拒绝，不新增监听器、VM权威或Agent生命周期。',
+    approvedBy:
+      '2026-11-21 用户正式授权 MET-271 剩余 release-policy、原会话 Web/Worker HTTP/WS adapters、可信 root 组合与服务端 Mux 子会话只读；冻结 NATIVE-WEB-OWNER-SEAM-v1。',
+  },
+  {
+    kind: 'patch',
     id: 'allrice-reference-read-v1',
     category: '业务工具',
     basis:

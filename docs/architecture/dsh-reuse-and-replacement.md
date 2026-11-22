@@ -324,6 +324,28 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 以下条目的复核日期/版本统一继承“本轮复核”。测试路径以仓库根目录为起点。退役必须在同一 PR 删除相应旧实现、更新机器清单并留下验证结果；一项适配中的少量机制可退役，不代表它承担的整项治理责任可以删除。
 
+### `allrice-d-entry-native-root-v1`
+
+- MET-271，用户 2026-11-21 已批准可信本人/员工、线程单代入口，主线续派 271 自有 root producer；四类为存储后端。DSH rc.2 `session/create` 返回真实普通根，可能与请求 id 不同；直接消费生成 input/result codec，不从 catalog 列表或 guest JSON 任选根。
+- 0251 在既有 chat Session 增不可变 JSONB claim 与真实结果 pin 两个事实，保完整 org/workspace/person/employee instance/revision/version/release 和原 host receipt；唯一性按持久 VM/员工 profile/native id scope。临时 instance/epoch/bindingRef 只作创建出处，正常重启不重建根。旧 native origin、3.x binder 和 Run/Job 不改，不造 Agent 状态。
+- 完整 scope/可信 operationId 的 claim 在短事务内由同一 chat 行锁串行领取，成功 ACK 后才允许原始宿主 callback 唯一 create；同 claim 真实返回与最终现权复核后落 pin。提交/结果未知时保留 claim、不算创建成功，后续同键或换键均不重放，无 TTL 或自动恢复；pin 已提交而回复丢失只读原 pin。并发请求读取已提交 claim 后拒绝 UNCONFIRMED、零 native dispatch，不持第二套 advisory 连接锁。最终仍核当前本人/员工政策；整份名单的无关修改不作本人撤权，出生 revision 保留出处。真实原生认证/数据面和完整 envelope owner 仍由正式273宿主提供，替身不证明原生创建/VM验收。退役须由原生正式提供同等 SaaS immutable business pin 时删除本适配及登记。
+
+### `allrice-native-web-entry-guard-v1`
+
+- MET-271，用户 2026-11-21 授权，四类为门卫。复用 rc.2 `TYPERT_REMOTE` strict codec、公开 Mux frame parser 和实际 session catalog；精确 endpoint/effect 对照源码，非 HTTP method/关键词推断。DSH Gateway 的 owner principal 绕过 remoteAccess，因此不透明转发 owner Cookie 无法提供 SaaS 子会话门卫。
+- Web/Worker 原监听器上具名 HTTP/WS 重新认证原 session Bearer、当前员工/发布名单、永久代际及宿主 root；网页 child 只读，native parent 控制不变。配置复用 allrice_settings/system 的平台管理源，默认3.x、仅精确人/员工条目开启4.0，无新表/env/UI。
+- 271 自有跨进程现权 producer 复用原 identity/employee/settings 权威表，0251事务内 PG 通知仅提示当前 SQL 重核，先订阅后重核，真实 session expiry/通知断线 abort，close 等已排队复核。新增精确锁定 pg driver 的公开 notification/error/end 接缝；原 postgres.js listen 只公开重连回调，无法在断线时保守取消。无轮询/进程Map权威。
+- 数据面必须注入真实每请求 owner handle、完整原 envelope 和真实撤权 signal；未知 acquire/close 仍 finally finish，不能把 iterator.return/AbortSignal 当物理 fence。原生已结束/未知流的无效果 cancel/end 尾帧丢弃，不拆其他流；所有写 open 与非法 uplink 仍严格门卫。现树无273 transport/full resolver正式组合，未装配时503；controlReady 不是 editorReady/canSend。
+- 验证为原 cookie/共享 DB、同 listener HTTP/WS、严格 codec、跨 root、子会话写入、空闲取消及真实 close Promise 的受影响完整文件。替身只证明 consumer 调用，生产 PG/物理 fence、原生页面可发送与联合验收仍待真实组合，不声称通过。
+
+### `allrice-person-vm-entry-admission-v1`
+
+- MET-271 F4 consumer 准备，用户 2026-11-21 已批准门卫/租约及 join 语义；当前 DSH `0.2.1-rc.2`，原生 source `687f282e8625c6b8d11ff58211a90524be2e4317`。原生 turn/子会话/等待/重试与 call 身份直接复用，不修改 DSH 或另建 Agent 状态机。
+- AllRice 只消费 model owner 的公开 admission v1/boundary（合同切片来源 #905 `c041d94c6984463c9ff9a068cba0db58ebc91e16`）；原完整业务 owner 校验和实际连接/typing/prewarm 的 close Promise 由正式宿主注入。DSH 不持有 SaaS 当前权限、双宿主准入与跨 host lease；entry 不构造共享 SQL/权威。
+- consumer 实现在 `packages/database/src/d-entry-admission.ts` 供 Web/Worker 同用，旧 Web 文件保留薄导出；只依赖 person-vm 公开合同，c041 finally finish/错误链及 queued/deferred 行为不变。
+- callback 内现权/abort 复核先于 acquire；已 join 的业务错误 fulfil 本地 outcome，外层 finally finish 后再抛。拿不到 handle 或实际 close 未知则 callback reject，并保业务/取消和 close/finish 的错误链。模型线已回交 c041 sticky unsafe 的独审/PG 结果；固定 n3 已带入完整 person-vm producer，entry 的真实 Host 装配、全域 close producer、完整 envelope resolver、物理 fence 和正式 transport 尚未绑定，不能以 invocation double 声称 PG/生产验收通过。
+- 退役：正式宿主提供等价、完整公开的 entry operation 生命周期并保留现权/原 call 身份和未知收尾责任时，替换该薄接缝并同步删 ledger/baseline。回滚只退准备 hook，不清旧 claim/permit/历史，不重放旧执行。关键 consumer 完整文件为 `admission-participant.test.ts`、`identity/d-entry.test.ts`；真实 producer/PG 联验由主线在最终组合头安排，当前未跑。
+
 ### allrice-durable-native-question-wait-v1
 
 - MET-231 首轮复核 F1–F4：可信程序来源与原 Run/pause 编入 Host 生成的顶层 questionId，复用 strict v1 checkpoint 字段，不新增 PG 列/表或日志字段；legacy 在采纳答案前校验原 pause；模型 item/call ID 不能指定此顶层 ID。旧无标记题按普通题读取、不能 decide 当前 pause，进度门须重新提问。当前 Run 的程序题随公开 `turn.started` 更新网页投递 turn，Host 只接受当前 turn；PG 消费精确 Run/题/投递 turn 的 `question_resolved` 回执，已采纳后跨同 Run turn 仅凭既有 turn 记录收据结算，不扩大旧题提交权。回归包含真消息 API→PG claim→production Host/adapter→PG consume 与双子级结算换 turn。
