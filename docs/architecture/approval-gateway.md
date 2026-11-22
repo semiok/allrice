@@ -27,7 +27,11 @@ owner 的具名错误用 `ApprovalOwnerError` 按既有 `ApiErrorSchema` 或 `Re
 
 ## 数据、迁移与恢复
 
-模块版本迁移在 `packages/approval-gateway/migrations/0001_outbound_approvals.sql`。store 接收所属模块的 `Sql` 句柄，**不会自动建表**。批次部署方须将这个模块迁移接入受控部署清单、授权数据库连接与恢复集合后再挂服务；本 PR 不修改或执行共享 Dev 迁移。不冒填旧 3.x runtime approval 所要求的 policySnapshot/Run/execution 字段。
+唯一生效的 schema 定义在全局迁移 `packages/database/migrations/0252_approval_gateway_outbound_approvals.sql`，原模块的 `migrations/0001_outbound_approvals.sql` 已迁走，不保留第二份 SQL。`pnpm db:migrate` / `pnpm db:prepare` 沿用全局 runner 的事务、advisory lock 和 `allrice_schema_migrations` 账本执行并登记它；`db:verify` 与部署工具继续按全局迁移目录识别预期、待执行和未知迁移。数据库包现有 `migrations` 发布布局同时供源码和构建后的 runner 使用，无需导入审批网关或另加模块迁移入口。store 接收所属模块的 `Sql` 句柄，**不会自动建表**。不冒填旧 3.x runtime approval 所要求的 policySnapshot/Run/execution 字段。
+
+曾在隔离场景显式执行旧模块 0001、尚未登记全局迁移的表，可以由 runner 接管：迁移用同一建表定义生成事务内临时参照，持锁核对已有列、类型、空值要求、默认值、约束与索引，并拒绝额外的继承、行级策略或业务触发器。只有结构一致时才保留原行并由 runner 登记 0252；不覆盖已有表、不为结构不符的表补账本。失败时沿用 runner 的整笔事务回滚，包含本次 DDL 和账本写入。旧 0001 只执行 DDL，没有独立迁移账本；若有人另外手填未知迁移名，既有兼容门禁仍拒绝，不能将它加入 archive 绕过。
+
+实际部署仍须由发布主线通过迁移前 Dev 数据快照、隔离冒烟、停写、兼容性和恢复门禁。本次仅完成迁移接线，不执行共享 Dev 迁移。0252 执行后，缺少该迁移的旧版本会被 `db:verify` 和部署/回滚门禁拒绝；不能直接启动旧二进制，须按 `docs/runbooks/m1-database.md` 恢复经批准的迁移前快照或向前修复。审批业务账本已经产生外部效果时，仍遵守下文禁止回退后重发的恢复边界。
 
 冻结 digest 对规范排序 JSON（身份作用域 + 实际目标 + 正文 + 精确附件字节/摘要）计算，避免 JSONB 键顺序导致重启后误判。业务幂等键受本人/企业/工作区/员工/适配器隔离；重复键若字节改变直接冲突。store 的行锁一次性提交执行意图，之后任何重复调用均不再次 dispatch。接收端已提交但 ACK 未返回、进程崩溃或回执落库失败，一律保持 unknown；查不到回执不会伪造失败或清掉意图。首个受控失败分类（取消、发送错误、回执完整性、回执落库）和时间写入同一账本，后续故障/对账不覆盖；不保存外部异常原文或 SQL 参数。诊断写入也失败时返回 UNAVAILABLE，持久意图仍禁止补发。
 
@@ -38,6 +42,7 @@ owner 的具名错误用 `ApprovalOwnerError` 按既有 `ApiErrorSchema` 或 `Re
 - MCP 协议测试使用官方 SDK Client/InMemoryTransport，验证模型无法调用真人决策接口；它不是实际 DSH/VM 端到端验收。
 - 服务测试覆盖现权、跨人/VM epoch/摘要伪造、冻结附件、并发防重、拒绝/撤销、在途 abort、源文件变化。
 - `postgres.integration.test.ts` 使用独立 schema；真实子进程在合成接收端 fsync 后、ACK 前被杀，重建网关后只 lookup 回执、不重发。该文件声明为 CI 普通 DB 测试，不归 manual。
+- `packages/database/src/approval-migration-runner.integration.test.ts` 走真实迁移 CLI，覆盖自动建表/记账、重跑幂等、旧模块表与行接管、结构不符拒绝、账本写入失败时 DDL 回滚，以及旧版本迁移兼容门禁；资源为普通隔离 DB，不依赖 VM、模型或浏览器。
 - BFF handler 测试检查 Origin、独立 guest hostname、CSRF、实际服务端身份和只读附件；真正浏览器点击、跨 origin cookie、VM root 攻击和正式会话接线仍须联合验证。
 - 业务巡检应报告长期 unknown、owner 端口不可用、回执 digest 不匹配，不能将 tool success 或 Run succeeded 当外发成功；现有展示只回真实 `effect/receipt`。正式告警和后台装配随接线落地，未启用时不得声称已受监控。
 
