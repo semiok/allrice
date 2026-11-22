@@ -59,6 +59,13 @@ const layerEvidence = {
   internalCause: 'not assessed',
   fullLayerDiagnosticSatisfied: false,
 } as const;
+const pointerControl = {
+  method: 'mouse.move',
+  x: 720,
+  y: 0,
+  evidence:
+    'public input acknowledgement only; hover remains snapshot-controlled',
+} as const;
 const expectedPngs = labels
   .flatMap((label) =>
     ['frame', 'element', 'panel-window'].map((kind) => `${label}-${kind}.png`),
@@ -334,6 +341,7 @@ suite(
             acceptanceSatisfied: false,
             evidenceScope,
             layerEvidence,
+            pointerControl,
             cases: 1,
             phases,
             expectedPngs,
@@ -421,6 +429,15 @@ suite(
         label: (typeof labels)[number],
         inspectOwner = false,
       ) {
+        // A stationary cursor is not a fresh hover control after public placement.
+        // Re-issue the same real input for every capture, including return controls.
+        await page.mouse.move(pointerControl.x, pointerControl.y);
+        await settle(page);
+        journal.record(
+          page === native ? 'native' : 'reference',
+          label + '-pointer-control',
+          pointerControl,
+        );
         const value = await snapshot(page);
         const samplingBefore = {
           label,
@@ -880,6 +897,7 @@ suite(
           acceptanceSatisfied: false,
           evidenceScope,
           layerEvidence,
+          pointerControl,
           valid,
           effect,
           wrapperIdentity,
