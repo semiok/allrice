@@ -888,6 +888,12 @@ importers:
         specifier: ^19.2.0
         version: 19.2.0
 
+  packages/vm-memory:
+    dependencies:
+      '@allrice/person-vm':
+        specifier: workspace:*
+        version: link:../person-vm
+
 packages:
 
   '@anthropic-ai/sdk@0.129.0':
