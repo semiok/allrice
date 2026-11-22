@@ -27,6 +27,18 @@ export function getDatabase() {
   return client;
 }
 
+/** A caller-owned client from the trusted client's entire public configuration.
+ * No connection/pool handle is borrowed. The runtime accepts ParsedOptions'
+ * host/port arrays; its constructor declaration narrows those input fields. */
+export function createDedicatedDatabase(
+  db: Pick<ReturnType<typeof postgres>, 'options'>,
+) {
+  return postgres({
+    ...db.options,
+    max: 1,
+  } as unknown as NonNullable<Parameters<typeof postgres>[1]>);
+}
+
 export async function pingDatabase() {
   await getDatabase()`select 1 as ready`;
 }

@@ -26,7 +26,7 @@ import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import {
   bindCallerSourceQueries,
   closeCallerSourceQueries,
-  withReservedCallerTransaction,
+  withDedicatedCallerTransaction,
 } from './business-runtime/caller-transaction.ts';
 import { DataAccessError } from './data.ts';
 import { businessDeliverablePredicate } from './organization-dashboard.ts';
@@ -406,7 +406,7 @@ async function source(
     : getWorkbenchArtifact(context, v.session_id, id, db);
 }
 async function audit(
-  tx: postgres.TransactionSql | postgres.ReservedSql,
+  tx: postgres.TransactionSql | postgres.Sql,
   context: RequestContext,
   org: string,
   id: string,
@@ -530,7 +530,7 @@ export async function mutateCompanyAsset(
   let callbackCompleted = false;
   signal?.throwIfAborted();
   try {
-    const work = (tx: postgres.ReservedSql) => {
+    const work = (tx: postgres.Sql) => {
       return (async () => {
         await lockWorkspaceStorageQuota(tx, org, quotaWorkspace);
         signal?.throwIfAborted();
@@ -790,7 +790,7 @@ export async function mutateCompanyAsset(
         }
       })();
     };
-    await withReservedCallerTransaction(db, work, signal);
+    await withDedicatedCallerTransaction(db, work, signal);
   } catch (error) {
     // Callback success followed by commit/connection failure is unknown, not
     // proof of rollback. Never remove an object that may be committed.

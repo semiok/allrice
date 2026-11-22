@@ -1,5 +1,5 @@
 import { UuidSchema } from '@allrice/contracts';
-import type { TransactionSql, ReservedSql } from 'postgres';
+import type { TransactionSql, Sql } from 'postgres';
 
 /** Every storage increment takes this gate as its FIRST transaction lock,
  * before session, runtime root, operation, browser or task admission locks.
@@ -8,7 +8,7 @@ import type { TransactionSql, ReservedSql } from 'postgres';
  * Seed 42 retains the existing upload quota namespace; tenants do not share it.
  */
 export async function lockWorkspaceStorageQuota(
-  tx: TransactionSql | ReservedSql,
+  tx: TransactionSql | Sql,
   organizationId: string,
   workspaceId: string | null,
 ) {

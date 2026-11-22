@@ -1,4 +1,4 @@
-import type { ReservedSql, TransactionSql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import type {
   CompanyAssetMutation,
   EmployeeContentMutation,
@@ -6,7 +6,7 @@ import type {
   RequestContext,
   StoragePort,
 } from '@allrice/contracts';
-import { getDatabase } from '../core/client.ts';
+import { createDedicatedDatabase, getDatabase } from '../core/client.ts';
 import {
   listCompanyRuleSources,
   mutateCompanyAsset,
@@ -17,7 +17,7 @@ import { queryLegacyOriginForCaller } from './legacy-origin.ts';
 
 /** Trusted host composition of existing maintenance callers, not a native
  * execution/current-scope producer. Each caller retains its own SQL authority,
- * locks, CAS and reserved transaction. No SQL handle leaves this factory. */
+ * locks, CAS and dedicated transaction. No SQL handle leaves this factory. */
 export function createBusinessRuntimeCaller() {
   return Object.freeze({
     listCompanyRuleSources(
@@ -71,7 +71,7 @@ type SourceQuery<T> = PromiseLike<T> & { cancel?: () => unknown };
  * module/B/VM qualifications. Those missing producer contracts remain closed.
  */
 export function bindCallerSourceQueries(
-  tx: TransactionSql | ReservedSql,
+  tx: TransactionSql | Sql,
   scope: { organizationId: string; workspaceId: string },
   signal?: AbortSignal,
 ) {
@@ -183,7 +183,7 @@ export async function closeCallerSourceQueries(
 }
 
 /** @internal Historical comparison fixture; production writers use the
- * reserved lifecycle below. Join an already-started db.begin and callback.
+ * dedicated lifecycle below. Join an already-started db.begin and callback.
  * postgres3.4.9 may reject begin on connection close before its callback ends.
  * This starts no transaction and never reports that an unknown commit rolled
  * back. On normal commit, a later abort cannot replace the committed result. */
@@ -212,22 +212,22 @@ export async function joinCallerSave<T>(
   return result as T;
 }
 
-/** @internal Own only this reservation's explicit transaction. release() is
- * synchronous pool return, not physical close. No native begin/scope is used.
+/** @internal Own this dedicated max:1 client's explicit transaction and end.
+ * No shared-pool reservation or native begin/scope is used.
  * The existing callers use ordinary queries/fragments, not cursors/streams. */
-export async function withReservedCallerTransaction<T>(
-  db: Pick<ReturnType<typeof getDatabase>, 'reserve' | 'PostgresError'>,
-  work: (tx: ReservedSql) => Promise<T>,
+export async function withDedicatedCallerTransaction<T>(
+  db: Pick<ReturnType<typeof getDatabase>, 'options' | 'PostgresError'>,
+  work: (tx: Sql) => Promise<T>,
   signal?: AbortSignal,
 ): Promise<T> {
   signal?.throwIfAborted();
-  const reserved = await db.reserve();
+  const dedicated = createDedicatedDatabase(db);
   let accepting = true,
     began = false,
     committing = false,
     uncertain = false;
   let outcome: { value: T } | { error: unknown };
-  let releaseFailure: { error: unknown } | null = null;
+  let endFailure: { error: unknown } | null = null;
   const pending = new Set<Promise<unknown>>();
   const failures: unknown[] = [];
   const check = () => {
@@ -308,7 +308,7 @@ export async function withReservedCallerTransaction<T>(
     });
     return guarded;
   }
-  const tx = new Proxy(reserved, {
+  const tx = new Proxy(dedicated, {
     apply(target, receiver, args) {
       check();
       return wrap(Reflect.apply(target, receiver, args));
@@ -336,7 +336,7 @@ export async function withReservedCallerTransaction<T>(
       error.errors.some((child: unknown) => includes(child, item)));
   try {
     signal?.throwIfAborted();
-    await reserved`begin`;
+    await dedicated`begin`;
     began = true;
     signal?.throwIfAborted();
     const result = await work(tx);
@@ -345,7 +345,7 @@ export async function withReservedCallerTransaction<T>(
     if (failures.length) throw failures[0];
     signal?.throwIfAborted();
     committing = true;
-    await reserved`commit`;
+    await dedicated`commit`;
     outcome = { value: result };
   } catch (error) {
     accepting = false;
@@ -356,7 +356,7 @@ export async function withReservedCallerTransaction<T>(
     ];
     if (began && !committing && !uncertain) {
       try {
-        await reserved`rollback`;
+        await dedicated`rollback`;
       } catch (rollbackError) {
         errors.push(rollbackError);
       }
@@ -372,24 +372,24 @@ export async function withReservedCallerTransaction<T>(
             ),
     };
     // A failed COMMIT or transport query is unknown: never replay or claim
-    // rollback. release below cannot prove that the physical socket closed.
+    // rollback. A bounded end cannot turn an unknown commit into rollback.
   } finally {
     accepting = false;
     try {
-      reserved.release();
+      await dedicated.end({ timeout: 5 });
     } catch (error) {
-      releaseFailure = { error };
+      endFailure = { error };
     }
   }
   if ('error' in outcome) {
-    if (releaseFailure)
+    if (endFailure)
       throw new AggregateError(
-        [outcome.error, releaseFailure.error],
-        'caller_release_failed',
+        [outcome.error, endFailure.error],
+        'caller_end_failed',
         { cause: outcome.error },
       );
     throw outcome.error;
   }
-  if (releaseFailure) throw releaseFailure.error;
+  if (endFailure) throw endFailure.error;
   return outcome.value;
 }

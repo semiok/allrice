@@ -1,9 +1,14 @@
 /** Public-driver-shaped substitutes only; no test here proves a real disconnect. */
 import { setImmediate as turn } from 'node:timers/promises';
-import postgres, { type ReservedSql } from 'postgres';
-import { describe, expect, it, vi } from 'vitest';
-import { withReservedCallerTransaction } from './caller-transaction.ts';
+import postgres, { type Sql } from 'postgres';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { createDedicatedDatabase } from '../core/client.ts';
+import { withDedicatedCallerTransaction } from './caller-transaction.ts';
 
+vi.mock('../core/client.ts', () => ({
+  createDedicatedDatabase: vi.fn(),
+  getDatabase: vi.fn(),
+}));
 vi.mock('../company-assets.ts', () => ({
   listCompanyRuleSources: vi.fn(),
   mutateCompanyAsset: vi.fn(),
@@ -24,7 +29,7 @@ function deferred<T = void>() {
 function fixture(run: (sql: string) => unknown = () => []) {
   const operations: string[] = [];
   const cancel = vi.fn<() => void | null>(() => null);
-  const release = vi.fn();
+  const end = vi.fn(async () => {});
   function query(text: string) {
     let started: Promise<unknown> | undefined;
     return {
@@ -39,24 +44,55 @@ function fixture(run: (sql: string) => unknown = () => []) {
     };
   }
   // This is deliberately a partial driver substitute, never a production source.
-  const reserved = Object.assign(
+  const dedicated = Object.assign(
     (parts: TemplateStringsArray) => query(parts.join('$')),
-    { release, unsafe: query, json: (value: unknown) => value },
-  ) as unknown as ReservedSql;
+    { end, unsafe: query, json: (value: unknown) => value },
+  ) as unknown as Sql;
   const db = {
-    reserve: vi.fn(async () => reserved),
+    options: {},
+    reserve: vi.fn(),
+    end: vi.fn(),
     PostgresError: postgres.PostgresError,
-  };
-  return { db, operations, cancel, release, reserved };
+  } as unknown as Sql;
+  vi.mocked(createDedicatedDatabase).mockReturnValueOnce(dedicated);
+  return { db, operations, cancel, end, dedicated };
 }
 
-describe('caller-owned reserved transaction', () => {
-  it('commits once, keeps fragments lazy, and closes old handles before pool return', async () => {
+describe('caller-owned dedicated transaction', () => {
+  beforeEach(() => vi.mocked(createDedicatedDatabase).mockReset());
+  it('copies the entire trusted native configuration without changing the shared client', async () => {
+    const actual = await vi.importActual<{
+      createDedicatedDatabase: typeof createDedicatedDatabase;
+    }>('../core/client.ts');
+    const source = postgres('postgres://fixture:fixture@127.0.0.1:1/fixture', {
+      max: 3,
+      ssl: { rejectUnauthorized: true },
+      connection: { search_path: 'fixture,public', statement_timeout: 5432 },
+      types: {
+        number: { to: 23, from: [23], serialize: String, parse: Number },
+      },
+      transform: { column: { from: (name) => name.toUpperCase() } },
+    });
+    const dedicated = actual.createDedicatedDatabase(source);
+    try {
+      expect(dedicated).not.toBe(source);
+      expect(dedicated.options).not.toBe(source.options);
+      expect(dedicated.options).toEqual({ ...source.options, max: 1 });
+      expect(source.options.max).toBe(3);
+      expect(dedicated.options.ssl).toBe(source.options.ssl);
+      expect(dedicated.options.types).toBe(source.options.types);
+      expect(dedicated.options.transform).toBe(source.options.transform);
+    } finally {
+      await dedicated.end({ timeout: 5 });
+      await source.end({ timeout: 5 });
+    }
+  });
+  it('commits once, keeps fragments lazy, and closes old handles before client end', async () => {
     const f = fixture();
-    let saved: ReservedSql | undefined;
+    let saved: Sql | undefined;
     let lazy: PromiseLike<unknown> | undefined;
     expect(
-      await withReservedCallerTransaction(f.db, async (tx) => {
+      await withDedicatedCallerTransaction(f.db, async (tx) => {
         saved = tx;
         lazy = tx`select late`;
         const fragment = tx`where true`;
@@ -65,22 +101,20 @@ describe('caller-owned reserved transaction', () => {
       }),
     ).toBe('committed receipt');
     expect(f.operations).toEqual(['begin', 'select 1 $', 'commit']);
-    expect(f.release).toHaveBeenCalledTimes(1);
+    expect(f.end).toHaveBeenCalledTimes(1);
     if (!saved || !lazy) throw new Error('Actual callback handles required');
     const captured = saved;
-    expect(() => captured`select after release`).toThrow(
-      'authorization_denied',
-    );
+    expect(() => captured`select after end`).toThrow('authorization_denied');
     await expect(Promise.resolve(lazy)).rejects.toThrow('authorization_denied');
     expect(f.operations).toEqual(['begin', 'select 1 $', 'commit']);
   });
 
-  it('rereads a started result after release and abort without dispatching again', async () => {
+  it('rereads a started result after end and abort without dispatching again', async () => {
     const rows = [{ value: 'same result object' }];
     const f = fixture((text) => (text === 'select stable' ? rows : []));
     const controller = new AbortController();
     const handles: { query?: Promise<unknown> } = {};
-    await withReservedCallerTransaction(
+    await withDedicatedCallerTransaction(
       f.db,
       async (tx) => {
         handles.query = tx`select stable`;
@@ -97,7 +131,7 @@ describe('caller-owned reserved transaction', () => {
     expect(await query.finally(final)).toBe(rows);
     expect(final).toHaveBeenCalledTimes(1);
     expect(f.operations).toEqual(['begin', 'select stable', 'commit']);
-    expect(f.release).toHaveBeenCalledTimes(1);
+    expect(f.end).toHaveBeenCalledTimes(1);
   });
 
   it('rereads the original started query error while admission and old tx stay closed', async () => {
@@ -110,7 +144,7 @@ describe('caller-owned reserved transaction', () => {
     });
     const handles: { query?: Promise<unknown> } = {};
     await expect(
-      withReservedCallerTransaction(f.db, async (tx) => {
+      withDedicatedCallerTransaction(f.db, async (tx) => {
         const query = tx`select rejected`;
         handles.query = query;
         expect(await query.catch((error: unknown) => error)).toBe(failure);
@@ -128,12 +162,13 @@ describe('caller-owned reserved transaction', () => {
     await expect(query.finally(final)).rejects.toBe(failure);
     expect(final).toHaveBeenCalledTimes(1);
     expect(f.operations).toEqual(['begin', 'select rejected', 'rollback']);
-    expect(f.release).toHaveBeenCalledTimes(1);
+    expect(f.end).toHaveBeenCalledTimes(1);
   });
 
-  it('joins an already-started unawaited SQL before COMMIT and actual COMMIT before release', async () => {
+  it('joins an already-started unawaited SQL before COMMIT and actual COMMIT before end', async () => {
     const query = deferred(),
-      commit = deferred();
+      commit = deferred(),
+      ended = deferred();
     const entered = deferred();
     const f = fixture((sql) =>
       sql === 'select pending'
@@ -142,8 +177,9 @@ describe('caller-owned reserved transaction', () => {
           ? commit.promise
           : [],
     );
+    f.end.mockReturnValueOnce(ended.promise);
     let finished = false;
-    const saving = withReservedCallerTransaction(f.db, async (tx) => {
+    const saving = withDedicatedCallerTransaction(f.db, async (tx) => {
       void tx`select pending`.then(() => undefined);
       entered.resolve();
       return 'receipt';
@@ -158,10 +194,14 @@ describe('caller-owned reserved transaction', () => {
     query.resolve();
     await turn();
     expect(f.operations).toEqual(['begin', 'select pending', 'commit']);
-    expect(f.release).not.toHaveBeenCalled();
+    expect(f.end).not.toHaveBeenCalled();
     commit.resolve();
+    await turn();
+    expect(finished).toBe(false);
+    expect(f.end).toHaveBeenCalledWith({ timeout: 5 });
+    ended.resolve();
     expect(await saving).toBe('receipt');
-    expect(f.release).toHaveBeenCalledTimes(1);
+    expect(f.end).toHaveBeenCalledTimes(1);
   });
 
   it('awaits actual ROLLBACK and retains an ordinary callback error object', async () => {
@@ -171,15 +211,15 @@ describe('caller-owned reserved transaction', () => {
     const f = fixture((sql) =>
       sql === 'rollback' ? (entered.resolve(), rollback.promise) : [],
     );
-    const saving = withReservedCallerTransaction(f.db, async () => {
+    const saving = withDedicatedCallerTransaction(f.db, async () => {
       throw failure;
     }).catch((error: unknown) => error);
     await entered.promise;
-    expect(f.release).not.toHaveBeenCalled();
+    expect(f.end).not.toHaveBeenCalled();
     rollback.resolve();
     expect(await saving).toBe(failure);
     expect(f.operations).toEqual(['begin', 'rollback']);
-    expect(f.release).toHaveBeenCalledTimes(1);
+    expect(f.end).toHaveBeenCalledTimes(1);
   });
 
   it('does not admit a callback after failed BEGIN', async () => {
@@ -188,36 +228,39 @@ describe('caller-owned reserved transaction', () => {
       throw failure;
     });
     const work = vi.fn(async () => 'unadmitted');
-    await expect(withReservedCallerTransaction(f.db, work)).rejects.toBe(
+    await expect(withDedicatedCallerTransaction(f.db, work)).rejects.toBe(
       failure,
     );
     expect(work).not.toHaveBeenCalled();
     expect(f.operations).toEqual(['begin']);
-    expect(f.release).toHaveBeenCalledTimes(1);
+    expect(f.end).toHaveBeenCalledTimes(1);
   });
 
-  it('joins reservation acquisition after abort and returns it without BEGIN', async () => {
-    const f = fixture(),
-      acquired = deferred<ReservedSql>();
-    f.db.reserve.mockReturnValueOnce(acquired.promise);
+  it('joins an in-progress BEGIN after abort, rolls back, and ends without admitting the callback', async () => {
+    const begin = deferred(),
+      entered = deferred();
+    const f = fixture((text) =>
+      text === 'begin' ? (entered.resolve(), begin.promise) : [],
+    );
     const controller = new AbortController(),
-      reason = new Error('abort while acquiring');
+      reason = new Error('abort during handshake');
     const work = vi.fn(async () => 'unadmitted');
-    const saving = withReservedCallerTransaction(
+    const saving = withDedicatedCallerTransaction(
       f.db,
       work,
       controller.signal,
     ).catch((error: unknown) => error);
+    await entered.promise;
     controller.abort(reason);
-    expect(f.release).not.toHaveBeenCalled();
-    acquired.resolve(f.reserved);
+    expect(f.end).not.toHaveBeenCalled();
+    begin.resolve();
     expect(await saving).toBe(reason);
     expect(work).not.toHaveBeenCalled();
-    expect(f.operations).toEqual([]);
-    expect(f.release).toHaveBeenCalledTimes(1);
+    expect(f.operations).toEqual(['begin', 'rollback']);
+    expect(f.end).toHaveBeenCalledTimes(1);
   });
 
-  it.each(['rollback', 'release'] as const)(
+  it.each(['rollback', 'end'] as const)(
     'retains original and %s errors together',
     async (stage) => {
       const primary = new Error('caller refusal'),
@@ -226,11 +269,8 @@ describe('caller-owned reserved transaction', () => {
         if (stage === 'rollback' && sql === 'rollback') throw cleanup;
         return [];
       });
-      if (stage === 'release')
-        f.release.mockImplementationOnce(() => {
-          throw cleanup;
-        });
-      const error = await withReservedCallerTransaction(f.db, async () => {
+      if (stage === 'end') f.end.mockRejectedValueOnce(cleanup);
+      const error = await withDedicatedCallerTransaction(f.db, async () => {
         throw primary;
       }).catch((failure: unknown) => failure);
       expect(error).toBeInstanceOf(AggregateError);
@@ -238,7 +278,7 @@ describe('caller-owned reserved transaction', () => {
       expect(error.cause).toBe(primary);
       expect(error.errors).toEqual([primary, cleanup]);
       expect(f.operations).toEqual(['begin', 'rollback']);
-      expect(f.release).toHaveBeenCalledTimes(1);
+      expect(f.end).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -252,18 +292,20 @@ describe('caller-owned reserved transaction', () => {
       return [];
     });
     await expect(
-      withReservedCallerTransaction(f.db, async (tx) => {
+      withDedicatedCallerTransaction(f.db, async (tx) => {
         expect(() => tx.end()).toThrow('authorization_denied');
         await tx`select own`;
         return 'not a confirmed receipt';
       }),
     ).rejects.toBe(transport);
     expect(f.operations).toEqual(['begin', 'select own', 'commit']);
-    expect(f.db.reserve).toHaveBeenCalledTimes(1);
-    expect(f.release).toHaveBeenCalledTimes(1);
+    expect(createDedicatedDatabase).toHaveBeenCalledWith(f.db);
+    expect(f.db.reserve).not.toHaveBeenCalled();
+    expect(f.db.end).not.toHaveBeenCalled();
+    expect(f.end).toHaveBeenCalledTimes(1);
     const other = fixture();
     expect(
-      await withReservedCallerTransaction(other.db, async () => 'independent'),
+      await withDedicatedCallerTransaction(other.db, async () => 'independent'),
     ).toBe('independent');
     expect(other.operations).toEqual(['begin', 'commit']);
   });
@@ -279,7 +321,7 @@ describe('caller-owned reserved transaction', () => {
     const callbackFailure = new Error('callback cleanup rejected');
     const f = fixture((text) => (text === 'select pending' ? sql.promise : []));
     let finished = false;
-    const saving = withReservedCallerTransaction(f.db, async (tx) => {
+    const saving = withDedicatedCallerTransaction(f.db, async (tx) => {
       void tx`select pending`.catch(() => undefined);
       entered.resolve();
       await storage.promise;
@@ -293,7 +335,7 @@ describe('caller-owned reserved transaction', () => {
     sql.reject(transport);
     await turn();
     expect(finished).toBe(false);
-    expect(f.release).not.toHaveBeenCalled();
+    expect(f.end).not.toHaveBeenCalled();
     storage.resolve();
     const error = await saving;
     expect(error).toBeInstanceOf(AggregateError);
@@ -301,7 +343,7 @@ describe('caller-owned reserved transaction', () => {
     expect(error.cause).toBe(callbackFailure);
     expect(error.errors).toEqual([callbackFailure, transport]);
     expect(f.operations).toEqual(['begin', 'select pending']);
-    expect(f.release).toHaveBeenCalledTimes(1);
+    expect(f.end).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -320,7 +362,7 @@ describe('caller-owned reserved transaction', () => {
       );
       f.cancel.mockReturnValue(cancelResult);
       let finished = false;
-      const saving = withReservedCallerTransaction(
+      const saving = withDedicatedCallerTransaction(
         f.db,
         async (tx) => {
           const reading = tx`select pending`;
@@ -346,7 +388,7 @@ describe('caller-owned reserved transaction', () => {
       expect(f.cancel).toHaveBeenCalledTimes(1);
       await turn();
       expect(finished).toBe(false);
-      expect(f.release).not.toHaveBeenCalled();
+      expect(f.end).not.toHaveBeenCalled();
       if (rejectSQL) sql.reject(sqlFailure);
       else sql.resolve();
       expect(await saving).toBe(rejectSQL ? sqlFailure : reason);
@@ -355,7 +397,7 @@ describe('caller-owned reserved transaction', () => {
           ? ['begin', 'select pending']
           : ['begin', 'select pending', 'rollback'],
       );
-      expect(f.release).toHaveBeenCalledTimes(1);
+      expect(f.end).toHaveBeenCalledTimes(1);
     },
   );
 
@@ -366,13 +408,13 @@ describe('caller-owned reserved transaction', () => {
       return [];
     });
     expect(
-      await withReservedCallerTransaction(
+      await withDedicatedCallerTransaction(
         f.db,
         async () => 'committed',
         controller.signal,
       ),
     ).toBe('committed');
     expect(f.operations).toEqual(['begin', 'commit']);
-    expect(f.release).toHaveBeenCalledTimes(1);
+    expect(f.end).toHaveBeenCalledTimes(1);
   });
 });

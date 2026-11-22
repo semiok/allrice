@@ -67,7 +67,7 @@ import { assertEmployeeContentRetirement } from './employee-content-retirement.t
 import {
   bindCallerSourceQueries,
   closeCallerSourceQueries,
-  withReservedCallerTransaction,
+  withDedicatedCallerTransaction,
 } from '../business-runtime/caller-transaction.ts';
 export { EmployeeContentError } from './employee-content-model.ts';
 
@@ -593,7 +593,7 @@ export async function mutateEmployeeContent(
   signal?.throwIfAborted();
   const input = EmployeeContentMutationSchema.parse(raw);
   const context = { ...contextInput, workspaceId: input.workspaceId };
-  return withReservedCallerTransaction(
+  return withDedicatedCallerTransaction(
     db,
     (tx) => mutateEmployeeContentInTransaction(context, input, tx, { signal }),
     signal,

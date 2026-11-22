@@ -1,7 +1,7 @@
 /** Real baseline callers/PG/Storage only. No native module/B/VM producer. */
 import { createHash, randomUUID } from 'node:crypto';
 import { setImmediate as turn } from 'node:timers/promises';
-import postgres, { type ReservedSql } from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import {
   afterAll,
   afterEach,
@@ -44,7 +44,7 @@ import {
   bindCallerSourceQueries,
   createBusinessRuntimeCaller,
   joinCallerSave,
-  withReservedCallerTransaction,
+  withDedicatedCallerTransaction,
 } from './caller-transaction.ts';
 
 const suite =
@@ -217,13 +217,32 @@ suite('host caller transaction bindings with original SQL owners', () => {
     const sql = postgres(value, {
       max: 1,
       connection: {
-        application_name: 'caller_reserved_' + randomUUID(),
+        application_name: 'caller_dedicated_' + randomUUID(),
         search_path: settings.path,
       },
     });
-    cleanup.push(() => sql.end({ timeout: 5 }));
-    await sql`create temporary table caller_reserved_probe(marker uuid primary key)`;
+    cleanup.push(async () => {
+      try {
+        await sql`drop table if exists caller_dedicated_probe`;
+      } finally {
+        await sql.end({ timeout: 5 });
+      }
+    });
+    await sql`create table caller_dedicated_probe(marker uuid primary key)`;
     return sql;
+  }
+  async function dedicatedEnded(sql: ReturnType<typeof postgres>, pid: number) {
+    const [observer] = await sql<
+      { pid: number }[]
+    >`select pg_backend_pid() as pid`;
+    expect(pid).toBeGreaterThan(0);
+    expect(observer?.pid).not.toBe(pid);
+    await expect
+      .poll(
+        async () => sql<{ pid: number }[]>`
+      select pid from pg_stat_activity where pid=${pid}`,
+      )
+      .toEqual([]);
   }
   async function blockedBy(
     sql: Awaited<ReturnType<typeof observer>>,
@@ -573,51 +592,71 @@ suite('host caller transaction bindings with original SQL owners', () => {
     });
   }, 30000);
 
-  it('commits and rolls back on one reserved connection, then rejects released handles', async () => {
+  it('commits and rolls back on owned dedicated connections, then rejects closed handles', async () => {
     const sql = await ownClient(),
       committed = randomUUID(),
       rejected = randomUUID();
-    let saved: ReservedSql | undefined,
+    let saved: Sql | undefined,
       pid = 0;
     let lazy: PromiseLike<unknown> | undefined;
+    const startedAt = performance.now();
     expect(
-      await withReservedCallerTransaction(sql, async (tx) => {
+      await withDedicatedCallerTransaction(sql, async (tx) => {
         saved = tx;
-        lazy = tx`insert into caller_reserved_probe values(${randomUUID()})`;
+        lazy = tx`insert into caller_dedicated_probe values(${randomUUID()})`;
         const [row] = await tx<
           { pid: number }[]
         >`select pg_backend_pid() as pid`;
         if (!row) throw new Error('Actual backend required');
         pid = row.pid;
-        await tx`insert into caller_reserved_probe values(${committed})`;
+        const elapsedMs = performance.now() - startedAt;
+        expect(Number.isFinite(elapsedMs) && elapsedMs >= 0).toBe(true);
+        console.info(
+          JSON.stringify({
+            metric: 'dedicated_scope_first_select_ms',
+            elapsedMs,
+            includes: 'client+connect/auth/TLS+BEGIN+first SELECT',
+          }),
+        );
+        await tx`insert into caller_dedicated_probe values(${committed})`;
         const fragment = tx`marker=${committed}`;
         expect(
-          await tx`select marker from caller_reserved_probe where ${fragment}`,
+          await tx`select marker from caller_dedicated_probe where ${fragment}`,
         ).toEqual([{ marker: committed }]);
         return committed;
       }),
     ).toBe(committed);
+    await dedicatedEnded(sql, pid);
+    let rejectedPid = 0;
     const failure = new Error('ordinary callback refusal');
     await expect(
-      withReservedCallerTransaction(sql, async (tx) => {
-        await tx`insert into caller_reserved_probe values(${rejected})`;
+      withDedicatedCallerTransaction(sql, async (tx) => {
+        const [identity] = await tx<
+          { pid: number }[]
+        >`select pg_backend_pid() as pid`;
+        if (!identity) throw new Error('Actual dedicated backend required');
+        rejectedPid = identity.pid;
+        await tx`insert into caller_dedicated_probe values(${rejected})`;
         throw failure;
       }),
     ).rejects.toBe(failure);
+    await dedicatedEnded(sql, rejectedPid);
     if (!saved || !lazy) throw new Error('Actual callback handles required');
     const captured = saved;
     expect(() => captured`select 1`).toThrow('authorization_denied');
     await expect(Promise.resolve(lazy)).rejects.toThrow('authorization_denied');
     expect(
-      await sql<{ marker: string }[]>`select marker from caller_reserved_probe`,
+      await sql<
+        { marker: string }[]
+      >`select marker from caller_dedicated_probe`,
     ).toEqual([{ marker: committed }]);
     const [reused] = await sql<{ pid: number; xid: string | null }[]>`
       select pg_backend_pid() as pid,txid_current_if_assigned()::text as xid`;
-    expect(reused).toEqual({ pid, xid: null });
-    expect(pid).toBeGreaterThan(0);
+    expect(reused?.xid).toBe(null);
+    expect(reused?.pid).not.toBe(pid);
   }, 15000);
 
-  it('rolls back a native UNDEFINED_VALUE build failure after a real write before pool return', async () => {
+  it('rolls back a native UNDEFINED_VALUE build failure after a real write before ending its client', async () => {
     const sql = await ownClient(),
       marker = randomUUID();
     const [identity] = await sql<
@@ -625,9 +664,13 @@ suite('host caller transaction bindings with original SQL owners', () => {
     >`select pg_backend_pid() as pid,current_setting('application_name') as application_name`;
     if (!identity?.application_name || identity.pid <= 0)
       throw new Error('Actual owned backend identity required');
-    let parameterFailure: unknown;
-    const failure = await withReservedCallerTransaction(sql, async (tx) => {
-      await tx`insert into caller_reserved_probe values(${marker})`;
+    let parameterFailure: unknown,
+      scopePid = 0;
+    const failure = await withDedicatedCallerTransaction(sql, async (tx) => {
+      const [row] = await tx<{ pid: number }[]>`select pg_backend_pid() as pid`;
+      if (!row) throw new Error('Actual dedicated backend required');
+      scopePid = row.pid;
+      await tx`insert into caller_dedicated_probe values(${marker})`;
       try {
         // Invalid runtime input through the public unsafe API, deliberately
         // outside its static parameter type; no private driver hooks or faults.
@@ -641,31 +684,31 @@ suite('host caller transaction bindings with original SQL owners', () => {
     expect(failure).toBeInstanceOf(Error);
     expect(failure).not.toBeInstanceOf(postgres.PostgresError);
     expect(failure).toMatchObject({ code: 'UNDEFINED_VALUE' });
-    expect(await sql`select marker from caller_reserved_probe`).toEqual([]);
+    await dedicatedEnded(sql, scopePid);
+    expect(await sql`select marker from caller_dedicated_probe`).toEqual([]);
     const [reused] = await sql<{ pid: number; xid: string | null }[]>`
       select pg_backend_pid() as pid,txid_current_if_assigned()::text as xid`;
     expect(reused).toEqual({ pid: identity.pid, xid: null });
-    await expect
-      .poll(async () => {
-        return f.db<{ state: string; in_transaction: boolean }[]>`
-          select state,xact_start is not null as in_transaction
-          from pg_stat_activity where pid=${identity.pid}
-            and application_name=${identity.application_name}`;
-      })
-      .toEqual([{ state: 'idle', in_transaction: false }]);
   }, 15000);
 
-  it('rolls back a received statement_timeout error before returning the reservation', async () => {
+  it('rolls back a received statement_timeout error before ending the dedicated client', async () => {
     const sql = await ownClient(),
       marker = randomUUID();
-    const failure = await withReservedCallerTransaction(sql, async (tx) => {
-      await tx`insert into caller_reserved_probe values(${marker})`;
+    let scopePid = 0;
+    const failure = await withDedicatedCallerTransaction(sql, async (tx) => {
+      const [row] = await tx<{ pid: number }[]>`select pg_backend_pid() as pid`;
+      if (!row) throw new Error('Actual dedicated backend required');
+      scopePid = row.pid;
+      await tx`insert into caller_dedicated_probe values(${marker})`;
       await tx`set local statement_timeout='30ms'`;
       await tx`select pg_sleep(5)`;
     }).catch((error: unknown) => error);
     expect(failure).toBeInstanceOf(postgres.PostgresError);
     expect(failure).toMatchObject({ code: '57014', severity: 'ERROR' });
-    expect(await sql`select marker from caller_reserved_probe`).toHaveLength(0);
+    await dedicatedEnded(sql, scopePid);
+    expect(await sql`select marker from caller_dedicated_probe`).toHaveLength(
+      0,
+    );
     const [reused] = await sql<{ timeout: string }[]>`
       select current_setting('statement_timeout') as timeout`;
     expect(reused?.timeout).toBe('0');
@@ -702,12 +745,18 @@ suite('host caller transaction bindings with original SQL owners', () => {
       immutable: false,
     };
     const storage = runtimeFixtureStorage(f.db);
-    let finished = false;
+    let finished = false,
+      scopePid = 0;
     const saving = track(
-      withReservedCallerTransaction(
+      withDedicatedCallerTransaction(
         sql,
         async (tx) => {
-          await tx`insert into caller_reserved_probe values(${marker})`;
+          const [row] = await tx<
+            { pid: number }[]
+          >`select pg_backend_pid() as pid`;
+          if (!row) throw new Error('Actual dedicated backend required');
+          scopePid = row.pid;
+          await tx`insert into caller_dedicated_probe values(${marker})`;
           await (async () => {
             await storage.put(
               object,
@@ -733,7 +782,10 @@ suite('host caller transaction bindings with original SQL owners', () => {
     expect(independent).toEqual({ ok: 1 });
     release.resolve();
     expect(await observed).toBe(reason);
-    expect(await sql`select marker from caller_reserved_probe`).toHaveLength(0);
+    await dedicatedEnded(sql, scopePid);
+    expect(await sql`select marker from caller_dedicated_probe`).toHaveLength(
+      0,
+    );
     expect(
       Buffer.from(await new Response(await storage.get(object)).arrayBuffer()),
     ).toEqual(bytes);

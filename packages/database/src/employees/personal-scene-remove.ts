@@ -6,7 +6,7 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
-import { withReservedCallerTransaction } from '../business-runtime/caller-transaction.ts';
+import { withDedicatedCallerTransaction } from '../business-runtime/caller-transaction.ts';
 import { DataAccessError } from '../data.ts';
 import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
@@ -188,5 +188,5 @@ export async function removePersonalSceneSkill(
       removed: true,
     });
   };
-  return withReservedCallerTransaction(db, work);
+  return withDedicatedCallerTransaction(db, work);
 }
