@@ -122,7 +122,7 @@ else if(a[0]==='logs'){
 else if(a[0]==='wait'){
  const job=v.jobs[a[a.indexOf('--job')+1]];
  if(mode==='unknown-wait'){console.log('{}');save();process.exit(0);}
- if(((mode==='cancel-init'&&job.cmd.includes('/work/memory/init.cjs'))||(mode==='cancel-memory-probe'&&job.cmd[1]==='-e'))&&job.code===0){
+ if(((mode==='cancel-init'&&job.cmd.includes('/work/memory/init.cjs'))||(mode==='cancel-memory-probe'&&job.cmd[1]==='-e')||(mode==='cancel-retained-command'&&job.cmd.includes('native-dsh')))&&job.code===0){
   save();fs.writeFileSync(p.join(home,'waiting'),String(process.pid));setInterval(()=>{},1000);return;
  }
  job.state='exited';
@@ -401,65 +401,105 @@ describe('Microsandbox public CLI protocol through real child processes (no actu
         .memoryGuestReader(scope, readerConfiguration)
         .read(scope.binding, signal()),
     ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
-    expect(
-      await f.native
+    await expect(
+      f.native
         .memoryCommandObserver(scope, observerConfiguration)
         .observeCompletion(
           scope.binding,
           { job, executionRef: 'closed-operation' },
           signal(),
         ),
-    ).toMatchObject({ state: 'unknown', completion: null });
+    ).rejects.toBe(scope.signal.reason);
     expect(await f.calls()).toEqual(calls); // Closed scope dispatches no ordinary exec/wait/logs/inspect.
   });
-  it('provider probe取消后CLI真实退出，过期scope仍用独立signal exact kill/wait再stop/status', async () => {
-    const f = await bootstrapFixture('cancel-memory-probe', undefined, 5000),
-      controller = new AbortController();
-    f.h.runtime.start = async (_binding, _signal, scope) => {
-      await f.native
-        .memoryGuestReader(scope, readerConfiguration)
-        .read(scope.binding, signal());
-    };
-    const starting = f.service.prewarm(
-      f.rc,
-      { trigger: 'page' },
-      controller.signal,
-    );
-    const failure = expect(starting).rejects.toMatchObject({
-      code: 'PROVIDER_FAILED',
-    });
-    try {
-      let pid = 0;
-      await vi.waitFor(
-        async () => {
-          pid = Number(
-            await readFile(join(f.mount, 'host-home/waiting'), 'utf8'),
-          );
-          expect(pid).toBeGreaterThan(0);
-        },
-        { timeout: 5000 },
+  it.each(['probe', 'retained-command'] as const)(
+    'provider %s仅scope取消后CLI真实join；probe独立kill/wait，retained命令不被观察取消杀死',
+    async (kind) => {
+      const f = await bootstrapFixture(
+          kind === 'probe' ? 'cancel-memory-probe' : 'cancel-retained-command',
+          undefined,
+          5000,
+        ),
+        controller = new AbortController(),
+        caller = new AbortController(),
+        reason = new Error('scope-only observation cancellation');
+      let observation: Promise<unknown> | undefined;
+      f.h.runtime.start = async (_binding, _signal, scope) => {
+        if (kind === 'retained-command') {
+          const job = await scope.launch({
+            executable: 'node',
+            args: ['native-dsh'],
+          });
+          observation = f.native
+            .memoryCommandObserver(scope, observerConfiguration)
+            .observeCompletion(
+              scope.binding,
+              { job, executionRef: 'c1-retained-command' },
+              caller.signal,
+            );
+          await observation;
+        } else
+          await f.native
+            .memoryGuestReader(scope, readerConfiguration)
+            .read(scope.binding, caller.signal);
+      };
+      const starting = f.service.prewarm(
+        f.rc,
+        { trigger: 'page' },
+        controller.signal,
       );
-      controller.abort();
-      await failure;
-      expect(() => process.kill(pid, 0)).toThrow();
-      const calls = await f.calls(),
-        kill = calls.findIndex((a) => a[0] === 'kill');
-      expect(kill).toBeGreaterThan(0);
-      expect(calls[kill + 1]).toEqual([
-        'wait',
-        calls[kill]![1],
-        '--job',
-        calls[kill]![3],
-        '--format',
-        'json',
-      ]);
-      expect(calls.findIndex((a) => a[0] === 'stop')).toBeGreaterThan(kill + 1);
-      expect(f.h.mounts.size).toBe(0);
-    } finally {
-      controller.abort();
-      await starting.catch(() => {});
-    }
-  });
+      const failure = expect(starting).rejects.toMatchObject({
+        code: 'PROVIDER_FAILED',
+      });
+      try {
+        let pid = 0;
+        await vi.waitFor(
+          async () => {
+            pid = Number(
+              await readFile(join(f.mount, 'host-home/waiting'), 'utf8'),
+            );
+            expect(pid).toBeGreaterThan(0);
+          },
+          { timeout: 5000 },
+        );
+        controller.abort(reason);
+        if (kind === 'retained-command')
+          await expect(observation).rejects.toBe(reason);
+        await failure;
+        expect(caller.signal.aborted).toBe(false);
+        expect(() => process.kill(pid, 0)).toThrow();
+        const calls = await f.calls(),
+          kill = calls.findIndex((a) => a[0] === 'kill');
+        if (kind === 'probe') {
+          expect(kill).toBeGreaterThan(0);
+          expect(calls[kill + 1]).toEqual([
+            'wait',
+            calls[kill]![1],
+            '--job',
+            calls[kill]![3],
+            '--format',
+            'json',
+          ]);
+          expect(calls.findIndex((a) => a[0] === 'stop')).toBeGreaterThan(
+            kill + 1,
+          );
+        } else {
+          expect(kill).toBe(-1);
+          const waiting = calls.findLastIndex((a) => a[0] === 'wait');
+          expect(calls[waiting - 1]?.[0]).toBe('inspect');
+          expect(calls[waiting - 1]?.[3]).toBe(calls[waiting]?.[3]);
+          expect(calls.findIndex((a) => a[0] === 'stop')).toBeGreaterThan(
+            waiting,
+          );
+        }
+        expect(f.h.mounts.size).toBe(0);
+      } finally {
+        controller.abort();
+        caller.abort();
+        await starting.catch(() => {});
+      }
+    },
+  );
   it('readonly code首次create走真实provider/child入口；准确mount及active inspect，stop后原绑定start对账同版密封manifest', async () => {
     const c = await readonlyFixture(),
       f = await bootstrapFixture('ok', c);

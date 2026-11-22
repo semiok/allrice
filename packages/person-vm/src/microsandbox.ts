@@ -224,7 +224,7 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
     if (cleanupTimeoutMs === undefined)
       throw new PersonVmError('PROVIDER_FAILED');
     const binding = Object.freeze({ ...scope.binding });
-    return createPersonVmCommandMemoryObserver({
+    const observer = createPersonVmCommandMemoryObserver({
       ...configuration,
       binding,
       probes: this.managedMemoryProbes(scope, cleanupTimeoutMs),
@@ -244,6 +244,23 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
       },
       cleanupSignal: () => AbortSignal.timeout(cleanupTimeoutMs),
     });
+    return {
+      observeCompletion: async (bindingInput, execution, signal) => {
+        const running = AbortSignal.any([scope.signal, signal]);
+        running.throwIfAborted();
+        await scope.assertCurrent();
+        running.throwIfAborted();
+        const result = await observer.observeCompletion(
+          bindingInput,
+          execution,
+          running,
+        );
+        running.throwIfAborted();
+        await scope.assertCurrent();
+        running.throwIfAborted();
+        return result;
+      },
+    };
   }
   private async artifact(
     binding: PersonVmBinding,
