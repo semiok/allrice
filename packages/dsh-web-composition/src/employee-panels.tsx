@@ -296,19 +296,7 @@ export function apply(ctx: Context) {
 
 /** Authenticated owner installs this child in its own Cordis lifetime.
  * Disposing the returned fork removes the service and aborts detached intents. */
-export function bindEmployeePanels(ctx: Context, port: EmployeePanelsPort) {
-  return ctx.plugin({
-    apply(owner: Context) {
-      const lifetime = new AbortController();
-      owner.provide('allriceEmployeePanels', { port, signal: lifetime.signal });
-      owner.effect(() => () => lifetime.abort());
-    },
-  });
-}
-
-/** 4.0 data entry point. Missing BFF methods stay explicitly unbound. The
- * presentation-only binder above remains for existing compatibility fixtures. */
-export function bindEmployeePanelsData(
+export function bindEmployeePanels(
   ctx: Context,
   port: EmployeePanelsPort,
   resolve: EmployeePanelsDataResolver = () => null,
@@ -324,6 +312,9 @@ export function bindEmployeePanelsData(
     },
   });
 }
+
+/** Explicit data entry remains an alias of the guarded public default. */
+export const bindEmployeePanelsData = bindEmployeePanels;
 
 export { createEmployeePanelsDataPort } from './employee-panels-data';
 export { createEmployeePanelDataClient } from '../../../apps/web/lib/chatflow/employee-panel-data';

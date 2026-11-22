@@ -33,11 +33,14 @@ export function createEmployeePanelsDataPort(
       value: EmployeePanelsSnapshot;
       controller: AbortController;
       client: EmployeePanelDataClient;
+      unsubscribe: () => void;
     }
   >();
   const clear = (id: SessionIdOf) => {
-    snapshots.get(id)?.controller.abort();
+    const entry = snapshots.get(id);
     snapshots.delete(id);
+    entry?.controller.abort();
+    entry?.unsubscribe();
   };
   signal.addEventListener(
     'abort',
@@ -55,6 +58,7 @@ export function createEmployeePanelsDataPort(
     if (!original) return null;
     const controller = new AbortController();
     const raw = resolve(id, original) ?? unboundEmployeePanelDataClient;
+    if (signal.aborted) return null;
     const current = () => {
       if (
         signal.aborted ||
@@ -89,6 +93,7 @@ export function createEmployeePanelsDataPort(
       original,
       controller,
       client,
+      unsubscribe: () => {},
       value: {
         ...original,
         materials: { ...original.materials, dataClient: client },
@@ -96,6 +101,28 @@ export function createEmployeePanelsDataPort(
       },
     };
     snapshots.set(id, entry);
+    // Independent preview/dialog/upload consumers keep this subscription even
+    // when no React panel is subscribed. Install the entry before subscribe:
+    // owners may notify or revoke synchronously while registering a listener.
+    let unsubscribe: () => void;
+    try {
+      unsubscribe = source.subscribe(id, () => {
+        if (snapshots.get(id) === entry && source.getSnapshot(id) !== original)
+          clear(id);
+      });
+    } catch (error) {
+      if (snapshots.get(id) === entry) clear(id);
+      throw error;
+    }
+    if (snapshots.get(id) !== entry) {
+      unsubscribe();
+      return null;
+    }
+    entry.unsubscribe = unsubscribe;
+    if (source.getSnapshot(id) !== original) {
+      clear(id);
+      return null;
+    }
     return entry;
   };
   return {

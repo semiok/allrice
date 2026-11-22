@@ -1,4 +1,5 @@
 import { Context } from '@deepseek-ai/cordis';
+import { createElement, useEffect } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createEmployeePanelDataClient,
@@ -9,9 +10,15 @@ import {
 import { legacyEmployeePanelDataClient } from '../../../apps/web/lib/chatflow/employee-panel-data-legacy';
 import { ReferenceSelectionUnavailableError } from '../../../apps/web/lib/chatflow/reference-selection';
 import { createEmployeePanelsDataPort } from '../src/employee-panels-data';
-import { bindEmployeePanelsData } from '../src/employee-panels';
+import {
+  bindEmployeePanels,
+  bindEmployeePanelsData,
+  EmployeePanelContent,
+} from '../src/employee-panels';
 import { EmployeePanelsUnavailableError } from '../src/employee-panels-model';
 import { syntheticPanelsOwner } from './fixtures/employee-panels/owner';
+import { createLauncherMount } from './fixtures/employee-settings/launcher-mount';
+import { useEmployeePanelData } from '../../../apps/web/app/chatflow/use-employee-panel-data';
 import {
   createSyntheticPanelsData,
   panelsViewer,
@@ -279,6 +286,144 @@ describe('explicit browser panel client, without BFF identity or business writes
 });
 
 describe('data owner bound to existing public sidebar props', () => {
+  it('rejects both panels through the default public binder without a resolver or legacy HTTP', async () => {
+    const ctx = new Context();
+    const owner = syntheticPanelsOwner();
+    const fetch = vi.fn(async () => Response.json({}, { status: 503 }));
+    vi.stubGlobal('fetch', fetch);
+    const mount = await createLauncherMount();
+    const errors: unknown[] = [];
+    function PanelDataProbe({
+      props,
+      kind,
+    }: {
+      props: Parameters<typeof useEmployeePanelData>[0];
+      kind: 'materials' | 'files';
+    }) {
+      const data = useEmployeePanelData(props);
+      useEffect(() => {
+        const input = { workspaceId: panelsWorkspace };
+        const pending =
+          kind === 'materials'
+            ? data.queryMaterials({ ...input, query: {} }, signal())
+            : data.listDeliverables(input, signal());
+        void pending.catch((error: unknown) => errors.push(error));
+      }, [data, kind]);
+      return null;
+    }
+    try {
+      await bindEmployeePanels(ctx, owner.port);
+      const binding = ctx.allriceEmployeePanels;
+      const snapshot = binding.port.getSnapshot(owner.sessionId)!;
+      for (const kind of ['materials', 'files'] as const) {
+        const element = EmployeePanelContent({
+          ctx,
+          binding,
+          snapshot,
+          sessionId: owner.sessionId,
+          signal: binding.signal,
+          kind,
+        });
+        await mount.render(
+          createElement(PanelDataProbe, {
+            props: element.props as Parameters<typeof useEmployeePanelData>[0],
+            kind,
+          }),
+        );
+      }
+      expect(errors).toHaveLength(2);
+      expect(errors).toEqual([
+        expect.objectContaining({
+          name: 'EmployeePanelDataUnavailableError',
+          method: 'queryMaterials',
+        }),
+        expect.objectContaining({
+          name: 'EmployeePanelDataUnavailableError',
+          method: 'listDeliverables',
+        }),
+      ]);
+      expect(fetch).not.toHaveBeenCalled();
+    } finally {
+      await mount.dispose();
+      await ctx.fiber.dispose();
+    }
+  });
+
+  it.each(['none', 'removed'] as const)(
+    'aborts an independent client on revoke with UI subscription %s and rejects ignored-abort results',
+    async (subscription) => {
+      const owner = syntheticPanelsOwner();
+      let release!: (value: unknown) => void;
+      let supplied!: AbortSignal;
+      const raw = createEmployeePanelDataClient({
+        listDeliverables: async (_input, signal) => {
+          supplied = signal;
+          return new Promise((done) => {
+            release = done;
+          });
+        },
+      });
+      const port = createEmployeePanelsDataPort(
+        owner.port,
+        () => raw,
+        owner.lifetime.signal,
+      );
+      const client = port.dataClient(owner.sessionId);
+      if (subscription === 'removed')
+        port.subscribe(owner.sessionId, () => {})();
+      const pending = client.listDeliverables(
+        { workspaceId: panelsWorkspace },
+        signal(),
+      );
+      owner.publish(null);
+      expect(supplied.aborted).toBe(true);
+      release(createSyntheticPanelsData().files);
+      await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+      expect(owner.listeners.size).toBe(0);
+      owner.lifetime.abort();
+    },
+  );
+
+  it('handles synchronous subscribe notification/revocation and releases every entry subscription', async () => {
+    const owner = syntheticPanelsOwner();
+    const subscribe = owner.port.subscribe;
+    let revokeDuringSubscribe = false;
+    owner.port.subscribe = (id, listener) => {
+      const stop = subscribe(id, listener);
+      if (revokeDuringSubscribe) owner.publish(null);
+      listener();
+      return stop;
+    };
+    const port = createEmployeePanelsDataPort(
+      owner.port,
+      () => null,
+      owner.lifetime.signal,
+    );
+    const first = port.dataClient(owner.sessionId);
+    expect(owner.listeners.size).toBe(1);
+    expect(port.dataClient(owner.sessionId)).toBe(first);
+    const original = owner.snapshot();
+    owner.publish({ ...original });
+    expect(owner.listeners.size).toBe(0);
+    const second = port.dataClient(owner.sessionId);
+    expect(second).not.toBe(first);
+    expect(owner.listeners.size).toBe(1);
+    owner.lifetime.abort();
+    expect(owner.listeners.size).toBe(0);
+
+    const lifetime = new AbortController();
+    owner.publish(original);
+    revokeDuringSubscribe = true;
+    const revoked = createEmployeePanelsDataPort(
+      owner.port,
+      () => null,
+      lifetime.signal,
+    );
+    expect(revoked.getSnapshot(owner.sessionId)).toBeNull();
+    expect(owner.listeners.size).toBe(0);
+    lifetime.abort();
+  });
+
   it('publishes explicit unbound clients and keeps snapshot identity stable without changing header props', async () => {
     const owner = syntheticPanelsOwner();
     const port = createEmployeePanelsDataPort(
@@ -339,6 +484,9 @@ describe('data owner bound to existing public sidebar props', () => {
     expect(port.useReference?.(insertion)).toBe(true);
     expect(owner.port.useReference).toHaveBeenCalledWith(insertion);
     stop();
+    // Independent clients keep their own owner subscription until invalidation.
+    expect(owner.listeners.size).toBe(1);
+    owner.lifetime.abort();
     expect(owner.listeners.size).toBe(0);
   });
 

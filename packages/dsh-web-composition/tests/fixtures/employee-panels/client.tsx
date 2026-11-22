@@ -17,6 +17,7 @@ import type {
 import type * as PanelsProduct from '../../../src/employee-panels';
 import { syntheticMainKey, syntheticPanelSnapshot } from './presentation';
 import { createSyntheticPanelsData, type PanelsState } from './data';
+import { legacyEmployeePanelDataClient } from '../../../../../apps/web/lib/chatflow/employee-panel-data-legacy';
 
 export const panelSessionA =
   'session-00000000-0000-4000-8000-000000000036' as SessionIdOf;
@@ -164,7 +165,16 @@ function installSyntheticPanelsOwner(ctx: Context, product: Product) {
       return result;
     },
   };
-  let owner = product.bindEmployeePanels(ctx, port);
+  // Test-only compatibility fixture for the existing 3.x HTTP server. The
+  // production 4.0 binder always rejects absent data, including on rebind.
+  const bindFixtureOwner = () =>
+    product.bindEmployeePanels(ctx, port, (_id, snapshot) =>
+      legacyEmployeePanelDataClient(
+        snapshot.files.headers,
+        snapshot.files.viewerId,
+      ),
+    );
+  let owner = bindFixtureOwner();
   let ownerBinding: EmployeePanelsBinding | undefined;
   ctx.inject(['allriceEmployeePanels'], (scope) => {
     const binding = scope.allriceEmployeePanels;
@@ -295,7 +305,7 @@ function installSyntheticPanelsOwner(ctx: Context, product: Product) {
       await owner.dispose();
     },
     async rebind() {
-      owner = product.bindEmployeePanels(ctx, port);
+      owner = bindFixtureOwner();
       await owner;
     },
   };

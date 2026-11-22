@@ -10,6 +10,10 @@ import '@allrice/ui/styles.css';
 import { createRoot } from 'react-dom/client';
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives';
+import { Context } from '@deepseek-ai/cordis';
+import { bindEmployeePanels } from '../../../packages/dsh-web-composition/src/employee-panels';
+import type { EmployeePanelsPort } from '../../../packages/dsh-web-composition/src/employee-panels-port';
+import { syntheticPanelSnapshot } from '../../../packages/dsh-web-composition/tests/fixtures/employee-panels/presentation';
 import type {
   ReferenceRevision,
   WorkbenchDeliverable,
@@ -459,7 +463,31 @@ function Fixture() {
     </>
   );
 }
-const unbound = createEmployeePanelDataClient({});
+// Exercise the formal default binder, without a resolver. The existing unbound
+// matrix opens both real panels and asserts zero legacy HTTP requests.
+const unboundOwner = new Context();
+const unboundSession = uid(7) as Parameters<
+  EmployeePanelsPort['getSnapshot']
+>[0];
+const unboundSnapshot = syntheticPanelSnapshot(
+  'default-unbound',
+  'list',
+  () => {},
+);
+await bindEmployeePanels(unboundOwner, {
+  getSnapshot: (id) => (id === unboundSession ? unboundSnapshot : null),
+  subscribe: () => () => {},
+});
+const unbound =
+  unboundOwner.allriceEmployeePanels.port.getSnapshot(unboundSession)!.files
+    .dataClient!;
+window.addEventListener(
+  'pagehide',
+  () => {
+    void unboundOwner.fiber.dispose();
+  },
+  { once: true },
+);
 applyTheme(
   new URLSearchParams(location.search).get('theme') === 'dark'
     ? 'dark'

@@ -170,7 +170,10 @@ it('exports the settings binder from the built module-table artifact and shares 
   ).toBe(fork);
   install!.apply(owner);
   expect(owner.provide).toHaveBeenCalledWith('allriceEmployeePanels', {
-    port,
+    port: expect.objectContaining({
+      getSnapshot: expect.any(Function),
+      dataClient: expect.any(Function),
+    }),
     signal: expect.any(AbortSignal),
   });
   const binding = owner.provide.mock.calls[0]![1] as { signal: AbortSignal };

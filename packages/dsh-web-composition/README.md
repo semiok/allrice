@@ -40,8 +40,13 @@ surfaces or production preferences. Browser execution remains pending.
 
 M1-15 also composes the four original AllRice panels through the native
 `conversation.session.header.actions` and `sidebar.right.pane.tab` registries.
-The module-table facade exports `bindEmployeePanels(ctx, port)`; dispose the
-returned Cordis fork with the authenticated owner's lifetime. Native
+The module-table facade exports `bindEmployeePanels(ctx, port, resolveData?)`;
+`bindEmployeePanelsData` is the same guarded entry. Without a data resolver,
+materials/files receive explicit rejecting clients and never use legacy HTTP.
+The authenticated owner must supply the formal browser/BFF client; Host ports
+are not browser transports. Dispose the returned Cordis fork with that owner's
+lifetime. The separate historical test fixture explicitly opts into the legacy
+client for its existing 3.x server; standalone 3.x components remain compatible. Native
 Conversation and right-sidebar modules are explicit client dependencies. There
 is no default business owner, replacement Dock, or management-main fallback.
 Files use the existing owner-provided unread count; the other three badges keep
