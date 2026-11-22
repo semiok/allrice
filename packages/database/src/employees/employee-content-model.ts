@@ -9,7 +9,7 @@ import type { getDatabase } from '../core/client.ts';
 
 export type ContentSql =
   ReturnType<typeof getDatabase> | postgres.TransactionSql;
-export type ContentTx = postgres.TransactionSql;
+export type ContentTx = postgres.TransactionSql | postgres.ReservedSql;
 export type ContentScope = EmployeeContentMutation['ownership'];
 export type ContentTarget = EmployeeContentMutation['target'];
 export type ContentSetRow = {

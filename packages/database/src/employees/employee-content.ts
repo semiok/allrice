@@ -67,7 +67,7 @@ import { assertEmployeeContentRetirement } from './employee-content-retirement.t
 import {
   bindCallerSourceQueries,
   closeCallerSourceQueries,
-  joinCallerSave,
+  withReservedCallerTransaction,
 } from '../business-runtime/caller-transaction.ts';
 export { EmployeeContentError } from './employee-content-model.ts';
 
@@ -593,14 +593,11 @@ export async function mutateEmployeeContent(
   signal?.throwIfAborted();
   const input = EmployeeContentMutationSchema.parse(raw);
   const context = { ...contextInput, workspaceId: input.workspaceId };
-  let transactionWork: Promise<EmployeeContentReceipt> | undefined;
-  const transaction = db.begin((tx) => {
-    transactionWork = mutateEmployeeContentInTransaction(context, input, tx, {
-      signal,
-    });
-    return transactionWork;
-  });
-  return joinCallerSave(transaction, () => transactionWork);
+  return withReservedCallerTransaction(
+    db,
+    (tx) => mutateEmployeeContentInTransaction(context, input, tx, { signal }),
+    signal,
+  );
 }
 
 /** Internal composition point for controlled chat edits. Stable original input

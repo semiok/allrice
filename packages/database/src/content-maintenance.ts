@@ -100,7 +100,7 @@ export async function getContentAccess(
 export async function requireContentMaintenance(
   context: ContentIdentity,
   ownership: ContentOwnership,
-  tx: postgres.TransactionSql,
+  tx: postgres.TransactionSql | postgres.ReservedSql,
   lock = true,
 ) {
   const decision = await getContentAccess(context, ownership, tx, lock);

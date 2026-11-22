@@ -3,7 +3,7 @@ import {
   type MemoryOriginSelectorProjection,
   type OrdinaryOriginClassificationProjection,
 } from '@allrice/contracts';
-import type { TransactionSql } from 'postgres';
+import type { TransactionSql, ReservedSql } from 'postgres';
 import { DataAccessError } from '../data.ts';
 
 type LegacyOriginScope = { organizationId: string; workspaceId: string };
@@ -17,7 +17,7 @@ type LegacyOriginScope = { organizationId: string; workspaceId: string };
  * Its internal parameters do not freeze a caller-assembly signature.
  */
 export async function queryLegacyOriginForCaller(
-  tx: TransactionSql,
+  tx: TransactionSql | ReservedSql,
   scope: LegacyOriginScope,
   input: MemoryOriginSelectorProjection,
   signal?: AbortSignal,

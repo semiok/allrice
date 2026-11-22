@@ -13,7 +13,7 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
-import { joinCallerSave } from '../business-runtime/caller-transaction.ts';
+import { withReservedCallerTransaction } from '../business-runtime/caller-transaction.ts';
 import { DataAccessError } from '../data.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
@@ -246,12 +246,9 @@ export async function restorePersonalSceneFile(
 ) {
   const input = RestorePersonalSceneFileSchema.parse(raw);
   const context = humanContext(contextInput, input.workspaceId);
-  let work: ReturnType<typeof savePersonalSceneSkillInTransaction> | undefined;
-  const transaction = db.begin((tx) => {
-    work = savePersonalSceneSkillInTransaction(context, instanceId, input, tx);
-    return work;
-  });
-  return joinCallerSave(transaction, () => work);
+  return withReservedCallerTransaction(db, (tx) =>
+    savePersonalSceneSkillInTransaction(context, instanceId, input, tx),
+  );
 }
 
 /** Only domain metadata is returned. Every body's later read still checks the

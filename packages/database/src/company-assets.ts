@@ -26,7 +26,7 @@ import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import {
   bindCallerSourceQueries,
   closeCallerSourceQueries,
-  joinCallerSave,
+  withReservedCallerTransaction,
 } from './business-runtime/caller-transaction.ts';
 import { DataAccessError } from './data.ts';
 import { businessDeliverablePredicate } from './organization-dashboard.ts';
@@ -406,7 +406,7 @@ async function source(
     : getWorkbenchArtifact(context, v.session_id, id, db);
 }
 async function audit(
-  tx: postgres.TransactionSql,
+  tx: postgres.TransactionSql | postgres.ReservedSql,
   context: RequestContext,
   org: string,
   id: string,
@@ -527,12 +527,11 @@ export async function mutateCompanyAsset(
     organization?.default_workspace_id;
   if (!quotaWorkspace) throw new DataAccessError('not_found');
   let copied: StorageObject | undefined;
-  let transactionWork: Promise<void> | undefined;
   let callbackCompleted = false;
   signal?.throwIfAborted();
   try {
-    const transaction = db.begin((tx) => {
-      transactionWork = (async () => {
+    const work = (tx: postgres.ReservedSql) => {
+      return (async () => {
         await lockWorkspaceStorageQuota(tx, org, quotaWorkspace);
         signal?.throwIfAborted();
         if (administration) {
@@ -790,9 +789,8 @@ export async function mutateCompanyAsset(
           }
         }
       })();
-      return transactionWork;
-    });
-    await joinCallerSave(transaction, () => transactionWork);
+    };
+    await withReservedCallerTransaction(db, work, signal);
   } catch (error) {
     // Callback success followed by commit/connection failure is unknown, not
     // proof of rollback. Never remove an object that may be committed.

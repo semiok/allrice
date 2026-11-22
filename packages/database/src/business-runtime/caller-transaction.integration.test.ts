@@ -1,6 +1,7 @@
 /** Real baseline callers/PG/Storage only. No native module/B/VM producer. */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setImmediate as turn } from 'node:timers/promises';
+import postgres, { type ReservedSql } from 'postgres';
 import {
   afterAll,
   afterEach,
@@ -12,6 +13,7 @@ import {
 } from 'vitest';
 import {
   CompanyAssetMutationSchema,
+  makeObjectKey,
   type CompanyAssetContent,
   type EmployeeContentReference,
   type RequestContext,
@@ -42,6 +44,7 @@ import {
   bindCallerSourceQueries,
   createBusinessRuntimeCaller,
   joinCallerSave,
+  withReservedCallerTransaction,
 } from './caller-transaction.ts';
 
 const suite =
@@ -203,6 +206,23 @@ suite('host caller transaction bindings with original SQL owners', () => {
     cleanup.push(async () => {
       await sql.release();
     });
+    return sql;
+  }
+  async function ownClient() {
+    const value = process.env.ALLRICE_TEST_DATABASE_URL;
+    if (!value) throw new Error('Dedicated fixture database required');
+    const [settings] = await f.db<{ path: string }[]>`
+      select current_setting('search_path') as path`;
+    if (!settings?.path) throw new Error('Actual fixture search path required');
+    const sql = postgres(value, {
+      max: 1,
+      connection: {
+        application_name: 'caller_reserved_' + randomUUID(),
+        search_path: settings.path,
+      },
+    });
+    cleanup.push(() => sql.end({ timeout: 5 }));
+    await sql`create temporary table caller_reserved_probe(marker uuid primary key)`;
     return sql;
   }
   async function blockedBy(
@@ -552,6 +572,135 @@ suite('host caller transaction bindings with original SQL owners', () => {
       expect(unavailable.issue?.code).toBe('source_unavailable');
     });
   }, 30000);
+
+  it('commits and rolls back on one reserved connection, then rejects released handles', async () => {
+    const sql = await ownClient(),
+      committed = randomUUID(),
+      rejected = randomUUID();
+    let saved: ReservedSql | undefined,
+      pid = 0;
+    let lazy: PromiseLike<unknown> | undefined;
+    expect(
+      await withReservedCallerTransaction(sql, async (tx) => {
+        saved = tx;
+        lazy = tx`insert into caller_reserved_probe values(${randomUUID()})`;
+        const [row] = await tx<
+          { pid: number }[]
+        >`select pg_backend_pid() as pid`;
+        if (!row) throw new Error('Actual backend required');
+        pid = row.pid;
+        await tx`insert into caller_reserved_probe values(${committed})`;
+        const fragment = tx`marker=${committed}`;
+        expect(
+          await tx`select marker from caller_reserved_probe where ${fragment}`,
+        ).toEqual([{ marker: committed }]);
+        return committed;
+      }),
+    ).toBe(committed);
+    const failure = new Error('ordinary callback refusal');
+    await expect(
+      withReservedCallerTransaction(sql, async (tx) => {
+        await tx`insert into caller_reserved_probe values(${rejected})`;
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+    if (!saved || !lazy) throw new Error('Actual callback handles required');
+    const captured = saved;
+    expect(() => captured`select 1`).toThrow('authorization_denied');
+    await expect(Promise.resolve(lazy)).rejects.toThrow('authorization_denied');
+    expect(
+      await sql<{ marker: string }[]>`select marker from caller_reserved_probe`,
+    ).toEqual([{ marker: committed }]);
+    const [reused] = await sql<{ pid: number; xid: string | null }[]>`
+      select pg_backend_pid() as pid,txid_current_if_assigned()::text as xid`;
+    expect(reused).toEqual({ pid, xid: null });
+    expect(pid).toBeGreaterThan(0);
+  }, 15000);
+
+  it('rolls back a received statement_timeout error before returning the reservation', async () => {
+    const sql = await ownClient(),
+      marker = randomUUID();
+    const failure = await withReservedCallerTransaction(sql, async (tx) => {
+      await tx`insert into caller_reserved_probe values(${marker})`;
+      await tx`set local statement_timeout='30ms'`;
+      await tx`select pg_sleep(5)`;
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(postgres.PostgresError);
+    expect(failure).toMatchObject({ code: '57014', severity: 'ERROR' });
+    expect(await sql`select marker from caller_reserved_probe`).toHaveLength(0);
+    const [reused] = await sql<{ timeout: string }[]>`
+      select current_setting('statement_timeout') as timeout`;
+    expect(reused?.timeout).toBe('0');
+  }, 15000);
+
+  it('joins real Storage after caller abort without blocking an independent client', async () => {
+    const sql = await ownClient(),
+      marker = randomUUID();
+    const entered = gate(),
+      release = gate();
+    releases.push(() => release.resolve());
+    const controller = new AbortController(),
+      reason = new Error('abort during actual Storage');
+    const bytes = Buffer.from('Reserved actual Storage 中文🙂');
+    const workspaceId = owner.workspaceId;
+    if (!workspaceId) throw new Error('Actual fixture workspace required');
+    const object = {
+      id: marker,
+      organizationId: owner.organizationId,
+      workspaceId,
+      ownerId: owner.actor.id,
+      key: makeObjectKey({
+        organizationId: owner.organizationId,
+        workspaceId,
+        ownerId: owner.actor.id,
+        category: 'uploads',
+        objectId: marker,
+      }),
+      checksum: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+      mediaType: 'text/plain',
+      sizeBytes: bytes.length,
+      retentionUntil: null,
+      deletedAt: null,
+      immutable: false,
+    };
+    const storage = runtimeFixtureStorage(f.db);
+    let finished = false;
+    const saving = track(
+      withReservedCallerTransaction(
+        sql,
+        async (tx) => {
+          await tx`insert into caller_reserved_probe values(${marker})`;
+          await (async () => {
+            await storage.put(
+              object,
+              new Blob(['Reserved actual Storage 中文🙂']).stream(),
+            );
+            entered.resolve();
+            await release.promise;
+          })();
+          expect(() => tx`select forbidden`).toThrow(reason);
+        },
+        controller.signal,
+      ),
+    );
+    const observed = saving.catch((error: unknown) => {
+      finished = true;
+      return error;
+    });
+    await entered.promise;
+    controller.abort(reason);
+    await turn();
+    expect(finished).toBe(false);
+    const [independent] = await f.db<{ ok: number }[]>`select 1::int as ok`;
+    expect(independent).toEqual({ ok: 1 });
+    release.resolve();
+    expect(await observed).toBe(reason);
+    expect(await sql`select marker from caller_reserved_probe`).toHaveLength(0);
+    expect(
+      Buffer.from(await new Response(await storage.get(object)).arrayBuffer()),
+    ).toEqual(bytes);
+    await storage.delete(object);
+  }, 15000);
 
   it('binds G5 to the physical caller transaction and returns query before commit without fabricating a zero fact', async () => {
     const releaseTable = gate();

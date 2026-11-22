@@ -6,7 +6,7 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
-import { joinCallerSave } from '../business-runtime/caller-transaction.ts';
+import { withReservedCallerTransaction } from '../business-runtime/caller-transaction.ts';
 import { DataAccessError } from '../data.ts';
 import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
@@ -188,10 +188,5 @@ export async function removePersonalSceneSkill(
       removed: true,
     });
   };
-  let transactionWork: ReturnType<typeof work> | undefined;
-  const transaction = db.begin((tx) => {
-    transactionWork = work(tx);
-    return transactionWork;
-  });
-  return joinCallerSave(transaction, () => transactionWork);
+  return withReservedCallerTransaction(db, work);
 }
