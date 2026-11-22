@@ -70,6 +70,51 @@ const settle = (page: Page) =>
 const sha = (bytes: string | Buffer) =>
   createHash('sha256').update(bytes).digest('hex');
 
+// The static native history has exactly one inactive child. Close its real
+// transient catalog, including a pending hover/pinned state, before sampling.
+async function dismissInitialNativeCatalog(page: Page, out: string) {
+  const trigger = page.getByRole('button', {
+    name: '1 个子智能体',
+    exact: true,
+  });
+  const tree = page.getByRole('tree', {
+    name: '子智能体会话',
+    exact: true,
+    includeHidden: true,
+  });
+  const state = () =>
+    trigger.evaluate((node) => {
+      const trees = [
+        ...node.ownerDocument.querySelectorAll(
+          '[role="tree"][aria-label="子智能体会话"]',
+        ),
+      ];
+      const { x, y, width, height } = node.getBoundingClientRect();
+      return {
+        triggerLabel: node.getAttribute('aria-label'),
+        expanded: node.getAttribute('aria-expanded'),
+        triggerRect: { x, y, width, height },
+        hovered: node.matches(':hover'),
+        focused: node.ownerDocument.activeElement === node,
+        treeCount: trees.length,
+        treeText: trees.map((element) => element.textContent),
+      };
+    });
+  await writeFile(
+    join(out, 'native-initial-catalog-before.json'),
+    JSON.stringify(await state(), null, 2),
+    { flag: 'wx' },
+  );
+  await trigger.press('Escape');
+  await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  await expect(tree).toHaveCount(0);
+  await writeFile(
+    join(out, 'native-initial-catalog-after.json'),
+    JSON.stringify(await state(), null, 2),
+    { flag: 'wx' },
+  );
+}
+
 // This closure owns a new DOM host only. Existing product nodes/styles are never edited.
 async function nativeHost(page: Page, offset: { x: number; y: number }) {
   return page.evaluateHandle(
@@ -613,6 +658,7 @@ suite(
         await memory(reference).waitFor({ state: 'visible' });
         for (const page of [native, reference]) {
           await page.mouse.move(720, 0);
+          if (page === native) await dismissInitialNativeCatalog(page, out);
           await page.evaluate(async () => {
             if (document.activeElement instanceof HTMLElement)
               document.activeElement.blur();
