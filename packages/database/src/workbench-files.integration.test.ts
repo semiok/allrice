@@ -1344,8 +1344,12 @@ suite(
       });
       expect(get).toHaveBeenCalledTimes(2);
       expect(
-        await new Response(await actualStorage.get(stored.object)).text(),
-      ).toBe(body);
+        Buffer.from(
+          await new Response(
+            await actualStorage.get(stored.object),
+          ).arrayBuffer(),
+        ),
+      ).toEqual(Buffer.from(body));
     }, 30000);
     it('keeps MCP owner qualification, private-resource refusals and unknown storage failures distinct', async () => {
       const t = await setup();
