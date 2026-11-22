@@ -1,3 +1,4 @@
+import { setImmediate as turn } from 'node:timers/promises';
 import type {
   CurrentEmployeeBusinessProjection,
   EmployeeBusinessTargetProjection,
@@ -293,12 +294,10 @@ describe('current business projection with explicit contract fakes', () => {
     const controller = new AbortController(),
       reason = Error('original request cancelled');
     let finish!: (value: CurrentEmployeeBusinessProjection) => void;
-    const management = vi.fn(
-      () =>
-        new Promise<CurrentEmployeeBusinessProjection>((resolve) => {
-          finish = resolve;
-        }),
-    );
+    const gate = new Promise<CurrentEmployeeBusinessProjection>((resolve) => {
+      finish = resolve;
+    });
+    const management = vi.fn(() => gate);
     let settled = false;
     const outcome = currentEmployeeBusiness(
       { management },
@@ -317,11 +316,15 @@ describe('current business projection with explicit contract fakes', () => {
       .finally(() => {
         settled = true;
       });
-    expect(management).toHaveBeenCalledOnce();
-    controller.abort(reason);
-    await Promise.resolve();
-    expect(settled).toBe(false);
-    finish(contractFakeCurrent());
+    try {
+      expect(management).toHaveBeenCalledOnce();
+      controller.abort(reason);
+      await turn();
+      expect(settled).toBe(false);
+    } finally {
+      finish(contractFakeCurrent());
+      await outcome;
+    }
     expect(await outcome).toEqual({ error: reason });
   });
 
