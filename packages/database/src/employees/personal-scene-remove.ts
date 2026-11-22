@@ -6,13 +6,17 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
+import { withDedicatedCallerTransaction } from '../business-runtime/caller-transaction.ts';
 import { DataAccessError } from '../data.ts';
 import { runtimePolicyDigest } from '../runtime-policy-digest.ts';
 import { getEmployeeInstance } from './employee-instances.ts';
 import { canUsePersonalEmployeeScenes } from './employee-instance-policy.ts';
 import { resolvePersonalEmployeeContentTarget } from './employee-content-target.ts';
 import { mutateEmployeeContentInTransaction } from './employee-content.ts';
-import { EmployeeContentError } from './employee-content-model.ts';
+import {
+  EmployeeContentError,
+  type ContentSql,
+} from './employee-content-model.ts';
 import { parsePersonalSceneContentRef } from './personal-scene-skills.ts';
 
 /** Withdraw only this scene's private package sources, through existing source
@@ -33,7 +37,7 @@ export async function removePersonalSceneSkill(
   const context = { ...contextInput, workspaceId: input.workspaceId };
   if (!context.sessionId || context.actor.type !== 'user')
     throw new DataAccessError('authorization_denied');
-  return db.begin(async (tx) => {
+  const work = async (tx: ContentSql) => {
     const authorize = async () => {
       const instance = await getEmployeeInstance(context, instanceId, tx);
       if (!(await canUsePersonalEmployeeScenes(instance, tx)))
@@ -183,5 +187,6 @@ export async function removePersonalSceneSkill(
       revision: receipt.revision,
       removed: true,
     });
-  });
+  };
+  return withDedicatedCallerTransaction(db, work);
 }

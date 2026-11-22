@@ -31,6 +31,7 @@ import {
 import { createDevRequestHandler } from './server/dev-maintenance.mjs';
 import { createWebRuntimeClose } from './server/close-runtime.mjs';
 import { createNativeSubagentFollowGateway } from './server/native-subagent-follow.mjs';
+import { createDEntryNativeGateway } from './server/d-entry-native.mjs';
 import { observePreviewHttp } from './server/preview-diagnostics.mjs';
 
 /** Next registers its own upgrade listener after the first HTTP request. Route
@@ -41,7 +42,12 @@ export class AllRiceHttpServer extends Server {
   previewGateway = null;
   terminalGateway = null;
   nativeFollowGateway = null;
+  dEntryNativeGateway = null;
   emit(event, ...args) {
+    if (event === 'upgrade' && this.dEntryNativeGateway?.matches(args[0])) {
+      void this.dEntryNativeGateway.upgrade(...args);
+      return true;
+    }
     if (event === 'upgrade' && this.terminalGateway?.matches(args[0])) {
       void this.terminalGateway.upgrade(...args);
       return true;
@@ -101,6 +107,7 @@ export async function startAllRiceWeb({
   portalEntries();
   const handle = createDevRequestHandler(lifecycle, app.getRequestHandler());
   server.nativeFollowGateway = createNativeSubagentFollowGateway({ port });
+  server.dEntryNativeGateway = createDEntryNativeGateway({ port });
   server.on('request', (req, res) => {
     void observePreviewHttp(req, res, () => handle(req, res)).catch(() => {
       if (!res.headersSent) res.writeHead(500);

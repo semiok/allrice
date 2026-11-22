@@ -1,3 +1,4 @@
+import type { bindCallerSourceQueries } from '../business-runtime/caller-transaction.ts';
 import { personalMemoryIndexReadPredicate } from '../workspace/employee-memory-read.ts';
 import {
   EmployeeContentTextSchema,
@@ -65,6 +66,8 @@ type ResolveInput = {
   allowDraft: boolean;
   frozenPublication?: boolean;
   sharedReader?: OrganizationSharedReader;
+  /** Original caller-private source lifecycle; never read from a model input. */
+  callerSources?: ReturnType<typeof bindCallerSourceQueries>;
 };
 
 /** Exact source revisions are reused; neither a scene nor a content set grants
@@ -379,9 +382,11 @@ export async function resolveEmployeeContentSource(
   }
   // A shared administration read never fetches personal memory, even if a
   // malformed shared manifest contains its reference.
-  if (input.sharedReader || !input.instanceId || !context.workspaceId)
+  const instanceId = input.instanceId;
+  const workspaceId = context.workspaceId;
+  if (input.sharedReader || !instanceId || !workspaceId)
     return unavailable(ref, 'source_scope_mismatch');
-  const [memory] = await sql<
+  const readMemory = () => sql<
     {
       owner_id: string;
       visibility: string;
@@ -396,12 +401,15 @@ export async function resolveEmployeeContentSource(
     where m.id=${ref.contentId} and r.id=${ref.revisionId} and m.employee_id=${input.employeeId}
       and m.summary is not null and ${personalMemoryIndexReadPredicate(sql, {
         organizationId: context.organizationId,
-        workspaceId: context.workspaceId,
+        workspaceId,
         ownerId: context.actor.id,
-        instanceId: input.instanceId,
+        instanceId,
         employeeId: input.employeeId,
       })}
     ${lock ? sql`for share of m,r` : sql``}`;
+  const [memory] = input.callerSources
+    ? await input.callerSources.personalMemorySource(readMemory)
+    : await readMemory();
   if (!memory) return unavailable(ref);
   // A confirmed personal memory is not a company/department publication.
   if (ownership.scope !== 'personal')

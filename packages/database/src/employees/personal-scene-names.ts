@@ -5,7 +5,7 @@ import {
   type EmployeeInstance,
 } from '@allrice/contracts';
 import type { ContentIdentity } from '../content-maintenance.ts';
-import type { ContentSql, ContentTx } from './employee-content-model.ts';
+import type { ContentSql } from './employee-content-model.ts';
 import { EmployeeContentError } from './employee-content-model.ts';
 import { PersonalSkillError } from './personal-skill-model.ts';
 import { readCurrentEmployeeBaseSkills } from './employee-current-skills.ts';
@@ -72,7 +72,7 @@ export async function assertOrdinarySkillSceneName(
 
 /** Controlled saves and restores share the same native namespace check. */
 export async function assertPersonalSceneNames(
-  tx: ContentTx,
+  tx: ContentSql,
   context: ContentIdentity,
   instance: EmployeeInstance,
   manifest: EmployeeContentManifest,
