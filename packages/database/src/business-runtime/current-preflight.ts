@@ -92,7 +92,7 @@ async function qualified(
       and workspace_id=${instance.workspaceId} and user_id=${instance.ownerId}
       and employee_version_id=${instance.source.employeeVersionId}`;
   signal?.throwIfAborted();
-  if (!assignment) deny();
+  if (!assignment) return deny();
   const employeeId = UuidSchema.parse(assignment.employee_id).toLowerCase();
   const generation = target.threadId
     ? await getSessionExecutionGeneration(
