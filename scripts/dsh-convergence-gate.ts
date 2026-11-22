@@ -41,6 +41,7 @@ export const EXACT_TABLE_NAMES = [
 
   'allrice_brand_content_reminders',
   'allrice_brand_native_reminder_targets',
+  'allrice_employee_memory_contexts',
 ] as const;
 export const KINDS = ['table', 'patch', 'private-interface'] as const;
 export type ItemKind = (typeof KINDS)[number];

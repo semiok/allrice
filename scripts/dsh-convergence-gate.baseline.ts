@@ -584,4 +584,13 @@ export const baseline: readonly BaselineEntry[] = [
       'MET-195：单向记录公开 shutdown/dispose 的关闭结果与 Worker 观察，供 SaaS 审计。',
     approvedBy: 'baseline 2026-10-27',
   },
+  {
+    kind: 'table',
+    id: 'allrice_employee_memory_contexts',
+    category: '存储后端',
+    basis:
+      'MET-283 / 0253：持久保存记忆已发摘要、不可变pins及同一V2字节/读取次数账本，恢复原B不重发额度。DSH原生MCP/会话不持有AllRice记忆revision、当前SaaS权限及外部原子预算；无Agent阶段、pins/call附表或新租约。',
+    approvedBy:
+      '2026-11-22 UTC 用户原话：“批准最小方案，按正式接口继续实施”；见~/allrice-dev/qa/codex/met283-memory-business-20261122/CARRIER-APPROVAL.md，问题call_d0935e72e3c14c94a8157f07d22f5451。',
+  },
 ];
