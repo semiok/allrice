@@ -2,6 +2,56 @@ import { crc32, deflateSync } from 'node:zlib';
 import type { PanelsCausalSnapshot } from './employee-panels-causal-dom';
 import { screenshotPixels } from './sidebar-pixels';
 
+type OriginCapture = 'formalElement' | 'fullFramePanelWindow';
+type OriginPixels = Record<OriginCapture, { changedPixels: number | null }>;
+
+/** Causality needs this run's observable zero → aligned → returned contrast.
+ * Return reproduction uses captured reference PNG byte equality, not counts alone. */
+export function classifyPanelsOriginEffect(
+  valid: boolean,
+  comparisons: {
+    atZero: OriginPixels | null;
+    aligned: OriginPixels | null;
+    returned: OriginPixels | null;
+  },
+  returnedMatchesZero: Record<OriginCapture, boolean>,
+) {
+  const capture = (kind: OriginCapture) => {
+    const atZero = comparisons.atZero?.[kind].changedPixels ?? null,
+      aligned = comparisons.aligned?.[kind].changedPixels ?? null,
+      returned = comparisons.returned?.[kind].changedPixels ?? null;
+    const reproduced = returnedMatchesZero[kind] && returned === atZero;
+    const status =
+      !valid || atZero === null || aligned === null || returned === null
+        ? 'invalid-experiment'
+        : atZero === 0 && aligned === 0 && returned === 0 && reproduced
+          ? 'no-observable-effect'
+          : atZero > 0 && aligned === 0 && reproduced
+            ? 'supported'
+            : 'not-supported';
+    return {
+      status,
+      atZero,
+      aligned,
+      returned,
+      returnedMatchesZero: returnedMatchesZero[kind],
+    };
+  };
+  const captures = {
+    formalElement: capture('formalElement'),
+    fullFramePanelWindow: capture('fullFramePanelWindow'),
+  };
+  const values = Object.values(captures);
+  const status = values.some((value) => value.status === 'invalid-experiment')
+    ? 'invalid-experiment'
+    : values.every((value) => value.status === 'supported')
+      ? 'supported'
+      : values.every((value) => value.status === 'no-observable-effect')
+        ? 'no-observable-effect'
+        : 'not-supported';
+  return { status, captures, supportsReferenceOrigin: status === 'supported' };
+}
+
 /** A lossless derived view of saved full-frame pixels, not a second capture. */
 export function cropPanelsOriginFrame(
   png: Buffer,

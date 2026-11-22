@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { PanelsCausalSnapshot } from './employee-panels-causal-dom';
 import {
+  classifyPanelsOriginEffect,
   comparePanelsOriginContent,
   cropPanelsOriginFrame,
 } from './employee-panels-reference-origin';
@@ -32,6 +33,63 @@ describe('saved full-frame panel window', () => {
     expect(() => cropPanelsOriginFrame(png, rect)).toThrow(
       'exact integer rectangle',
     );
+  });
+});
+
+describe('same-run origin effect', () => {
+  const pixels = (formalElement: number, fullFramePanelWindow: number) => ({
+    formalElement: { changedPixels: formalElement },
+    fullFramePanelWindow: { changedPixels: fullFramePanelWindow },
+  });
+  const classify = (
+    atZero = pixels(56, 80),
+    aligned = pixels(0, 0),
+    returned = atZero,
+    matches = { formalElement: true, fullFramePanelWindow: true },
+    valid = true,
+  ) =>
+    classifyPanelsOriginEffect(valid, { atZero, aligned, returned }, matches);
+  it('supports each capture only after a same-run nonzero → zero → exact return', () => {
+    const value = classify();
+    expect(value.status).toBe('supported');
+    expect(value.supportsReferenceOrigin).toBe(true);
+    expect(Object.values(value.captures).map((item) => item.status)).toEqual([
+      'supported',
+      'supported',
+    ]);
+  });
+  it('does not claim support when both capture types already match', () => {
+    const value = classify(pixels(0, 0));
+    expect(value.status).toBe('no-observable-effect');
+    expect(value.supportsReferenceOrigin).toBe(false);
+  });
+  it('retains per-capture no-effect instead of borrowing the other capture contrast', () => {
+    const value = classify(pixels(0, 80));
+    expect(value.status).toBe('not-supported');
+    expect(value.captures.formalElement.status).toBe('no-observable-effect');
+    expect(value.captures.fullFramePanelWindow.status).toBe('supported');
+    expect(value.supportsReferenceOrigin).toBe(false);
+  });
+  it('does not support a residual that stays nonzero after alignment', () => {
+    expect(classify(pixels(56, 80), pixels(1, 0)).status).toBe('not-supported');
+  });
+  it('requires the returned residual to reproduce the current zero-origin state', () => {
+    expect(classify(pixels(56, 80), pixels(0, 0), pixels(55, 80)).status).toBe(
+      'not-supported',
+    );
+  });
+  it('requires exact returned reference bytes even if residual counts match', () => {
+    expect(
+      classify(undefined, undefined, undefined, {
+        formalElement: false,
+        fullFramePanelWindow: true,
+      }).supportsReferenceOrigin,
+    ).toBe(false);
+  });
+  it('keeps an invalid experiment separate from a supported pixel pattern', () => {
+    const value = classify(undefined, undefined, undefined, undefined, false);
+    expect(value.status).toBe('invalid-experiment');
+    expect(value.supportsReferenceOrigin).toBe(false);
   });
 });
 

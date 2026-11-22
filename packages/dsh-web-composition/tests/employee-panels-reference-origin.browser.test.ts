@@ -23,6 +23,7 @@ import {
 } from './employee-panels-causal-network';
 import { compareSidebarPixels } from './sidebar-pixels';
 import {
+  classifyPanelsOriginEffect,
   comparePanelsOriginContent,
   cropPanelsOriginFrame,
 } from './employee-panels-reference-origin';
@@ -637,17 +638,28 @@ suite('diagnostic-only reverse reference origin; no acceptance claim', () => {
         failures.push(Error('Exact reverse-origin PNG inventory differs'));
       }
       const alignedPixels = start && aligned ? compare(start, aligned) : null;
-      const supportsReferenceOrigin =
-        valid &&
-        alignedPixels?.formalElement.changedPixels === 0 &&
-        alignedPixels.fullFramePanelWindow.changedPixels === 0;
+      const originEffect = classifyPanelsOriginEffect(
+        valid,
+        {
+          atZero: start && zero ? compare(start, zero) : null,
+          aligned: alignedPixels,
+          returned: start && returned ? compare(start, returned) : null,
+        },
+        {
+          formalElement:
+            !!zero && !!returned && sha(zero.element) === sha(returned.element),
+          fullFramePanelWindow:
+            !!zero && !!returned && sha(zero.window) === sha(returned.window),
+        },
+      );
       await save('network-audit.json', audits);
       await save('events.json', journal.events);
       await save('result.json', {
         diagnosticOnly: true,
         acceptanceSatisfied: false,
         valid,
-        supportsReferenceOrigin,
+        supportsReferenceOrigin: originEffect.supportsReferenceOrigin,
+        originEffect,
         measuredScope:
           'One 1440/light/list/experience panel; existing discrete sampling validity only. No whole-domain visibility, other79 pairs or product fix is proved.',
         nativeNeverWrappedOrMoved: true,
