@@ -2,7 +2,7 @@ import { inflateSync } from 'node:zlib';
 
 /** Decode Chromium's non-interlaced, 8-bit RGB/RGBA screenshots, without
  * comparing PNG compression bytes or excluding antialiased/text pixels. */
-function screenshotPixels(png: Buffer) {
+export function screenshotPixels(png: Buffer) {
   if (png.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a')
     throw new Error('Screenshot is not a PNG');
   let width = 0,
