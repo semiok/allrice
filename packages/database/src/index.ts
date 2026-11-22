@@ -400,3 +400,6 @@ export { ReferenceArchiveInputError } from './reference-archive-read.ts';
 export { checkReferenceImageSignal } from './reference-image-read.ts';
 export * from './brand-media/server-wiring.ts';
 export * from './employees/employee-module-bindings.ts';
+
+// Host-only named baseline callers; internal SQL/source bindings stay private.
+export { createBusinessRuntimeCaller } from './business-runtime/caller-transaction.ts';

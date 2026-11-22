@@ -23,6 +23,11 @@ import {
   type ContentIdentity,
 } from './content-maintenance.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
+import {
+  bindCallerSourceQueries,
+  closeCallerSourceQueries,
+  joinCallerSave,
+} from './business-runtime/caller-transaction.ts';
 import { DataAccessError } from './data.ts';
 import { businessDeliverablePredicate } from './organization-dashboard.ts';
 import { runtimePolicyDigest } from './runtime-policy.ts';
@@ -365,14 +370,19 @@ export async function listCompanyRuleSources(
   context: RequestContext,
   org: string,
   db: Db = getDatabase(),
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   await requireCompanyAssetReader(context, org, db, true);
+  signal?.throwIfAborted();
   const sources = await db<
     { id: string; revisionId: string; revision: number; content: string }[]
   >`select m.id,r.id as "revisionId",r.revision,left(r.content,4000) as content from allrice_memories m join allrice_memory_revisions r on r.memory_id=m.id and r.organization_id=m.organization_id and r.workspace_id=m.workspace_id and r.revision=m.revision where m.organization_id=${org} and m.archived_at is null and m.lifecycle_state='durable' and m.trust_level='user_confirmed' and r.summary is not null and r.lifecycle_state='durable' and r.trust_level='user_confirmed' order by m.created_at desc,m.id desc limit 50`;
+  signal?.throwIfAborted();
   const employees = await db<
     { id: string; name: string }[]
   >`select distinct p.id,p.name from allrice_platform_employees p join allrice_platform_employee_tenant_assignments a on a.employee_id=p.id and a.organization_id=${org} and a.active where p.status='published' order by p.name,p.id`;
+  signal?.throwIfAborted();
   return { sources, employees };
 }
 async function source(
@@ -465,7 +475,9 @@ export async function mutateCompanyAsset(
   storage: StoragePort,
   administration = false,
   db: Db = getDatabase(),
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   const input = CompanyAssetMutationSchema.parse(raw);
   const principal =
     (await requireCompanyAssetReader(context, org, db, administration)) ?? null;
@@ -515,238 +527,276 @@ export async function mutateCompanyAsset(
     organization?.default_workspace_id;
   if (!quotaWorkspace) throw new DataAccessError('not_found');
   let copied: StorageObject | undefined;
+  let transactionWork: Promise<void> | undefined;
+  let callbackCompleted = false;
+  signal?.throwIfAborted();
   try {
-    await db.begin(async (tx) => {
-      await lockWorkspaceStorageQuota(tx, org, quotaWorkspace);
-      await requireCompanyAssetReader(context, org, tx, administration);
-      const currentPrincipal = administration
-        ? null
-        : await readContentPrincipal(context, tx, true);
-      const [current] = await tx<
-        {
-          owner_id: string;
-          kind: string;
-          revision: number;
-          pinned: boolean;
-          latest_revision_id: string | null;
-          published_revision_id: string | null;
-          state: string;
-        }[]
-      >`select * from allrice_company_assets where id=${input.assetId} and organization_id=${org} for update`;
-      if (current && !['rule', 'template'].includes(current.kind))
-        throw new DataAccessError('not_found');
-      requireAssetMutation(
-        context,
-        org,
-        input,
-        current,
-        administration,
-        currentPrincipal,
-      );
-      if (
-        current?.state === 'archived' &&
-        input.expectedRevision !== current.revision - 1
-      )
-        throw new CompanyAssetError('asset_unavailable');
-      if (!current && input.expectedRevision !== 0)
-        throw new DataAccessError('not_found');
-      if (current && current.revision !== input.expectedRevision) {
-        if (
-          (input.operation === 'pin' || input.operation === 'unpin') &&
-          current.revision === input.expectedRevision + 1 &&
-          current.kind === 'template' &&
-          current.state === 'published' &&
-          current.pinned === (input.operation === 'pin')
-        )
-          return;
-        if (
-          input.operation !== 'save' &&
-          input.operation !== 'pin' &&
-          input.operation !== 'unpin' &&
-          current.revision === input.expectedRevision + 1 &&
-          current.state ===
-            (
-              {
-                publish: 'published',
-                resume: 'published',
-                pause: 'paused',
-                withdraw: 'withdrawn',
-                archive: 'archived',
-              } as const
-            )[input.operation] &&
-          (input.operation !== 'publish' ||
-            current.latest_revision_id === current.published_revision_id)
-        )
-          return;
-        const [same] =
-          input.operation === 'save' &&
-          current.revision === input.expectedRevision + 1
-            ? await tx<
-                { content: unknown }[]
-              >`select content from allrice_company_asset_revisions where id=${current.latest_revision_id} and base_asset_revision=${input.expectedRevision} and created_by=${context.actor.id}`
-            : [];
-        if (
-          input.operation === 'save' &&
-          same &&
-          runtimeContractEqual(same.content, input.content)
-        )
-          return;
-        throw new CompanyAssetError('version_conflict');
-      }
-      if (input.operation === 'save') {
-        if (current && current.kind !== input.content.kind)
-          throw new CompanyAssetError('kind_conflict');
-        if (input.content.kind === 'template' && !sourceId)
-          throw new CompanyAssetError('source_required');
-        if (input.content.sourceMemoryId) {
-          const [memory] =
-            await tx`select r.id from allrice_memories m join allrice_memory_revisions r on r.memory_id=m.id and r.organization_id=m.organization_id and r.workspace_id=m.workspace_id where m.id=${input.content.sourceMemoryId} and m.organization_id=${org} and m.archived_at is null and r.id=${input.content.sourceMemoryRevisionId!} and m.lifecycle_state='durable' and m.trust_level='user_confirmed' and r.summary is not null and r.lifecycle_state='durable' and r.trust_level='user_confirmed' for share of m,r`;
-          if (!memory) throw new CompanyAssetError('source_changed');
+    const transaction = db.begin((tx) => {
+      transactionWork = (async () => {
+        await lockWorkspaceStorageQuota(tx, org, quotaWorkspace);
+        signal?.throwIfAborted();
+        if (administration) {
+          // Same issuer rows as content writers: native UPDATE/DELETE conflicts
+          // with these SHARE locks. Recheck admin SQL only after taking them.
+          await readContentPrincipal(context, tx, true);
+          await tx`select id from allrice_organizations where id=${org} for share`;
+          await tx`select id from allrice_workspaces where id=${quotaWorkspace} and organization_id=${org} for share`;
         }
-        if (input.content.appliesToEmployeeIds.length) {
-          const employees =
-            await tx`select id from allrice_platform_employees where id in ${tx(input.content.appliesToEmployeeIds)} and status<>'archived'`;
-          if (
-            employees.length !==
-            new Set(input.content.appliesToEmployeeIds).size
-          )
-            throw new DataAccessError('not_found');
-        }
-        let file: CompanyAssetRevision['file'] = reused?.file_metadata ?? null;
-        if (selected && bytes) {
-          const [valid] =
-            await tx`select o.id from allrice_storage_objects o join allrice_deliverable_versions v on v.object_id=o.id where v.id=${sourceId!} and v.organization_id=${org} and o.id=${selected.object.id} and o.checksum=${selected.object.checksum} and o.size_bytes=${selected.object.sizeBytes} and o.state='ready' and o.deleted_at is null and (o.retention_until is null or o.retention_until>clock_timestamp()) for share of o`;
-          if (!valid) throw new CompanyAssetError('source_changed');
-          const [quota] = await tx<
+        await requireCompanyAssetReader(context, org, tx, administration);
+        const currentPrincipal = administration
+          ? null
+          : await readContentPrincipal(context, tx, true);
+        const sources = bindCallerSourceQueries(
+          tx,
+          { organizationId: org, workspaceId: quotaWorkspace },
+          signal,
+        );
+        let failure: { error: unknown } | null = null;
+        try {
+          const [current] = await tx<
             {
-              limit_bytes: number | string | null;
-              used_bytes: number | string;
+              owner_id: string;
+              kind: string;
+              revision: number;
+              pinned: boolean;
+              latest_revision_id: string | null;
+              published_revision_id: string | null;
+              state: string;
             }[]
-          >`select q.limit_bytes,coalesce(sum(o.size_bytes)filter(where o.state<>'deleted'),0) as used_bytes from allrice_workspaces w left join allrice_storage_quotas q on q.organization_id=w.organization_id and q.workspace_id=w.id left join allrice_storage_objects o on o.organization_id=w.organization_id and o.workspace_id=w.id where w.organization_id=${org} and w.id=${quotaWorkspace} group by q.limit_bytes`;
-          if (
-            !quota ||
-            (quota.limit_bytes !== null &&
-              Number(quota.used_bytes) + bytes.length >
-                Number(quota.limit_bytes))
-          )
-            throw new DataAccessError('quota_exceeded');
-          const objectId = randomUUID();
-          copied = {
-            ...selected.object,
-            id: objectId,
-            ownerId: context.actor.id,
-            key: makeObjectKey({
-              organizationId: org,
-              workspaceId: quotaWorkspace,
-              ownerId: context.actor.id,
-              category: 'exports',
-              objectId,
-            }),
-            retentionUntil: null,
-            deletedAt: null,
-            immutable: true,
-          };
-          await tx`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,visibility,state,immutable) values(${copied.id},${org},${quotaWorkspace},${context.actor.id},${copied.key},'exports',${copied.mediaType},${copied.sizeBytes},${copied.checksum},'private','pending',true)`;
-          await storage.put(
-            copied,
-            new ReadableStream({
-              start(controller) {
-                controller.enqueue(bytes);
-                controller.close();
-              },
-            }),
+          >`select * from allrice_company_assets where id=${input.assetId} and organization_id=${org} for update`;
+          if (current && !['rule', 'template'].includes(current.kind))
+            throw new DataAccessError('not_found');
+          requireAssetMutation(
+            context,
+            org,
+            input,
+            current,
+            administration,
+            currentPrincipal,
           );
-          await tx`update allrice_storage_objects set state='ready',updated_at=clock_timestamp() where id=${copied.id} and state='pending'`;
-          file = {
-            objectId: copied.id,
-            checksum: copied.checksum,
-            sizeBytes: copied.sizeBytes,
-            mediaType: copied.mediaType,
-            fileName: selected.version.fileName,
-            format: selected.version.format,
-          };
-        }
-        if (reused) {
-          const [valid] =
-            await tx`select o.id from allrice_company_asset_revisions r join allrice_storage_objects o on o.id=r.snapshot_object_id and o.state='ready' and o.deleted_at is null where r.id=${current!.latest_revision_id} and r.snapshot_object_id=${reused.snapshot_object_id!} for share of o`;
-          if (!valid) throw new CompanyAssetError('source_changed');
-        }
-        if (!current)
-          await tx`insert into allrice_company_assets(id,organization_id,owner_id,kind) values(${input.assetId},${org},${context.actor.id},${input.content.kind})`;
-        const revisionId = randomUUID(),
-          [latest] = await tx<
-            { number: number }[]
-          >`select coalesce(max(number),0)::int as number from allrice_company_asset_revisions where asset_id=${input.assetId}`;
-        const digest = runtimePolicyDigest({ content: input.content, file });
-        await tx`insert into allrice_company_asset_revisions(id,organization_id,asset_id,number,content,digest,snapshot_object_id,file_metadata,source_version_id,source_memory_id,source_memory_revision_id,base_asset_revision,created_by) values(${revisionId},${org},${input.assetId},${(latest?.number ?? 0) + 1},${tx.json(input.content)},${digest},${file?.objectId ?? null},${file ? tx.json(file) : null},${sourceId ?? null},${input.content.sourceMemoryId ?? null},${input.content.sourceMemoryRevisionId ?? null},${input.expectedRevision},${context.actor.id})`;
-        await tx`update allrice_company_assets set latest_revision_id=${revisionId},revision=${current ? current.revision + 1 : 1},updated_at=clock_timestamp() where id=${input.assetId}`;
-        await audit(tx, context, org, input.assetId, 'saved', revisionId);
-      } else if (input.operation === 'pin' || input.operation === 'unpin') {
-        if (
-          !current ||
-          current.kind !== 'template' ||
-          current.state !== 'published'
-        )
-          throw new CompanyAssetError('asset_unavailable');
-        await tx`update allrice_company_assets set pinned=${input.operation === 'pin'},revision=revision+1,updated_at=clock_timestamp()
-          where id=${input.assetId} and organization_id=${org}`;
-        await audit(
-          tx,
-          context,
-          org,
-          input.assetId,
-          input.operation,
-          current.published_revision_id,
-        );
-      } else {
-        if (!current) throw new DataAccessError('not_found');
-        const publishing =
-          input.operation === 'publish' || input.operation === 'resume';
-        const publishedId =
-          input.operation === 'publish'
-            ? current.latest_revision_id
-            : current.published_revision_id;
-        if (publishing && !publishedId)
-          throw new CompanyAssetError('asset_unavailable');
-        if (publishing && current.kind === 'rule') {
-          await tx`select pg_advisory_xact_lock(hashtextextended(${org},73))`;
-          const [budget] = await tx<
-            { bytes: number; count: number }[]
-          >`select coalesce(sum(octet_length(r.content->>'body')),0)::int as bytes,count(*)::int as count from allrice_company_assets a join allrice_company_asset_revisions r on r.id=a.published_revision_id where a.organization_id=${org} and a.kind='rule' and a.state='published' and a.id<>${input.assetId}`;
-          const [newRule] = await tx<
-            { bytes: number }[]
-          >`select octet_length(content->>'body')::int as bytes from allrice_company_asset_revisions where id=${publishedId!}`;
           if (
-            (budget?.count ?? 0) + 1 > companyRuleBudget.maximumRules ||
-            (budget?.bytes ?? 0) + (newRule?.bytes ?? 0) >
-              companyRuleBudget.maximumBytes
+            current?.state === 'archived' &&
+            input.expectedRevision !== current.revision - 1
           )
-            throw new CompanyAssetError('rule_budget_exceeded');
+            throw new CompanyAssetError('asset_unavailable');
+          if (!current && input.expectedRevision !== 0)
+            throw new DataAccessError('not_found');
+          if (current && current.revision !== input.expectedRevision) {
+            if (
+              (input.operation === 'pin' || input.operation === 'unpin') &&
+              current.revision === input.expectedRevision + 1 &&
+              current.kind === 'template' &&
+              current.state === 'published' &&
+              current.pinned === (input.operation === 'pin')
+            )
+              return;
+            if (
+              input.operation !== 'save' &&
+              input.operation !== 'pin' &&
+              input.operation !== 'unpin' &&
+              current.revision === input.expectedRevision + 1 &&
+              current.state ===
+                (
+                  {
+                    publish: 'published',
+                    resume: 'published',
+                    pause: 'paused',
+                    withdraw: 'withdrawn',
+                    archive: 'archived',
+                  } as const
+                )[input.operation] &&
+              (input.operation !== 'publish' ||
+                current.latest_revision_id === current.published_revision_id)
+            )
+              return;
+            const [same] =
+              input.operation === 'save' &&
+              current.revision === input.expectedRevision + 1
+                ? await tx<
+                    { content: unknown }[]
+                  >`select content from allrice_company_asset_revisions where id=${current.latest_revision_id} and base_asset_revision=${input.expectedRevision} and created_by=${context.actor.id}`
+                : [];
+            if (
+              input.operation === 'save' &&
+              same &&
+              runtimeContractEqual(same.content, input.content)
+            )
+              return;
+            throw new CompanyAssetError('version_conflict');
+          }
+          if (input.operation === 'save') {
+            if (current && current.kind !== input.content.kind)
+              throw new CompanyAssetError('kind_conflict');
+            if (input.content.kind === 'template' && !sourceId)
+              throw new CompanyAssetError('source_required');
+            if (input.content.sourceMemoryId) {
+              const [memory] = await sources.companyRuleRevision(
+                () =>
+                  tx`select r.id from allrice_memories m join allrice_memory_revisions r on r.memory_id=m.id and r.organization_id=m.organization_id and r.workspace_id=m.workspace_id where m.id=${input.content.sourceMemoryId} and m.organization_id=${org} and m.archived_at is null and r.id=${input.content.sourceMemoryRevisionId!} and m.lifecycle_state='durable' and m.trust_level='user_confirmed' and r.summary is not null and r.lifecycle_state='durable' and r.trust_level='user_confirmed' for share of m,r`,
+              );
+              if (!memory) throw new CompanyAssetError('source_changed');
+            }
+            if (input.content.appliesToEmployeeIds.length) {
+              const employees =
+                await tx`select id from allrice_platform_employees where id in ${tx(input.content.appliesToEmployeeIds)} and status<>'archived'`;
+              if (
+                employees.length !==
+                new Set(input.content.appliesToEmployeeIds).size
+              )
+                throw new DataAccessError('not_found');
+            }
+            let file: CompanyAssetRevision['file'] =
+              reused?.file_metadata ?? null;
+            if (selected && bytes) {
+              const [valid] =
+                await tx`select o.id from allrice_storage_objects o join allrice_deliverable_versions v on v.object_id=o.id where v.id=${sourceId!} and v.organization_id=${org} and o.id=${selected.object.id} and o.checksum=${selected.object.checksum} and o.size_bytes=${selected.object.sizeBytes} and o.state='ready' and o.deleted_at is null and (o.retention_until is null or o.retention_until>clock_timestamp()) for share of o`;
+              if (!valid) throw new CompanyAssetError('source_changed');
+              const [quota] = await tx<
+                {
+                  limit_bytes: number | string | null;
+                  used_bytes: number | string;
+                }[]
+              >`select q.limit_bytes,coalesce(sum(o.size_bytes)filter(where o.state<>'deleted'),0) as used_bytes from allrice_workspaces w left join allrice_storage_quotas q on q.organization_id=w.organization_id and q.workspace_id=w.id left join allrice_storage_objects o on o.organization_id=w.organization_id and o.workspace_id=w.id where w.organization_id=${org} and w.id=${quotaWorkspace} group by q.limit_bytes`;
+              if (
+                !quota ||
+                (quota.limit_bytes !== null &&
+                  Number(quota.used_bytes) + bytes.length >
+                    Number(quota.limit_bytes))
+              )
+                throw new DataAccessError('quota_exceeded');
+              const objectId = randomUUID();
+              copied = {
+                ...selected.object,
+                id: objectId,
+                ownerId: context.actor.id,
+                key: makeObjectKey({
+                  organizationId: org,
+                  workspaceId: quotaWorkspace,
+                  ownerId: context.actor.id,
+                  category: 'exports',
+                  objectId,
+                }),
+                retentionUntil: null,
+                deletedAt: null,
+                immutable: true,
+              };
+              await tx`insert into allrice_storage_objects(id,organization_id,workspace_id,owner_id,object_key,category,media_type,size_bytes,checksum,visibility,state,immutable) values(${copied.id},${org},${quotaWorkspace},${context.actor.id},${copied.key},'exports',${copied.mediaType},${copied.sizeBytes},${copied.checksum},'private','pending',true)`;
+              await storage.put(
+                copied,
+                new ReadableStream({
+                  start(controller) {
+                    controller.enqueue(bytes);
+                    controller.close();
+                  },
+                }),
+              );
+              await tx`update allrice_storage_objects set state='ready',updated_at=clock_timestamp() where id=${copied.id} and state='pending'`;
+              file = {
+                objectId: copied.id,
+                checksum: copied.checksum,
+                sizeBytes: copied.sizeBytes,
+                mediaType: copied.mediaType,
+                fileName: selected.version.fileName,
+                format: selected.version.format,
+              };
+            }
+            if (reused) {
+              const [valid] =
+                await tx`select o.id from allrice_company_asset_revisions r join allrice_storage_objects o on o.id=r.snapshot_object_id and o.state='ready' and o.deleted_at is null where r.id=${current!.latest_revision_id} and r.snapshot_object_id=${reused.snapshot_object_id!} for share of o`;
+              if (!valid) throw new CompanyAssetError('source_changed');
+            }
+            if (!current)
+              await tx`insert into allrice_company_assets(id,organization_id,owner_id,kind) values(${input.assetId},${org},${context.actor.id},${input.content.kind})`;
+            const revisionId = randomUUID(),
+              [latest] = await tx<
+                { number: number }[]
+              >`select coalesce(max(number),0)::int as number from allrice_company_asset_revisions where asset_id=${input.assetId}`;
+            const digest = runtimePolicyDigest({
+              content: input.content,
+              file,
+            });
+            await tx`insert into allrice_company_asset_revisions(id,organization_id,asset_id,number,content,digest,snapshot_object_id,file_metadata,source_version_id,source_memory_id,source_memory_revision_id,base_asset_revision,created_by) values(${revisionId},${org},${input.assetId},${(latest?.number ?? 0) + 1},${tx.json(input.content)},${digest},${file?.objectId ?? null},${file ? tx.json(file) : null},${sourceId ?? null},${input.content.sourceMemoryId ?? null},${input.content.sourceMemoryRevisionId ?? null},${input.expectedRevision},${context.actor.id})`;
+            await tx`update allrice_company_assets set latest_revision_id=${revisionId},revision=${current ? current.revision + 1 : 1},updated_at=clock_timestamp() where id=${input.assetId}`;
+            await audit(tx, context, org, input.assetId, 'saved', revisionId);
+          } else if (input.operation === 'pin' || input.operation === 'unpin') {
+            if (
+              !current ||
+              current.kind !== 'template' ||
+              current.state !== 'published'
+            )
+              throw new CompanyAssetError('asset_unavailable');
+            await tx`update allrice_company_assets set pinned=${input.operation === 'pin'},revision=revision+1,updated_at=clock_timestamp()
+          where id=${input.assetId} and organization_id=${org}`;
+            await audit(
+              tx,
+              context,
+              org,
+              input.assetId,
+              input.operation,
+              current.published_revision_id,
+            );
+          } else {
+            if (!current) throw new DataAccessError('not_found');
+            const publishing =
+              input.operation === 'publish' || input.operation === 'resume';
+            const publishedId =
+              input.operation === 'publish'
+                ? current.latest_revision_id
+                : current.published_revision_id;
+            if (publishing && !publishedId)
+              throw new CompanyAssetError('asset_unavailable');
+            if (publishing && current.kind === 'rule') {
+              await tx`select pg_advisory_xact_lock(hashtextextended(${org},73))`;
+              const [budget] = await tx<
+                { bytes: number; count: number }[]
+              >`select coalesce(sum(octet_length(r.content->>'body')),0)::int as bytes,count(*)::int as count from allrice_company_assets a join allrice_company_asset_revisions r on r.id=a.published_revision_id where a.organization_id=${org} and a.kind='rule' and a.state='published' and a.id<>${input.assetId}`;
+              const [newRule] = await tx<
+                { bytes: number }[]
+              >`select octet_length(content->>'body')::int as bytes from allrice_company_asset_revisions where id=${publishedId!}`;
+              if (
+                (budget?.count ?? 0) + 1 > companyRuleBudget.maximumRules ||
+                (budget?.bytes ?? 0) + (newRule?.bytes ?? 0) >
+                  companyRuleBudget.maximumBytes
+              )
+                throw new CompanyAssetError('rule_budget_exceeded');
+            }
+            const state = publishing
+              ? 'published'
+              : input.operation === 'pause'
+                ? 'paused'
+                : input.operation === 'withdraw'
+                  ? 'withdrawn'
+                  : 'archived';
+            if (publishing)
+              await tx`insert into allrice_company_asset_publications(asset_id,revision_id,published_by) values(${input.assetId},${publishedId!},${context.actor.id}) on conflict do nothing`;
+            await tx`update allrice_company_assets set state=${state},published_revision_id=${publishing ? publishedId : current.published_revision_id},revision=revision+1,updated_at=clock_timestamp() where id=${input.assetId}`;
+            await audit(
+              tx,
+              context,
+              org,
+              input.assetId,
+              input.operation,
+              publishedId,
+            );
+          }
+        } catch (error) {
+          failure = { error };
+          throw error;
+        } finally {
+          await closeCallerSourceQueries(sources, failure);
+          if (!failure) {
+            signal?.throwIfAborted();
+            callbackCompleted = true;
+          }
         }
-        const state = publishing
-          ? 'published'
-          : input.operation === 'pause'
-            ? 'paused'
-            : input.operation === 'withdraw'
-              ? 'withdrawn'
-              : 'archived';
-        if (publishing)
-          await tx`insert into allrice_company_asset_publications(asset_id,revision_id,published_by) values(${input.assetId},${publishedId!},${context.actor.id}) on conflict do nothing`;
-        await tx`update allrice_company_assets set state=${state},published_revision_id=${publishing ? publishedId : current.published_revision_id},revision=revision+1,updated_at=clock_timestamp() where id=${input.assetId}`;
-        await audit(
-          tx,
-          context,
-          org,
-          input.assetId,
-          input.operation,
-          publishedId,
-        );
-      }
+      })();
+      return transactionWork;
     });
+    await joinCallerSave(transaction, () => transactionWork);
   } catch (error) {
-    // Only this failed transaction's newly allocated object may be removed.
-    // It never became a committed revision or an externally readable grant.
-    if (copied)
+    // Callback success followed by commit/connection failure is unknown, not
+    // proof of rollback. Never remove an object that may be committed.
+    if (copied && !callbackCompleted)
       await storage
         .delete({ ...copied, immutable: false })
         .catch(() => undefined);
