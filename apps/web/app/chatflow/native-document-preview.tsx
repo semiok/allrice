@@ -14,6 +14,10 @@ import { NativeHtmlPreview } from './native-html-preview';
 import { OfficePreview } from './office-preview';
 import { LoadingIndicator } from './dsh-upstream/document/LoadingIndicator';
 const noHeaders: Record<string, string> = {};
+export type DocumentPreviewPageReader = (
+  page: { source: true; offset?: number },
+  signal: AbortSignal,
+) => Promise<ArtifactPreview>;
 export function hasSourcePreview(preview: ArtifactPreview | null) {
   return (
     preview?.kind === 'text' ||
@@ -32,6 +36,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
   preview,
   fileName,
   pageUrl,
+  readPage,
   headers = noHeaders,
   source = false,
   interactive = false,
@@ -44,6 +49,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
   preview: ArtifactPreview;
   fileName: string;
   pageUrl?: string;
+  readPage?: DocumentPreviewPageReader;
   headers?: Record<string, string>;
   source?: boolean;
   interactive?: boolean;
@@ -60,11 +66,15 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
   useEffect(() => {
     setSourcePage(undefined);
     setError('');
-    if (!sourceNeeded || !pageUrl) return;
+    if (!sourceNeeded || (!pageUrl && !readPage)) return;
     const controller = new AbortController();
-    void workbenchJson(`${pageUrl}&source=1`, headers, {
-      signal: controller.signal,
-    })
+    void (
+      readPage
+        ? readPage({ source: true }, controller.signal)
+        : workbenchJson(`${pageUrl}&source=1`, headers, {
+            signal: controller.signal,
+          })
+    )
       .then(parseArtifactPreview)
       .then((value) => {
         if (controller.signal.aborted) return;
@@ -81,7 +91,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
         }
       });
     return () => controller.abort();
-  }, [sourceNeeded, pageUrl, headers, onReadFailure]);
+  }, [sourceNeeded, pageUrl, readPage, headers, onReadFailure]);
   if (sourceNeeded) {
     if (error) return <p role="alert">{error}</p>;
     return sourcePage ? (
@@ -90,6 +100,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
         initial={sourcePage}
         fileName={fileName}
         pageUrl={pageUrl}
+        readPage={readPage}
         headers={headers}
         active={active}
         onReadFailure={onReadFailure}
@@ -106,6 +117,7 @@ export const NativeDocumentPreview = memo(function NativeDocumentPreview({
         initial={preview}
         fileName={fileName}
         pageUrl={pageUrl}
+        readPage={readPage}
         headers={headers}
         source={source}
         toolResult={toolResult}
@@ -139,6 +151,7 @@ function PagedDocumentText({
   initial,
   fileName,
   pageUrl,
+  readPage,
   headers,
   source,
   toolResult,
@@ -148,6 +161,7 @@ function PagedDocumentText({
   initial: TextPreview;
   fileName: string;
   pageUrl?: string;
+  readPage?: DocumentPreviewPageReader;
   headers: Record<string, string>;
   source?: boolean;
   toolResult?: boolean;
@@ -169,9 +183,9 @@ function PagedDocumentText({
     setError('');
     setBusy(false);
     return () => request.current?.abort();
-  }, [initial, pageUrl, headers]);
+  }, [initial, pageUrl, readPage, headers]);
   async function load(direction: 'previous' | 'next', displayedPages = 0) {
-    if (!pageUrl || busy) return;
+    if ((!pageUrl && !readPage) || busy) return;
     const previous = history.at(-1);
     if (direction === 'previous' && !previous) return;
     if (direction === 'next' && (page.eof !== false || !page.lines)) return;
@@ -186,11 +200,11 @@ function PagedDocumentText({
           ? previous!.offset
           : (page.offset ?? 1) + page.lines!;
       const next = parseArtifactPreview(
-        await workbenchJson(
-          `${pageUrl}&source=1&offset=${nextOffset}`,
-          headers,
-          { signal: controller.signal },
-        ),
+        await (readPage
+          ? readPage({ source: true, offset: nextOffset }, controller.signal)
+          : workbenchJson(`${pageUrl}&source=1&offset=${nextOffset}`, headers, {
+              signal: controller.signal,
+            })),
       );
       if (controller.signal.aborted) return;
       if (next.kind !== 'text')
@@ -232,7 +246,7 @@ function PagedDocumentText({
         toolResult={toolResult}
         active={active}
         pagination={
-          pageUrl && (history.length || page.eof === false)
+          (pageUrl || readPage) && (history.length || page.eof === false)
             ? {
                 firstPage,
                 fromEnd,

@@ -96,6 +96,10 @@ ${js}
     exports.bindEmployeeSidebar = sidebar.bindEmployeeSidebar;
     exports.bindEmployeeSettings = settings.bindEmployeeSettings;
     exports.bindEmployeePanels = panels.bindEmployeePanels;
+    exports.bindEmployeePanelsData = panels.bindEmployeePanelsData;
+    exports.createEmployeePanelsDataPort = panels.createEmployeePanelsDataPort;
+    exports.createEmployeePanelDataClient = panels.createEmployeePanelDataClient;
+    exports.uploadPersonalDeliverable = panels.uploadPersonalDeliverable;
     exports.EmployeeClientNavigation = sidebar.EmployeeClientNavigation;
     return exports;
   },

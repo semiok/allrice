@@ -14,11 +14,12 @@ import {
   IconPlusOutlineRegular,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import { workbenchJson } from '../../lib/chatflow/workbench-model';
+import type { WorkbenchDeliverablesActionsCatalog } from '../../lib/chatflow/workbench-file-actions';
+import type { EmployeePanelDataClient } from '../../lib/chatflow/employee-panel-data';
 import {
-  WorkbenchDeliverablesActionsCatalogSchema,
-  type WorkbenchDeliverablesActionsCatalog,
-} from '../../lib/chatflow/workbench-file-actions';
+  useEmployeePanelData,
+  useEmployeePanelDownload,
+} from './use-employee-panel-data';
 import { WorkbenchIcon } from './workbench-modules';
 import { useWorkbenchFileReference } from './use-workbench-file-reference';
 import { useWorkbenchFileFavorite } from './use-workbench-file-favorite';
@@ -40,6 +41,7 @@ export function WorkbenchFilesPanel(props: {
   sessionId: string | null;
   headers: Record<string, string>;
   active: boolean;
+  dataClient?: EmployeePanelDataClient;
   initialCategory?: 'all' | 'artifact' | 'reference';
   readOnly?: boolean;
   onOpen: (file: WorkbenchFile) => void;
@@ -48,6 +50,8 @@ export function WorkbenchFilesPanel(props: {
   onRead?: () => void;
   onPublish?: (file: WorkbenchDeliverable) => void;
 }) {
+  const data = useEmployeePanelData(props);
+  const download = useEmployeePanelDownload(data, props.ownerKey, props.active);
   const publicationOptions = useReferencePublicationOptions({
     ...props,
     active: props.active && !!props.onPublish,
@@ -72,6 +76,7 @@ export function WorkbenchFilesPanel(props: {
   );
   const [snapshot, setSnapshot] = useState<{
     key: string;
+    client: EmployeePanelDataClient;
     value: WorkbenchDeliverablesActionsCatalog;
   } | null>(null);
   const [status, setStatus] = useState({ key: '', loading: false, error: '' });
@@ -92,7 +97,8 @@ export function WorkbenchFilesPanel(props: {
     key = `${props.ownerKey}/${request}`;
   if (page && page.key !== key) setPage(null);
   const cursor = page?.key === key ? page.cursor : null;
-  const catalog = snapshot?.key === key ? snapshot.value : null;
+  const catalog =
+    snapshot?.key === key && snapshot.client === data ? snapshot.value : null;
   const loading = status.key === key && status.loading;
   const error = status.key === key ? status.error : '';
   const referenceActions = useWorkbenchFileReference(props);
@@ -107,20 +113,30 @@ export function WorkbenchFilesPanel(props: {
     const controller = new AbortController();
     const timer = setTimeout(() => {
       setStatus({ key, loading: true, error: '' });
-      void workbenchJson(
-        '/api/v1/workbench/files?' +
-          request +
-          (cursor ? `&cursor=${cursor}` : ''),
-        props.headers,
-        { signal: controller.signal },
-      )
-        .then(WorkbenchDeliverablesActionsCatalogSchema.parse)
+      void data
+        .listDeliverables(
+          {
+            workspaceId: props.workspaceId,
+            category,
+            ...(employeeId ? { employeeInstanceId: employeeId } : {}),
+            query: query.trim(),
+            ...(cursor ? { cursor } : {}),
+          },
+          controller.signal,
+        )
         .then((value) => {
           if (controller.signal.aborted) return;
+          if (
+            value.viewerId &&
+            props.viewerId &&
+            value.viewerId !== props.viewerId
+          )
+            throw Error('文件加载失败，请重新加载。');
           setSnapshot((prior) => ({
             key,
+            client: data,
             value:
-              cursor && prior?.key === key
+              cursor && prior?.key === key && prior.client === data
                 ? {
                     ...value,
                     files: [
@@ -144,15 +160,17 @@ export function WorkbenchFilesPanel(props: {
           setStatus({ key, loading: false, error: '' });
         })
         .catch((cause) => {
-          if (!controller.signal.aborted)
+          if (!controller.signal.aborted) {
+            if (props.dataClient) setSnapshot(null);
             setStatus({ key, loading: false, error: message(cause) });
+          }
         });
     }, 180);
     return () => {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [props.active, props.headers, request, key, revision, cursor]);
+  }, [props.active, props.headers, request, key, revision, cursor, data]);
   useEffect(() => {
     setPage(null);
     reload();
@@ -177,19 +195,19 @@ export function WorkbenchFilesPanel(props: {
       setLinkStatus({ scope: props.ownerKey, denied: true, error: '' });
       return;
     }
-    void workbenchJson(
-      '/api/v1/workbench/files?' +
-        new URLSearchParams({
-          workspaceId: props.workspaceId,
-          view: 'deliverables',
-          objectId: id.data,
-        }),
-      props.headers,
-      { signal: controller.signal },
-    )
-      .then(WorkbenchDeliverablesActionsCatalogSchema.parse)
+    void data
+      .listDeliverables(
+        { workspaceId: props.workspaceId, objectId: id.data },
+        controller.signal,
+      )
       .then((value) => {
         if (controller.signal.aborted) return;
+        if (
+          value.viewerId &&
+          props.viewerId &&
+          value.viewerId !== props.viewerId
+        )
+          throw Error('文件加载失败，请重新加载。');
         const file = value.files.find((file) => file.objectId === id.data);
         if (!file) {
           setLinkStatus({ scope: props.ownerKey, denied: true, error: '' });
@@ -215,6 +233,7 @@ export function WorkbenchFilesPanel(props: {
     props.workspaceId,
     props.headers,
     revision,
+    data,
   ]);
   if (!props.active) return null;
   if (linkStatus?.scope === props.ownerKey && linkStatus.denied)
@@ -287,11 +306,13 @@ export function WorkbenchFilesPanel(props: {
         ))}
       </nav>
       {(error ||
+        download.error ||
         referenceActions.error ||
         favorite.error ||
         (linkStatus?.scope === props.ownerKey && linkStatus.error)) && (
         <p className={css.error} role="alert">
           {error ||
+            download.error ||
             referenceActions.error ||
             favorite.error ||
             linkStatus?.error}
@@ -381,6 +402,22 @@ export function WorkbenchFilesPanel(props: {
                     !catalog?.quotableFileIds.includes(file.objectId)
                   }
                   onUse={() => void referenceActions.useFile(file)}
+                  onDownload={
+                    props.dataClient
+                      ? () =>
+                          void download.download(
+                            (signal) =>
+                              data.downloadDeliverable(
+                                {
+                                  workspaceId: props.workspaceId,
+                                  objectId: file.objectId,
+                                },
+                                signal,
+                              ),
+                            file.fileName,
+                          )
+                      : undefined
+                  }
                   favoriteDisabled={favorite.disabled || !!favorite.using}
                   onFavorite={() =>
                     void favorite.setFavorite(file.objectId, !file.favorite)
@@ -428,6 +465,7 @@ function FileMenu({
   favoriteDisabled,
   onFavorite,
   onPublish,
+  onDownload,
 }: {
   file: WorkbenchDeliverable;
   disabled: boolean;
@@ -435,6 +473,7 @@ function FileMenu({
   favoriteDisabled: boolean;
   onFavorite: () => void;
   onPublish?: () => void;
+  onDownload?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   return (
@@ -494,6 +533,10 @@ function FileMenu({
           if (id === 'favorite') onFavorite();
           if (id === 'publish') onPublish?.();
           if (id === 'download') {
+            if (onDownload) {
+              onDownload();
+              return;
+            }
             const a = document.createElement('a');
             a.href = `/api/v1/workbench/files/${file.objectId}/download?workspaceId=${file.workspaceId}`;
             a.download = file.fileName;

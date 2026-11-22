@@ -6,6 +6,7 @@ import {
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import { workbenchJson } from '../../lib/chatflow/workbench-model';
+import { useEmployeePanelData } from './use-employee-panel-data';
 import {
   WorkbenchFileActionsCatalogSchema,
   type WorkbenchFileActionsCatalog,
@@ -22,9 +23,11 @@ export function WorkbenchFileToolbarActions(
     fileName: string;
   },
 ) {
-  const [catalog, setCatalog] = useState<WorkbenchFileActionsCatalog | null>(
-    null,
-  );
+  const data = useEmployeePanelData(props);
+  const [catalog, setCatalog] = useState<Pick<
+    WorkbenchFileActionsCatalog,
+    'files' | 'quotableFileIds'
+  > | null>(null);
   const [revision, setRevision] = useState(0);
   const reference = useWorkbenchFileReference(props);
   const file = catalog?.files.find((f) => f.objectId === props.objectId);
@@ -37,10 +40,16 @@ export function WorkbenchFileToolbarActions(
       scope: 'all',
       query: props.fileName.slice(0, 200),
     });
-    void workbenchJson('/api/v1/workbench/files?' + query, props.headers, {
-      signal: abort.signal,
-    })
-      .then(WorkbenchFileActionsCatalogSchema.parse)
+    void (
+      props.dataClient
+        ? data.listDeliverables(
+            { workspaceId: props.workspaceId, objectId: props.objectId },
+            abort.signal,
+          )
+        : workbenchJson('/api/v1/workbench/files?' + query, props.headers, {
+            signal: abort.signal,
+          }).then(WorkbenchFileActionsCatalogSchema.parse)
+    )
       .then((data) => {
         if (!abort.signal.aborted) setCatalog(data);
       })
@@ -55,6 +64,8 @@ export function WorkbenchFileToolbarActions(
     props.headers,
     props.active,
     revision,
+    data,
+    props.dataClient,
   ]);
   useEffect(() => {
     const changed = () => setRevision((n) => n + 1);

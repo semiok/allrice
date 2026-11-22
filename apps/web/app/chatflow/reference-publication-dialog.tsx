@@ -1,13 +1,10 @@
 'use client';
 
 import { useEffect, useId, useRef, useState } from 'react';
-import { z } from 'zod';
 import {
   ReferenceAudienceSchema,
   ReferencePublicationActionSchema,
   ReferencePublishInputSchema,
-  ReferenceSaveResultSchema,
-  UuidSchema,
   type ReferenceRevision,
   type WorkbenchDeliverable,
 } from '@allrice/contracts';
@@ -19,7 +16,14 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives';
 import { DshDialog } from './dsh-upstream/Dialog';
 import { WorkbenchFileIcon } from './workbench-file-icon';
-import { workbenchJson } from '../../lib/chatflow/workbench-model';
+import {
+  EmployeePanelDataUnavailableError,
+  type EmployeePanelDataClient,
+} from '../../lib/chatflow/employee-panel-data';
+import {
+  useEmployeePanelData,
+  useEmployeePanelDownload,
+} from './use-employee-panel-data';
 import css from './reference-publication-dialog.module.css';
 import {
   useReferencePublicationOptions,
@@ -38,6 +42,7 @@ type Props = {
   viewerId: string;
   headers: Record<string, string>;
   options?: ReferencePublicationOptions;
+  dataClient?: EmployeePanelDataClient;
   target: ReferencePublicationTarget;
   onClose: () => void;
   onSaved: (result: { sourceId: string; revisionId?: string }) => void;
@@ -66,10 +71,17 @@ function PublicationForm({
   viewerId,
   headers,
   options: suppliedOptions,
+  dataClient,
   target,
   onClose,
   onSaved,
 }: Props) {
+  const data = useEmployeePanelData({ dataClient, headers, viewerId });
+  const download = useEmployeePanelDownload(
+    data,
+    `${workspaceId}/${viewerId}`,
+    true,
+  );
   const purposeLabelId = useId();
   const available = useReferencePublicationOptions({
     workspaceId,
@@ -77,6 +89,7 @@ function PublicationForm({
     headers,
     active: true,
     supplied: suppliedOptions,
+    dataClient,
   });
   const options = available.options;
   const reference = 'reference' in target ? target.reference : null;
@@ -158,7 +171,6 @@ function PublicationForm({
         departmentIds: scope === 'departments' ? departmentIds : [],
       });
       let value: Record<string, unknown>;
-      let url = '/api/v1/references/publications';
       if (target.kind === 'file') {
         value = {
           workspaceId,
@@ -180,7 +192,6 @@ function PublicationForm({
           purpose,
         };
       } else if (reference && publication) {
-        url += '/' + encodeURIComponent(reference.sourceId);
         value = {
           workspaceId,
           expectedRevision: publication.audienceRevision,
@@ -206,23 +217,32 @@ function PublicationForm({
       ).join('');
       const requestId = requestIds.current.get(key) ?? proposed;
       requestIds.current.set(key, requestId);
-      const data = await workbenchJson(url, headers, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-allrice-expected-viewer-id': viewerId,
-        },
-        body: JSON.stringify({ ...canonical, requestId }),
-        signal: controller.signal,
-      });
       const saved = reference
-        ? z.object({ sourceId: UuidSchema }).strict().parse(data)
-        : ReferenceSaveResultSchema.parse(data);
+        ? await data.changePublication(
+            {
+              sourceId: reference.sourceId,
+              body: ReferencePublicationActionSchema.parse({
+                ...canonical,
+                requestId,
+              }),
+            },
+            controller.signal,
+          )
+        : await (() => {
+            const body = ReferencePublishInputSchema.parse({
+              ...canonical,
+              requestId,
+            });
+            return body.origin === 'file'
+              ? data.publishFile(body, controller.signal)
+              : data.publishUpload(body, controller.signal);
+          })();
       if (alive.current && !controller.signal.aborted) onSaved(saved);
     } catch (caught) {
       if (alive.current && !controller.signal.aborted) {
         setError(
-          reference && caught instanceof Error && 'status' in caught
+          caught instanceof EmployeePanelDataUnavailableError ||
+            (reference && caught instanceof Error && 'status' in caught)
             ? caught.message
             : '发布未完成，请重试。',
         );
@@ -397,25 +417,44 @@ function PublicationForm({
           </p>
         </>
       )}
-      {(error || available.error) && (
+      {(error || download.error || available.error) && (
         <p role="alert" className={css.error}>
-          {error || available.error}
+          {error || download.error || available.error}
         </p>
       )}
       <footer className={css.actions}>
         <Button type="button" variant="ghost" disabled={busy} onClick={onClose}>
           取消
         </Button>
-        {target.kind === 'delete' && (
-          <a
-            className={css.download}
-            href={`/api/v1/references/revisions/${encodeURIComponent(target.reference.revisionId)}/download?workspaceId=${encodeURIComponent(workspaceId)}`}
-            download
-          >
-            <IconDownloadOutlineRegular size={18} />
-            先下载
-          </a>
-        )}
+        {target.kind === 'delete' &&
+          (dataClient ? (
+            <button
+              type="button"
+              className={css.download}
+              onClick={() =>
+                void download.download(
+                  (signal) =>
+                    data.downloadMaterial(
+                      { workspaceId, revisionId: target.reference.revisionId },
+                      signal,
+                    ),
+                  target.reference.fileName,
+                )
+              }
+            >
+              <IconDownloadOutlineRegular size={18} />
+              先下载
+            </button>
+          ) : (
+            <a
+              className={css.download}
+              href={`/api/v1/references/revisions/${encodeURIComponent(target.reference.revisionId)}/download?workspaceId=${encodeURIComponent(workspaceId)}`}
+              download
+            >
+              <IconDownloadOutlineRegular size={18} />
+              先下载
+            </a>
+          ))}
         <Button
           type="button"
           variant="primary"

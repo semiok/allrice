@@ -33,6 +33,10 @@ import type {
 } from './employee-panels-port';
 import '@allrice/ui/tokens.css';
 import css from './employee-panels.module.css';
+import {
+  createEmployeePanelsDataPort,
+  type EmployeePanelsDataResolver,
+} from './employee-panels-data';
 
 function useOwner(binding: EmployeePanelsBinding, sessionId: SessionIdOf) {
   const subscribe = useCallback(
@@ -301,6 +305,29 @@ export function bindEmployeePanels(ctx: Context, port: EmployeePanelsPort) {
     },
   });
 }
+
+/** 4.0 data entry point. Missing BFF methods stay explicitly unbound. The
+ * presentation-only binder above remains for existing compatibility fixtures. */
+export function bindEmployeePanelsData(
+  ctx: Context,
+  port: EmployeePanelsPort,
+  resolve: EmployeePanelsDataResolver = () => null,
+) {
+  return ctx.plugin({
+    apply(owner: Context) {
+      const lifetime = new AbortController();
+      owner.effect(() => () => lifetime.abort());
+      owner.provide('allriceEmployeePanels', {
+        port: createEmployeePanelsDataPort(port, resolve, lifetime.signal),
+        signal: lifetime.signal,
+      });
+    },
+  });
+}
+
+export { createEmployeePanelsDataPort } from './employee-panels-data';
+export { createEmployeePanelDataClient } from '../../../apps/web/lib/chatflow/employee-panel-data';
+export { uploadPersonalDeliverable } from '../../../apps/web/lib/chatflow/employee-panel-upload';
 
 export type {
   EmployeePanelsActions,

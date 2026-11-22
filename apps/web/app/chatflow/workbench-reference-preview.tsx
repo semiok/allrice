@@ -1,6 +1,11 @@
 'use client';
 import { documentPreviewPresentation } from './document-preview-presentation';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
+import type { EmployeePanelDataClient } from '../../lib/chatflow/employee-panel-data';
+import {
+  useEmployeePanelData,
+  useEmployeePanelDownload,
+} from './use-employee-panel-data';
 import {
   parseArtifactPreview,
   workbenchJson,
@@ -20,6 +25,7 @@ export function ReferenceSnapshotPreview(props: {
   workspaceId: string;
   headers: Record<string, string>;
   active: boolean;
+  dataClient?: EmployeePanelDataClient;
   material?: {
     purpose: string;
     beforePreview?: ReactNode;
@@ -28,6 +34,21 @@ export function ReferenceSnapshotPreview(props: {
     trailingActions?: ReactNode;
   };
 }) {
+  const data = useEmployeePanelData(props);
+  const scope = `${props.workspaceId}/${props.revisionId}`;
+  const download = useEmployeePanelDownload(data, scope, props.active);
+  const readPage = useCallback(
+    (page: { source: true; offset?: number }, signal: AbortSignal) =>
+      data.previewMaterial(
+        {
+          workspaceId: props.workspaceId,
+          revisionId: props.revisionId,
+          ...page,
+        },
+        signal,
+      ),
+    [data, props.workspaceId, props.revisionId],
+  );
   const [preview, setPreview] = useState<ArtifactPreview | null>(null),
     [error, setError] = useState(''),
     [attempt, setAttempt] = useState(0),
@@ -40,9 +61,16 @@ export function ReferenceSnapshotPreview(props: {
     setPreview(null);
     setError('');
     setSource(false);
-    void workbenchJson(base + '/preview' + query, props.headers, {
-      signal: controller.signal,
-    })
+    void (
+      props.dataClient
+        ? data.previewMaterial(
+            { workspaceId: props.workspaceId, revisionId: props.revisionId },
+            controller.signal,
+          )
+        : workbenchJson(base + '/preview' + query, props.headers, {
+            signal: controller.signal,
+          })
+    )
       .then(parseArtifactPreview)
       .then((value) => {
         if (!controller.signal.aborted) setPreview(value);
@@ -54,7 +82,17 @@ export function ReferenceSnapshotPreview(props: {
           );
       });
     return () => controller.abort();
-  }, [base, query, props.headers, attempt, props.active]);
+  }, [
+    base,
+    query,
+    props.headers,
+    attempt,
+    props.active,
+    data,
+    props.dataClient,
+    props.workspaceId,
+    props.revisionId,
+  ]);
   const nativeViewport = hasNativeViewport(preview) && !source;
   const pdfFooter = !!props.material && preview?.kind === 'pdf' && !source;
   const content = (
@@ -75,7 +113,8 @@ export function ReferenceSnapshotPreview(props: {
           active={props.active}
           preview={preview}
           fileName={props.title}
-          pageUrl={base + '/preview' + query}
+          pageUrl={props.dataClient ? undefined : base + '/preview' + query}
+          readPage={props.dataClient ? readPage : undefined}
           headers={props.headers}
           source={source}
           footer={pdfFooter ? props.material?.footer : undefined}
@@ -96,7 +135,23 @@ export function ReferenceSnapshotPreview(props: {
         delivery={!!props.material}
         description={props.material?.purpose}
         title={props.title}
-        downloadUrl={base + '/download' + query}
+        downloadUrl={props.dataClient ? undefined : base + '/download' + query}
+        onDownload={
+          props.dataClient
+            ? () =>
+                void download.download(
+                  (signal) =>
+                    data.downloadMaterial(
+                      {
+                        workspaceId: props.workspaceId,
+                        revisionId: props.revisionId,
+                      },
+                      signal,
+                    ),
+                  props.title,
+                )
+            : undefined
+        }
         missingFonts={
           preview?.kind === 'pdf' ? preview.missingFonts : undefined
         }
@@ -113,6 +168,7 @@ export function ReferenceSnapshotPreview(props: {
           if (id === 'source') setSource((v) => !v);
         }}
       />
+      {download.error && <p role="alert">{download.error}</p>}
       {props.material?.beforePreview}
       {props.material ? (
         <div className={detail.deliveryReadingArea}>

@@ -1,8 +1,9 @@
 'use client';
 import { useEffect, useState } from 'react';
-import { z } from 'zod';
-import { ReferenceLibraryOptionsSchema, UuidSchema } from '@allrice/contracts';
-import { workbenchJson } from '../../lib/chatflow/workbench-model';
+import type { z } from 'zod';
+import type { ReferenceLibraryOptionsSchema } from '@allrice/contracts';
+import type { EmployeePanelDataClient } from '../../lib/chatflow/employee-panel-data';
+import { useEmployeePanelData } from './use-employee-panel-data';
 
 export type ReferencePublicationOptions = z.infer<
   typeof ReferenceLibraryOptionsSchema
@@ -11,10 +12,6 @@ type ReferencePublicationOptionsResult = {
   options?: ReferencePublicationOptions;
   error?: string;
 };
-const responseSchema = z.object({
-  viewerId: UuidSchema,
-  options: ReferenceLibraryOptionsSchema,
-});
 
 /** Only the existing publication options are needed by a deliverable form.
  * The current viewer is a response identity check, never write ownership. */
@@ -23,27 +20,24 @@ export function useReferencePublicationOptions(props: {
   viewerId?: string;
   headers: Record<string, string>;
   active: boolean;
+  dataClient?: EmployeePanelDataClient;
   supplied?: ReferencePublicationOptions;
 }): ReferencePublicationOptionsResult {
+  const data = useEmployeePanelData(props);
   const headerKey = JSON.stringify(props.headers);
   const key = `${props.workspaceId}/${props.viewerId}/${headerKey}`;
   const [result, setResult] = useState<
-    (ReferencePublicationOptionsResult & { key: string }) | null
+    | (ReferencePublicationOptionsResult & {
+        key: string;
+        client: EmployeePanelDataClient;
+      })
+    | null
   >(null);
   useEffect(() => {
     if (!props.active || !props.viewerId || props.supplied) return;
     const controller = new AbortController();
-    void workbenchJson(
-      '/api/v1/references/publications?' +
-        new URLSearchParams({
-          workspaceId: props.workspaceId,
-          category: 'all',
-          limit: '1',
-        }),
-      JSON.parse(headerKey),
-      { signal: controller.signal },
-    )
-      .then(responseSchema.parse)
+    void data
+      .publicationOptions({ workspaceId: props.workspaceId }, controller.signal)
       .then((value) => {
         if (controller.signal.aborted) return;
         if (
@@ -51,11 +45,11 @@ export function useReferencePublicationOptions(props: {
           value.options.workspaceId !== props.workspaceId
         )
           throw Error('Publication viewer changed');
-        setResult({ key, options: value.options });
+        setResult({ key, client: data, options: value.options });
       })
       .catch(() => {
         if (!controller.signal.aborted)
-          setResult({ key, error: '发布未完成，请重试。' });
+          setResult({ key, client: data, error: '发布未完成，请重试。' });
       });
     return () => controller.abort();
   }, [
@@ -65,10 +59,11 @@ export function useReferencePublicationOptions(props: {
     props.workspaceId,
     props.viewerId,
     headerKey,
+    data,
   ]);
   return props.supplied?.workspaceId === props.workspaceId
     ? { options: props.supplied }
-    : result?.key === key
+    : result?.key === key && result.client === data
       ? result
       : {};
 }

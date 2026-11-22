@@ -25,7 +25,8 @@ import { zh as officeZh } from './dsh-upstream/document/office/locales';
 /** DSH primitives and preview chrome; Allrice only supplies scoped file actions. */
 export function DocumentToolbar(props: {
   title: string;
-  downloadUrl: string;
+  downloadUrl?: string;
+  onDownload?: () => void;
   actions: MenuEntry[];
   onAction: (id: string) => void;
   children?: ReactNode;
@@ -91,14 +92,25 @@ export function DocumentToolbar(props: {
           }
         />
         <Tooltip label="下载" side="bottom" delayMs={500} portal>
-          <a
-            className={styles.download}
-            href={props.downloadUrl}
-            download
-            aria-label="下载"
-          >
-            <IconDownloadOutlineRegular size={20} />
-          </a>
+          {props.onDownload ? (
+            <button
+              type="button"
+              className={styles.download}
+              onClick={props.onDownload}
+              aria-label="下载"
+            >
+              <IconDownloadOutlineRegular size={20} />
+            </button>
+          ) : (
+            <a
+              className={styles.download}
+              href={props.downloadUrl}
+              download
+              aria-label="下载"
+            >
+              <IconDownloadOutlineRegular size={20} />
+            </a>
+          )}
         </Tooltip>
         {props.trailingActions}
         {hasMenuActions && (

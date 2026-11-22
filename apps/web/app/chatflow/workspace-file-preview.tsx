@@ -1,6 +1,11 @@
 'use client';
 import { documentPreviewPresentation } from './document-preview-presentation';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { EmployeePanelDataClient } from '../../lib/chatflow/employee-panel-data';
+import {
+  useEmployeePanelData,
+  useEmployeePanelDownload,
+} from './use-employee-panel-data';
 import type {
   WorkbenchDeliverable,
   EmployeeAccentColor,
@@ -27,7 +32,6 @@ import styles from './workbench.module.css';
 import { WorkbenchFileToolbarActions } from './workbench-file-toolbar-actions';
 import type { WorkbenchFileReferenceProps } from './use-workbench-file-reference';
 import { useWorkbenchFileReference } from './use-workbench-file-reference';
-import { WorkbenchDeliverablesActionsCatalogSchema } from '../../lib/chatflow/workbench-file-actions';
 import detail from './workbench-files-panel.module.css';
 import { employeeAccentStyle } from './employee-navigation';
 import { useWorkbenchFileFavorite } from './use-workbench-file-favorite';
@@ -43,6 +47,7 @@ export function WorkbenchDeliverablePreview(props: {
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   active: boolean;
+  dataClient?: EmployeePanelDataClient;
   employeeColors?: Record<string, EmployeeAccentColor | undefined>;
   onBack: () => void;
   onSource?: (sessionId: string) => void;
@@ -56,9 +61,11 @@ export function WorkbenchDeliverablePreview(props: {
     'sessionId' | 'readOnly' | 'onUse' | 'onTemplate'
   >;
 }) {
+  const data = useEmployeePanelData({ ...props, headers: props.tenantHeaders });
   const key = `${props.scope}/${props.objectId}`;
   const [snapshot, setSnapshot] = useState<{
     key: string;
+    client: EmployeePanelDataClient;
     file: WorkbenchDeliverable;
     quotable: boolean;
     publicationViewerId?: string;
@@ -68,7 +75,11 @@ export function WorkbenchDeliverablePreview(props: {
     denied: boolean;
   } | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const loaded = useRef<{ key: string; attempt: number } | null>(null);
+  const loaded = useRef<{
+    key: string;
+    attempt: number;
+    client: EmployeePanelDataClient;
+  } | null>(null);
   useEffect(() => {
     const changed = () => setAttempt((n) => n + 1);
     window.addEventListener('allrice:workbench-files-changed', changed);
@@ -80,34 +91,39 @@ export function WorkbenchDeliverablePreview(props: {
       loaded.current = null;
       return;
     }
-    if (loaded.current?.key === key && loaded.current.attempt === attempt)
+    if (
+      loaded.current?.key === key &&
+      loaded.current.attempt === attempt &&
+      loaded.current.client === data
+    )
       return;
     const abort = new AbortController();
     setSnapshot((prior) => (prior?.key === key ? prior : null));
     setFailure(null);
-    void workbenchJson(
-      '/api/v1/workbench/files?' +
-        new URLSearchParams({
-          workspaceId: props.workspaceId,
-          view: 'deliverables',
-          objectId: props.objectId,
-        }),
-      props.tenantHeaders,
-      { signal: abort.signal },
-    )
-      .then(WorkbenchDeliverablesActionsCatalogSchema.parse)
-      .then((data) => {
+    void data
+      .listDeliverables(
+        { workspaceId: props.workspaceId, objectId: props.objectId },
+        abort.signal,
+      )
+      .then((catalog) => {
         if (abort.signal.aborted) return;
-        const file = data.files.find(
+        if (
+          catalog.viewerId &&
+          props.viewerId &&
+          catalog.viewerId !== props.viewerId
+        )
+          throw Error('文件加载失败，请重新加载。');
+        const file = catalog.files.find(
           (file) => file.objectId === props.objectId,
         );
         if (file) {
-          loaded.current = { key, attempt };
+          loaded.current = { key, attempt, client: data };
           setSnapshot({
             key,
+            client: data,
             file,
-            quotable: data.quotableFileIds.includes(file.objectId),
-            publicationViewerId: data.viewerId,
+            quotable: catalog.quotableFileIds.includes(file.objectId),
+            publicationViewerId: catalog.viewerId,
           });
         } else {
           setSnapshot(null);
@@ -130,8 +146,12 @@ export function WorkbenchDeliverablePreview(props: {
     props.tenantHeaders,
     props.active,
     attempt,
+    data,
   ]);
-  if (failure?.key === key && (failure.denied || snapshot?.key !== key))
+  if (
+    failure?.key === key &&
+    (failure.denied || snapshot?.key !== key || snapshot.client !== data)
+  )
     return failure.denied ? (
       <p className={detail.empty}>无权访问</p>
     ) : (
@@ -142,7 +162,8 @@ export function WorkbenchDeliverablePreview(props: {
         </button>
       </p>
     );
-  if (snapshot?.key !== key) return <p role="status">正在加载文件预览…</p>;
+  if (snapshot?.key !== key || snapshot.client !== data)
+    return <p role="status">正在加载文件预览…</p>;
   return (
     <div
       className={reader.reader}
@@ -176,6 +197,7 @@ export function WorkspaceFilePreview(props: {
   workspaceId: string;
   tenantHeaders: Record<string, string>;
   active?: boolean;
+  dataClient?: EmployeePanelDataClient;
   unified?: boolean;
   deliverable?: WorkbenchDeliverable;
   employeeColors?: Record<string, EmployeeAccentColor | undefined>;
@@ -194,6 +216,34 @@ export function WorkspaceFilePreview(props: {
     'sessionId' | 'readOnly' | 'onUse' | 'onTemplate'
   >;
 }) {
+  const data = useEmployeePanelData({ ...props, headers: props.tenantHeaders });
+  const download = useEmployeePanelDownload(
+    data,
+    `${props.ownerKey}/${props.workspaceId}/${props.objectId}`,
+    props.active ?? true,
+  );
+  const readPage = useCallback(
+    (page: { source: true; offset?: number }, signal: AbortSignal) =>
+      data.previewDeliverable(
+        {
+          workspaceId: props.workspaceId,
+          objectId: props.objectId,
+          fileName: props.title,
+          ...page,
+        },
+        signal,
+      ),
+    [data, props.workspaceId, props.objectId, props.title],
+  );
+  const downloadFile = () =>
+    void download.download(
+      (signal) =>
+        data.downloadDeliverable(
+          { workspaceId: props.workspaceId, objectId: props.objectId },
+          signal,
+        ),
+      props.title,
+    );
   const [preview, setPreview] = useState<ArtifactPreview | null>(null);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
@@ -205,12 +255,14 @@ export function WorkspaceFilePreview(props: {
     workspaceId: props.workspaceId,
     headers: props.tenantHeaders,
     active: props.active ?? true,
+    dataClient: props.dataClient,
   });
   const reference = useWorkbenchFileReference({
     workspaceId: props.workspaceId,
     sessionId: props.fileActions?.sessionId ?? null,
     headers: props.tenantHeaders,
     active: props.active ?? true,
+    dataClient: props.dataClient,
     readOnly: props.fileActions?.readOnly,
     onUse: props.fileActions?.onUse ?? (() => {}),
     onTemplate: props.fileActions?.onTemplate,
@@ -229,6 +281,7 @@ export function WorkspaceFilePreview(props: {
     viewerId: props.viewerId,
     headers: props.tenantHeaders,
     active: !!props.active && !!publication,
+    dataClient: props.dataClient,
   }).options;
   const publicationLabel = publication ? '已添加为企业资料' : '添加为企业资料';
   const publishDisabled =
@@ -259,14 +312,26 @@ export function WorkspaceFilePreview(props: {
   const query = `?workspaceId=${encodeURIComponent(props.workspaceId)}&name=${encodeURIComponent(props.title)}`;
   const downloadUrl = `${base}/download${query}`;
   useEffect(() => {
+    if (props.dataClient && props.active === false) return;
     const controller = new AbortController();
     setError('');
     setPreview(null);
     setSource(false);
     setInteractive(false);
-    void workbenchJson(`${base}/preview${query}`, props.tenantHeaders, {
-      signal: controller.signal,
-    })
+    void (
+      props.dataClient
+        ? data.previewDeliverable(
+            {
+              workspaceId: props.workspaceId,
+              objectId: props.objectId,
+              fileName: props.title,
+            },
+            controller.signal,
+          )
+        : workbenchJson(`${base}/preview${query}`, props.tenantHeaders, {
+            signal: controller.signal,
+          })
+    )
       .then((value) => {
         if (!controller.signal.aborted) setPreview(parseArtifactPreview(value));
       })
@@ -279,7 +344,18 @@ export function WorkspaceFilePreview(props: {
           );
       });
     return () => controller.abort();
-  }, [base, query, props.tenantHeaders, attempt]);
+  }, [
+    base,
+    query,
+    props.tenantHeaders,
+    attempt,
+    data,
+    props.dataClient,
+    props.active,
+    props.workspaceId,
+    props.objectId,
+    props.title,
+  ]);
   const footer = props.deliverable ? (
     <footer className={detail.detailFooter}>
       <dl className={detail.metadata}>
@@ -335,6 +411,10 @@ export function WorkspaceFilePreview(props: {
         <button
           type="button"
           onClick={() => {
+            if (props.dataClient) {
+              downloadFile();
+              return;
+            }
             const a = document.createElement('a');
             a.href = downloadUrl;
             a.download = props.title;
@@ -368,18 +448,23 @@ export function WorkspaceFilePreview(props: {
         )}
       </div>
       {(reference.error ||
+        download.error ||
         favorite.error ||
         props.metadataError ||
         reference.notice) && (
         <p
           role={
-            reference.error || favorite.error || props.metadataError
+            reference.error ||
+            download.error ||
+            favorite.error ||
+            props.metadataError
               ? 'alert'
               : 'status'
           }
           className={detail.notice}
         >
           {reference.error ||
+            download.error ||
             favorite.error ||
             (props.metadataError ? '预览加载失败' : '') ||
             reference.notice}
@@ -429,7 +514,8 @@ export function WorkspaceFilePreview(props: {
             active={props.active}
             preview={preview}
             fileName={props.title}
-            pageUrl={`${base}/preview${query}`}
+            pageUrl={props.dataClient ? undefined : `${base}/preview${query}`}
+            readPage={props.dataClient ? readPage : undefined}
             headers={props.tenantHeaders}
             source={source}
             interactive={interactive}
@@ -491,7 +577,8 @@ export function WorkspaceFilePreview(props: {
             </div>
           )
         }
-        downloadUrl={downloadUrl}
+        downloadUrl={props.dataClient ? undefined : downloadUrl}
+        onDownload={props.dataClient ? downloadFile : undefined}
         quickActions={
           props.deliverable ? (
             <Tooltip label="引用到对话" side="bottom" portal>
@@ -515,6 +602,7 @@ export function WorkspaceFilePreview(props: {
               workspaceId={props.workspaceId}
               headers={props.tenantHeaders}
               active={props.active ?? true}
+              dataClient={props.dataClient}
             />
           ) : undefined
         }

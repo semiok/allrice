@@ -10,12 +10,9 @@ import { SearchField } from '../../components/search-field';
 import type { z } from 'zod';
 import {
   ReferencePublicationQuerySchema,
-  ReferencePublicationQueryResultSchema,
   type ReferenceSearchCursorSchema,
-  ReferenceInputSelectionResultSchema,
   referenceSearchPolicy,
-  ReferenceLibraryOptionsSchema,
-  UuidSchema,
+  type ReferenceLibraryOptionsSchema,
   type ReferenceRevision,
 } from '@allrice/contracts';
 import {
@@ -28,12 +25,15 @@ import {
   Menu,
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives';
-import { workbenchJson } from '../../lib/chatflow/workbench-model';
 import {
-  checkReferenceSelectionFailure,
-  ReferenceSelectionUnavailableError,
-} from '../../lib/chatflow/reference-selection';
-import { readJson } from './chatflow-utils';
+  type MaterialsCatalogSchema,
+  type EmployeePanelDataClient,
+} from '../../lib/chatflow/employee-panel-data';
+import {
+  useEmployeePanelData,
+  useEmployeePanelDownload,
+} from './use-employee-panel-data';
+import { ReferenceSelectionUnavailableError } from '../../lib/chatflow/reference-selection';
 import type { ReferenceDraft } from './reference-chips';
 import { ReferenceSnapshotPreview } from './workbench-reference-preview';
 import { WorkbenchIcon } from './workbench-modules';
@@ -49,10 +49,6 @@ import nativeFiles from './dsh-upstream/files/FilesBody.module.css';
 import { FileRow } from './dsh-upstream/files/FileRow';
 import { formatFileListDate } from '../../lib/chatflow/file-list-date';
 
-const catalogSchema = ReferencePublicationQueryResultSchema.extend({
-  viewerId: UuidSchema,
-  options: ReferenceLibraryOptionsSchema,
-});
 export type ReferencePublicationOptions = z.infer<
   typeof ReferenceLibraryOptionsSchema
 >;
@@ -73,6 +69,7 @@ export function EnterpriseMaterialsPanel(props: {
   sessionId: string | null;
   headers: Record<string, string>;
   active: boolean;
+  dataClient?: EmployeePanelDataClient;
   readOnly?: boolean;
   initialReference?: ReferenceLocation;
   onUse: (reference: ReferenceDraft) => void;
@@ -84,7 +81,18 @@ export function EnterpriseMaterialsPanel(props: {
     options: ReferencePublicationOptions,
   ) => void;
 }) {
+  const data = useEmployeePanelData(props);
   const identity = `${props.ownerKey}/${props.workspaceId}/${props.viewerId}/${props.sessionId ?? 'draft'}`;
+  const download = useEmployeePanelDownload(data, identity, props.active);
+  const downloadFile = (r: ReferenceRevision) =>
+    void download.download(
+      (signal) =>
+        data.downloadMaterial(
+          { workspaceId: props.workspaceId, revisionId: r.revisionId },
+          signal,
+        ),
+      r.fileName,
+    );
   const current = useRef(identity);
   current.current = identity;
   const active = useRef(props.active);
@@ -102,7 +110,8 @@ export function EnterpriseMaterialsPanel(props: {
   );
   const [snapshot, setSnapshot] = useState<{
     key: string;
-    value: z.infer<typeof catalogSchema>;
+    client: EmployeePanelDataClient;
+    value: z.infer<typeof MaterialsCatalogSchema>;
   } | null>(null);
   const [status, setStatus] = useState({
     key: '',
@@ -150,7 +159,7 @@ export function EnterpriseMaterialsPanel(props: {
         : { key: identity, busy: '', error: '', notice: '' },
     );
     return () => operation.current?.abort();
-  }, [identity, props.active]);
+  }, [identity, props.active, data]);
   useEffect(() => {
     if (!props.readOnly || !quoteOperation.current) return;
     quoteOperation.current.abort();
@@ -169,20 +178,11 @@ export function EnterpriseMaterialsPanel(props: {
       ...(locatedSourceId ? { sourceId: locatedSourceId } : {}),
       ...(cursor ? { cursor } : {}),
     });
-    const params = new URLSearchParams({
-      workspaceId: props.workspaceId,
-      category: input.category,
-      query: input.query,
-      limit: String(input.limit),
-      ...(input.sourceId ? { sourceId: input.sourceId } : {}),
-    });
-    if (input.cursor) params.set('cursor', JSON.stringify(input.cursor));
-    void workbenchJson(
-      '/api/v1/references/publications?' + params,
-      props.headers,
-      { signal: controller.signal },
-    )
-      .then(catalogSchema.parse)
+    void data
+      .queryMaterials(
+        { workspaceId: props.workspaceId, query: input },
+        controller.signal,
+      )
       .then((value) => {
         if (controller.signal.aborted || current.current !== identity) return;
         if (
@@ -198,8 +198,9 @@ export function EnterpriseMaterialsPanel(props: {
           );
         setSnapshot((prior) => ({
           key: filterKey,
+          client: data,
           value:
-            cursor && prior?.key === filterKey
+            cursor && prior?.key === filterKey && prior.client === data
               ? {
                   ...value,
                   references: [
@@ -250,8 +251,12 @@ export function EnterpriseMaterialsPanel(props: {
     locatedSourceId,
     revisionId,
     attempt,
+    data,
   ]);
-  const catalog = snapshot?.key === filterKey ? snapshot.value : null;
+  const catalog =
+    snapshot?.key === filterKey && snapshot.client === data
+      ? snapshot.value
+      : null;
   const visibleStatus = status.key === requestKey ? status : null;
   const activeAction = action.key === identity ? action : null;
   const reference = selected
@@ -295,18 +300,9 @@ export function EnterpriseMaterialsPanel(props: {
     quoteOperation.current = controller;
     setAction({ key: identity, busy: r.revisionId, error: '', notice: '' });
     try {
-      const response = await fetch(
-        `/api/v1/references/revisions/${r.revisionId}/selection?workspaceId=${encodeURIComponent(props.workspaceId)}`,
-        {
-          cache: 'no-store',
-          credentials: 'same-origin',
-          headers: props.headers,
-          signal: controller.signal,
-        },
-      );
-      await checkReferenceSelectionFailure(response, [r.revisionId]);
-      const value = ReferenceInputSelectionResultSchema.parse(
-        await readJson(response, { read: true }),
+      const value = await data.selectMaterial(
+        { workspaceId: props.workspaceId, revisionId: r.revisionId },
+        controller.signal,
       );
       if (
         controller.signal.aborted ||
@@ -388,19 +384,17 @@ export function EnterpriseMaterialsPanel(props: {
     retryRequests.current.set(requestKey, requestId);
     setAction({ key: identity, busy: r.revisionId, error: '', notice: '' });
     try {
-      await workbenchJson(
-        `/api/v1/references/${r.sourceId}`,
-        { ...props.headers, 'X-AllRice-Expected-Viewer-Id': props.viewerId },
+      await data.changeSource(
         {
-          method: 'POST',
-          signal: controller.signal,
-          body: JSON.stringify({
+          sourceId: r.sourceId,
+          body: {
             workspaceId: props.workspaceId,
             requestId,
             expectedRevision: r.revision,
             action: 'retry',
-          }),
+          },
         },
+        controller.signal,
       );
       if (controller.signal.aborted || current.current !== identity) return;
       // A later processing failure is a new user retry, while an unconfirmed
@@ -478,9 +472,9 @@ export function EnterpriseMaterialsPanel(props: {
       className={`${files.panel} ${css.panel} ${reference ? css.detail : ''}`}
       aria-label="企业资料"
     >
-      {activeAction?.error && (
+      {(activeAction?.error || download.error) && (
         <div className={files.error} role="alert">
-          {activeAction.error}
+          {activeAction?.error || download.error}
         </div>
       )}
       {activeAction?.notice && (
@@ -507,6 +501,7 @@ export function EnterpriseMaterialsPanel(props: {
             workspaceId={props.workspaceId}
             headers={props.headers}
             active={props.active}
+            dataClient={props.dataClient}
             material={{
               purpose: reference.purpose,
               quickActions: iconAction(
@@ -583,10 +578,20 @@ export function EnterpriseMaterialsPanel(props: {
                       <IconPlusOutlineRegular size={18} />
                       引用到对话
                     </button>
-                    <a href={downloadUrl(reference)} download>
-                      <IconDownloadOutlineRegular size={18} />
-                      下载
-                    </a>
+                    {props.dataClient ? (
+                      <button
+                        type="button"
+                        onClick={() => downloadFile(reference)}
+                      >
+                        <IconDownloadOutlineRegular size={18} />
+                        下载
+                      </button>
+                    ) : (
+                      <a href={downloadUrl(reference)} download>
+                        <IconDownloadOutlineRegular size={18} />
+                        下载
+                      </a>
+                    )}
                     <button type="button" onClick={() => void copy(reference)}>
                       <IconLinkOutlineRegular size={18} />
                       复制链接
@@ -721,6 +726,11 @@ export function EnterpriseMaterialsPanel(props: {
                           <MaterialMenu
                             reference={r}
                             downloadUrl={downloadUrl(r)}
+                            onDownload={
+                              props.dataClient
+                                ? () => downloadFile(r)
+                                : undefined
+                            }
                             onCopy={() => void copy(r)}
                             onManage={
                               canManage(r) && props.onManage
@@ -781,6 +791,7 @@ function MarkedExcerpt({ content, query }: { content: string; query: string }) {
 function MaterialMenu(props: {
   reference: ReferenceRevision;
   downloadUrl: string;
+  onDownload?: () => void;
   onCopy: () => void;
   className?: string;
   iconSize?: number;
@@ -824,6 +835,10 @@ function MaterialMenu(props: {
         setOpen(false);
         if (id === 'copy') props.onCopy();
         else if (id === 'download') {
+          if (props.onDownload) {
+            props.onDownload();
+            return;
+          }
           const link = document.createElement('a');
           link.href = props.downloadUrl;
           link.download = props.reference.fileName;

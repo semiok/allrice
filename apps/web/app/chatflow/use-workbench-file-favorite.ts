@@ -1,15 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { UuidSchema } from '@allrice/contracts';
-import { z } from 'zod';
-import { workbenchJson } from '../../lib/chatflow/workbench-model';
-
-const resultSchema = z.object({
-  viewerId: UuidSchema,
-  objectId: UuidSchema,
-  favorite: z.boolean(),
-});
+import type { EmployeePanelDataClient } from '../../lib/chatflow/employee-panel-data';
+import { useEmployeePanelData } from './use-employee-panel-data';
 
 /** A personal preference; the server independently checks the current actor and file. */
 export function useWorkbenchFileFavorite(props: {
@@ -18,7 +11,9 @@ export function useWorkbenchFileFavorite(props: {
   workspaceId: string;
   headers: Record<string, string>;
   active: boolean;
+  dataClient?: EmployeePanelDataClient;
 }) {
+  const data = useEmployeePanelData(props);
   const key = `${props.ownerKey}/${props.workspaceId}/${props.viewerId ?? ''}`;
   const current = useRef(key);
   current.current = key;
@@ -38,7 +33,7 @@ export function useWorkbenchFileFavorite(props: {
       prior.key === key ? prior : { key, using: '', error: '' },
     );
     return () => controller.abort();
-  }, [key]);
+  }, [key, data]);
   useEffect(() => {
     if (!props.active)
       setState((prior) =>
@@ -56,16 +51,13 @@ export function useWorkbenchFileFavorite(props: {
     request.current = { key, controller };
     setState({ key, using: objectId, error: '' });
     try {
-      const result = resultSchema.parse(
-        await workbenchJson(
-          `/api/v1/workbench/files/${objectId}/favorite?workspaceId=${encodeURIComponent(props.workspaceId)}`,
-          { ...props.headers, 'X-AllRice-Expected-Viewer-Id': props.viewerId },
-          {
-            method: 'PUT',
-            body: JSON.stringify({ favorite }),
-            signal: controller.signal,
-          },
-        ),
+      const result = await data.favorite(
+        {
+          workspaceId: props.workspaceId,
+          objectId,
+          body: { favorite },
+        },
+        controller.signal,
       );
       if (controller.signal.aborted || current.current !== key) return;
       if (
