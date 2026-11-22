@@ -890,7 +890,7 @@ suite(
             const bytes = await get(object);
             if (kind === 'membership')
               await f.db`update allrice_memberships set active=false where user_id=${p.context.actor.id} and organization_id=${p.context.organizationId}`;
-            else
+            else {
               await p.client.changePublication(
                 {
                   sourceId: saved.sourceId,
@@ -898,11 +898,15 @@ suite(
                     workspaceId: p.selection.workspaceId,
                     requestId: randomUUID(),
                     expectedRevision: revision.publication!.audienceRevision,
-                    action: 'revoke',
+                    action: 'delete',
                   },
                 },
                 signal(),
               );
+              expect(
+                await f.db`select status from allrice_knowledge_sources where id=${saved.sourceId}`,
+              ).toEqual([{ status: 'archived' }]);
+            }
             return bytes;
           });
         try {
