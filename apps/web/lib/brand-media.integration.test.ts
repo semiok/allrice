@@ -1377,15 +1377,27 @@ suite(
           (await catalog.GET(request(a, 'modules'), params(a.scope.instanceId)))
             .status,
         ).toBe(200);
+        // The catalog checks the existing management scope before and after
+        // its awaited application build read; neither check locks rows.
+        expect(reader.transactions).toEqual([
+          { index: 0, xid: null },
+          { index: 1, xid: null },
+        ]);
         const queries: Record<string, string>[] = [
           { view: 'topics' },
           { view: 'articles' },
           { view: 'article', articleId: article.id },
           { view: 'calendar', month: '2026-11', timezone: 'Asia/Shanghai' },
         ];
-        for (const query of queries) await read(a, query);
+        for (const query of queries) {
+          const before = reader.transactions.length;
+          await read(a, query);
+          expect(reader.transactions.slice(before)).toEqual([
+            { index: before, xid: null },
+          ]);
+        }
         reader.expectNoRowLocks();
-        expect(reader.transactions).toHaveLength(5);
+        expect(reader.transactions).toHaveLength(6);
       } finally {
         database.mockReturnValue(f.db);
       }
