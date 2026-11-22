@@ -245,12 +245,13 @@ suite(
       );
     });
 
-    it('joins actual lock-blocked SQL cancellation before returning the original caller reason', async () => {
+    it('joins actual lock-blocked SQL settlement and retains its error with the original caller reason', async () => {
       const controller = new AbortController();
       const reason = new Error('fixture caller cancelled original source read');
       let sqlSettled = false,
         classifierSettled = false;
       let readerPid: number | undefined;
+      let sqlFailure: unknown;
       let pending: Promise<{ value?: unknown; error?: unknown }> | undefined;
       await db.begin(async (blocker) => {
         const [holder] = await blocker`select pg_backend_pid() pid`;
@@ -275,7 +276,8 @@ suite(
                   () => {
                     sqlSettled = true;
                   },
-                  () => {
+                  (error: unknown) => {
+                    sqlFailure = error;
                     sqlSettled = true;
                   },
                 );
@@ -318,7 +320,13 @@ suite(
           expect(classifierSettled).toBe(false);
           controller.abort(reason);
           const result = await pending;
-          expect(result.error).toBe(reason);
+          expect(result.error).toBeInstanceOf(AggregateError);
+          const combined = result.error as AggregateError;
+          expect(combined.cause).toBe(sqlFailure);
+          expect(combined.errors).toHaveLength(2);
+          expect(combined.errors[0]).toBe(sqlFailure);
+          expect(combined.errors[1]).toBe(reason);
+          expect(sqlFailure).toMatchObject({ code: '57014' });
           expect(sqlSettled).toBe(true);
           expect(classifierSettled).toBe(true);
         } finally {

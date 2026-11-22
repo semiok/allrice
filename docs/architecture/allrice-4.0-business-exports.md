@@ -186,4 +186,4 @@ scope FK 只记录既有候选目标 `allrice_employee_instances(organization_id
 
 最新精确授权允许本作者在contracts barrel末尾仅追加正常空行和`export * from './employee-business-runtime.ts';`，其余字节未改；blob从`74efcd07e5add8378072ebf222f9a9ef4bec2987`变为`3ae43ea766e3b95f30947e898a2d0c048f80f4c0`。未改database barrel/manifest/构建配置，不用跨包源码deep import或alias绕过导出。新源码首提交/精确sourceAtSha和固定头检查由root收口；此时不声称已编译SDK、生产启用、合并、部署或验收。
 
-本片测试源码已准备；仅使用既有安装的Prettier格式化本片文件，并做syntax-only transpile（不解析导入或做语义类型检查，确切文件数/结果见实施报告）。尚未执行产品测试、构建、类型/lint、PG/M5/QA/VM/模型/browser运行。新PG文件只安排独立来源SQL：旧谓词等价、零关联/错误、真实relation lock与pg_blocking_pids屏障、实际SQL取消settle后才回原signal reason；不以合同替身或独立连接代替真实current authority、Workflow caller/写者并发/fence组合证据。资源已释放：无新增运行资源、后台任务或共享锁占用。
+本片测试源码已准备；仅使用既有安装的Prettier格式化本片文件，并做syntax-only transpile（不解析导入或做语义类型检查，确切文件数/结果见实施报告）。尚未执行产品测试、构建、类型/lint、PG/M5/QA/VM/模型/browser运行。新PG文件只安排独立来源SQL：旧谓词等价、零关联/错误、真实relation lock与pg_blocking_pids屏障、实际SQL settle后才返回。SQL失败且signal已取消时，用AggregateError完整保留原SQL错误（cause及errors[0]）和原signal reason（errors[1]），不按57014或message猜因；SQL成功但signal已取消则直接抛原reason，不披露晚值。不以合同替身或独立连接代替真实current authority、Workflow caller/写者并发/fence组合证据。资源已释放：无新增运行资源、后台任务或共享锁占用。

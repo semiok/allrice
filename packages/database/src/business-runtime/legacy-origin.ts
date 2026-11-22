@@ -45,7 +45,16 @@ export async function queryLegacyOriginForCaller(
     if (signal?.aborted) cancel();
     // Cancellation requests actual driver cancellation, then still joins the
     // real SQL settlement. Never race it or wait for the enclosing commit.
-    const rows = await query;
+    const rows = await query.catch((error: unknown) => {
+      if (!signal?.aborted) throw error;
+      // A failed SQL query and an aborted signal are both observed facts.
+      // Neither SQLSTATE nor message proves which event ended the query.
+      throw new AggregateError(
+        [error, signal.reason],
+        'legacy_origin_query_failed_while_signal_aborted',
+        { cause: error },
+      );
+    });
     signal?.throwIfAborted();
     if (rows.length !== 1 || typeof rows[0]?.excluded !== 'boolean')
       throw new DataAccessError('authorization_denied');
@@ -53,18 +62,6 @@ export async function queryLegacyOriginForCaller(
       sourceCheck: 'checked',
       excludedByMethodAuthoring: rows[0].excluded,
     };
-  } catch (error) {
-    // A driver acknowledgement of our cancel request must not replace the
-    // original signal reason. Unrelated SQL/permission failures stay intact.
-    if (
-      signal?.aborted &&
-      typeof error === 'object' &&
-      error !== null &&
-      'code' in error &&
-      error.code === '57014'
-    )
-      signal.throwIfAborted();
-    throw error;
   } finally {
     signal?.removeEventListener('abort', cancel);
   }

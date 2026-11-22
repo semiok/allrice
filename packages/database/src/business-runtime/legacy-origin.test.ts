@@ -104,7 +104,7 @@ describe('package-internal legacy source query, explicit contract fixtures', () 
     expect(fake.read).not.toHaveBeenCalled();
   });
 
-  it('requests real query cancellation but waits for SQL settlement before returning the original reason', async () => {
+  it('joins SQL settlement and preserves both original errors without attributing 57014 to the signal', async () => {
     let rejectSql!: (error: unknown) => void;
     const sqlSettlement = new Promise<unknown>((_resolve, reject) => {
       rejectSql = reject;
@@ -132,12 +132,22 @@ describe('package-internal legacy source query, explicit contract fixtures', () 
     await Promise.resolve();
     expect(fake.cancel).toHaveBeenCalledOnce();
     expect(returned).toBe(false);
-    rejectSql(
-      Object.assign(new Error('driver cancellation acknowledged'), {
+    const sqlFailure = Object.assign(
+      new Error('driver reported query cancellation'),
+      {
         code: '57014',
-      }),
+        severity: 'ERROR',
+        file: 'postgres.c',
+      },
     );
-    expect(await pending).toBe(reason);
+    rejectSql(sqlFailure);
+    const failure = await pending;
+    expect(failure).toBeInstanceOf(AggregateError);
+    const combined = failure as AggregateError;
+    expect(combined.cause).toBe(sqlFailure);
+    expect(combined.errors).toHaveLength(2);
+    expect(combined.errors[0]).toBe(sqlFailure);
+    expect(combined.errors[1]).toBe(reason);
   });
 
   it('does not hide an unrelated SQL failure behind a concurrent cancellation', async () => {
@@ -157,9 +167,78 @@ describe('package-internal legacy source query, explicit contract fixtures', () 
       selector,
       controller.signal,
     );
-    const result = expect(pending).rejects.toBe(failure);
-    controller.abort(new Error('later cancellation'));
+    const result = pending.catch((error: unknown) => error);
+    const reason = new Error('later cancellation');
+    controller.abort(reason);
     rejectSql(failure);
+    const combined = (await result) as AggregateError;
+    expect(combined).toBeInstanceOf(AggregateError);
+    expect(combined.cause).toBe(failure);
+    expect(combined.errors[0]).toBe(failure);
+    expect(combined.errors[1]).toBe(reason);
+  });
+
+  it('preserves the exact 57014 statement-timeout object and diagnostics when the signal is also aborted', async () => {
+    let rejectSql!: (error: unknown) => void;
+    const fake = contractSql(
+      new Promise<unknown>((_resolve, reject) => {
+        rejectSql = reject;
+      }),
+    );
+    const controller = new AbortController();
+    const reason = new Error('caller abort after database timeout fired');
+    const timeout = Object.assign(
+      new Error('canceling statement due to statement timeout'),
+      {
+        code: '57014',
+        severity: 'ERROR',
+        file: 'postgres.c',
+        line: '3193',
+        routine: 'ProcessInterrupts',
+        detail: 'original diagnostic details',
+      },
+    );
+    const pending = queryLegacyOriginForCaller(
+      fake.tx,
+      scope,
+      selector,
+      controller.signal,
+    ).catch((error: unknown) => error);
+    rejectSql(timeout);
+    controller.abort(reason);
+    const combined = (await pending) as AggregateError;
+    expect(combined).toBeInstanceOf(AggregateError);
+    expect(combined.cause).toBe(timeout);
+    expect(combined.errors).toHaveLength(2);
+    expect(combined.errors[0]).toBe(timeout);
+    expect(combined.errors[1]).toBe(reason);
+    expect(combined.cause).toMatchObject({
+      code: '57014',
+      message: 'canceling statement due to statement timeout',
+      severity: 'ERROR',
+      file: 'postgres.c',
+      line: '3193',
+      routine: 'ProcessInterrupts',
+      detail: 'original diagnostic details',
+    });
+  });
+
+  it('suppresses a late successful SQL result and returns a 57014-shaped signal reason without wrapping it as SQL failure', async () => {
+    let resolveSql!: (value: unknown) => void;
+    const fake = contractSql(
+      new Promise<unknown>((resolve) => {
+        resolveSql = resolve;
+      }),
+    );
+    const controller = new AbortController();
+    const reason = Object.assign(new Error('original caller reason'), {
+      code: '57014',
+    });
+    const result = expect(
+      queryLegacyOriginForCaller(fake.tx, scope, selector, controller.signal),
+    ).rejects.toBe(reason);
+    controller.abort(reason);
+    resolveSql([{ excluded: false }]);
     await result;
   });
 });
