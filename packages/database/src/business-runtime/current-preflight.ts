@@ -123,6 +123,15 @@ export async function readEmployeeBusinessCurrentPreflight(
     // Existing non-builtin callers keep their original exact binding/config
     // source. This new reader cannot invent that original configDigest.
     throw new EmployeeBusinessCurrentUnavailable('module.binding-config');
+  const applicationModules =
+    target.module.kind === 'builtin'
+      ? ApplicationBuiltinModulesProjectionSchema.parse(
+          await readApplicationBuiltinModules('worker'),
+        )
+      : null;
+  signal?.throwIfAborted();
+  // Content's own current authority decides draft/department visibility only
+  // after policy I/O has joined; the earlier identity is not a content fence.
   const currentConfiguration =
     target.access === 'management'
       ? EmployeeEffectiveContentSchema.parse(
@@ -140,13 +149,6 @@ export async function readEmployeeBusinessCurrentPreflight(
       !sameUuid(currentConfiguration.employeeId, before.employeeId))
   )
     deny();
-  const applicationModules =
-    target.module.kind === 'builtin'
-      ? ApplicationBuiltinModulesProjectionSchema.parse(
-          await readApplicationBuiltinModules('worker'),
-        )
-      : null;
-  signal?.throwIfAborted();
   const current = await qualified(context, target, db, signal);
   if (
     !sameDEntryIdentity(before.identity, current.identity) ||

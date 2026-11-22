@@ -13,6 +13,8 @@ import {
 } from 'vitest';
 import type {
   EmployeeBusinessTargetProjection,
+  EmployeeContentMutation,
+  EmployeeContentReceipt,
   RequestContext,
 } from '@allrice/contracts';
 import * as client from '../core/client.ts';
@@ -33,7 +35,10 @@ import {
   getEmployeeInstance,
   updateEmployeeInstance,
 } from '../employees/employee-instances.ts';
-import { getEffectiveEmployeeContent } from '../employees/employee-content.ts';
+import {
+  getEffectiveEmployeeContent,
+  mutateEmployeeContent,
+} from '../employees/employee-content.ts';
 import {
   updateDEntryReleasePolicy,
   dEntryReleasePolicyKey,
@@ -336,36 +341,175 @@ suite(
         await expect(outcome).rejects.toMatchObject({
           code: 'authorization_denied',
         });
+      } finally {
+        held.source.resolve(null);
+        await Promise.allSettled([outcome]);
+      }
+    });
 
-        it('does not retain a writer transaction or current-authority row locks across the static policy await', async () => {
-          const f = await setup(),
-            held = holdBuild();
-          const outcome = track(
+    it.each(['maintenance', 'role', 'department'] as const)(
+      'reloads content authority after pending policy when %s access is withdrawn',
+      async (withdrawal) => {
+        const f = await setup(),
+          departmentId = randomUUID(),
+          otherDepartmentId = randomUUID();
+        await db.db`insert into allrice_departments
+          (id,organization_id,name,create_request_id,create_name) values
+          (${departmentId},${f.context.organizationId},'Research',${randomUUID()},'Research'),
+          (${otherDepartmentId},${f.context.organizationId},'Finance',${randomUUID()},'Finance')`;
+        await db.db`insert into allrice_organization_people
+          (organization_id,user_id,display_name,department_id,content_maintenance_level)
+          values(${f.context.organizationId},${f.context.actor.id},'Current owner',${departmentId},${withdrawal === 'department' ? 'department' : 'company'})
+          on conflict(organization_id,user_id) do update set department_id=excluded.department_id,
+            content_maintenance_level=excluded.content_maintenance_level`;
+        const draft: Extract<
+          EmployeeContentMutation,
+          { operation: 'save_draft' }
+        > = {
+          operation: 'save_draft',
+          workspaceId: f.target.workspaceId,
+          setId: randomUUID(),
+          ownership:
+            withdrawal !== 'department'
+              ? { scope: 'company', organizationId: f.context.organizationId }
+              : {
+                  scope: 'department',
+                  organizationId: f.context.organizationId,
+                  departmentId,
+                },
+          target: { kind: 'employee', employeeId: f.assigned.employeeId },
+          requestId: randomUUID(),
+          expectedRevision: 0,
+          changeSummary: 'Published shared configuration',
+          manifest: {
+            schemaVersion: 1,
+            common: [],
+            scenes: [],
+            declaredConflicts: [],
+          },
+          textEdits: [],
+        };
+        const action = (
+          receipt: EmployeeContentReceipt,
+          operation: 'validate' | 'activate',
+        ) =>
+          mutateEmployeeContent(f.context, {
+            workspaceId: draft.workspaceId,
+            setId: draft.setId,
+            ownership: draft.ownership,
+            target: draft.target,
+            requestId: randomUUID(),
+            expectedRevision: receipt.revision,
+            changeSummary: operation,
+            operation,
+            candidateRevisionId: receipt.candidate.id,
+            candidateDigest: receipt.candidate.digest,
+          });
+        const saved = await mutateEmployeeContent(f.context, draft),
+          checked = await action(saved, 'validate');
+        expect(checked.validation?.valid).toBe(true);
+        const active = await action(checked, 'activate'),
+          candidate = await mutateEmployeeContent(f.context, {
+            ...draft,
+            requestId: randomUUID(),
+            expectedRevision: active.revision,
+            changeSummary: 'Unpublished maintenance-only candidate',
+          });
+        await action(candidate, 'validate');
+        const oldContent = await getEffectiveEmployeeContent(
+          f.context,
+          f.instance.id,
+        );
+        expect(
+          oldContent.layers.find((layer) => layer.id === draft.setId),
+        ).toMatchObject({
+          candidate: {
+            id: candidate.candidate.id,
+            changeSummary: 'Unpublished maintenance-only candidate',
+          },
+          validation: { valid: true },
+          access: { canRead: true, canMaintain: true },
+        });
+        const held = holdBuild(),
+          outcome = track(
             caller.readEmployeeBusinessCurrentPreflight(f.context, f.target),
           );
-          try {
-            await held.entered.promise;
-            // Immediate lock acquisition on a different real transaction proves the
-            // preflight is not a retained writer fence. No delay/lock timeout probe.
-            await db.db.begin(async (tx) => {
-              await tx`select id from allrice_organizations where id=${f.context.organizationId} for update nowait`;
-              await tx`select id from allrice_workspaces where id=${f.target.workspaceId} for update nowait`;
-              await tx`select id from allrice_users where id=${f.context.actor.id} for update nowait`;
-              await tx`select id from allrice_sessions where id=${f.context.sessionId} for update nowait`;
-              await tx`select id from allrice_memberships where organization_id=${f.context.organizationId} and user_id=${f.context.actor.id} for update nowait`;
-              await tx`select id from allrice_employee_assignments where id=${f.instance.assignmentId} for update nowait`;
-              await tx`select id from allrice_employee_instances where id=${f.instance.id} for update nowait`;
+        try {
+          await held.entered.promise;
+          await db.db.begin(async (tx) => {
+            if (withdrawal === 'maintenance')
+              await tx`update allrice_organization_people set content_maintenance_level='personal'
+                where organization_id=${f.context.organizationId} and user_id=${f.context.actor.id}`;
+            else if (withdrawal === 'role')
+              await tx`update allrice_memberships set role='viewer'
+                where organization_id=${f.context.organizationId} and user_id=${f.context.actor.id}`;
+            else
+              await tx`update allrice_organization_people set department_id=${otherDepartmentId}
+                where organization_id=${f.context.organizationId} and user_id=${f.context.actor.id}`;
+            const [current] =
+              await tx`select a.active assignment_active,m.active membership_active
+              from allrice_employee_assignments a join allrice_memberships m
+                on m.organization_id=a.organization_id and m.user_id=a.user_id
+              where a.id=${f.instance.assignmentId}
+                and (m.workspace_id is null or m.workspace_id=${f.target.workspaceId})`;
+            expect(current).toEqual({
+              assignment_active: true,
+              membership_active: true,
             });
-          } finally {
-            held.source.resolve(null);
-            await Promise.allSettled([outcome]);
-          }
-          expect((await outcome).projection.access).toBe('management');
+          });
+          expect(await getEmployeeInstance(f.context, f.instance.id)).toEqual(
+            f.instance,
+          );
+          const allowed = await getEffectiveEmployeeContent(
+            f.context,
+            f.instance.id,
+          );
+          if (withdrawal !== 'department')
+            expect(
+              allowed.layers.find((layer) => layer.id === draft.setId),
+            ).toMatchObject({
+              active: { id: active.active?.id },
+              candidate: null,
+              validation: null,
+              access: { canRead: true, canMaintain: false },
+            });
+          else
+            expect(allowed.layers.map((layer) => layer.id)).not.toContain(
+              draft.setId,
+            );
+          held.source.resolve(null);
+          expect((await outcome).currentConfiguration).toEqual(allowed);
+        } finally {
+          held.source.resolve(null);
+          await Promise.allSettled([outcome]);
+        }
+      },
+    );
+
+    it('does not retain a writer transaction or current-authority row locks across the static policy await', async () => {
+      const f = await setup(),
+        held = holdBuild();
+      const outcome = track(
+        caller.readEmployeeBusinessCurrentPreflight(f.context, f.target),
+      );
+      try {
+        await held.entered.promise;
+        // Immediate lock acquisition on a different real transaction proves the
+        // preflight is not a retained writer fence. No delay/lock timeout probe.
+        await db.db.begin(async (tx) => {
+          await tx`select id from allrice_organizations where id=${f.context.organizationId} for update nowait`;
+          await tx`select id from allrice_workspaces where id=${f.target.workspaceId} for update nowait`;
+          await tx`select id from allrice_users where id=${f.context.actor.id} for update nowait`;
+          await tx`select id from allrice_sessions where id=${f.context.sessionId} for update nowait`;
+          await tx`select id from allrice_memberships where organization_id=${f.context.organizationId} and user_id=${f.context.actor.id} for update nowait`;
+          await tx`select id from allrice_employee_assignments where id=${f.instance.assignmentId} for update nowait`;
+          await tx`select id from allrice_employee_instances where id=${f.instance.id} for update nowait`;
         });
       } finally {
         held.source.resolve(null);
         await Promise.allSettled([outcome]);
       }
+      expect((await outcome).projection.access).toBe('management');
     });
 
     it('rejects a real instance revision change across the policy read', async () => {
