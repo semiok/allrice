@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
 import { PersonVmError } from './contract.ts';
 import type { PersonVmBinding } from './contract.ts';
-import type { bootstrapMicrosandbox } from './microsandbox-bootstrap.ts';
+import type {
+  PersonVmManagedProbeJob,
+  PersonVmManagedProbePort,
+} from './native-command-observer.ts';
 
 export type PersonVmGuestControlValue = number | 'max';
 export type PersonVmGuestControlTarget = Readonly<{
@@ -37,9 +40,6 @@ export type PersonVmGuestMemoryReadback = Readonly<{
   groups: readonly PersonVmGuestControlReadback[];
 }>;
 
-// The existing bootstrap provider's public msb command capability. This reader
-// neither launches ordinary DSH commands nor creates a second execution owner.
-type NativeCommand = Parameters<typeof bootstrapMicrosandbox>[0]['command'];
 const names = ['memory.high', 'memory.max', 'memory.swap.max'] as const;
 const bindingKey = (binding: PersonVmBinding) =>
   JSON.stringify([
@@ -50,7 +50,10 @@ const bindingKey = (binding: PersonVmBinding) =>
     binding.leaseEpoch,
   ]);
 const value = (input: unknown): input is PersonVmGuestControlValue =>
-  input === 'max' || (Number.isSafeInteger(input) && (input as number) >= 0);
+  input === 'max' ||
+  (typeof input === 'number' && Number.isSafeInteger(input) && input >= 0);
+const record = (input: unknown): input is Record<string, unknown> =>
+  input !== null && typeof input === 'object' && !Array.isArray(input);
 function control(input: unknown): PersonVmGuestControlValue | undefined {
   if (input === 'max') return input;
   if (typeof input !== 'string' || !/^(0|[1-9][0-9]*)$/.test(input))
@@ -64,27 +67,49 @@ const decimal = (input: unknown): input is string =>
 /** Fixed read-only guest probe. Expected limits deliberately stay on the host,
  * so absent/unreadable controls cannot be echoed back from configuration. */
 export const PERSON_VM_GUEST_CONTROL_READER = String.raw`
-const fs = require('node:fs'), path = require('node:path');
-const targets = JSON.parse(process.argv[1]);
+const fs = require('node:fs'), path = require('node:path').posix;
+const { cgroupRoot, targets } = JSON.parse(process.argv[1]);
 const names = ['memory.high', 'memory.max', 'memory.swap.max'];
+const canonical = p => typeof p === 'string' && p.startsWith('/') && p !== '/' && path.normalize(p) === p && !p.includes('\0') && fs.realpathSync(p) === p;
+const checkDirectory = p => {
+  if (!canonical(p)) throw new Error('noncanonical-cgroup-path');
+  const stat = fs.statSync(p, { bigint: true });
+  if (!stat.isDirectory() || fs.statfsSync(p, { bigint: true }).type !== 0x63677270n) throw new Error('not-cgroup2');
+  return stat;
+};
+const read = (p, device) => {
+  if (!canonical(p)) throw new Error('noncanonical-control-path');
+  const fd = fs.openSync(p, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+  try {
+    const stat = fs.fstatSync(fd, { bigint: true });
+    if (!stat.isFile() || stat.dev !== device) throw new Error('invalid-control-identity');
+    return { value: fs.readFileSync(fd, 'utf8').trim(), device: stat.dev, inode: stat.ino };
+  } finally { fs.closeSync(fd); }
+};
 const groups = targets.map(({ target, path: directory }) => {
   try {
-    const before = fs.statSync(directory, { bigint: true });
-    const first = names.map(name => fs.readFileSync(path.join(directory, name), 'utf8').trim());
-    const second = names.map(name => fs.readFileSync(path.join(directory, name), 'utf8').trim());
-    const after = fs.statSync(directory, { bigint: true });
-    if (!before.isDirectory() || !after.isDirectory() || before.dev !== after.dev || before.ino !== after.ino || first.some((v, i) => v !== second[i]))
+    if (!(directory === cgroupRoot || directory.startsWith(cgroupRoot + '/'))) throw new Error('outside-cgroup-root');
+    const rootBefore = checkDirectory(cgroupRoot), before = checkDirectory(directory);
+    if (before.dev !== rootBefore.dev) throw new Error('different-cgroup-device');
+    const first = names.map(name => read(path.join(directory, name), before.dev));
+    const second = names.map(name => read(path.join(directory, name), before.dev));
+    const after = checkDirectory(directory), rootAfter = checkDirectory(cgroupRoot);
+    if (rootBefore.dev !== rootAfter.dev || rootBefore.ino !== rootAfter.ino || before.dev !== after.dev || before.ino !== after.ino || first.some((v, i) => v.value !== second[i].value || v.device !== second[i].device || v.inode !== second[i].inode))
       return { target, path: directory, error: 'control-changed-during-read' };
-    return { target, path: directory, device: String(before.dev), inode: String(before.ino), values: first };
-  } catch { return { target, path: directory, error: 'control-unreadable' }; }
+    return { target, path: directory, device: String(before.dev), inode: String(before.ino), values: first.map(entry => entry.value) };
+  } catch (error) { return { target, path: directory, error: error instanceof Error ? error.message : 'control-unreadable' }; }
 });
 process.stdout.write(JSON.stringify({ version: 1, scope: 'guest-cgroup', groups }));
 `;
 
 export function createPersonVmGuestMemoryReader(input: {
   binding: PersonVmBinding;
-  name: string;
-  command: NativeCommand;
+  /** Existing native owner/executor, including actual guest completion. */
+  probes: PersonVmManagedProbePort;
+  /** Explicit approved guest Node path; no guest PATH/default binary guess. */
+  nodeExecutable: string;
+  /** Existing owner's independent cleanup budget, not the aborted read. */
+  cleanupSignal(): AbortSignal;
   cgroupRoot: string;
   /** Explicit approved plan expectations; no physical/child limit defaults. */
   targets: readonly PersonVmGuestControlTarget[];
@@ -96,7 +121,7 @@ export function createPersonVmGuestMemoryReader(input: {
 } {
   const binding = Object.freeze({ ...input.binding });
   const key = bindingKey(binding);
-  const { name, command } = input;
+  const { probes, nodeExecutable, cleanupSignal } = input;
   const targets = input.targets.map((target) => Object.freeze({ ...target }));
   const root = input.cgroupRoot;
   const pathValid = (path: string) =>
@@ -105,9 +130,10 @@ export function createPersonVmGuestMemoryReader(input: {
     posix.normalize(path) === path &&
     !path.includes('\0');
   if (
-    !name ||
-    /[\s\0]/.test(name) ||
-    typeof command !== 'function' ||
+    typeof probes?.launch !== 'function' ||
+    typeof cleanupSignal !== 'function' ||
+    !pathValid(nodeExecutable) ||
+    nodeExecutable === '/' ||
     !pathValid(root) ||
     root === '/' ||
     targets.length === 0 ||
@@ -137,7 +163,7 @@ export function createPersonVmGuestMemoryReader(input: {
         ? 'verified'
         : 'unknown',
       revision,
-      evidenceRef: `msb-exec:guest-cgroup:${revision}`,
+      evidenceRef: `msb-managed-probe:guest-cgroup:${revision}`,
       groups: Object.freeze(groups),
     });
   };
@@ -153,48 +179,89 @@ export function createPersonVmGuestMemoryReader(input: {
         }),
       ),
     );
+  async function runProbe(signal: AbortSignal): Promise<string> {
+    let job: PersonVmManagedProbeJob;
+    try {
+      job = await probes.launch(
+        {
+          executable: nodeExecutable,
+          args: [
+            '-e',
+            PERSON_VM_GUEST_CONTROL_READER,
+            JSON.stringify({
+              cgroupRoot: root,
+              targets: targets.map(({ target, path }) => ({ target, path })),
+            }),
+          ],
+        },
+        signal,
+      );
+    } catch (cause) {
+      // With no retained exact job, dispatch may have succeeded. The source
+      // owner must resolve this admission using its whole-VM stop/status path.
+      throw new PersonVmError('CLEANUP_INCOMPLETE', { cause });
+    }
+    if (!job || !record(job.binding) || bindingKey(job.binding) !== key)
+      throw new PersonVmError('CLEANUP_INCOMPLETE');
+    let joined = false;
+    try {
+      signal.throwIfAborted();
+      if (!job.jobId || typeof job.stdout !== 'function')
+        throw new PersonVmError('RUNTIME_NOT_READY');
+      const exit = await job.wait(signal);
+      if (
+        !Number.isInteger(exit?.exitCode) ||
+        typeof exit?.timedOut !== 'boolean'
+      )
+        throw new PersonVmError('RUNTIME_NOT_READY');
+      joined = true;
+      signal.throwIfAborted();
+      if (exit.exitCode !== 0 || exit.timedOut)
+        throw new PersonVmError('RUNTIME_NOT_READY');
+      const output = await job.stdout(signal);
+      signal.throwIfAborted();
+      return output;
+    } catch (cause) {
+      if (!joined) {
+        try {
+          const exit = await job.cancelAndWait(cleanupSignal());
+          if (
+            !Number.isInteger(exit?.exitCode) ||
+            typeof exit?.timedOut !== 'boolean'
+          )
+            throw new Error('unconfirmed-guest-probe-cleanup');
+        } catch (cleanup) {
+          throw new PersonVmError('CLEANUP_INCOMPLETE', {
+            cause: new AggregateError([cause, cleanup]),
+          });
+        }
+      }
+      signal.throwIfAborted();
+      throw cause;
+    }
+  }
   return {
     async read(bindingInput, signal) {
       signal.throwIfAborted();
       if (bindingKey(bindingInput) !== key)
         throw new PersonVmError('LEASE_LOST');
       try {
-        const raw: unknown = JSON.parse(
-          await command(
-            [
-              'exec',
-              name,
-              '--no-stdin',
-              '--no-tty',
-              '--',
-              'node',
-              '-e',
-              PERSON_VM_GUEST_CONTROL_READER,
-              JSON.stringify(
-                targets.map(({ target, path }) => ({ target, path })),
-              ),
-            ],
-            signal,
-          ),
-        );
+        const raw: unknown = JSON.parse(await runProbe(signal));
         signal.throwIfAborted();
         if (
-          !raw ||
-          typeof raw !== 'object' ||
-          !('version' in raw) ||
+          !record(raw) ||
           raw.version !== 1 ||
-          !('scope' in raw) ||
           raw.scope !== 'guest-cgroup' ||
-          !('groups' in raw) ||
           !Array.isArray(raw.groups) ||
           raw.groups.length !== targets.length
         )
           return unknown('invalid-public-readback');
+        const rawGroups: readonly unknown[] = raw.groups;
         const groups: PersonVmGuestControlReadback[] = [];
         for (const [index, target] of targets.entries()) {
-          const group = raw.groups[index];
+          const group = rawGroups[index];
           if (
-            !group ||
+            !record(group) ||
             group.target !== target.target ||
             group.path !== target.path
           )
@@ -208,7 +275,8 @@ export function createPersonVmGuestMemoryReader(input: {
             Array.isArray(group.values) &&
             group.values.length === names.length
           ) {
-            const values = group.values.map(control);
+            const rawValues: readonly unknown[] = group.values;
+            const values = rawValues.map(control);
             if (values.every((entry) => entry !== undefined))
               observed = Object.freeze({
                 device: group.device,
@@ -238,11 +306,14 @@ export function createPersonVmGuestMemoryReader(input: {
           );
         }
         return snapshot(groups);
-      } catch {
-        // Join the host CLI runner, never race abort against it. This alone is
-        // not a guest job completion certificate; lifecycle wiring owns that.
+      } catch (cause) {
+        if (
+          cause instanceof PersonVmError &&
+          cause.code === 'CLEANUP_INCOMPLETE'
+        )
+          throw cause;
         signal.throwIfAborted();
-        return unknown('public-exec-unavailable');
+        return unknown('public-managed-probe-unavailable');
       }
     },
   };
