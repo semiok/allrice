@@ -866,7 +866,7 @@ fs.writeFileSync(f,JSON.stringify(v));
     );
     expect(config.allowed_backends).toEqual(['local']);
     expect(config.paths.sandboxes).toBe(
-      join(socketRoot, binding.vmId, 'sandboxes'),
+      join(root, 'mount/microsandbox/sandboxes'),
     );
   });
   it('不接可变镜像tag或不固定的运行版本', async () => {
@@ -995,6 +995,31 @@ fs.writeFileSync(f,JSON.stringify(v));
     ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
     expect(await readlink(alias)).toBe(join(mount, 'microsandbox'));
     expect(runner).toHaveBeenCalledTimes(1);
+
+    const nextSocketRoot = await socketDirectory();
+    await make(nextSocketRoot).prepare(binding, mount, signal());
+    const nextConfig = JSON.parse(
+      await readFile(join(mount, 'msb-config.json'), 'utf8'),
+    );
+    expect(config.paths.sandboxes).toBe(join(mount, 'microsandbox/sandboxes'));
+    expect(nextConfig.paths.sandboxes).toBe(config.paths.sandboxes);
+    expect(nextConfig.home).toBe(join(nextSocketRoot, binding.vmId));
+    expect(nextConfig.home).not.toBe(config.home);
+    expect(await readlink(nextConfig.home)).toBe(join(mount, 'microsandbox'));
+    const differentMount = join(root, 'different-mounted-disk');
+    await make(await socketDirectory()).prepare(
+      binding,
+      differentMount,
+      signal(),
+    );
+    const differentConfig = JSON.parse(
+      await readFile(join(differentMount, 'msb-config.json'), 'utf8'),
+    );
+    expect(differentConfig.paths.sandboxes).toBe(
+      join(differentMount, 'microsandbox/sandboxes'),
+    );
+    expect(differentConfig.paths.sandboxes).not.toBe(config.paths.sandboxes);
+    expect(runner).toHaveBeenCalledTimes(3);
   });
   it('取消真实子进程等待退出，不把仍跑的promise丢给回收器', async () => {
     const root = await directory(),

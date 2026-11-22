@@ -167,7 +167,10 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
               'snapshots',
               'logs',
               'secrets',
-            ].map((name) => [name, join(home, name)]),
+            ].map((name) => [
+              name,
+              join(name === 'sandboxes' ? target : home, name),
+            ]),
           ),
         },
         sandbox_defaults: {
