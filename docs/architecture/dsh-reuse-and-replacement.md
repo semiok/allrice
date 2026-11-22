@@ -2,6 +2,16 @@
 
 > 2026-10-27 起，复用 DSH 但和 DSH 默认不同的地方，总览以 Linear MET-225（DSH 定制点清单）为准，规则见 `AGENTS.md` 第 0 节。本文继续保留 `CONTRIBUTING.md` 和 `pnpm dsh:verify` 要求的逐项决策记录（每个 `patch-ledger.json` id）：新增、删除 patch-ledger 项或升级 DSH 时，按 `CONTRIBUTING.md` 更新对应 id 的段落；其余按日期记的流水账不再续写。
 
+## MET-268：VM外模型网关与实际尝试账本
+
+`allrice-host-model-gateway-v1` 使用固定 `0.2.1-rc.2` 的公开 `LlmAdapter`、`LlmRuntime.prepareCall`、`GenerateOptions`、`StreamChunk`，保留原生消息、工具增量、工具结果和取消语义。开发注入现有订阅 loader 已初始化的宿主 LlmRuntime，生产注入同一 provider port；SSE 配置由宿主 loader 固定。没有凭据复制、账户路由、原生 loop 或 Agent 状态机；包需显式装配，本片没有启用4.0或改动现有3.x composition。
+
+DSH 不拥有 SaaS 当前本人/企业、受管VM instance/epoch、员工release、原生根/子会话与Run/call归属，也不证明每次HTTP retry/授权刷新或跨gateway的每人8路。AllRice在host-only上下文参数位置核现权；消息/header不能选择owner。宿主逐fetch记录实际响应及独立usage；redirect不跟随，缺usage为null；provider最终合成0不能成为计费。账本只单向输出既有RuntimeRunUsage，不添加价格、套餐、余额或第二个扣费权威。
+
+新三表分别为不可变native-call幂等关联、实际上游尝试账本、全局person的8格准入租约，均在MET-268授权和写前四类检查内。排队重查现权，真实reader收尾与receipt提交后才放slot；crash/DB失败保留unknown及占位，无TTL释放/自动重放。`reconcileOwner`只能凭可信宿主死进程/全部transport停止事实恢复，guest回执无效。原生pi-ai正常terminal后会取消私有consumer signal，因此不把该信号等同真人取消；实际host/client/revoke信号与raw terminal、awaited reader close共同决定回执。
+
+升级须核公开消息/stream/replay词汇、pi-ai HTTP transport及fetch接缝、原生私有consumer close语义、wire终止/usage字段和缓存子集口径。上游若能直接提供host可信身份/逐HTTP attempt/全局person准入合同，可替换相应薄适配；租户授权和实际费用审计不能随替换删除。当前fixture证明loopback HTTP文本/工具往返、失败/取消/重连/8路隔离；数据库、多进程恢复及真实VM/模型验收另列，不把fixture当上线通过。完整owner合同见[model-gateway.md](model-gateway.md)。MET-225待主会话登记同名行。
+
 ## MET-221：只用一代 DSH
 
 2026-10-25 起，AllRice 任何时候只依赖一代 DSH（当前 `0.2.1-rc.2` / `687f282`）。升级时 Worker、Web、Bridge、Office 与维护工具一次性换到新一代，不保留旧包、旧补丁或独立的旧版服务。

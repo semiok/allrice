@@ -144,7 +144,11 @@ if (mode === 'finish') {
     throw Error('CI_WRONG_REPOSITORY');
   result = {
     version: 1,
-    scope: 'allrice.repository-ci.v1',
+    // Nightly observations are not publication receipts (whose event is push/PR).
+    scope:
+      process.env.GITHUB_EVENT_NAME === 'schedule'
+        ? 'allrice.repository-nightly-ci.v1'
+        : 'allrice.repository-ci.v1',
     repositoryId: 1323769790,
     repository: 'semiok/allrice',
     workflowPath: '.github/workflows/ci.yml',

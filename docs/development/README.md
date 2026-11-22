@@ -34,6 +34,8 @@ startup bypasses native content verification.
 
 ## Environment example
 
+MET-268 的可选 `@allrice/model-gateway` 宿主包按[公开合同](../architecture/model-gateway.md)装配，默认开发启动流程没有挂载它。新增迁移只建宿主调用账本和每人准入租约；不搬旧用量、不运行模型、不启动VM。开发复用已有订阅loader、生产注入API provider；只有可信宿主可以提供当前身份、VM epoch与native call映射。此包没有新增产品env或凭据路径，因此`.env.example`无需添加开关/秘密。Node按M1规则固定22.23.2。
+
 Run `pnpm env:generate` after staging configuration source changes; `pnpm env:check` rejects drift in CI.
 Names come from finite static TS/JS syntax, never real env values. Safe active examples and audited exclusions/opaque reads live in `scripts/env-example-policy.yml`; this does not prove arbitrary dynamic configuration coverage.
 Commented values are unset. Direct/production startup requires `DATABASE_URL`; `pnpm dev` can prepare its local Docker database. Supply credentials/secrets before enabling the corresponding features, and prepare/review `ALLRICE_DSH_NATIVE_ARTIFACT_ID` as above. Never copy production secrets into policy.

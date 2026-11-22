@@ -2,6 +2,14 @@
   "schemaVersion": 2,
   "patches": [
     {
+      "id": "allrice-host-model-gateway-v1",
+      "issue": "MET-268",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "packages/model-gateway/src/index.ts",
+      "reason": "Opt-in host gateway uses public LlmAdapter, prepared native calls and StreamChunk vocabulary. SaaS owns current person/VM epoch/native-call authority, per-HTTP model/refresh receipts and global per-person eight-stream leases. Provider credentials remain in the existing host loader, absent wire usage stays unknown and reconnect never replays a call. No native loop, agent state machine, account router, pricing or automatic 4.0 activation."
+    },
+    {
       "id": "allrice-reference-read-v1",
       "issue": "MET-247",
       "upstreamVersion": "0.2.1-rc.2",

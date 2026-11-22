@@ -1,0 +1,25 @@
+{
+  "name": "@allrice/egress-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@allrice/contracts": "workspace:*",
+    "@allrice/person-vm": "workspace:*",
+    "@allrice/project-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "postgres": "3.4.9",
+    "@allrice/model-gateway": "workspace:*"
+  }
+}
