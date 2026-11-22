@@ -12,6 +12,14 @@ DSH 不拥有 SaaS 当前本人/企业、受管VM instance/epoch、员工release
 
 升级须核公开消息/stream/replay词汇、pi-ai HTTP transport及fetch接缝、原生私有consumer close语义、wire终止/usage字段和缓存子集口径。上游若能直接提供host可信身份/逐HTTP attempt/全局person准入合同，可替换相应薄适配；租户授权和实际费用审计不能随替换删除。当前fixture证明loopback HTTP文本/工具往返、失败/取消/重连/8路隔离；数据库、多进程恢复及真实VM/模型验收另列，不把fixture当上线通过。完整owner合同见[model-gateway.md](model-gateway.md)。MET-225待主会话登记同名行。
 
+## MET-267：独立内存门卫与guest plan（尚未装配）
+
+`allrice-vm-memory-v1` 基于固定DSH `0.2.1-rc.2` / `687f282e8625c6b8d11ff58211a90524be2e4317`，复用公开原生bash `BASH_ENV` 与exec前launcher；执行、取消、超时、stdout/stderr/exit、会话及继续仍归DSH。AllRice仅补四类中的外部资源门卫和只读诊断投影，按VM/person/org/instance/leaseEpoch核观察；`VmMemorySource`、已批policy及guest plan须显式注入，不添加默认阈值、TTL、第二executor或私有DSH handle。guest root协作不是隔离，low/oom优先级不保证任意OOM下会话永活。
+
+当前是独立模块，n3 gateway/VM owner尚未实际装配；c35/f0c已有bootstrap/managed launch公开口可消费，但actual starting全域fence、shell外exact child/OOM completion、可信运行hardcap回读、可信host pressure producer及真实联合验收仍开放。configured/RSS/guest MemTotal不能代填enforced hardcap，137/SIGKILL/父组计数不能证明单命令局部OOM。合成source/sysfs/bash回归只验证模块边界，不关闭上述真实保证或自动启用4.0；完整合同与未完成项见[vm-memory.md](vm-memory.md)。MET-225同名行由主会话按此状态登记。
+
+升级须核公开BASH_ENV/launcher与原生exec、取消、exit/signal/output语义，Linux memcg/swap计量及局部OOM归因前提，bootstrap/managed Job公开合同，可信cap/source的实例epoch与断连失效，以及fail-closed和真实压力恢复证据。上游提供等价公开资源合同后替换相应薄适配，SaaS当前权限/epoch门卫仍保留；未来启用或回退须经owner实际装配、取消/收尾及联合验收，不回退DSH代际、不恢复旧观察、不重放命令。
+
 ## MET-221：只用一代 DSH
 
 2026-10-25 起，AllRice 任何时候只依赖一代 DSH（当前 `0.2.1-rc.2` / `687f282`）。升级时 Worker、Web、Bridge、Office 与维护工具一次性换到新一代，不保留旧包、旧补丁或独立的旧版服务。
