@@ -5,12 +5,15 @@ import {
   ErrorCode,
   McpError,
   ToolListChangedNotificationSchema,
+  ToolSchema,
   type CallToolResult,
 } from '@modelcontextprotocol/sdk/types.js';
 import {
   ApiErrorSchema,
+  ReferenceArchiveReadInputSchema,
   ReferenceSelectionErrorSchema,
 } from '@allrice/contracts';
+import { z } from 'zod';
 import { riceToolDefinitions } from '../tool-broker/definitions.js';
 import {
   ALLRICE_MCP_CONTRACT_VERSION,
@@ -185,7 +188,9 @@ describe('AllRice M2 six optional native SDK callbacks (protocol fixtures only)'
         'deliverable_read',
       );
       const tool = catalog.find((item) => item.name === name)!;
-      expect(tool.inputSchema.additionalProperties).toBe(false);
+      expect(tool.inputSchema.type).toBe('object');
+      if (name !== 'reference_archive_read')
+        expect(tool.inputSchema.additionalProperties).toBe(false);
       if (name === 'memory_remember') {
         expect(tool.inputSchema).toEqual(
           JSON.parse(
@@ -214,6 +219,108 @@ describe('AllRice M2 six optional native SDK callbacks (protocol fixtures only)'
       for (const other of extensionCases)
         if (other.method !== method)
           expect(f.services[other.method]).not.toHaveBeenCalled();
+    },
+  );
+
+  it('lists the archive union with a legal MCP object root and both complete strict branches', async () => {
+    const f = extensionFixture();
+    const { client } = await connect(f);
+    const tool = (await client.listTools()).tools.find(
+      (item) => item.name === 'reference_archive_read',
+    )!;
+    expect(
+      ToolSchema.shape.inputSchema.safeParse(tool.inputSchema).success,
+    ).toBe(true);
+    expect(tool.inputSchema).toEqual({
+      ...z.toJSONSchema(ReferenceArchiveReadInputSchema, { io: 'input' }),
+      type: 'object',
+    });
+    expect(tool.inputSchema).not.toHaveProperty('properties');
+    expect(tool.inputSchema).not.toHaveProperty('additionalProperties');
+    expect(tool.inputSchema).toMatchObject({
+      oneOf: ['text', 'image'].map((as) => ({
+        type: 'object',
+        properties: { as: { const: as } },
+        required: expect.arrayContaining([
+          'sourceId',
+          'revisionId',
+          'digest',
+          'checksum',
+          'entryId',
+          'as',
+        ]),
+        additionalProperties: false,
+      })),
+    });
+  });
+
+  it.each(['text', 'image'] as const)(
+    'keeps archive %s required pins, strict input and branch semantics over SDK calls',
+    async (as) => {
+      const f = extensionFixture();
+      const { client } = await connect(f);
+      const input = { ...pin, entryId: extensionCases[3].input.entryId, as };
+      await expect(
+        client.callTool({ name: 'reference_archive_read', arguments: input }),
+      ).resolves.toMatchObject({
+        content: [{ text: 'protocol fixture, no business carrier' }],
+      });
+      const callback = f.services.referenceArchiveRead;
+      expect(callback).toHaveBeenCalledExactlyOnceWith(
+        f.scope,
+        as === 'text' ? { ...input, offset: 0, limit: 4000 } : input,
+        expect.any(AbortSignal),
+      );
+      const invalid: Record<string, unknown>[] = [
+        { ...input, path: 'guest/member.txt' },
+        ...(as === 'text'
+          ? [
+              { ...input, offset: 1 },
+              { ...input, limit: 4001 },
+            ]
+          : [
+              { ...input, offset: 0 },
+              { ...input, expectedTextChecksum: pin.checksum },
+            ]),
+      ];
+      for (const key of [
+        'sourceId',
+        'revisionId',
+        'digest',
+        'checksum',
+        'entryId',
+        'as',
+      ]) {
+        const missing: Record<string, unknown> = { ...input };
+        delete missing[key];
+        invalid.push(missing);
+      }
+      for (const args of invalid)
+        await expect(
+          client.callTool({ name: 'reference_archive_read', arguments: args }),
+        ).rejects.toMatchObject({ code: ErrorCode.InvalidParams });
+      expect(callback).toHaveBeenCalledTimes(1);
+      if (as === 'text') {
+        const continuation = {
+          ...input,
+          offset: 1,
+          expectedTextChecksum: pin.checksum,
+        };
+        await expect(
+          client.callTool({
+            name: 'reference_archive_read',
+            arguments: continuation,
+          }),
+        ).resolves.toMatchObject({
+          content: [{ text: 'protocol fixture, no business carrier' }],
+        });
+        expect(callback).toHaveBeenCalledTimes(2);
+        expect(callback).toHaveBeenLastCalledWith(
+          f.scope,
+          { ...continuation, limit: 4000 },
+          expect.any(AbortSignal),
+        );
+      }
     },
   );
 
