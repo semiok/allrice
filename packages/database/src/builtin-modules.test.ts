@@ -1,7 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { setImmediate as turn } from 'node:timers/promises';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { DEntryIdentitySchema, RequestContextSchema } from '@allrice/contracts';
+import {
+  ApplicationBuiltinModulesProjectionSchema,
+  DEntryIdentitySchema,
+  RequestContextSchema,
+} from '@allrice/contracts';
 import * as buildIdentity from './service-build-identity.ts';
 import {
   builtinModules,
@@ -44,6 +48,9 @@ afterEach(() => {
 
 it('ships one immutable all-enabled application policy for exactly the four approved builtins', async () => {
   const policy = await readApplicationBuiltinModules('web');
+  expect(ApplicationBuiltinModulesProjectionSchema.parse(policy)).toEqual(
+    policy,
+  );
   expect(policy).toEqual({
     schemaVersion: 1,
     policy: 'all-enabled',
@@ -95,6 +102,9 @@ it('projects only the existing verified application build identity, with no per-
     .mocked(buildIdentity.readServiceBuildIdentity)
     .mockResolvedValue(verified);
   const policy = await readApplicationBuiltinModules('worker');
+  expect(ApplicationBuiltinModulesProjectionSchema.parse(policy)).toEqual(
+    policy,
+  );
   expect(read).toHaveBeenCalledWith('worker');
   expect(policy.applicationBuild).toEqual({
     sourceSha: verified.sourceSha,

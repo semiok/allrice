@@ -20,6 +20,13 @@ type ProjectionReader<Selector> = (
   signal?: AbortSignal,
 ) => Promise<unknown>;
 
+/** Each access reader retains its original identity/resource qualification.
+ * Builtins project readApplicationBuiltinModules('worker') from the trusted
+ * service, bracketed by that reader's current guard; no request supplies a
+ * build/policy. A null applicationBuild is unknown provenance, not a release.
+ * Management current configuration is read through the existing content APIs;
+ * actual/stored execution config pins remain separate original facts. Other
+ * modules keep their exact binding/release/configDigest contract. */
 export interface CurrentEmployeeBusinessSources {
   management?: ProjectionReader<EmployeeBusinessTargetProjection>;
   history?: ProjectionReader<EmployeeBusinessTargetProjection>;

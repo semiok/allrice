@@ -43,6 +43,12 @@ export async function currentEmployeeBusiness(
   if (target.module.kind === 'not-applicable') {
     if (current.module.kind !== 'not-applicable')
       denyBusinessProjection(dependency);
+  } else if (target.module.kind === 'builtin') {
+    if (
+      current.module.kind !== 'builtin' ||
+      current.module.moduleId !== target.module.moduleId
+    )
+      denyBusinessProjection(dependency);
   } else {
     if (current.module.kind !== 'required') denyBusinessProjection(dependency);
     const binding = current.module.binding;

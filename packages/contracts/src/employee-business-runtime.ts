@@ -20,12 +20,62 @@ export const EmployeeBusinessScopeProjectionSchema = z
   })
   .strict();
 
+/** Shape only. The availability writer is the application's static policy,
+ * read through readApplicationBuiltinModules; these DTOs grant no authority. */
+export const ApplicationBuiltinModuleIdSchema = z.enum([
+  'deliverables',
+  'enterprise-materials',
+  'employee-memory',
+  'capabilities',
+]);
+export const ApplicationBuiltinModulesProjectionSchema = z
+  .object({
+    schemaVersion: z.literal(1),
+    policy: z.literal('all-enabled'),
+    applicationBuild: z
+      .object({
+        sourceSha: z.string().regex(/^[a-f0-9]{40}$/),
+        sourceTree: z.string().regex(/^[a-f0-9]{40}$/),
+        manifestDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+        webBuildId: z.string().min(1).max(200),
+      })
+      .strict()
+      .nullable(),
+    builtinModules: z
+      .object({
+        deliverables: z.literal(true),
+        'enterprise-materials': z.literal(true),
+        'employee-memory': z.literal(true),
+        capabilities: z.literal(true),
+      })
+      .strict(),
+  })
+  .strict();
+export const BuiltinEmployeeModuleRequirementProjectionSchema = z
+  .object({
+    kind: z.literal('builtin'),
+    moduleId: ApplicationBuiltinModuleIdSchema,
+  })
+  .strict();
+const independentlyReleasedModule = EmployeeModuleReleaseSchema.refine(
+  (release) =>
+    !ApplicationBuiltinModuleIdSchema.safeParse(release.moduleId).success,
+  'application builtins use the builtin branch',
+);
+const independentlyReleasedBinding = EmployeeModuleBindingSchema.refine(
+  (binding) =>
+    !ApplicationBuiltinModuleIdSchema.safeParse(binding.release.moduleId)
+      .success,
+  'application builtins do not acquire an employee module binding',
+);
+
 const moduleRequirement = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('not-applicable') }).strict(),
+  BuiltinEmployeeModuleRequirementProjectionSchema,
   z
     .object({
       kind: z.literal('required'),
-      release: EmployeeModuleReleaseSchema,
+      release: independentlyReleasedModule,
     })
     .strict(),
 ]);
@@ -53,10 +103,14 @@ export const CurrentEmployeeBusinessProjectionSchema = z
     executionGeneration: z.literal('4.0').nullable(),
     module: z.discriminatedUnion('kind', [
       z.object({ kind: z.literal('not-applicable') }).strict(),
+      BuiltinEmployeeModuleRequirementProjectionSchema.extend({
+        // Availability and build provenance only, never an execution config pin.
+        applicationModules: ApplicationBuiltinModulesProjectionSchema,
+      }).strict(),
       z
         .object({
           kind: z.literal('required'),
-          binding: EmployeeModuleBindingSchema,
+          binding: independentlyReleasedBinding,
           configDigest: opaque,
         })
         .strict(),
@@ -169,6 +223,10 @@ export const OrdinaryOriginClassificationProjectionSchema =
       })
       .strict(),
   ]);
+
+export type ApplicationBuiltinModulesProjection = z.infer<
+  typeof ApplicationBuiltinModulesProjectionSchema
+>;
 
 export type EmployeeBusinessScopeProjection = z.infer<
   typeof EmployeeBusinessScopeProjectionSchema

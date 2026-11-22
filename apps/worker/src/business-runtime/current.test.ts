@@ -194,6 +194,137 @@ describe('current business projection with explicit contract fakes', () => {
     ).rejects.toMatchObject({ code: 'business_runtime_authorization_denied' });
   });
 
+  it.each([
+    'deliverables',
+    'enterprise-materials',
+    'employee-memory',
+    'capabilities',
+  ] as const)(
+    'uses the original management reader for builtin %s without B or an employee binding',
+    async (moduleId) => {
+      const builtinTarget: EmployeeBusinessTargetProjection = {
+        ...target,
+        access: 'management',
+        module: { kind: 'builtin', moduleId },
+      };
+      const current: CurrentEmployeeBusinessProjection = {
+        ...contractFakeCurrent(),
+        access: 'management',
+        module: {
+          kind: 'builtin',
+          moduleId,
+          applicationModules: {
+            schemaVersion: 1,
+            policy: 'all-enabled',
+            applicationBuild: null,
+            builtinModules: {
+              deliverables: true,
+              'enterprise-materials': true,
+              'employee-memory': true,
+              capabilities: true,
+            },
+          },
+        },
+      };
+      const management = vi.fn(async () => current),
+        execute = vi.fn(async () => {
+          throw Error('must not execute');
+        });
+      expect(
+        await currentEmployeeBusiness(
+          { management, execute },
+          contractFakeContext,
+          builtinTarget,
+        ),
+      ).toEqual(current);
+      expect(management).toHaveBeenCalledWith(
+        contractFakeContext,
+        builtinTarget,
+        undefined,
+      );
+      expect(execute).not.toHaveBeenCalled();
+      const denied = Error('contract-fake current membership revoked');
+      management.mockRejectedValueOnce(denied);
+      await expect(
+        currentEmployeeBusiness(
+          { management },
+          contractFakeContext,
+          builtinTarget,
+        ),
+      ).rejects.toBe(denied);
+      await expect(
+        currentEmployeeBusiness(
+          {
+            management: async () => ({
+              ...current,
+              module: {
+                ...current.module,
+                moduleId:
+                  moduleId === 'capabilities'
+                    ? 'employee-memory'
+                    : 'capabilities',
+              },
+            }),
+          },
+          contractFakeContext,
+          builtinTarget,
+        ),
+      ).rejects.toMatchObject({
+        code: 'business_runtime_authorization_denied',
+      });
+      await expect(
+        currentEmployeeBusiness(
+          {
+            management: async () => ({
+              ...current,
+              module: { kind: 'not-applicable' },
+            }),
+          },
+          contractFakeContext,
+          builtinTarget,
+        ),
+      ).rejects.toMatchObject({
+        code: 'business_runtime_authorization_denied',
+      });
+    },
+  );
+
+  it('joins a pending builtin current read before honoring cancellation', async () => {
+    const controller = new AbortController(),
+      reason = Error('original request cancelled');
+    let finish!: (value: CurrentEmployeeBusinessProjection) => void;
+    const management = vi.fn(
+      () =>
+        new Promise<CurrentEmployeeBusinessProjection>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    let settled = false;
+    const outcome = currentEmployeeBusiness(
+      { management },
+      contractFakeContext,
+      {
+        ...target,
+        access: 'management',
+        module: { kind: 'builtin', moduleId: 'employee-memory' },
+      },
+      controller.signal,
+    )
+      .then(
+        () => ({ error: null }),
+        (error) => ({ error }),
+      )
+      .finally(() => {
+        settled = true;
+      });
+    expect(management).toHaveBeenCalledOnce();
+    controller.abort(reason);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    finish(contractFakeCurrent());
+    expect(await outcome).toEqual({ error: reason });
+  });
+
   it('retains source denial instead of trusting a schema-valid ID or historical membership', async () => {
     const denied = new Error('contract-fake current membership revoked');
     await expect(

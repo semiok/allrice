@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   AdoptedHumanSourceProjectionSchema,
+  ApplicationBuiltinModulesProjectionSchema,
+  CurrentEmployeeBusinessProjectionSchema,
   EmployeeBusinessTargetProjectionSchema,
   LogicalExecutionBindingProjectionSchema,
   MemoryOriginSelectorProjectionSchema,
@@ -45,6 +47,111 @@ describe('neutral employee business projections (contract fakes, not authority)'
       EmployeeBusinessTargetProjectionSchema.safeParse({
         ...target,
         approved: true,
+      }).success,
+    ).toBe(false);
+  });
+
+  it.each([
+    'deliverables',
+    'enterprise-materials',
+    'employee-memory',
+    'capabilities',
+  ] as const)(
+    'selects builtin %s without an employee binding or config digest',
+    (moduleId) => {
+      const target = {
+        workspaceId: scope.workspaceId,
+        employeeInstanceId: scope.employeeInstanceId,
+        threadId: null,
+        access: 'management',
+        module: { kind: 'builtin', moduleId },
+      };
+      expect(EmployeeBusinessTargetProjectionSchema.parse(target)).toEqual(
+        target,
+      );
+      const current = {
+        scope,
+        threadId: null,
+        access: 'management',
+        identityRevisionRef: 'contract-fake-current',
+        executionGeneration: null,
+        module: {
+          ...target.module,
+          applicationModules: {
+            schemaVersion: 1,
+            policy: 'all-enabled',
+            applicationBuild: null,
+            builtinModules: {
+              deliverables: true,
+              'enterprise-materials': true,
+              'employee-memory': true,
+              capabilities: true,
+            },
+          },
+        },
+      };
+      expect(CurrentEmployeeBusinessProjectionSchema.parse(current)).toEqual(
+        current,
+      );
+      for (const extra of [
+        { configDigest: 'not-an-execution-pin' },
+        { binding: {} },
+        { release: {} },
+      ])
+        expect(
+          CurrentEmployeeBusinessProjectionSchema.safeParse({
+            ...current,
+            module: { ...current.module, ...extra },
+          }).success,
+        ).toBe(false);
+      expect(
+        EmployeeBusinessTargetProjectionSchema.safeParse({
+          ...target,
+          module: {
+            kind: 'required',
+            release: {
+              moduleId,
+              contractVersion: 1,
+              contentVersion: '1.0.0',
+              digest: `sha256:${'a'.repeat(64)}`,
+            },
+          },
+        }).success,
+      ).toBe(false);
+    },
+  );
+
+  it('keeps unknown build provenance distinct and rejects malformed or disabled builtin policy facts', () => {
+    const policy = {
+      schemaVersion: 1,
+      policy: 'all-enabled',
+      applicationBuild: null,
+      builtinModules: {
+        deliverables: true,
+        'enterprise-materials': true,
+        'employee-memory': true,
+        capabilities: true,
+      },
+    };
+    expect(
+      ApplicationBuiltinModulesProjectionSchema.parse(policy).applicationBuild,
+    ).toBeNull();
+    expect(
+      ApplicationBuiltinModulesProjectionSchema.safeParse({
+        ...policy,
+        applicationBuild: { sourceSha: 'browser-claim' },
+      }).success,
+    ).toBe(false);
+    expect(
+      ApplicationBuiltinModulesProjectionSchema.safeParse({
+        ...policy,
+        builtinModules: { ...policy.builtinModules, capabilities: false },
+      }).success,
+    ).toBe(false);
+    expect(
+      ApplicationBuiltinModulesProjectionSchema.safeParse({
+        ...policy,
+        configDigest: 'manifest-is-not-config',
       }).success,
     ).toBe(false);
   });
