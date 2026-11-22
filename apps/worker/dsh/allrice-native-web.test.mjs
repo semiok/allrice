@@ -70,6 +70,35 @@ it('uses upstream schemas, guidance and budgets; only the frozen tools are regis
   expect(f.ctx.tools.get('web_search')).toBeUndefined();
 });
 
+it('assembles visible native web tools and guidance after Skill dedup', async () => {
+  const broker = vi.fn();
+  const f = await fixture(broker);
+  const upstream = new Context();
+  contexts.push(upstream);
+  await upstream.plugin(SystemPrompt);
+  await upstream.plugin(Tools);
+  await upstream.plugin(Web, {});
+  await upstream.plugin(Timeout);
+  await upstream.plugin(NativeWeb, { fetchMaxOutputChars: 12000 });
+  const actual = await f.ctx.systemPrompt.assemble();
+  const expected = await upstream.systemPrompt.assemble();
+  expect(actual.tools.map((tool) => tool.name).sort()).toEqual([
+    'web_fetch',
+    'web_search',
+  ]);
+  expect(actual.tools).toEqual(expected.tools);
+  for (const name of ['tool:web_search', 'tool:web_fetch']) {
+    const section = actual.sections.find((entry) => entry.name === name);
+    const native = expected.sections.find((entry) => entry.name === name);
+    expect(section).toBeDefined();
+    expect(native).toBeDefined();
+    expect(section).toEqual(native);
+    expect(section.text).toMatch(/untrusted.*instructions/i);
+    expect(section.text).toMatch(/cite.*markdown links?/i);
+  }
+  expect(broker).not.toHaveBeenCalled();
+});
+
 it('keeps >12k search summaries/snippets intact; native count cap and renderer own the output', async () => {
   const source = {
     url: 'https://source.test',
