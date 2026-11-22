@@ -14,7 +14,11 @@ import {
 } from './reference-processing.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
-import type { RequestContext, WorkbenchFileSharing } from '@allrice/contracts';
+import type {
+  RequestContext,
+  StoragePort,
+  WorkbenchFileSharing,
+} from '@allrice/contracts';
 import * as client from './core/client.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -169,6 +173,14 @@ suite(
       };
     }
     const storage = () => runtimeFixtureStorage(fixture.db);
+    function boundStorage(actual: StoragePort): StoragePort {
+      return {
+        put: actual.put.bind(actual),
+        get: actual.get.bind(actual),
+        delete: actual.delete.bind(actual),
+        exists: actual.exists.bind(actual),
+      };
+    }
     async function seedLegacySharing(
       objectId: string,
       sharing: WorkbenchFileSharing,
@@ -730,7 +742,7 @@ suite(
         firstPutStarted = resolve;
       });
       const first = uploadWorkbenchFile(t.owner, firstInput, {
-        ...actualStorage,
+        ...boundStorage(actualStorage),
         async put(object, content) {
           firstPutStarted();
           await held;
@@ -910,7 +922,7 @@ suite(
       const corrupt = createDeliverablesPort({
         requireCurrentAccess: testQualification,
         storage: {
-          ...actualStorage,
+          ...boundStorage(actualStorage),
           async get() {
             return new Blob(['corrupt']).stream();
           },
@@ -923,7 +935,7 @@ suite(
       const port = createDeliverablesPort({
         requireCurrentAccess: testQualification,
         storage: {
-          ...actualStorage,
+          ...boundStorage(actualStorage),
           async get() {
             return new ReadableStream<Uint8Array>({
               pull(controller) {
@@ -1015,7 +1027,10 @@ suite(
         const port = createDeliverablesPort({
           // Explicit qualification substitute; real owner/membership SQL runs.
           requireCurrentAccess: async () => {},
-          storage: { ...actualStorage, get: async () => upstream },
+          storage: {
+            ...boundStorage(actualStorage),
+            get: async () => upstream,
+          },
         });
         const cancellation = new AbortController();
         const resource = await port.authorizedResource(
@@ -1104,7 +1119,10 @@ suite(
               boundaryFinished = true;
             }
           },
-          storage: { ...actualStorage, get: async () => upstream },
+          storage: {
+            ...boundStorage(actualStorage),
+            get: async () => upstream,
+          },
         });
         const signal = new AbortController().signal;
         const resource = await port.authorizedResource(t.owner, source, signal);
@@ -1209,7 +1227,10 @@ suite(
         );
         const port = createDeliverablesPort({
           requireCurrentAccess: async () => {}, // Explicit qualification substitute.
-          storage: { ...actualStorage, get: async () => upstream },
+          storage: {
+            ...boundStorage(actualStorage),
+            get: async () => upstream,
+          },
         });
         const cancellation = new AbortController();
         const resource = await port.authorizedResource(
