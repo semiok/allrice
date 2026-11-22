@@ -248,7 +248,6 @@ class DevHttpProblem(Exception):
         self.step = {'/api/v1/d-entry/identity': 'IDENTITY.login',
                      '/api/v1/d-entry/native-owner': 'IDENTITY.employee'}[endpoint]
         self.diagnostic = {'endpoint': endpoint, 'status': status, 'code': code}
-        self.missing_source = status == 503 and code == 'DEPENDENCY_UNAVAILABLE'
         super().__init__(f'{endpoint} HTTP {status} code={code}')
 
 
@@ -292,8 +291,8 @@ def dev_json(origin, route, selection, token, timeout, post=False):
                 raise DevHttpProblem(endpoint, response.status, 'UNRECOGNIZED')
             return json.loads(response.read())
     except urllib.error.HTTPError as error:
-        # The BFF maps DEntryDependencyUnavailable to precisely this envelope.
-        # Other statuses, malformed bodies and unknown codes are execution failures.
+        # The BFF also maps fetch/parse failures and unknown Worker errors to
+        # 503/DEPENDENCY_UNAVAILABLE. No HTTP envelope proves an absent source.
         allowed = {'DEPENDENCY_UNAVAILABLE', 'AUTHENTICATION_REQUIRED',
                    'AUTHORIZATION_DENIED', 'VALIDATION_FAILED', 'RESOURCE_NOT_FOUND',
                    'CONFLICT', 'INTERNAL_ERROR'}
@@ -422,12 +421,11 @@ def run(mode, output, config):
             by_id = {item['id']: item for item in actual}
             steps[:] = [by_id.get(step['id'], step) for step in steps]
     except DevHttpProblem as error:
-        status = 'skipped' if error.missing_source else 'failed'
-        reason = ('已确认BFF生产依赖未装配；' if error.missing_source else '真实BFF请求失败；') + str(error)
+        reason = '真实BFF请求失败；具体原因未确定，HTTP错误码不能证明生产缺源；' + str(error)
         for index, step in enumerate(steps):
             if step['id'] == error.step:
                 steps[index] = {**result(step['id'], step['case'], step['title'],
-                    status, 'dev', reason, '271/273'), 'http': error.diagnostic}
+                    'failed', 'dev', reason, '271/273'), 'http': error.diagnostic}
                 break
     except Unavailable as error:
         steps.append(result('RUNNER.precondition', 'GATE', '实际开验前置', 'skipped',

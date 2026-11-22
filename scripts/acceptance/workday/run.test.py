@@ -142,6 +142,15 @@ class RunnerTests(unittest.TestCase):
             del config['gates']['met267']
             with self.assertRaises(workday.Unavailable):
                 workday.validate_live(config)
+            with tempfile.TemporaryDirectory() as temp, patch.object(workday, 'dev_json') as request:
+                output = Path(temp) / 'run'
+                self.assertEqual(workday.run('dev', output, config), 2)
+                request.assert_not_called()
+                receipt = json.loads((output / 'result.json').read_text())
+                self.assertEqual(receipt['summary']['counts']['failed'], 0)
+                precondition = next(row for row in receipt['steps'] if row['id'] == 'RUNNER.precondition')
+                self.assertEqual(precondition['status'], 'skipped')
+                self.assertIn('met267', precondition['reason'])
 
     def test_legacy_generation_and_wrong_person_are_not_4_acceptance(self):
         config = self.live_config()
@@ -171,11 +180,11 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(evidence['editorReady'], 'not-verified')
             self.assertEqual(evidence['canSend'], 'not-verified')
 
-    def test_real_http_missing_producer_and_service_errors_have_distinct_status_and_exit(self):
-        for status, code, expected_exit in [(503, 'DEPENDENCY_UNAVAILABLE', 2),
-                (500, 'INTERNAL_ERROR', 1), (500, 'DEPENDENCY_UNAVAILABLE', 1),
-                (502, 'INTERNAL_ERROR', 1), (400, 'VALIDATION_FAILED', 1),
-                (503, 'server-private-code', 1), (503, None, 1)]:
+    def test_real_http_errors_fail_without_claiming_production_source_absence(self):
+        for status, code in [(503, 'DEPENDENCY_UNAVAILABLE'),
+                (500, 'INTERNAL_ERROR'), (500, 'DEPENDENCY_UNAVAILABLE'),
+                (502, 'INTERNAL_ERROR'), (400, 'VALIDATION_FAILED'),
+                (503, 'server-private-code'), (503, None)]:
             with self.subTest(status=status, code=code), tempfile.TemporaryDirectory() as temp:
                 body = {'error': {'code': code, 'message': 'server-private-body',
                                   'accessToken': 'server-private-token'}}
@@ -183,12 +192,14 @@ class RunnerTests(unittest.TestCase):
                         os.environ, {workday.SESSION_ENV: 'synthetic-private-session'}):
                     config = {**self.live_config(), 'baseUrl': origin}
                     output = Path(temp) / 'run'
-                    self.assertEqual(workday.run('dev', output, config), expected_exit)
+                    self.assertEqual(workday.run('dev', output, config), 1)
                     self.assertEqual(requests, [('GET', '/api/v1/d-entry/identity')])
                 receipt = json.loads((output / 'result.json').read_text())
                 row = next(item for item in receipt['steps'] if item['id'] == 'IDENTITY.login')
-                self.assertEqual(row['status'], 'skipped' if expected_exit == 2 else 'failed')
-                self.assertEqual(receipt['summary']['counts']['failed'], int(expected_exit == 1))
+                self.assertEqual(row['status'], 'failed')
+                self.assertEqual(receipt['summary']['counts']['failed'], 1)
+                self.assertIn('具体原因未确定', row['reason'])
+                self.assertNotIn('已确认BFF生产依赖未装配', row['reason'])
                 self.assertEqual(row['http'], {'endpoint': '/api/v1/d-entry/identity',
                     'status': status, 'code': code if code not in {None, 'server-private-code'} else 'UNRECOGNIZED'})
                 for name in ['index.html', 'result.json']:
@@ -201,16 +212,18 @@ class RunnerTests(unittest.TestCase):
         config = self.live_config()
         identity = {key: config[key] for key in ['personId', 'organizationId', 'workspaceId', 'employeeInstanceId', 'threadId']}
         identity.update(employeeRevision=1, employeeVersionId='66666666-6666-4666-8666-666666666666')
-        with tempfile.TemporaryDirectory() as temp, bff_http([(200, {'identity': identity}),
-                (502, {'error': {'code': 'INTERNAL_ERROR'}})]) as (origin, requests), patch.dict(
+        for status, code in [(502, 'INTERNAL_ERROR'), (503, 'DEPENDENCY_UNAVAILABLE')]:
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as temp, bff_http([(200, {'identity': identity}),
+                (status, {'error': {'code': code}})]) as (origin, requests), patch.dict(
                     os.environ, {workday.SESSION_ENV: 'synthetic'}):
-            output = Path(temp) / 'run'
-            self.assertEqual(workday.run('dev', output, {**config, 'baseUrl': origin}), 1)
-            receipt = json.loads((output / 'result.json').read_text())
-            row = next(item for item in receipt['steps'] if item['id'] == 'IDENTITY.employee')
-            self.assertEqual(row['status'], 'failed')
-            self.assertEqual(row['http']['endpoint'], '/api/v1/d-entry/native-owner')
-            self.assertEqual(requests[-1], ('POST', '/api/v1/d-entry/native-owner'))
+                output = Path(temp) / 'run'
+                self.assertEqual(workday.run('dev', output, {**config, 'baseUrl': origin}), 1)
+                receipt = json.loads((output / 'result.json').read_text())
+                row = next(item for item in receipt['steps'] if item['id'] == 'IDENTITY.employee')
+                self.assertEqual(row['status'], 'failed')
+                self.assertEqual(row['http'], {'endpoint': '/api/v1/d-entry/native-owner', 'status': status, 'code': code})
+                self.assertIn('具体原因未确定', row['reason'])
+                self.assertEqual(requests[-1], ('POST', '/api/v1/d-entry/native-owner'))
 
     def test_unexpected_identity_fields_are_rejected_without_persisting_secret_body(self):
         config = self.live_config()
@@ -358,6 +371,9 @@ class RunnerTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 2, completed.stderr)
             self.assertTrue((output / 'index.html').is_file())
             self.assertFalse(json.loads(completed.stdout)['completeWorkday'])
+            receipt = json.loads((output / 'result.json').read_text())
+            self.assertEqual(receipt['summary']['counts']['failed'], 0)
+            self.assertEqual(next(row for row in receipt['steps'] if row['id'] == 'NATIVE.fixture')['status'], 'skipped')
             self.assertNotIn('allrice_session=', (output / 'result.json').read_text())
 
     def test_wrong_fixture_pin_is_still_a_failure_and_never_dispatches_driver(self):
