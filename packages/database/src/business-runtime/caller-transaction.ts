@@ -229,7 +229,6 @@ export async function withReservedCallerTransaction<T>(
   let outcome: { value: T } | { error: unknown };
   let releaseFailure: { error: unknown } | null = null;
   const pending = new Set<Promise<unknown>>();
-  const active = new Set<PromiseLike<unknown> & { cancel(): unknown }>();
   const failures: unknown[] = [];
   const check = () => {
     if (!accepting) throw new DataAccessError('authorization_denied');
@@ -241,28 +240,22 @@ export async function withReservedCallerTransaction<T>(
       failures.push(error);
       if (sql) {
         accepting = false;
-        // A received ordinary PG error permits ROLLBACK; transport/FATAL
-        // outcomes do not justify issuing more SQL on the same reservation.
+        // postgres 3.4.9 documents UNDEFINED_VALUE as a local parameter-build
+        // error (types.js handleValue), not an unknown transport outcome.
+        const undefinedValue =
+          error instanceof Error &&
+          'code' in error &&
+          error.code === 'UNDEFINED_VALUE';
         uncertain ||= !(
-          error instanceof db.PostgresError && error.severity === 'ERROR'
+          undefinedValue ||
+          (error instanceof db.PostgresError && error.severity === 'ERROR')
         );
       }
     });
     return promise;
   }
-  function cancel(query: PromiseLike<unknown> & { cancel(): unknown }) {
-    if (!active.has(query)) return;
-    try {
-      observe(Promise.resolve(query.cancel()));
-    } catch (error) {
-      failures.push(error);
-    }
-  }
   async function drain() {
-    for (let seen = -1; seen !== pending.size;) {
-      seen = pending.size;
-      await Promise.allSettled([...pending]);
-    }
+    await Promise.allSettled([...pending]);
   }
   function wrap(value: unknown): unknown {
     if (
@@ -277,23 +270,22 @@ export async function withReservedCallerTransaction<T>(
     const query = value as PromiseLike<unknown> & { cancel(): unknown };
     let started: Promise<unknown> | undefined;
     const start = () => {
-      check();
       if (!started) {
-        active.add(query);
+        check();
         started = observe(Promise.resolve(query), true);
-        void started.then(
-          () => active.delete(query),
-          () => active.delete(query),
-        );
       }
       return started;
     };
     const guarded = new Proxy(query, {
       get(target, key) {
         if (key === 'then' || key === 'catch' || key === 'finally')
-          return (...args: unknown[]) =>
-            Reflect.apply(Reflect.get(start(), key), start(), args);
-        if (key === 'cancel') return () => cancel(query);
+          return (...args: unknown[]) => {
+            const promise = start();
+            return Reflect.apply(Reflect.get(promise, key), promise, args);
+          };
+        // Native cancel returns void/null, not its cancellation transport.
+        // drain joins the original SQL only; it cannot join that transport.
+        if (key === 'cancel') return () => query.cancel();
         if (key === 'execute')
           return () => {
             start();

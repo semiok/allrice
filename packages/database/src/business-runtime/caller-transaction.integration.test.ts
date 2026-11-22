@@ -617,6 +617,44 @@ suite('host caller transaction bindings with original SQL owners', () => {
     expect(pid).toBeGreaterThan(0);
   }, 15000);
 
+  it('rolls back a native UNDEFINED_VALUE build failure after a real write before pool return', async () => {
+    const sql = await ownClient(),
+      marker = randomUUID();
+    const [identity] = await sql<
+      { pid: number; application_name: string }[]
+    >`select pg_backend_pid() as pid,current_setting('application_name') as application_name`;
+    if (!identity?.application_name || identity.pid <= 0)
+      throw new Error('Actual owned backend identity required');
+    let parameterFailure: unknown;
+    const failure = await withReservedCallerTransaction(sql, async (tx) => {
+      await tx`insert into caller_reserved_probe values(${marker})`;
+      try {
+        // Invalid runtime input through the public unsafe API, deliberately
+        // outside its static parameter type; no private driver hooks or faults.
+        await Reflect.apply(tx.unsafe, tx, ['select $1::text', [undefined]]);
+      } catch (error) {
+        parameterFailure = error;
+        throw error;
+      }
+    }).catch((error: unknown) => error);
+    expect(failure).toBe(parameterFailure);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(postgres.PostgresError);
+    expect(failure).toMatchObject({ code: 'UNDEFINED_VALUE' });
+    expect(await sql`select marker from caller_reserved_probe`).toEqual([]);
+    const [reused] = await sql<{ pid: number; xid: string | null }[]>`
+      select pg_backend_pid() as pid,txid_current_if_assigned()::text as xid`;
+    expect(reused).toEqual({ pid: identity.pid, xid: null });
+    await expect
+      .poll(async () => {
+        return f.db<{ state: string; in_transaction: boolean }[]>`
+          select state,xact_start is not null as in_transaction
+          from pg_stat_activity where pid=${identity.pid}
+            and application_name=${identity.application_name}`;
+      })
+      .toEqual([{ state: 'idle', in_transaction: false }]);
+  }, 15000);
+
   it('rolls back a received statement_timeout error before returning the reservation', async () => {
     const sql = await ownClient(),
       marker = randomUUID();

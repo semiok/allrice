@@ -23,7 +23,7 @@ function deferred<T = void>() {
 }
 function fixture(run: (sql: string) => unknown = () => []) {
   const operations: string[] = [];
-  const cancel = vi.fn<() => unknown>();
+  const cancel = vi.fn<() => void | null>(() => null);
   const release = vi.fn();
   function query(text: string) {
     let started: Promise<unknown> | undefined;
@@ -73,6 +73,62 @@ describe('caller-owned reserved transaction', () => {
     );
     await expect(Promise.resolve(lazy)).rejects.toThrow('authorization_denied');
     expect(f.operations).toEqual(['begin', 'select 1 $', 'commit']);
+  });
+
+  it('rereads a started result after release and abort without dispatching again', async () => {
+    const rows = [{ value: 'same result object' }];
+    const f = fixture((text) => (text === 'select stable' ? rows : []));
+    const controller = new AbortController();
+    const handles: { query?: Promise<unknown> } = {};
+    await withReservedCallerTransaction(
+      f.db,
+      async (tx) => {
+        handles.query = tx`select stable`;
+        expect(await handles.query).toBe(rows);
+      },
+      controller.signal,
+    );
+    controller.abort(new Error('after completed SQL'));
+    if (!handles.query) throw new Error('Actual started query required');
+    const query = handles.query;
+    expect(await query.then((value) => value)).toBe(rows);
+    expect(await query.catch(() => 'unexpected rejection')).toBe(rows);
+    const final = vi.fn();
+    expect(await query.finally(final)).toBe(rows);
+    expect(final).toHaveBeenCalledTimes(1);
+    expect(f.operations).toEqual(['begin', 'select stable', 'commit']);
+    expect(f.release).toHaveBeenCalledTimes(1);
+  });
+
+  it('rereads the original started query error while admission and old tx stay closed', async () => {
+    const failure = Object.assign(new Error('local undefined parameter'), {
+      code: 'UNDEFINED_VALUE',
+    });
+    const f = fixture((text) => {
+      if (text === 'select rejected') throw failure;
+      return [];
+    });
+    const handles: { query?: Promise<unknown> } = {};
+    await expect(
+      withReservedCallerTransaction(f.db, async (tx) => {
+        const query = tx`select rejected`;
+        handles.query = query;
+        expect(await query.catch((error: unknown) => error)).toBe(failure);
+        expect(await query.catch((error: unknown) => error)).toBe(failure);
+        expect(() => tx`select forbidden`).toThrow('authorization_denied');
+      }),
+    ).rejects.toBe(failure);
+    if (!handles.query) throw new Error('Actual rejected query required');
+    const query = handles.query;
+    expect(await query.then(undefined, (error: unknown) => error)).toBe(
+      failure,
+    );
+    expect(await query.catch((error: unknown) => error)).toBe(failure);
+    const final = vi.fn();
+    await expect(query.finally(final)).rejects.toBe(failure);
+    expect(final).toHaveBeenCalledTimes(1);
+    expect(f.operations).toEqual(['begin', 'select rejected', 'rollback']);
+    expect(f.release).toHaveBeenCalledTimes(1);
   });
 
   it('joins an already-started unawaited SQL before COMMIT and actual COMMIT before release', async () => {
@@ -248,46 +304,60 @@ describe('caller-owned reserved transaction', () => {
     expect(f.release).toHaveBeenCalledTimes(1);
   });
 
-  it('joins explicit caller-owned public cancellation, SQL and callback settlement', async () => {
-    const sql = deferred(),
-      cancelled = deferred(),
-      entered = deferred();
-    const controller = new AbortController(),
-      reason = new Error('caller aborted');
-    const f = fixture((text) => (text === 'select pending' ? sql.promise : []));
-    f.cancel.mockImplementation(() => cancelled.promise);
-    let finished = false;
-    const saving = withReservedCallerTransaction(
-      f.db,
-      async (tx) => {
-        const reading = tx`select pending`;
-        const result = reading.then(() => 'late result');
-        const cancel = () => reading.cancel();
-        controller.signal.addEventListener('abort', cancel, { once: true });
-        entered.resolve();
-        try {
-          return await result;
-        } finally {
-          controller.signal.removeEventListener('abort', cancel);
-        }
-      },
-      controller.signal,
-    ).catch((error: unknown) => {
-      finished = true;
-      return error;
-    });
-    await entered.promise;
-    controller.abort(reason);
-    expect(f.cancel).toHaveBeenCalledTimes(1);
-    sql.resolve();
-    await turn();
-    expect(finished).toBe(false);
-    expect(f.release).not.toHaveBeenCalled();
-    cancelled.resolve();
-    expect(await saving).toBe(reason);
-    expect(f.operations).toEqual(['begin', 'select pending', 'rollback']);
-    expect(f.release).toHaveBeenCalledTimes(1);
-  });
+  it.each([
+    { cancelResult: undefined, rejectSQL: false },
+    { cancelResult: null, rejectSQL: true },
+  ])(
+    'requests native cancel $cancelResult and joins the original SQL (reject=$rejectSQL)',
+    async ({ cancelResult, rejectSQL }) => {
+      const sql = deferred(),
+        entered = deferred();
+      const controller = new AbortController(),
+        reason = new Error('caller aborted');
+      const sqlFailure = new Error('original pending SQL rejection');
+      const f = fixture((text) =>
+        text === 'select pending' ? sql.promise : [],
+      );
+      f.cancel.mockReturnValue(cancelResult);
+      let finished = false;
+      const saving = withReservedCallerTransaction(
+        f.db,
+        async (tx) => {
+          const reading = tx`select pending`;
+          const result = reading.then(() => 'late result');
+          const cancel = () => {
+            expect(reading.cancel()).toBe(cancelResult);
+          };
+          controller.signal.addEventListener('abort', cancel, { once: true });
+          entered.resolve();
+          try {
+            return await result;
+          } finally {
+            controller.signal.removeEventListener('abort', cancel);
+          }
+        },
+        controller.signal,
+      ).catch((error: unknown) => {
+        finished = true;
+        return error;
+      });
+      await entered.promise;
+      controller.abort(reason);
+      expect(f.cancel).toHaveBeenCalledTimes(1);
+      await turn();
+      expect(finished).toBe(false);
+      expect(f.release).not.toHaveBeenCalled();
+      if (rejectSQL) sql.reject(sqlFailure);
+      else sql.resolve();
+      expect(await saving).toBe(rejectSQL ? sqlFailure : reason);
+      expect(f.operations).toEqual(
+        rejectSQL
+          ? ['begin', 'select pending']
+          : ['begin', 'select pending', 'rollback'],
+      );
+      expect(f.release).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('keeps a confirmed commit result when a later signal aborts', async () => {
     const controller = new AbortController();
