@@ -13,6 +13,11 @@ import type {
   WorkbenchFileUploadSchema,
 } from './workbench-files.ts';
 import { WorkbenchFileFavoriteSchema } from './workbench-files.ts';
+import type { ReferenceRevisionSchema } from './reference-library.ts';
+import type {
+  PanelWriteReceiptQuerySchema,
+  PanelWriteReceiptSchema,
+} from './enterprise-materials-port.ts';
 
 /** Existing workspace.file.read bounds, now shared with the business Port.
  * These are UTF-16 offsets and UTF-8 source bytes, not an instructions budget. */
@@ -70,6 +75,11 @@ export const DeliverableUploadResultProjectionSchema = z
 export const DeliverableObjectQueryProjectionSchema = z
   .object({ objectId: UuidSchema })
   .strict();
+export const DeliverableCaptureReferenceQuerySchema =
+  DeliverableObjectQueryProjectionSchema.extend({
+    workspaceId: UuidSchema,
+    requestId: UuidSchema,
+  });
 export const DeliverableArtifactQueryProjectionSchema = z
   .object({
     workspaceId: UuidSchema,
@@ -105,6 +115,16 @@ export interface AuthorizedDeliverableResource {
 /** API v1 subset implemented by the business owner. No file history, parent
  * selection, replacement, synchronization, sharing or archive method. */
 export interface DeliverablesPort {
+  captureReference(
+    context: RequestContext,
+    input: z.input<typeof DeliverableCaptureReferenceQuerySchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof ReferenceRevisionSchema>>;
+  readWriteReceipt(
+    context: RequestContext,
+    input: z.input<typeof PanelWriteReceiptQuerySchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof PanelWriteReceiptSchema>>;
   list(
     context: RequestContext,
     input: z.input<typeof WorkbenchDeliverablesFilterSchema>,

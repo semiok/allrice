@@ -10,9 +10,27 @@ export async function readDocumentTextPage(
   offset = 1,
   signal?: AbortSignal,
 ) {
+  return readDocumentTextPageFromStream(
+    () => storage.get(object),
+    object,
+    offset,
+    signal,
+  );
+}
+
+/** The authorized browser path supplies its fixed owner stream, never a key.
+ * Source pages retain the existing UTF-8/line-window/checksum contract. */
+export async function readDocumentTextPageFromStream(
+  open: (signal: AbortSignal) => Promise<ReadableStream<Uint8Array>>,
+  object: Pick<StorageObject, 'sizeBytes'> & { checksum: string },
+  offset = 1,
+  signal?: AbortSignal,
+) {
   if (!Number.isSafeInteger(offset) || offset < 1)
     throw new ArtifactReviewError('invalid_page');
-  const reader = (await storage.get(object)).getReader();
+  const deadline = AbortSignal.timeout(10_000);
+  const lifetime = signal ? AbortSignal.any([signal, deadline]) : deadline;
+  const reader = (await open(lifetime)).getReader();
   const decoder = new TextDecoder('utf-8', { fatal: true });
   const hash = createHash('sha256');
   const lines: string[] = [];
@@ -21,11 +39,15 @@ export async function readDocumentTextPage(
     pageBytes = 0,
     current = '',
     trailing = false;
+  let canceling: Promise<PromiseSettledResult<void>> | undefined;
   const cancel = () => {
-    void reader.cancel().catch(() => undefined);
+    canceling ??= Promise.resolve()
+      .then(() => reader.cancel(lifetime.reason))
+      .then(
+        () => ({ status: 'fulfilled' as const, value: undefined }),
+        (reason: unknown) => ({ status: 'rejected' as const, reason }),
+      );
   };
-  const deadline = AbortSignal.timeout(10_000);
-  const lifetime = signal ? AbortSignal.any([signal, deadline]) : deadline;
   lifetime.addEventListener('abort', cancel, { once: true });
   const consume = (text: string) => {
     if (text.includes('\0')) throw new ArtifactReviewError('preview_not_text');
@@ -77,11 +99,21 @@ export async function readDocumentTextPage(
     };
   } catch (error) {
     cancel();
-    if (error instanceof TypeError)
-      throw new ArtifactReviewError('preview_not_text');
-    throw error;
+    const cleanup = await canceling!;
+    const failure =
+      error instanceof TypeError && !lifetime.aborted
+        ? new ArtifactReviewError('preview_not_text')
+        : error;
+    if (cleanup.status === 'rejected')
+      throw new AggregateError(
+        [failure, cleanup.reason],
+        'Text page cleanup failed',
+        { cause: failure },
+      );
+    throw failure;
   } finally {
     lifetime.removeEventListener('abort', cancel);
+    if (canceling) await canceling;
     reader.releaseLock();
   }
 }

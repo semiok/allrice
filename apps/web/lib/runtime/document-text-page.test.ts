@@ -1,7 +1,11 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import type { StorageObject, StoragePort } from '@allrice/contracts';
-import { readDocumentTextPage } from './document-text-page';
+import {
+  readDocumentTextPage,
+  readDocumentTextPageFromStream,
+} from './document-text-page';
+import { setImmediate as turn } from 'node:timers/promises';
 function fixture(text: string | Buffer, chunk = 79) {
   const bytes = Buffer.isBuffer(text) ? text : Buffer.from(text);
   const object = {
@@ -78,4 +82,135 @@ describe('authenticated document text pages', () => {
       expect(storage.get).not.toHaveBeenCalled();
     },
   );
+});
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((yes) => {
+    resolve = yes;
+  });
+  return { promise, resolve };
+}
+describe('authorized source page cancellation and exact pin', () => {
+  it('validates a complete source even for an offset beyond EOF', async () => {
+    const bytes = Buffer.from('中文\n第二行\n'),
+      object = {
+        sizeBytes: bytes.length,
+        checksum: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+      };
+    const open = vi.fn(async () => new Blob([bytes]).stream());
+    expect(await readDocumentTextPageFromStream(open, object, 999)).toEqual({
+      text: '',
+      offset: 999,
+      lines: 0,
+      eof: true,
+    });
+    expect(open).toHaveBeenCalledTimes(1);
+  });
+  it('joins a source open that was already in progress when the page was canceled', async () => {
+    const opened = deferred(),
+      release = deferred(),
+      canceled = deferred(),
+      cleanup = deferred(),
+      stop = new AbortController();
+    const reading = readDocumentTextPageFromStream(
+      async () => {
+        opened.resolve();
+        await release.promise;
+        return new ReadableStream({
+          cancel() {
+            canceled.resolve();
+            return cleanup.promise;
+          },
+        });
+      },
+      {
+        sizeBytes: 0,
+        checksum: 'sha256:' + createHash('sha256').digest('hex'),
+      },
+      1,
+      stop.signal,
+    );
+    let settled = false;
+    const result = reading.finally(() => {
+      settled = true;
+    });
+    await opened.promise;
+    const reason = Error('page retired');
+    stop.abort(reason);
+    await turn();
+    expect(settled).toBe(false);
+    release.resolve();
+    await canceled.promise;
+    await turn();
+    expect(settled).toBe(false);
+    cleanup.resolve();
+    await expect(result).rejects.toBe(reason);
+  });
+  it('waits for real cancel on a pending read before reporting request cancellation', async () => {
+    const entered = deferred(),
+      canceled = deferred(),
+      cleanup = deferred(),
+      stop = new AbortController();
+    const result = readDocumentTextPageFromStream(
+      async () =>
+        new ReadableStream({
+          pull() {
+            entered.resolve();
+          },
+          cancel() {
+            canceled.resolve();
+            return cleanup.promise;
+          },
+        }),
+      { sizeBytes: 1, checksum: 'sha256:' + 'a'.repeat(64) },
+      1,
+      stop.signal,
+    );
+    let settled = false;
+    const observed = result.finally(() => {
+      settled = true;
+    });
+    await entered.promise;
+    stop.abort(Error('request closed'));
+    await canceled.promise;
+    await turn();
+    expect(settled).toBe(false);
+    cleanup.resolve();
+    await expect(observed).rejects.toThrow('request closed');
+  });
+  it('preserves binary-source failure and a source cleanup rejection together', async () => {
+    const bytes = Buffer.from('binary\0text'),
+      cleanup = Error('cancel failed');
+    const error: unknown = await readDocumentTextPageFromStream(
+      async () =>
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(bytes);
+          },
+          cancel: async () => {
+            throw cleanup;
+          },
+        }),
+      {
+        sizeBytes: bytes.length,
+        checksum: 'sha256:' + createHash('sha256').update(bytes).digest('hex'),
+      },
+    ).catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(AggregateError);
+    expect(String((error as AggregateError).cause)).toContain(
+      'preview_not_text',
+    );
+    expect((error as AggregateError).errors).toContain(cleanup);
+  });
+  it('rejects a changed checksum outside the selected page instead of changing revision', async () => {
+    const bytes = Buffer.from('one\n' + 'tail\n'.repeat(5001));
+    await expect(
+      readDocumentTextPageFromStream(
+        async () => new Blob([bytes]).stream(),
+        { sizeBytes: bytes.length, checksum: 'sha256:' + 'b'.repeat(64) },
+        1,
+      ),
+    ).rejects.toThrow('content_changed');
+  });
 });

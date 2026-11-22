@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createAuthorizedFileResource } from './authorized-file-resource.ts';
 import {
   ArtifactSourceFileSchema,
   DeliverableArtifactIdentityProjectionSchema,
@@ -10,6 +10,8 @@ import {
   DeliverableReadInputProjectionSchema,
   DeliverableReadMcpProjectionSchema,
   DeliverableUploadResultProjectionSchema,
+  DeliverableCaptureReferenceQuerySchema,
+  PanelWriteReceiptQuerySchema,
   RequestContextSchema,
   WorkbenchDeliverablesFilterSchema,
   WorkbenchFileUploadSchema,
@@ -29,7 +31,10 @@ import {
   readPersonalWorkbenchFile,
   setWorkbenchFileFavorite,
   uploadWorkbenchFile,
+  captureWorkbenchFileReference,
+  readWorkbenchUploadReceipt,
 } from './workbench-files.ts';
+import { readReferenceWriteReceipt } from './reference-library.ts';
 
 export interface DeliverablesPortOptions {
   storage: StoragePort;
@@ -119,148 +124,57 @@ export function createDeliverablesPort(
       mediaType: original.object.mediaType,
       sizeBytes: original.object.sizeBytes,
       async open(openSignal) {
-        const stopped = new AbortController();
-        const transferSignal = AbortSignal.any([
+        return createAuthorizedFileResource({
           signal,
-          openSignal,
-          stopped.signal,
-        ]);
-        const file = await recheck(transferSignal);
-        const stream = await options.storage.get(file.object);
-        try {
-          await recheck(transferSignal);
-        } catch (error) {
-          try {
-            await stream.cancel(error);
-          } catch (cleanup) {
-            throw new AggregateError(
-              [error, cleanup],
-              'Deliverable stream cleanup failed',
-              { cause: error },
-            );
-          }
-          throw error;
-        }
-        const reader = stream.getReader();
-        const hash = createHash('sha256');
-        let size = 0;
-        let controller: ReadableStreamDefaultController<Uint8Array>;
-        let work: Promise<boolean> | undefined;
-        let consumerCanceled = false;
-        let termination:
-          Promise<{ error: unknown; cleanupFailed: boolean }> | undefined;
-        const terminate = (
-          reason: unknown,
-          kind: 'complete' | 'error' | 'cancel',
-        ) => {
-          if (termination) return termination;
-          transferSignal.removeEventListener('abort', abort);
-          // Join only the I/O body, never pull's termination continuation:
-          // otherwise a pull failure and this join would wait on each other.
-          const pending = work;
-          termination = Promise.resolve().then(async () => {
-            const [reading, canceling] = await Promise.allSettled([
-              pending,
-              kind === 'complete'
-                ? undefined
-                : Promise.resolve().then(() => reader.cancel(reason)),
-            ]);
-            const failures: unknown[] = [];
-            if (
-              reading.status === 'rejected' &&
-              reading.reason !== reason &&
-              reading.reason !== transferSignal.reason
-            )
-              failures.push(reading.reason);
-            if (canceling.status === 'rejected')
-              failures.push(canceling.reason);
-            try {
-              reader.releaseLock();
-            } catch (error) {
-              failures.push(error);
-            }
-            const error = failures.length
-              ? new AggregateError(
-                  [reason, ...failures],
-                  'Deliverable stream cleanup failed',
-                  { cause: reason },
-                )
-              : reason;
-            // Native consumer cancellation closes its stream before invoking
-            // cancel. Its returned Promise, rather than closed, proves join.
-            if (!consumerCanceled) {
-              if (kind === 'complete' && !failures.length) controller.close();
-              else controller.error(error);
-            }
-            return { error, cleanupFailed: failures.length > 0 };
-          });
-          // The owner API has no SQL cancellation. Stop the next operation,
-          // but wait for any already entered owner Promise above to settle.
-          if (kind !== 'complete') stopped.abort(reason);
-          return termination;
-        };
-        const abort = () => {
-          // terminate records cleanup failures in the outer stream's error;
-          // its always-fulfilled outcome also serves the consumer cancel path.
-          void terminate(transferSignal.reason, 'error');
-        };
-        return new ReadableStream<Uint8Array>(
-          {
-            start(value) {
-              controller = value;
-              transferSignal.addEventListener('abort', abort, { once: true });
-              if (transferSignal.aborted) abort();
-            },
-            pull() {
-              if (termination) return termination.then(() => {});
-              // Register before executing even a synchronous qualification
-              // callback, which may itself trigger cancellation.
-              const reading = Promise.resolve().then(async () => {
-                await recheck(transferSignal);
-                const chunk = await reader.read();
-                await recheck(transferSignal);
-                if (chunk.done) {
-                  if (
-                    size !== original.object.sizeBytes ||
-                    `sha256:${hash.digest('hex')}` !== source.checksum
-                  )
-                    throw new DeliverableReadError(
-                      'TOOL_FILE_CHECKSUM_MISMATCH',
-                    );
-                  return true;
-                }
-                size += chunk.value.byteLength;
-                if (size > original.object.sizeBytes)
-                  throw new DeliverableReadError('TOOL_FILE_CHECKSUM_MISMATCH');
-                hash.update(chunk.value);
-                controller.enqueue(chunk.value);
-                return false;
-              });
-              work = reading;
-              return reading.then(
-                (complete) => {
-                  if (work === reading) work = undefined;
-                  if (complete)
-                    return terminate(undefined, 'complete').then(() => {});
-                },
-                (error: unknown) => {
-                  if (work === reading) work = undefined;
-                  return terminate(error, 'error').then(() => {});
-                },
-              );
-            },
-            async cancel(reason) {
-              consumerCanceled = true;
-              const result = await terminate(reason, 'cancel');
-              if (result.cleanupFailed) throw result.error;
-            },
+          checksum: source.checksum,
+          sizeBytes: original.object.sizeBytes,
+          recheck,
+          async openSource(transferSignal) {
+            const file = await recheck(transferSignal);
+            return options.storage.get(file.object);
           },
-          { highWaterMark: 0 },
-        );
+          changed: () =>
+            new DeliverableReadError('TOOL_FILE_CHECKSUM_MISMATCH'),
+        })(openSignal);
       },
     };
   }
   return {
+    async captureReference(contextInput, input, signal) {
+      const value = DeliverableCaptureReferenceQuerySchema.parse(input);
+      const context = await current(contextInput, signal);
+      workspace(context, value.workspaceId);
+      const source = await resource(context, value.objectId, undefined, signal);
+      const reference = await captureWorkbenchFileReference(
+        context,
+        value.workspaceId,
+        value.objectId,
+        value.requestId,
+        options.storage,
+        {
+          source,
+          signal,
+          requireCurrentAccess: async () => {
+            await current(context, signal);
+          },
+        },
+      );
+      await current(context, signal);
+      return reference;
+    },
+    async readWriteReceipt(contextInput, input, signal) {
+      const value = PanelWriteReceiptQuerySchema.parse(input);
+      const context = await current(contextInput, signal);
+      workspace(context, value.workspaceId);
+      if (!['upload', 'capture'].includes(value.operation))
+        throw new DataAccessError('authorization_denied');
+      const result =
+        value.operation === 'upload'
+          ? await readWorkbenchUploadReceipt(context, value)
+          : await readReferenceWriteReceipt(context, value);
+      await current(context, signal);
+      return result;
+    },
     async list(contextInput, input, signal) {
       const context = await current(contextInput, signal);
       const filter = WorkbenchDeliverablesFilterSchema.parse(input);

@@ -7,6 +7,10 @@ import {
   MaterialsScopeQueryProjectionSchema,
   MaterialsSelectionQueryProjectionSchema,
   MaterialsUploadPublicationInputProjectionSchema,
+  MaterialsFilePublicationInputProjectionSchema,
+  MaterialsPreparedReferenceQuerySchema,
+  PanelWriteReceiptQuerySchema,
+  ReferenceRevisionSchema,
   ReferenceLibraryOptionsSchema,
   ReferencePublicationQuerySchema,
   ReferenceSaveResultSchema,
@@ -24,7 +28,10 @@ import {
   prepareReferenceUpload,
   publishReference,
   referenceLibraryOptions,
+  getAuthorizedReferenceFile,
+  readReferenceWriteReceipt,
 } from './reference-library.ts';
+import { createAuthorizedFileResource } from './authorized-file-resource.ts';
 import { queryReferencePublications } from './reference-search.ts';
 import { readReferenceInputSelection } from './reference-runtime.ts';
 
@@ -61,6 +68,97 @@ export function createEnterpriseMaterialsPort(
     return context;
   }
   return {
+    async authorizedRevisionResource(contextInput, input, signal) {
+      const value = MaterialsSelectionQueryProjectionSchema.parse(input);
+      const context = await current(contextInput, value.workspaceId, signal);
+      const original = await getAuthorizedReferenceFile(
+        context,
+        value.workspaceId,
+        value.revisionId,
+      );
+      const pin = {
+        sourceId: original.sourceId,
+        revisionId: value.revisionId,
+        revision: original.reference.revision,
+        digest:
+          original.reference.manifestDigest ?? original.reference.checksum,
+        checksum: original.object.checksum,
+      };
+      const recheck = async (reading: AbortSignal) => {
+        await current(context, value.workspaceId, reading);
+        const file = await getAuthorizedReferenceFile(
+          context,
+          value.workspaceId,
+          value.revisionId,
+        );
+        if (
+          file.sourceId !== pin.sourceId ||
+          file.object.id !== original.object.id ||
+          file.object.checksum !== pin.checksum ||
+          file.object.sizeBytes !== original.object.sizeBytes ||
+          file.reference.revision !== pin.revision ||
+          (file.reference.manifestDigest ?? file.reference.checksum) !==
+            pin.digest
+        )
+          throw new DataAccessError('not_found');
+        await current(context, value.workspaceId, reading);
+        return file;
+      };
+      await recheck(signal);
+      return {
+        pin,
+        objectId: original.object.id,
+        fileName: original.fileName,
+        mediaType: original.object.mediaType,
+        sizeBytes: original.object.sizeBytes,
+        open: createAuthorizedFileResource({
+          signal,
+          checksum: pin.checksum,
+          sizeBytes: original.object.sizeBytes,
+          recheck,
+          openSource: async (reading) =>
+            options.storage.get((await recheck(reading)).object),
+          changed: () => new DataAccessError('not_found'),
+        }),
+      };
+    },
+    async readPreparedReference(contextInput, input, signal) {
+      const value = MaterialsPreparedReferenceQuerySchema.parse(input);
+      const context = await current(contextInput, value.workspaceId, signal);
+      const result = (
+        await listReferenceRevisions(context, value.workspaceId, value.sourceId)
+      ).find(
+        (reference) =>
+          reference.revisionId === value.revisionId &&
+          reference.sourceId === value.sourceId,
+      );
+      if (!result) throw new DataAccessError('not_found');
+      await current(context, value.workspaceId, signal);
+      return ReferenceRevisionSchema.parse(result);
+    },
+    async publishFile(contextInput, input, source, signal) {
+      const value = MaterialsFilePublicationInputProjectionSchema.parse(input);
+      const context = await current(contextInput, value.workspaceId, signal);
+      if (source.source.objectId !== value.objectId)
+        throw new DataAccessError('not_found');
+      const result = await publishReference(context, value, options.storage, {
+        namePolicy: 'independent-material',
+        source,
+        signal,
+        requireCurrentAccess: async () => {
+          await current(context, value.workspaceId, signal);
+        },
+      });
+      await current(context, value.workspaceId, signal);
+      return ReferenceSaveResultSchema.parse(result);
+    },
+    async readWriteReceipt(contextInput, input, signal) {
+      const value = PanelWriteReceiptQuerySchema.parse(input);
+      const context = await current(contextInput, value.workspaceId, signal);
+      const result = await readReferenceWriteReceipt(context, value);
+      await current(context, value.workspaceId, signal);
+      return result;
+    },
     async listCurrent(contextInput, input, signal) {
       const value = MaterialsScopeQueryProjectionSchema.parse(input);
       const context = await current(contextInput, value.workspaceId, signal);
@@ -141,6 +239,10 @@ export function createEnterpriseMaterialsPort(
       const context = await current(contextInput, value.workspaceId, signal);
       const result = await publishReference(context, value, options.storage, {
         namePolicy: 'independent-material',
+        signal,
+        requireCurrentAccess: async () => {
+          await current(context, value.workspaceId, signal);
+        },
       });
       // Owner Promise joins storage/transaction. A revoked response does not
       // roll back a publication; reconcile this original requestId.

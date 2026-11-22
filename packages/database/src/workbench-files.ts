@@ -6,12 +6,15 @@ import {
   WorkbenchDeliverablesFilterSchema,
   WorkbenchDeliverablesCatalogSchema,
   WorkbenchFileFavoriteSchema,
+  PanelWriteReceiptQuerySchema,
+  PanelWriteReceiptSchema,
   type WorkbenchDeliverable,
   UuidSchema,
   type RequestContext,
   type StorageObject,
   type StoragePort,
   type WorkbenchFile,
+  type AuthorizedDeliverableResource,
 } from '@allrice/contracts';
 import { getDatabase } from './core/client.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
@@ -56,6 +59,30 @@ export class WorkbenchFileError extends Error {
 }
 const digest = (value: string | Uint8Array) =>
   `sha256:${createHash('sha256').update(value).digest('hex')}`;
+
+export async function readWorkbenchUploadReceipt(
+  contextInput: RequestContext,
+  input: unknown,
+) {
+  const value = PanelWriteReceiptQuerySchema.parse(input);
+  const context = scoped(contextInput, value.workspaceId);
+  if (value.operation !== 'upload' || !(await readContentPrincipal(context)))
+    throw new DataAccessError('authorization_denied');
+  const [row] =
+    await getDatabase()`select p.object_id,p.upload_digest,(o.state='ready') ready
+    from allrice_workbench_file_policies p join allrice_storage_objects o on o.id=p.object_id
+    where p.organization_id=${context.organizationId} and p.workspace_id=${value.workspaceId}
+      and p.owner_id=${context.actor.id} and o.owner_id=${context.actor.id}
+      and p.upload_request_id=${value.requestId}`;
+  return PanelWriteReceiptSchema.parse({
+    requestId: value.requestId,
+    operation: value.operation,
+    status: row ? 'recorded' : 'unknown',
+    inputDigest: row?.upload_digest ?? null,
+    result: row ? { objectId: row.object_id } : null,
+    ready: row?.ready ?? null,
+  });
+}
 type Facts = {
   id: string;
   organization_id: string;
@@ -318,7 +345,13 @@ async function snapshotFile(
   file: Awaited<ReturnType<typeof readWorkbenchFile>>,
   requestId: string,
   storage: StoragePort,
+  options?: {
+    source: AuthorizedDeliverableResource;
+    signal: AbortSignal;
+    requireCurrentAccess(): Promise<void>;
+  },
 ) {
+  await options?.requireCurrentAccess();
   if (file.row.legacy_company_asset_id)
     throw new WorkbenchFileError(
       'invalid_file',
@@ -355,9 +388,21 @@ async function snapshotFile(
       'invalid_file',
       '这个文件超过长期参考的上传容量，请先拆分资料。',
     );
+  if (
+    options &&
+    (options.source.source.objectId !== file.object.id ||
+      options.source.source.checksum !== file.object.checksum ||
+      options.source.sizeBytes !== file.object.sizeBytes)
+  )
+    throw new DataAccessError('not_found');
   const bytes = new Uint8Array(
-    await new Response(await storage.get(file.object)).arrayBuffer(),
+    await new Response(
+      options
+        ? await options.source.open(options.signal)
+        : await storage.get(file.object),
+    ).arrayBuffer(),
   );
+  await options?.requireCurrentAccess();
   if (
     bytes.byteLength !== file.object.sizeBytes ||
     digest(bytes) !== file.object.checksum
@@ -379,11 +424,13 @@ async function snapshotFile(
     },
     { originObjectId: file.object.id },
   );
+  await options?.requireCurrentAccess();
   if (!prepared.alreadyReady) {
     await storage.put(
       prepared.object,
       new Blob([new Uint8Array(prepared.bytes)]).stream(),
     );
+    await options?.requireCurrentAccess();
     await completeReferenceUpload(
       context,
       context.workspaceId!,
@@ -401,11 +448,18 @@ export async function captureWorkbenchFileReference(
   objectId: string,
   requestId: string,
   storage: StoragePort,
+  options?: {
+    source: AuthorizedDeliverableResource;
+    signal: AbortSignal;
+    requireCurrentAccess(): Promise<void>;
+  },
 ) {
   const context = scoped(contextInput, workspaceId);
   UuidSchema.parse(requestId);
-  const file = await readWorkbenchFile(context, objectId);
-  const copy = await snapshotFile(context, file, requestId, storage);
+  const file = options
+    ? await readPersonalWorkbenchFile(context, objectId)
+    : await readWorkbenchFile(context, objectId);
+  const copy = await snapshotFile(context, file, requestId, storage, options);
   const references = await listReferenceRevisions(
     context,
     workspaceId,
@@ -413,6 +467,7 @@ export async function captureWorkbenchFileReference(
   );
   const reference = references.find((r) => r.revisionId === copy.revisionId);
   if (!reference) throw new DataAccessError('not_found');
+  await options?.requireCurrentAccess();
   return reference;
 }
 

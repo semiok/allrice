@@ -419,3 +419,6 @@ export {
   createLegacyDeliverablesMcpPort,
   type PreparedMcpDeliverable,
 } from './deliverables-mcp-port.ts';
+
+export { readDEntryReleasePolicy } from './d-entry-release-policy.ts';
+export { requireEmployeePanelsAccess } from './employee-panels-access.ts';

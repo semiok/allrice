@@ -1,3 +1,4 @@
+import { readChatExecutionGeneration } from '../conversation/execution-generation.ts';
 import {
   BrandMediaInvocationSchema,
   type BrandMediaInvocation,
@@ -1310,6 +1311,37 @@ export async function authorizeSessionOwner(
     throw new DataAccessError('authorization_denied');
   }
   return mapSession(session);
+}
+
+/** Owner-only cold history admission. Archival does not grant execution. */
+export async function authorizeSessionHistoryOwner(
+  context: RequestContext,
+  workspaceId: string,
+  sessionId: string,
+) {
+  const session = await sessionRow(context, workspaceId, sessionId);
+  if (session.owner_id !== requireUser(context))
+    throw new DataAccessError('authorization_denied');
+  return mapSession(session);
+}
+
+/** Current owner read of the immutable product writer; never grants execution. */
+export async function getSessionExecutionGeneration(
+  context: RequestContext,
+  workspaceId: string,
+  sessionId: string,
+) {
+  const session = await authorizeSessionHistoryOwner(
+    context,
+    workspaceId,
+    sessionId,
+  );
+  return readChatExecutionGeneration(getDatabase(), {
+    organizationId: session.organizationId,
+    workspaceId: session.workspaceId,
+    ownerId: session.ownerId,
+    sessionId: session.id,
+  });
 }
 
 type ChatMessagePersistenceInput = {
