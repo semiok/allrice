@@ -423,7 +423,9 @@ suite(
         const issued = await f.issue();
         const id = issued.state.pins[1]!.id;
         if (change === 'expired')
-          await database.db`update allrice_memories set expires_at=clock_timestamp()-interval '1 second' where id=${id}`;
+          await database.db`update allrice_memories
+            set captured_at=statement_timestamp()-interval '2 seconds',
+              expires_at=statement_timestamp()-interval '1 second' where id=${id}`;
         if (change === 'scope')
           await database.db`update allrice_memories set instance_id=null where id=${id}`;
         if (change === 'private')
