@@ -71,6 +71,15 @@ export const baseline: readonly BaselineEntry[] = [
     approvedBy: '2026-11-21 MET-268用户开工授权；主会话审PLAN.md四类核定通过。',
   },
   {
+    kind: 'patch',
+    id: 'allrice-vm-memory-v1',
+    category: '门卫',
+    basis:
+      'MET-267：独立模块尚未装配，DSH 0.2.1-rc.2不提供SaaS宿主内存准入及本人VM/epoch资源权威；仅补外部门卫与同人root的guest memcg/swap/公开BASH_ENV和launcher协作，原生shell/工具/会话仍归DSH，root协作非隔离。actual starting全域fence、shell外exact child/OOM completion、可信运行hardcap、可信pressure producer及真实联合验收仍未交，不把fixture或137当已验事实。',
+    approvedBy:
+      '2026-11-22 规划线转达用户本轮MET-267开工指令及既有MET-267 2G/swap/排队/OOM授权；见JUNGLE2-METADATA-OWNERSHIP-20261122.md同名baseline登记派活，文件owner协调不构成新能力授权。',
+  },
+  {
     kind: 'table',
     id: 'allrice_employee_module_bindings',
     category: '门卫',
