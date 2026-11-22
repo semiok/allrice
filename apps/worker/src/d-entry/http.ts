@@ -6,6 +6,8 @@ import { TYPERT_REMOTE } from '@deepseek-ai/dsh-api-session-controller/remote';
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
 import {
   DEntryNativeOwnerRequestSchema,
+  DEntryNativePrewarmRequestSchema,
+  DEntryNativePrewarmResultSchema,
   DEntryNativeResourceRequestSchema,
   sameDEntryIdentity,
 } from '@allrice/contracts';
@@ -37,6 +39,10 @@ import {
   observeDEntryFinish,
   ownDEntryCatalog,
 } from './native-data.js';
+import {
+  dEntryNativePrewarmPort,
+  type DEntryNativePrewarmPort,
+} from './native-prewarm.js';
 
 export const dEntryRpcRequestSchema = DEntryNativeResourceRequestSchema.omit({
   nativeSessionId: true,
@@ -52,6 +58,7 @@ export type DEntryHttpDependencies = {
   data: typeof currentDEntryNativeDataPort;
   watch: typeof watchDEntryNativeAuthority;
   ensureRoot: typeof ensureDEntryNativeRoot;
+  prewarm: DEntryNativePrewarmPort;
 };
 export const dEntryHttpDefaults: DEntryHttpDependencies = {
   authenticate: authenticateSession,
@@ -61,6 +68,7 @@ export const dEntryHttpDefaults: DEntryHttpDependencies = {
   data: currentDEntryNativeDataPort,
   watch: watchDEntryNativeAuthority,
   ensureRoot: ensureDEntryNativeRoot,
+  prewarm: dEntryNativePrewarmPort,
 };
 export function dEntryBearer(request: IncomingMessage) {
   const value = request.headers.authorization;
@@ -154,6 +162,7 @@ export function createDEntryHttpHandler(
         '/internal/d-entry/native-resource',
         '/internal/d-entry/native-rpc',
         '/internal/d-entry/native-root',
+        '/internal/d-entry/native-prewarm',
       ].includes(path ?? '')
     )
       return false;
@@ -210,8 +219,15 @@ export function createDEntryHttpHandler(
         path === '/internal/d-entry/native-resource'
           ? DEntryNativeResourceRequestSchema.parse(decoded)
           : undefined;
+      const prewarmRequest =
+        path === '/internal/d-entry/native-prewarm'
+          ? DEntryNativePrewarmRequestSchema.parse(decoded)
+          : undefined;
       const input =
-        rpc ?? resourceRequest ?? DEntryNativeOwnerRequestSchema.parse(decoded);
+        prewarmRequest ??
+        rpc ??
+        resourceRequest ??
+        DEntryNativeOwnerRequestSchema.parse(decoded);
       const creatingRoot = path === '/internal/d-entry/native-root';
       if (creatingRoot && !input.selection.threadId)
         throw new DataAccessError('authorization_denied');
@@ -224,10 +240,43 @@ export function createDEntryHttpHandler(
         auth.context,
         input.selection,
         auth.identity,
-        signal,
+        // Keep genuine authority loss separate from browser disconnection.
+        // The watcher remains owned until actual prewarm settlement below.
+        prewarmRequest
+          ? AbortSignal.any([
+              lifetime.signal,
+              ...(serviceSignal ? [serviceSignal] : []),
+            ])
+          : signal,
       );
       authority.revoked.addEventListener('abort', revoke, { once: true });
       if (authority.revoked.aborted) revoke();
+      if (prewarmRequest) {
+        await deps.prewarm.prewarm(
+          auth.context,
+          auth.identity,
+          prewarmRequest.trigger,
+          signal,
+          authority.revoked,
+        );
+        const next = await currentDEntryRequest(deps, token, input, signal);
+        if (!sameDEntryIdentity(auth.identity, next.identity))
+          throw new DataAccessError('authorization_denied');
+        signal.throwIfAborted();
+        response.writeHead(200, {
+          'content-type': 'application/json',
+          'cache-control': 'no-store',
+        });
+        response.end(
+          JSON.stringify(
+            DEntryNativePrewarmResultSchema.parse({
+              identity: next.identity,
+              trigger: prewarmRequest.trigger,
+            }),
+          ),
+        );
+        return true;
+      }
       const current = await currentDEntryNativeOwner(
         deps.owners,
         auth.context,

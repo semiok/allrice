@@ -13,6 +13,7 @@ import {
   createDEntryHttpHandler,
   type DEntryHttpDependencies,
 } from './http.js';
+import { dEntryNativePrewarmPort } from './native-prewarm.js';
 import { createDEntryMuxHandler } from './mux.js';
 import type { DEntryNativeDataPort } from './native-data.js';
 import type { ResolvedDEntryNativeOwner } from './native-owner.js';
@@ -232,6 +233,7 @@ export function nativeEntryFixture(preset?: {
     vmId: binding.vmId,
   }));
   const deps = {
+    prewarm: dEntryNativePrewarmPort,
     authenticate: vi.fn(async () => context as RequestContext | null),
     identity: vi.fn(async () => identity),
     root,

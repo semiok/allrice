@@ -7,6 +7,7 @@ import { POST as owner } from '../../app/api/v1/d-entry/native-owner/route';
 import { POST as resource } from '../../app/api/v1/d-entry/native-resource/route';
 import { POST as rpc } from '../../app/api/v1/d-entry/native-rpc/route';
 import { POST as root } from '../../app/api/v1/d-entry/native-root/route';
+import { POST as prewarm } from '../../app/api/v1/d-entry/native-prewarm/route';
 
 const ports = vi.hoisted(() => ({
   context: vi.fn(),
@@ -75,6 +76,63 @@ afterEach(() => {
 });
 
 describe('Web original-cookie to fixed Worker adapters', () => {
+  it('prewarms page/input with only selectors and original Session, returning no readiness capability', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({ identity, trigger: 'page' }),
+    );
+    vi.stubGlobal('fetch', fetch);
+    for (const invalid of [
+      { selection, trigger: 'page', personId: identity.personId },
+      { selection, trigger: 'send' },
+    ])
+      expect((await prewarm(request(invalid))).status).toBe(400);
+    expect(fetch).not.toHaveBeenCalled();
+    const response = await prewarm(request({ selection, trigger: 'page' }));
+    expect(response.status).toBe(204);
+    expect(await response.text()).toBe('');
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    const [url, options] = fetch.mock.calls[0]!;
+    expect(url).toEqual(
+      new URL('http://worker.internal:3101/internal/d-entry/native-prewarm'),
+    );
+    expect(JSON.parse(String(options?.body))).toEqual({
+      organizationId: context.organizationId,
+      selection,
+      trigger: 'page',
+    });
+    expect(options?.headers).toEqual({
+      'content-type': 'application/json',
+      authorization: `Bearer ${ports.token}`,
+    });
+    fetch.mockResolvedValueOnce(Response.json({ identity, trigger: 'input' }));
+    expect(
+      (await prewarm(request({ selection, trigger: 'input' }))).status,
+    ).toBe(204);
+  });
+  it('prewarm rejects cross-origin writes, unavailable Worker and mismatching current identity', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () =>
+      Response.json({
+        identity: { ...identity, personId: randomUUID() },
+        trigger: 'page',
+      }),
+    );
+    vi.stubGlobal('fetch', fetch);
+    expect(
+      (
+        await prewarm(
+          request({ selection, trigger: 'page' }, 'https://other.test'),
+        )
+      ).status,
+    ).toBe(403);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(
+      (await prewarm(request({ selection, trigger: 'page' }))).status,
+    ).toBe(403);
+    fetch.mockRejectedValueOnce(new Error('Worker unavailable'));
+    expect(
+      (await prewarm(request({ selection, trigger: 'page' }))).status,
+    ).toBe(503);
+  });
   it('forwards only selectors for explicit native root creation and validates the returned root', async () => {
     const native = {
       organizationId: identity.organizationId,

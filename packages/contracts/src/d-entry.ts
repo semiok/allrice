@@ -128,6 +128,24 @@ export const DEntryNativeOwnerRequestSchema = z
     selection: DEntrySelectionInputSchema,
   })
   .strict();
+export const DEntryNativePrewarmTriggerSchema = z.enum(['page', 'input']);
+export const DEntryNativePrewarmInputSchema = z
+  .object({
+    selection: DEntrySelectionInputSchema,
+    trigger: DEntryNativePrewarmTriggerSchema,
+  })
+  .strict();
+export const DEntryNativePrewarmRequestSchema =
+  DEntryNativeOwnerRequestSchema.extend({
+    trigger: DEntryNativePrewarmTriggerSchema,
+  });
+/** Internal acknowledgement only; never editor/send/control readiness. */
+export const DEntryNativePrewarmResultSchema = z
+  .object({
+    identity: DEntryIdentitySchema,
+    trigger: DEntryNativePrewarmTriggerSchema,
+  })
+  .strict();
 export const DEntryNativeResourceRequestSchema = z
   .object({
     organizationId: UuidSchema,
