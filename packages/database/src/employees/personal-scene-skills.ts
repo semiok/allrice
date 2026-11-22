@@ -20,6 +20,7 @@ import {
   type PersonalSceneSkill,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
+import { joinCallerSave } from '../business-runtime/caller-transaction.ts';
 import { DataAccessError } from '../data.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { assertPersonalSceneNamespace } from './personal-scene-names.ts';
@@ -410,9 +411,17 @@ export async function savePersonalSceneSkill(
   db = getDatabase(),
 ) {
   const input = SavePersonalSceneSkillSchema.parse(raw);
-  return db.begin(async (tx) =>
-    savePersonalSceneSkillInTransaction(contextInput, instanceId, input, tx),
-  );
+  let work: ReturnType<typeof savePersonalSceneSkillInTransaction> | undefined;
+  const transaction = db.begin((tx) => {
+    work = savePersonalSceneSkillInTransaction(
+      contextInput,
+      instanceId,
+      input,
+      tx,
+    );
+    return work;
+  });
+  return joinCallerSave(transaction, () => work);
 }
 
 /** The existing personal writer, composed inside the caller's transaction.
