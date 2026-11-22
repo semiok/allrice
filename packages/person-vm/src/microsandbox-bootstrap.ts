@@ -58,6 +58,42 @@ export async function spawnMicrosandboxManagedProbe(
   },
   commandSpec: PersonVmGuestCommand,
 ): Promise<PersonVmManagedProbeJob> {
+  return spawnMicrosandboxJob(input, commandSpec, 'probe-operation');
+}
+
+function operationScopedProbe(
+  scope: PersonVmStartingScope,
+  job: PersonVmManagedProbeJob,
+): PersonVmManagedProbeJob {
+  async function ordinary<T>(
+    signal: AbortSignal,
+    operation: (running: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    const running = AbortSignal.any([scope.signal, signal]);
+    running.throwIfAborted();
+    await scope.assertCurrent();
+    running.throwIfAborted();
+    const result = await operation(running);
+    running.throwIfAborted();
+    await scope.assertCurrent();
+    running.throwIfAborted();
+    return result;
+  }
+  return Object.freeze({
+    ...job,
+    wait: (signal: AbortSignal) => ordinary(signal, job.wait),
+    stdout: (signal: AbortSignal) => ordinary(signal, job.stdout),
+  });
+}
+
+/** One exact native exec/wait/logs/cleanup kernel. Only the probe view binds
+ * ordinary reads to an operation scope; bootstrap transfers the retained job
+ * to its runtime owner, whose caller signal controls the long-lived wait. */
+async function spawnMicrosandboxJob(
+  input: Parameters<typeof spawnMicrosandboxManagedProbe>[0],
+  commandSpec: PersonVmGuestCommand,
+  lifetime: 'bootstrap-retained' | 'probe-operation',
+): Promise<PersonVmManagedProbeJob> {
   const { scope, name, command } = input;
   commandInput(commandSpec);
   scope.signal.throwIfAborted();
@@ -76,12 +112,17 @@ export async function spawnMicrosandboxManagedProbe(
       )
     ).trim();
   } catch (cause) {
-    // Dispatch may have succeeded without returning its job ID. The lifecycle
-    // owner must stop/status this exact VM; no retry or orphaned success.
+    // Bootstrap retains its existing service-owned stop/status classification.
+    // Probe dispatch without a retained ID must report owner cleanup failure.
+    if (lifetime === 'bootstrap-retained') throw cause;
     throw new PersonVmError('CLEANUP_INCOMPLETE', { cause });
   }
   if (!jobId || /[\s\0]/.test(jobId))
-    throw new PersonVmError('CLEANUP_INCOMPLETE');
+    throw new PersonVmError(
+      lifetime === 'bootstrap-retained'
+        ? 'PROVIDER_FAILED'
+        : 'CLEANUP_INCOMPLETE',
+    );
   // Cleanup uses only its independent owner budget, even after scope loss.
   async function nativeWait(signal: AbortSignal): Promise<PersonVmJobExit> {
     signal.throwIfAborted();
@@ -110,52 +151,39 @@ export async function spawnMicrosandboxManagedProbe(
       timedOut: result.timed_out,
     });
   }
-  async function ordinary<T>(
-    signal: AbortSignal,
-    operation: (running: AbortSignal) => Promise<T>,
-  ): Promise<T> {
-    const running = AbortSignal.any([scope.signal, signal]);
-    running.throwIfAborted();
-    await scope.assertCurrent();
-    running.throwIfAborted();
-    const result = await operation(running);
-    running.throwIfAborted();
-    await scope.assertCurrent();
-    running.throwIfAborted();
-    return result;
-  }
   const job: PersonVmManagedProbeJob = Object.freeze({
     binding: scope.binding,
     jobId,
-    wait: (signal: AbortSignal) => ordinary(signal, nativeWait),
-    stdout: (signal: AbortSignal) =>
-      ordinary(signal, async (running) => {
-        const records = await command(
-          ['logs', name, '--job', jobId, '--source', 'stdout', '--json'],
-          running,
-        );
-        return records
-          .split(/\r?\n/)
-          .filter((line) => line.length > 0)
-          .map((line) => {
-            const entry: unknown = JSON.parse(line);
-            if (
-              !entry ||
-              typeof entry !== 'object' ||
-              !('id' in entry) ||
-              entry.id !== jobId ||
-              !('s' in entry) ||
-              entry.s !== 'stdout' ||
-              !('e' in entry) ||
-              entry.e !== null ||
-              !('d' in entry) ||
-              typeof entry.d !== 'string'
-            )
-              throw new PersonVmError('PROVIDER_FAILED');
-            return entry.d;
-          })
-          .join('');
-      }),
+    wait: nativeWait,
+    stdout: async (signal: AbortSignal) => {
+      signal.throwIfAborted();
+      const records = await command(
+        ['logs', name, '--job', jobId, '--source', 'stdout', '--json'],
+        signal,
+      );
+      signal.throwIfAborted();
+      return records
+        .split(/\r?\n/)
+        .filter((line) => line.length > 0)
+        .map((line) => {
+          const entry: unknown = JSON.parse(line);
+          if (
+            !entry ||
+            typeof entry !== 'object' ||
+            !('id' in entry) ||
+            entry.id !== jobId ||
+            !('s' in entry) ||
+            entry.s !== 'stdout' ||
+            !('e' in entry) ||
+            entry.e !== null ||
+            !('d' in entry) ||
+            typeof entry.d !== 'string'
+          )
+            throw new PersonVmError('PROVIDER_FAILED');
+          return entry.d;
+        })
+        .join('');
+    },
     cancelAndWait: async (signal: AbortSignal) => {
       signal.throwIfAborted();
       try {
@@ -174,13 +202,16 @@ export async function spawnMicrosandboxManagedProbe(
     try {
       await job.cancelAndWait(AbortSignal.timeout(input.cleanupTimeoutMs));
     } catch (cleanup) {
+      if (lifetime === 'bootstrap-retained') throw cleanup;
       throw new PersonVmError('CLEANUP_INCOMPLETE', {
         cause: new AggregateError([error, cleanup]),
       });
     }
     throw error;
   }
-  return job;
+  return lifetime === 'probe-operation'
+    ? operationScopedProbe(scope, job)
+    : job;
 }
 
 /** Pinned public cp/managed-job protocol. No DSH executor, shell interpolation,
@@ -218,10 +249,21 @@ export async function bootstrapMicrosandbox(input: {
   )
     throw new PersonVmError('PROVIDER_FAILED');
 
-  const spawn = (
+  async function spawn(
     commandSpec: PersonVmGuestCommand,
-  ): Promise<PersonVmManagedJob> =>
-    spawnMicrosandboxManagedProbe(input, commandSpec);
+  ): Promise<PersonVmManagedJob> {
+    const job = await spawnMicrosandboxJob(
+      input,
+      commandSpec,
+      'bootstrap-retained',
+    );
+    return Object.freeze({
+      binding: job.binding,
+      jobId: job.jobId,
+      wait: job.wait,
+      cancelAndWait: job.cancelAndWait,
+    });
+  }
   async function run(commandSpec: PersonVmGuestCommand) {
     const job = await spawn(commandSpec);
     let result: PersonVmJobExit;

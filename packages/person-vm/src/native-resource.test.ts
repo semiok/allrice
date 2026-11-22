@@ -13,8 +13,22 @@ import { tmpdir } from 'node:os';
 import { join, posix } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import { runInNewContext } from 'node:vm';
-import { PersonVmError, type PersonVmBinding } from './contract.ts';
-import { spawnMicrosandboxManagedProbe } from './microsandbox-bootstrap.ts';
+import {
+  PersonVmError,
+  type PersonVmBinding,
+  type PersonVmRuntimePort,
+} from './contract.ts';
+import {
+  bootstrapMicrosandbox,
+  spawnMicrosandboxManagedProbe,
+} from './microsandbox-bootstrap.ts';
+import {
+  bootstrapPersonVm,
+  type PersonVmBootstrapScope,
+  type PersonVmJobExit,
+  type PersonVmManagedJob,
+  type PersonVmMemoryGuestPlan,
+} from './guest-bootstrap.ts';
 import type {
   PersonVmManagedProbeJob,
   PersonVmManagedProbePort,
@@ -1028,6 +1042,270 @@ describe('extracted managed probe public protocol (synthetic transport, not VM a
         'stdout',
         '--json',
       ]);
+    },
+  );
+});
+
+const retainedBootstrapPlan = (): PersonVmMemoryGuestPlan => ({
+  files: [
+    {
+      path: '/work/memory/initialize.cjs',
+      contents: '// synthetic initialization artifact',
+      mode: 0o600,
+    },
+    {
+      path: '/work/memory/launcher',
+      contents: '#!/bin/sh\nexec "$@"\n',
+      mode: 0o700,
+    },
+  ],
+  initialize: { executable: 'node', args: ['/work/memory/initialize.cjs'] },
+  launcher: '/work/memory/launcher',
+  env: { SYNTHETIC_MEMORY_PLAN: 'explicit' },
+});
+const bootstrapStage = async () => {
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), 'met267-retained-bootstrap-')),
+  );
+  directories.push(root);
+  return root;
+};
+
+describe('bootstrap retained jobs and operation-scoped probes share the real executor kernel', () => {
+  it.each(['during-startup', 'after-startup'] as const)(
+    'retained wait started %s outlives actual bootstrap scope closure, while stale probes reject and independently join cleanup',
+    async (phase) => {
+      const stagingRoot = await bootstrapStage(),
+        name = 'synthetic-native-sandbox';
+      const startup = new AbortController(),
+        lifetime = new AbortController(),
+        cleanup = new AbortController();
+      const retainedDone = gate(),
+        probeDone = gate(),
+        probeCleanupEntered = gate();
+      const jobs = new Map<
+        string,
+        { role: 'setup' | 'retained' | 'probe'; killed: boolean }
+      >();
+      let retained: PersonVmManagedJob | undefined,
+        probe: PersonVmManagedProbeJob | undefined;
+      let starting: PersonVmBootstrapScope | undefined,
+        retainedSignal: AbortSignal | undefined;
+      let completion:
+        | Promise<
+            | { state: 'exit'; exit: PersonVmJobExit }
+            | { state: 'lost'; cause: unknown }
+          >
+        | undefined;
+      let cleanupPending: Promise<PersonVmJobExit> | undefined;
+      let completed = false,
+        cleanupJoined = false;
+      const waitFor = async (
+        done: ReturnType<typeof gate>,
+        signal: AbortSignal,
+        code: number,
+      ) => {
+        signal.throwIfAborted();
+        await new Promise<void>((resolve, reject) => {
+          const aborted = () => {
+            signal.removeEventListener('abort', aborted);
+            reject(signal.reason);
+          };
+          signal.addEventListener('abort', aborted, { once: true });
+          void done.promise.then(() => {
+            signal.removeEventListener('abort', aborted);
+            resolve();
+          });
+          if (signal.aborted) aborted();
+        });
+        signal.throwIfAborted();
+        return JSON.stringify({ code, success: code === 0, timed_out: false });
+      };
+      const command = vi.fn<
+        Parameters<typeof spawnMicrosandboxManagedProbe>[0]['command']
+      >(async (args, signal) => {
+        signal.throwIfAborted();
+        if (args[0] === 'cp') return '';
+        if (args[0] === 'exec') {
+          const role = args.includes('/bin/retained-dsh')
+            ? 'retained'
+            : args.includes('/fixed-node/bin/node')
+              ? 'probe'
+              : 'setup';
+          const id = `synthetic-${role}-${jobs.size}`;
+          jobs.set(id, { role, killed: false });
+          return id + '\n';
+        }
+        const id = args[args.indexOf('--job') + 1]!;
+        const job = jobs.get(id);
+        if (!job) throw new Error('unknown exact public job');
+        if (args[0] === 'kill') {
+          job.killed = true;
+          return '';
+        }
+        if (args[0] === 'wait') {
+          if (job.role === 'setup')
+            return JSON.stringify({ code: 0, success: true, timed_out: false });
+          if (job.role === 'retained') {
+            retainedSignal = signal;
+            return waitFor(retainedDone, signal, 37);
+          }
+          expect(job.killed).toBe(true);
+          expect(signal).toBe(cleanup.signal);
+          probeCleanupEntered.resolve();
+          return waitFor(probeDone, signal, 137);
+        }
+        throw new Error('ordinary stale probe must not reach public logs');
+      });
+      const beginWait = (job: PersonVmManagedJob) =>
+        job.wait(lifetime.signal).then(
+          (exit) => {
+            completed = true;
+            return { state: 'exit' as const, exit };
+          },
+          (cause: unknown) => {
+            completed = true;
+            return { state: 'lost' as const, cause };
+          },
+        );
+      const runtime: PersonVmRuntimePort = {
+        memoryGuestPlan: async () => retainedBootstrapPlan(),
+        start: async (_binding, _signal, scope) => {
+          starting = scope;
+          retained = await scope.launch({
+            executable: '/bin/retained-dsh',
+            args: ['--synthetic'],
+          });
+          if (phase === 'during-startup') completion = beginWait(retained);
+          probe = await spawnMicrosandboxManagedProbe(
+            { scope, name, cleanupTimeoutMs: 10_000, command },
+            { executable: '/fixed-node/bin/node', args: ['-e', '0'] },
+          );
+        },
+        activity: async () => {
+          throw new Error('unexpected activity');
+        },
+        readiness: async () => {
+          throw new Error('unexpected readiness');
+        },
+      };
+      try {
+        await bootstrapPersonVm({
+          binding,
+          signal: startup.signal,
+          assertCurrent: async () => {},
+          runtime,
+          native: {
+            bootstrap: (scope, plan) =>
+              bootstrapMicrosandbox({
+                scope,
+                plan,
+                stagingRoot,
+                name,
+                cleanupTimeoutMs: 10_000,
+                command,
+              }),
+          },
+        });
+        if (!starting || !retained || !probe)
+          throw new Error('bootstrap did not hand off native jobs');
+        expect(starting.signal.aborted).toBe(true); // Closed by actual bootstrapPersonVm finally.
+        expect(startup.signal.aborted).toBe(false);
+        expect(retained).not.toHaveProperty('stdout');
+        if (phase === 'after-startup') completion = beginWait(retained);
+        startup.abort(
+          new Error('startup budget ended after successful handoff'),
+        );
+        await setImmediate();
+        expect(retainedSignal).toBe(lifetime.signal);
+        expect(retainedSignal?.aborted).toBe(false);
+        expect(completed).toBe(false);
+        await expect(probe.wait(new AbortController().signal)).rejects.toBe(
+          starting.signal.reason,
+        );
+        await expect(probe.stdout(new AbortController().signal)).rejects.toBe(
+          starting.signal.reason,
+        );
+        expect(command.mock.calls.some(([args]) => args[0] === 'logs')).toBe(
+          false,
+        );
+        cleanupPending = probe.cancelAndWait(cleanup.signal);
+        void cleanupPending.then(
+          () => {
+            cleanupJoined = true;
+          },
+          () => {
+            cleanupJoined = true;
+          },
+        );
+        await Promise.race([
+          probeCleanupEntered.promise,
+          cleanupPending.then(() => {
+            throw new Error('cleanup resolved without entering exact wait');
+          }),
+        ]);
+        await setImmediate();
+        expect(cleanupJoined).toBe(false);
+        expect(completed).toBe(false);
+        expect(
+          command.mock.calls
+            .filter(([args]) => args[0] === 'kill')
+            .map(([args]) => args),
+        ).toEqual([['kill', name, '--job', probe.jobId]]);
+        probeDone.resolve();
+        expect(await cleanupPending).toEqual({
+          exitCode: 137,
+          timedOut: false,
+        });
+        expect(completed).toBe(false);
+        retainedDone.resolve();
+        expect(await completion).toEqual({
+          state: 'exit',
+          exit: { exitCode: 37, timedOut: false },
+        });
+        expect(jobs.get(retained.jobId)?.killed).toBe(false);
+        expect(
+          command.mock.calls
+            .filter(([args]) => args[0] === 'wait')
+            .every((call) => call[2] === true),
+        ).toBe(true);
+      } finally {
+        retainedDone.resolve();
+        probeDone.resolve();
+        await completion;
+        await cleanupPending?.catch(() => {});
+      }
+    },
+  );
+
+  it.each(['lost-id', 'dispatch-rejection'] as const)(
+    'preserves bootstrap %s error classification while probe ambiguity stays CLEANUP_INCOMPLETE',
+    async (failure) => {
+      const h = managedProtocol(),
+        stagingRoot = await bootstrapStage();
+      const cause = new PersonVmError('PROVIDER_FAILED');
+      if (failure === 'lost-id') h.command.mockResolvedValueOnce('');
+      else h.command.mockRejectedValueOnce(cause);
+      const bootstrapping = bootstrapMicrosandbox({
+        scope: h.scope,
+        plan: retainedBootstrapPlan(),
+        stagingRoot,
+        name: h.name,
+        cleanupTimeoutMs: 10_000,
+        command: h.command,
+      });
+      if (failure === 'lost-id')
+        await expect(bootstrapping).rejects.toMatchObject({
+          code: 'PROVIDER_FAILED',
+        });
+      else await expect(bootstrapping).rejects.toBe(cause);
+      expect(h.command).toHaveBeenCalledOnce();
+      if (failure === 'lost-id') h.command.mockResolvedValueOnce('');
+      else h.command.mockRejectedValueOnce(cause);
+      await expect(h.launch()).rejects.toMatchObject({
+        code: 'CLEANUP_INCOMPLETE',
+      });
+      expect(h.command).toHaveBeenCalledTimes(2);
     },
   );
 });
