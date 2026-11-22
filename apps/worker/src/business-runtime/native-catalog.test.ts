@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { RequestContext } from '@allrice/contracts';
+import type * as Database from '@allrice/database';
 import { DataAccessError } from '@allrice/database';
+import type { NativeWebOwner } from '../native-web/owner.js';
 import {
   DEntryNativeUnavailable,
   dEntryNativeOwnerPort,
@@ -19,7 +21,7 @@ import {
 
 const authority = vi.hoisted(() => ({ identity: vi.fn(), roster: vi.fn() }));
 vi.mock('@allrice/database', async (original) => ({
-  ...(await original<typeof import('@allrice/database')>()),
+  ...(await original<typeof Database>()),
   requireDEntryNativeIdentity: authority.identity,
   readPersonNativeWebRoster: authority.roster,
 }));
@@ -36,16 +38,14 @@ function fixture() {
     binding: base.binding,
     revoked: base.revoked.signal,
     controlReady: vi.fn(() => true),
-    readSessions: vi.fn(async (_signal: AbortSignal) => ({
+    readSessions: vi.fn<NativeWebOwner['readSessions']>(async () => ({
       ok: true as const,
       value: base.catalog,
     })),
-    readSessionsFor: vi.fn(
-      async (_context: RequestContext, _signal: AbortSignal) => ({
-        ok: true as const,
-        value: base.catalog,
-      }),
-    ),
+    readSessionsFor: vi.fn<NativeWebOwner['readSessionsFor']>(async () => ({
+      ok: true as const,
+      value: base.catalog,
+    })),
     retireAfterNativeStop: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
   };
