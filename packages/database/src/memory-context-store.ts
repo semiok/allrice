@@ -20,14 +20,19 @@ import { MemoryContextError } from './run-memory-context.ts';
 import { runtimePolicyDigest } from './runtime-policy-digest.ts';
 import { memoryPairDigest } from './workspace/employee-memory-primitives.ts';
 
+// PostgreSQL canonicalizes UUIDs. Normalize once before scope/order/B locks and
+// stored-identity comparisons; opaque budget/native references remain exact.
+const MemoryContextStorageUuidSchema = UuidSchema.transform((value) =>
+  value.toLowerCase(),
+);
 const MemoryContextStorageKeySchema = z
   .object({
-    organizationId: UuidSchema,
-    workspaceId: UuidSchema,
-    ownerId: UuidSchema,
-    instanceId: UuidSchema,
-    employeeId: UuidSchema,
-    threadId: UuidSchema,
+    organizationId: MemoryContextStorageUuidSchema,
+    workspaceId: MemoryContextStorageUuidSchema,
+    ownerId: MemoryContextStorageUuidSchema,
+    instanceId: MemoryContextStorageUuidSchema,
+    employeeId: MemoryContextStorageUuidSchema,
+    threadId: MemoryContextStorageUuidSchema,
     budgetRef: z.string().min(1),
   })
   .strict();

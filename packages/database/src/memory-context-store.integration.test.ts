@@ -47,6 +47,17 @@ const deferred = () => {
 };
 const refused = { code: 'MEMORY_CONTEXT_UNAVAILABLE' };
 const exhausted = { code: 'MEMORY_CONTEXT_BUDGET_EXHAUSTED' };
+const uppercaseKey = (
+  key: MemoryContextStorageKey,
+): MemoryContextStorageKey => ({
+  ...key,
+  organizationId: key.organizationId.toUpperCase(),
+  workspaceId: key.workspaceId.toUpperCase(),
+  ownerId: key.ownerId.toUpperCase(),
+  instanceId: key.instanceId.toUpperCase(),
+  employeeId: key.employeeId.toUpperCase(),
+  threadId: key.threadId.toUpperCase(),
+});
 
 suite(
   'memory context internal storage; authority is a contract fixture',
@@ -291,6 +302,89 @@ suite(
       const [row] =
         await database.db`select count(*)::int count from allrice_employee_memory_contexts
       where organization_id=${f.key.organizationId} and budget_ref=${f.key.budgetRef}`;
+      expect(row!.count).toBe(1);
+    });
+
+    it('restores and reads legal uppercase UUID keys while keeping budget/native references case-sensitive', async () => {
+      const pair = { summary: '大小写恢复', details: '原始完整说明' };
+      const f = await setup([pair]);
+      f.key.budgetRef = `Fixture-B:CaSe:${randomUUID()}`;
+      f.origin.nativeOwnerRef = `Fixture-Native-Owner:CaSe:${randomUUID()}`;
+      f.origin.nativeProfileRef = `Fixture-Native-Profile:CaSe:${randomUUID()}`;
+      const upper = uppercaseKey(f.key);
+      const issued = await f.transaction(f.rootSessionRef, live(), async (tx) =>
+        issueMemoryContextStorage(tx, upper, await f.draft(tx), live()),
+      );
+      const text = renderMemoryDetailV2(1, pair);
+      expect(await f.read(1)).toBe(text);
+      expect(
+        await f.transaction(f.rootSessionRef, live(), (tx) =>
+          readMemoryContextStorageOrdinal(tx, upper, { number: 1 }, live()),
+        ),
+      ).toBe(text);
+      const restored = await f.transaction(
+        f.rootSessionRef,
+        live(),
+        async (tx) =>
+          issueMemoryContextStorage(tx, upper, await f.draft(tx), live()),
+      );
+      expect(restored.id).toBe(issued.id);
+      expect(restored.state.toolReads).toBe(2);
+      expect(restored.state.spentBytes).toBe(
+        issued.state.initial.bytes + 2 * Buffer.byteLength(text, 'utf8'),
+      );
+      expect(restored.origin).toEqual(f.origin);
+      expect(upper.budgetRef).toBe(f.key.budgetRef);
+      await expect(
+        f.transaction(f.rootSessionRef, live(), (tx) =>
+          readMemoryContextStorageOrdinal(
+            tx,
+            {
+              ...upper,
+              budgetRef: upper.budgetRef.toLowerCase(),
+            },
+            { number: 1 },
+            live(),
+          ),
+        ),
+      ).rejects.toMatchObject(refused);
+    });
+
+    it('uses one allowance for concurrent first issue with different UUID casing and the same S/B', async () => {
+      const pair = { summary: '同一个预算', details: '大小写不分裂锁' };
+      const f = await setup([pair]);
+      const issue = (key: MemoryContextStorageKey) =>
+        f.transaction(f.rootSessionRef, live(), async (tx) =>
+          issueMemoryContextStorage(tx, key, await f.draft(tx), live()),
+        );
+      const upper = uppercaseKey(f.key);
+      const mixed = {
+        ...upper,
+        ownerId: f.key.ownerId,
+        threadId: f.key.threadId,
+      };
+      const issued = await Promise.all([
+        issue(f.key),
+        issue(upper),
+        issue(mixed),
+      ]);
+      expect(new Set(issued.map((value) => value.id)).size).toBe(1);
+      expect(issued.every((value) => value.state.toolReads === 0)).toBe(true);
+      await Promise.all([
+        f.read(1),
+        f.transaction(f.childSessionRef, live(), (tx) =>
+          readMemoryContextStorageOrdinal(tx, upper, { number: 1 }, live()),
+        ),
+      ]);
+      const restored = await issue(mixed);
+      expect(restored.state.toolReads).toBe(2);
+      expect(restored.state.spentBytes).toBe(
+        issued[0]!.state.initial.bytes +
+          2 * Buffer.byteLength(renderMemoryDetailV2(1, pair), 'utf8'),
+      );
+      const [row] =
+        await database.db`select count(*)::int count from allrice_employee_memory_contexts
+        where organization_id=${f.key.organizationId} and budget_ref=${f.key.budgetRef}`;
       expect(row!.count).toBe(1);
     });
 
