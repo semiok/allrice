@@ -101,7 +101,7 @@ async function fixture() {
     personalSkills: true,
   };
   let mounted!: ReturnType<typeof registerNativeCapabilitySkillProvider>;
-  const fiber = ctx.plugin((target) => {
+  const fiber = ctx.inject(['skills'], (target) => {
     mounted = registerNativeCapabilitySkillProvider(target, host);
   });
   await fiber;

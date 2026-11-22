@@ -81,8 +81,9 @@ function throwFailures(errors: unknown[]) {
     );
 }
 
-/** Call synchronously in the target's Cordis plugin context. No production mount
- * or identity/config producer is installed here. DSH owns registration/cache.
+/** Call synchronously in the target's Cordis context with `skills` injected
+ * (e.g. ctx.inject(['skills'], apply)). No production mount or identity/config
+ * producer is installed here. DSH owns registration/cache.
  * The host must invalidate on current/config changes and await disposal before
  * releasing sources; native caller cancellation can race ahead of provider IO. */
 export function registerNativeCapabilitySkillProvider(

@@ -7,7 +7,6 @@ import {
 } from '@allrice/database';
 import { Context } from '@deepseek-ai/cordis';
 import SkillRegistry from '@deepseek-ai/dsh-skill';
-import type { Sql } from 'postgres';
 import {
   afterAll,
   afterEach,
@@ -32,7 +31,9 @@ import {
   type NativeCapabilitySkillConfiguration,
 } from '../src/native-capability-skill-provider.js';
 
-const client = vi.hoisted(() => ({ db: undefined as Sql | undefined }));
+const client: {
+  db?: Awaited<ReturnType<typeof createRuntimeFixtureDatabase>>['db'];
+} = vi.hoisted(() => ({}));
 vi.mock('../../../packages/database/src/core/client.ts', async (original) => ({
   ...(await original<typeof DatabaseClient>()),
   getDatabase: () => {
@@ -156,7 +157,7 @@ suite(
       };
       const personal = createPostgresPersonalSkillPackageSource(f.db, host);
       let mounted!: ReturnType<typeof registerNativeCapabilitySkillProvider>;
-      await ctx.plugin((target) => {
+      await ctx.inject(['skills'], (target) => {
         mounted = registerNativeCapabilitySkillProvider(target, {
           builtin,
           personal,

@@ -6,10 +6,23 @@
 It registers a real native `SkillProvider`, rather than a second registry,
 loader, MCP tool, execution engine or Run snapshot.
 
-Call it synchronously from the trusted target's Cordis plugin context after
-installing native `SkillRegistry`. The context must belong to that employee's
-Host/scope, never a global context shared with unrelated employees. The caller
-retains source/SQL ownership. This module installs no production bootstrap.
+Call it synchronously from the trusted target's Cordis context with the
+`skills` service declared as a required dependency. Installing `SkillRegistry`
+alone does not authorize an ordinary plugin context to access `ctx.skills`.
+Use the public Cordis injection entrypoint, which also owns unload/reload when
+the required service changes:
+
+```ts
+await ctx.plugin(SkillRegistry);
+const fiber = ctx.inject(['skills'], (target) => {
+  registration = registerNativeCapabilitySkillProvider(target, host);
+});
+await fiber;
+```
+
+The context must belong to that employee's Host/scope, never a global context
+shared with unrelated employees. The caller retains source/SQL ownership. This
+module installs no production bootstrap.
 
 The host supplies both required, cancellation-aware closures:
 
