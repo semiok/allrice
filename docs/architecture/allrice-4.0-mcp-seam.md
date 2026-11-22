@@ -2,7 +2,7 @@
 
 当前交付是原生 SDK server、host 现权/代际/调用绑定和三模块 M1 公开子集。4.0 的 execution/receipt、issued memory pin/预算及 publisher carrier 尚待所属 owner 公开绑定；这不表示模块已迁入或 4.0 生产业务全通。没有启动入口、默认配置或企业/员工开关变更。
 
-n3 接收基点为 `6eab934e51721a13f9b2537eca670ccffe0cb31d`，只重放本卡两个提交，未携带旧 #899 入口权威。下面具名 host API 含正式代际依赖的组合 sourceAtSha=`885a5e0391f9d878383f9fb5fdbf85fdb91c3fb8`（server 本体与首片 `197399232bde39bde40180728854808f38ffa7b7` 相同）；公开源级入口为 `apps/worker/src/mcp/allrice-server.ts`。Worker 是 private 工作区，本片没有新增 package exports，不能把该文件虚构成 `@allrice/worker` 的子路径导出。业务 owner 的宿主适配器消费这些签名，数据库模块不反向导入 Worker 或跨 owner SQL。
+原 n3 接收基点为 `6eab934e51721a13f9b2537eca670ccffe0cb31d`，M1 封版 sourceAtSha=`13c1b201da4f04acdf35359785f59b4f0cedd3f8`，未携带旧 #899 入口权威。本 n4 M2 首片从该源增加可选接口，正式头由交接回执绑定，不改原 #902 封版树。公开源级入口为 `apps/worker/src/mcp/allrice-server.ts`。Worker 是 private 工作区，没有新增 package exports，不能把该文件虚构成 `@allrice/worker` 的子路径导出。业务 owner 的宿主适配器消费这些签名，数据库模块不反向导入 Worker 或跨 owner SQL。
 
 ## 具名 host API v1
 
@@ -26,6 +26,31 @@ n3 接收基点为 `6eab934e51721a13f9b2537eca670ccffe0cb31d`，只重放本卡�
 恢复只交原业务 owner 对原 call/digest/receipt 核实已发生事实；MCP 不自动重发、换 key 或恢复授权。无需新表、限额、TTL、模型 permit 或 Agent 状态。approval/bridge 继续只保留 namespace，不新增工具或外发权限。
 
 代际依赖采用 271 owner 正式回交的 `c1aaee8017e960da1c64a8fa885c16a7bcbe895f:packages/contracts/src/d-entry.ts` 原字节（blob `5a2009a7a37b442e965af579f21f02de81b52897`），本树 contracts barrel 仅增加该文件 export；共同依赖 common.ts 与 n3 base 同 blob。没有合入旧 #899 或 271 身份/监听实现。`ExecutionGenerationSchema`/`ExecutionGeneration` 只校产品写代际，不证明当前身份、native call、VM ready 或生产装配。旧单文件缺导出的首败保留；新组合仍须自身门禁和独立增审，接口仍为 candidate，未正式验收。
+
+## n4 M2 可选接口首片：6/7 注册
+
+本片仅扩同一服务的六个可选 callback、具名 alias 和原生工具，`contractVersion=1` 不变；旧三 callback、四个既有工具 JSON 和取消端口保持。六项只消费 M1 源已有公开 schema，不实现业务。第七项 `deliverable_read` 等待 MET-281 正式 `DeliverableReadInputProjectionSchema` 交接，本片无该 callback/注册，不复制候选合同或创建相似 schema。
+
+以下每个 callback 都为 `(scope: AllriceMcpScope, input: z.input<typeof InputSchema>, signal: AbortSignal) => Promise<CallToolResult>`；公开 alias 是其 `NonNullable<AllriceMcpServices['method']>`。只有真实 owner callback 绑定且模块/代际现权允许时才 list/call；没有绑定时隐藏并沿 DEPENDENCY_UNAVAILABLE 拒绝，不能落入 deliverableCreate。
+
+| raw wire / method / public alias                                                        | InputSchema                       | module               |
+| --------------------------------------------------------------------------------------- | --------------------------------- | -------------------- |
+| reference_search / referenceSearch / AllriceMcpReferenceSearch                          | ReferenceSearchInputSchema        | enterprise-materials |
+| reference_read_image / referenceReadImage / AllriceMcpReferenceReadImage                | ReferenceReadImageInputSchema     | enterprise-materials |
+| reference_archive_list / referenceArchiveList / AllriceMcpReferenceArchiveList          | ReferenceArchiveListInputSchema   | enterprise-materials |
+| reference_archive_read / referenceArchiveRead / AllriceMcpReferenceArchiveRead          | ReferenceArchiveReadInputSchema   | enterprise-materials |
+| deliverable_document_read / deliverableDocumentRead / AllriceMcpDeliverableDocumentRead | WorkspaceDocumentReadArgsSchema   | deliverables         |
+| memory_remember / memoryRemember / AllriceMcpMemoryRemember                             | RememberPersonalMemoryInputSchema | employee-memory      |
+
+五个读取注册为只读提示；remember 不标只读或幂等。memory wire JSON 直接复用既有 workspace.memory.remember 完整 schema，运行时仍用 RememberPersonalMemoryInputSchema：strict 内容-only summary/details/memoryClass，details 省略默认 null、memoryClass 默认 work_note，保旧 Unicode/长度约束与归一规则。不接受 guest source/身份/worker/lease/approved。
+
+memoryRemember 只返回原生 CallToolResult；真实候选事务、真人消息/steering 来源及 operation receipt 归 MET-283。成功仅投影真实候选回执且 requiresConfirmation=true，不能生成 active、伪造 source/native call 或补 3.x Run。普通业务旧错误沿 owner 的具名 isError 投影；本服务不新增任意 thrown error 透传或业务 result schema。
+
+CallToolResultSchema 保原生 text/image/resource/structuredContent，不替业务 owner 做 allowlist。图片须有真实获权 bytes，attachment 元数据不是模型已读；搜索结果、图/归档 receipt 与文档 PDF/Office 薄投影仍待 MET-281 交付。host StorageObject.key、路径、凭据及 series/version 内部对象不得直接作为 guest 结果。没有绑定的业务能力不以协议 fixture 冒充。
+
+已验证的 thrown ApiError/ReferenceSelectionError 现在与普通返回一起经过原 post-current 复核，未失权时原 payload 不变。selection IDs 仅允许 reference_read 及新增三项 exact-pin 图/归档工具的输入 revisionId；搜索不接受该错误披露。remember 后失权提示候选可能已提交，沿原 call 对账，不暗示回滚；旧 create 提示不变。
+
+新增 callback 仍共用原 operation/AbortSignal、whenIdle 和 revoke/close 的真实 Promise join，绝不取消先返回并遗留事务。当前只有接口/注册 6/7，真实 271/273 身份资格、4.0 载体与 281/283 业务尚待绑定；不表示全部业务 ready。新增 SDK 协议回归及原完整文件须由 root 在固定头执行；源码或静态检查不算运行通过。
 
 ## 原生对照与 SaaS 边界
 
