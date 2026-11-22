@@ -223,6 +223,8 @@ export async function observeCausalPage(
   const errors: unknown[] = [];
   const cdpFailures: unknown[] = [];
   let layerIds: string[] | undefined;
+  let layerTreeEventSeq: number | undefined;
+  const layerWaiters = new Set<() => void>();
   const requests = new Map<
     string,
     {
@@ -317,7 +319,9 @@ export async function observeCausalPage(
   });
   session.on('LayerTree.layerTreeDidChange', (event) => {
     record('LayerTree.layerTreeDidChange', event);
+    layerTreeEventSeq = journal.events.length - 1;
     layerIds = event.layers?.map((layer) => layer.layerId);
+    for (const notify of layerWaiters) notify();
   });
   await session.send('Network.enable');
   await session.send('Log.enable');
@@ -350,12 +354,53 @@ export async function observeCausalPage(
     },
     async layers() {
       await session.send('Runtime.evaluate', { expression: 'void 0' });
-      if (!layerIds)
-        throw Error(
-          'LayerTree did not provide a supported diagnostic snapshot',
+      // An enable/evaluate acknowledgement is not a LayerTree event. Keep the
+      // existing 15s action budget; only a real supported receipt can satisfy it.
+      const ids = await new Promise<string[]>((resolve, reject) => {
+        const waitSeq = journal.events.length;
+        record('LayerTree.snapshot-wait', {
+          budgetMs: 15_000,
+          layerTreeEventSeq: layerTreeEventSeq ?? null,
+          hasLayers: layerIds !== undefined,
+        });
+        let settled = false;
+        const done = (error?: Error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          layerWaiters.delete(notify);
+          cancellations.delete(cancel);
+          record('LayerTree.snapshot-result', {
+            waitSeq,
+            status: error ? 'failed' : 'ready',
+            layerTreeEventSeq: layerTreeEventSeq ?? null,
+            layerIds: layerIds ?? null,
+            error: error?.message ?? null,
+          });
+          if (error) reject(error);
+          else resolve([...layerIds!]);
+        };
+        const cancel = () =>
+          done(new Error('CDP closed before expected LayerTree snapshot'));
+        const notify = () => {
+          if (layerIds !== undefined) done();
+        };
+        const timer = setTimeout(
+          () =>
+            done(
+              new Error(
+                'LayerTree did not provide a supported diagnostic snapshot within the existing action budget',
+              ),
+            ),
+          15_000,
         );
+        layerWaiters.add(notify);
+        cancellations.add(cancel);
+        if (closed) cancel();
+        else notify();
+      });
       return Promise.all(
-        layerIds.map(async (layerId) => ({
+        ids.map(async (layerId) => ({
           layerId,
           ...(await session.send('LayerTree.compositingReasons', { layerId })),
         })),

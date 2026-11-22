@@ -904,7 +904,7 @@ describe('tool-only route experiment outcomes; never an audit exemption', () => 
 describe('passive public event ownership (synthetic CDP doubles only)', () => {
   const fake = () => {
     const session = Object.assign(new EventEmitter(), {
-      send: vi.fn(async () => ({})),
+      send: vi.fn<(method: string) => Promise<unknown>>(async () => ({})),
       detach: vi.fn(async (): Promise<void> => {
         session.emit('close');
       }),
@@ -1091,4 +1091,206 @@ describe('passive public event ownership (synthetic CDP doubles only)', () => {
     expect(() => trace.assertClean()).toThrow('Unclassified');
     await trace.close();
   });
+  it('reads only layer IDs from a real receipt, with subscription preceding enable', async () => {
+    vi.useFakeTimers();
+    const value = fake(),
+      journal = causalJournal(),
+      trace = await observeCausalPage(value.publicPage, 'native', journal);
+    try {
+      value.session.send.mockImplementation(async (method) => {
+        if (method === 'LayerTree.enable') {
+          expect(
+            value.session.listenerCount('LayerTree.layerTreeDidChange'),
+          ).toBe(1);
+          value.session.emit('LayerTree.layerTreeDidChange', {
+            layers: [{ layerId: 'actual' }],
+          });
+        }
+        return {};
+      });
+      await trace.session.send('LayerTree.enable');
+      expect(await trace.layers()).toEqual([{ layerId: 'actual' }]);
+      const raw = journal.events.find(
+        (e) => e.name === 'LayerTree.layerTreeDidChange',
+      )!;
+      expect(
+        journal.events.find((e) => e.name === 'LayerTree.snapshot-result')
+          ?.data,
+      ).toMatchObject({
+        status: 'ready',
+        layerTreeEventSeq: raw.seq,
+        layerIds: ['actual'],
+      });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await trace.close();
+      vi.useRealTimers();
+    }
+  });
+  it('waits for a real supported layer event after an absent layer payload; never reuses stale IDs', async () => {
+    vi.useFakeTimers();
+    const value = fake(),
+      journal = causalJournal(),
+      trace = await observeCausalPage(value.publicPage, 'native', journal);
+    try {
+      value.session.emit('LayerTree.layerTreeDidChange', {
+        layers: [{ layerId: 'stale' }],
+      });
+      value.session.emit('LayerTree.layerTreeDidChange', {});
+      let status = 'pending';
+      const read = trace.layers().then(
+        (result) => {
+          status = 'ready';
+          return result;
+        },
+        (error) => {
+          status = 'failed';
+          return error;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(status).toBe('pending');
+      expect(
+        value.session.send.mock.calls.some(
+          ([method]) => method === 'LayerTree.compositingReasons',
+        ),
+      ).toBe(false);
+      value.session.emit('LayerTree.layerTreeDidChange', {
+        layers: [{ layerId: 'fresh' }],
+      });
+      expect(await read).toEqual([{ layerId: 'fresh' }]);
+      expect(status).toBe('ready');
+      expect(
+        journal.events.filter((e) => e.name === 'LayerTree.layerTreeDidChange'),
+      ).toHaveLength(3);
+      expect(
+        journal.events.find((e) => e.name === 'LayerTree.snapshot-result')
+          ?.data,
+      ).toMatchObject({ status: 'ready', layerIds: ['fresh'] });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await trace.close();
+      vi.useRealTimers();
+    }
+  });
+  it('rejects missing layer evidence at the existing15s deadline and retains late raw events', async () => {
+    vi.useFakeTimers();
+    const value = fake(),
+      journal = causalJournal(),
+      trace = await observeCausalPage(value.publicPage, 'native', journal);
+    try {
+      let status = 'pending';
+      const read = trace.layers().then(
+        (result) => {
+          status = 'ready';
+          return result;
+        },
+        (error) => {
+          status = 'failed';
+          return error;
+        },
+      );
+      await vi.advanceTimersByTimeAsync(14_999);
+      expect(status).toBe('pending');
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await read).toEqual(
+        expect.objectContaining({
+          message:
+            'LayerTree did not provide a supported diagnostic snapshot within the existing action budget',
+        }),
+      );
+      expect(status).toBe('failed');
+      expect(
+        journal.events.find((e) => e.name === 'LayerTree.snapshot-result')
+          ?.data,
+      ).toMatchObject({
+        status: 'failed',
+        layerTreeEventSeq: null,
+        layerIds: null,
+      });
+      value.session.emit('LayerTree.layerTreeDidChange', {
+        layers: [{ layerId: 'too-late' }],
+      });
+      expect(status).toBe('failed');
+      expect(
+        journal.events.filter((e) => e.name === 'LayerTree.snapshot-result'),
+      ).toHaveLength(1);
+      expect(
+        journal.events.filter((e) => e.name === 'LayerTree.layerTreeDidChange'),
+      ).toHaveLength(1);
+      expect(
+        value.session.send.mock.calls.filter(
+          ([method]) => method === 'Runtime.evaluate',
+        ),
+      ).toHaveLength(1);
+      expect(
+        value.session.send.mock.calls.some(
+          ([method]) => method === 'LayerTree.enable',
+        ),
+      ).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      await trace.close();
+      vi.useRealTimers();
+    }
+  });
+  it.each(['before', 'during'])(
+    'rejects layer readiness when its CDP closes %s waiting',
+    async (when) => {
+      vi.useFakeTimers();
+      const value = fake(),
+        trace = await observeCausalPage(
+          value.publicPage,
+          'native',
+          causalJournal(),
+        );
+      try {
+        if (when === 'before') await trace.close();
+        const layerRead = expect(trace.layers()).rejects.toThrow(
+          'CDP closed before expected LayerTree snapshot',
+        );
+        const terminalRead =
+          when === 'during'
+            ? expect(
+                trace.terminal('http://synthetic.invalid/favicon.ico'),
+              ).rejects.toThrow('CDP closed')
+            : undefined;
+        await vi.advanceTimersByTimeAsync(0);
+        if (when === 'during') await trace.close();
+        await layerRead;
+        await terminalRead;
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        if (when !== 'before') await trace.close();
+        vi.useRealTimers();
+      }
+    },
+  );
+  it.each(['Runtime.evaluate', 'LayerTree.compositingReasons'])(
+    'propagates unknown %s failures instead of reporting layer readiness as success',
+    async (method) => {
+      vi.useFakeTimers();
+      const value = fake(),
+        trace = await observeCausalPage(
+          value.publicPage,
+          'native',
+          causalJournal(),
+        ),
+        failure = new Error('synthetic unknown CDP failure');
+      try {
+        value.session.emit('LayerTree.layerTreeDidChange', {
+          layers: [{ layerId: 'actual' }],
+        });
+        value.session.send.mockImplementation(async (name) => {
+          if (name === method) throw failure;
+          return {};
+        });
+        await expect(trace.layers()).rejects.toBe(failure);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        await trace.close();
+        vi.useRealTimers();
+      }
+    },
+  );
 });
