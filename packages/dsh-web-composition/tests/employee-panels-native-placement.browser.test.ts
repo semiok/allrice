@@ -380,19 +380,32 @@ suite(
         };
         // A rejected precondition must retain its actual subjects/hits and owner
         // state. This unvalidated record never enters the pixel comparisons.
-        await save(label + '-sampling.json', samplingBefore);
+        const samplingFile = label + '-sampling.json',
+          samplingBytes = JSON.stringify(samplingBefore, null, 2);
+        await writeFile(join(out, samplingFile), samplingBytes, { flag: 'wx' });
         const ownerBefore = inspectOwner
           ? await owner!.evaluate((handle) => handle.inspect())
           : null;
-        await save(label + '-sampling.json', {
-          ...samplingBefore,
-          stage: 'before-sampling-assertion',
-          ownerState: {
-            ...samplingBefore.ownerState,
-            inspectionCompleted: inspectOwner,
-            value: ownerBefore,
-          },
-        });
+        await writeFile(
+          join(out, label + '-sampling-owner.json'),
+          JSON.stringify(
+            {
+              label,
+              stage: 'before-sampling-assertion',
+              comparisonEligible: false,
+              samplingFile,
+              samplingSha256: sha(samplingBytes),
+              ownerState: {
+                ...samplingBefore.ownerState,
+                inspectionCompleted: inspectOwner,
+                value: ownerBefore,
+              },
+            },
+            null,
+            2,
+          ),
+          { flag: 'wx' },
+        );
         assertCausalSampling(value);
         const frame = await page.screenshot({
           path: join(out, label + '-frame.png'),
