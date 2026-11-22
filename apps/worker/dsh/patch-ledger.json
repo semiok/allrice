@@ -167,6 +167,14 @@
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-employee-documents.mjs",
       "reason": "Supply current V2 memory and identity-only frozen employee documents through public systemPrompt.context and exact-Agent PERSONA_PREFIX_SECTION shadowing on an admitted root. Optional PERSONA has an independent 16384-byte budget and derives only from verified frozen source; admitted descendants read only current PERSONA. Ordinary human USER/MEMORY keep existing owner/instance eligibility; V2 human Runs carry all summary ordinals and complete native text reads metered only by the existing memory Run ledger. Persona-only and scheduled inputs carry empty MEMORY and no memory tools or read ledger; retired V1 documents, source/search tools and budgets are rejected. Native persona, snapshot update/clear/resume/fork and history stay native. No new permission, private interface or alternate lifecycle."
+    },
+    {
+      "id": "allrice-vm-memory-v1",
+      "issue": "MET-267",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "packages/vm-memory/src/index.ts",
+      "reason": "Standalone, unassembled memory module uses public native bash BASH_ENV and pre-exec launcher artifacts; DSH retains execution, cancellation, output, exit and sessions. AllRice adds the authorized external SaaS resource gate and diagnostic projection with explicit trusted source and approved policy injection. Guest root cooperation is not isolation or an OOM survival guarantee. Current n3 gateway and VM owners are not connected. Actual global starting fence, exact child/OOM completion, trusted runtime hardcap readback, host pressure producer and real joint acceptance remain open. No new defaults, second executor, private DSH handle or automatic activation; upgrade checks and retirement boundaries are recorded in the reuse decision."
     }
   ]
 }
