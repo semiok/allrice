@@ -92,6 +92,7 @@ export class HostHistoryStore implements HostHistoryStorePort {
     let latest: { digest: string; snapshot: HostHistorySnapshot } | null = null;
     let selected: { digest: string; snapshot: HostHistorySnapshot } | null =
       null;
+    const cursors = new Map<number, string>();
     for (const name of names) {
       signal.throwIfAborted();
       if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
@@ -115,6 +116,12 @@ export class HostHistoryStore implements HostHistoryStorePort {
         hostHistoryDigest(snapshot.binding) !== hostHistoryDigest(binding)
       )
         throw new HostHistoryIntegrityError();
+      // Comparing only against the longest prefix can hide two conflicting
+      // older projections after a restore, depending on directory order.
+      const cursorDigest = cursors.get(snapshot.source.throughSeq);
+      if (cursorDigest !== undefined && cursorDigest !== actual)
+        throw new HostHistoryIntegrityError();
+      cursors.set(snapshot.source.throughSeq, actual);
       if (latest) compatible(latest.snapshot, snapshot);
       if (
         !latest ||

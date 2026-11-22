@@ -94,6 +94,7 @@ export async function captureHostHistory(input: {
     SessionId(binding.nativeSessionId),
     signal,
   );
+  signal.throwIfAborted();
   if (
     inspection.meta.id !== binding.nativeSessionId ||
     inspection.meta.version !== SESSION_FORMAT_VERSION
@@ -221,6 +222,16 @@ export async function captureHostHistory(input: {
       }
     }
   }
+  // Fix this inspect cut before awaiting another owner. Entries and source
+  // hashes must describe the same prefix, even if an attached source advances.
+  const source = {
+    dshVersion: '0.2.1-rc.2',
+    sessionFormatVersion: SESSION_FORMAT_VERSION,
+    headerHash: hostHistoryDigest(inspection.meta),
+    inheritedEventCount: inspection.inheritedEventCount,
+    throughSeq: events.length - 1,
+    eventHashes: events.map(hostHistoryDigest),
+  };
   const attachments = (await input.attachments(binding, signal)).map(
     (attachment) => HostHistoryAttachmentSchema.parse(attachment),
   );
@@ -240,14 +251,7 @@ export async function captureHostHistory(input: {
   const snapshot = HostHistorySnapshotSchema.parse({
     schemaVersion: 1,
     binding,
-    source: {
-      dshVersion: '0.2.1-rc.2',
-      sessionFormatVersion: SESSION_FORMAT_VERSION,
-      headerHash: hostHistoryDigest(inspection.meta),
-      inheritedEventCount: inspection.inheritedEventCount,
-      throughSeq: events.length - 1,
-      eventHashes: events.map(hostHistoryDigest),
-    },
+    source,
     entries,
     attachments,
     lastTurn,

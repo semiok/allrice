@@ -11,6 +11,7 @@ import {
   makeObjectKey,
   type DEntryIdentity,
   type HostHistoryBinding,
+  type HostHistoryPage,
   type RequestContext,
   type StorageObject,
 } from '@allrice/contracts';
@@ -23,6 +24,7 @@ import {
 import { captureHostHistory } from '../../../worker/src/harness/host-history';
 import { createDEntryHistoryHandlers } from './history';
 import type { DEntryNativeResource } from './native-resource';
+import { DEntryDependencyUnavailable } from './release-policy';
 
 type SessionInspection = Awaited<
   ReturnType<Parameters<typeof captureHostHistory>[0]['native']['inspect']>
@@ -33,6 +35,7 @@ const authority = vi.hoisted(() => ({
   generation: vi.fn(),
 }));
 const spoolIO = vi.hoisted(() => ({
+  historyOrder: undefined as { directory: string; names: string[] } | undefined,
   files: [] as Array<{
     closed: boolean;
     closedPromise: Promise<void>;
@@ -43,6 +46,16 @@ vi.mock('node:fs/promises', async (original) => {
   const fs = await original<typeof FileSystem>();
   return {
     ...fs,
+    async readdir(...args: Parameters<typeof fs.readdir>) {
+      const names = await fs.readdir(...args);
+      const order = spoolIO.historyOrder;
+      if (order && String(args[0]) === order.directory)
+        names.sort(
+          (a, b) =>
+            order.names.indexOf(String(a)) - order.names.indexOf(String(b)),
+        );
+      return names;
+    },
     async open(...args: Parameters<typeof fs.open>) {
       const handle = await fs.open(...args);
       if (String(args[0]).includes('/spool/history-')) {
@@ -76,8 +89,17 @@ const directories: string[] = [];
 beforeEach(() => {
   vi.clearAllMocks();
   spoolIO.files = [];
+  spoolIO.historyOrder = undefined;
   authority.generation.mockResolvedValue('4.0');
 });
+
+function gate() {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
 afterEach(async () => {
   vi.unstubAllGlobals();
   for (const path of directories.splice(0))
@@ -258,7 +280,12 @@ async function fixture(
   const execution = { vmStarts: 0, modelRequests: 0, replays: 0 };
   const native = {
     binding: structuredClone(binding),
-    inspect: vi.fn(async () => nativeData),
+    inspect: vi.fn<
+      Parameters<typeof captureHostHistory>[0]['native']['inspect']
+    >(async (_id, signal) => {
+      signal?.throwIfAborted();
+      return nativeData;
+    }),
     resolveAgent: vi.fn(() => {
       execution.vmStarts++;
       execution.replays++;
@@ -301,7 +328,9 @@ async function fixture(
     mediaType: object.mediaType,
     fileName: 'receipt.txt',
   };
-  const attachments = vi.fn(async () => [attachment]);
+  const attachments = vi.fn<
+    Parameters<typeof captureHostHistory>[0]['attachments']
+  >(async () => [attachment]);
   const store = new HostHistoryStore(root);
   const capture = () =>
     captureHostHistory({
@@ -330,7 +359,16 @@ async function fixture(
   };
   const files = {
     spoolDirectory: join(root, 'spool'),
-    acquire: vi.fn(async () => owner),
+    acquire: vi.fn(
+      async (
+        _context: RequestContext,
+        _objectId: string,
+        signal: AbortSignal,
+      ) => {
+        signal.throwIfAborted();
+        return owner;
+      },
+    ),
   };
   const handlers = createDEntryHistoryHandlers({
     resources,
@@ -1181,4 +1219,574 @@ describe('host-only native recovery history BFF', () => {
       await f.store.read(f.binding, new AbortController().signal),
     ).toBeNull();
   });
+});
+
+/** Contract fixtures only: 271 root/config, 273 inspect/checkpoint and object
+ * ACL owners are not production-bound. No execute/receipt signature exists in
+ * v1; the explicit execution below stays local to its test. */
+describe('v1 recovery contracts with unbound-owner test substitutes', () => {
+  it('fixes the inspected source cut before waiting for immutable attachment export', async () => {
+    const f = await fixture();
+    const original = structuredClone(f.nativeData);
+    const entered = gate();
+    const drained = gate();
+    f.attachments.mockImplementationOnce(async () => {
+      entered.release();
+      await drained.promise;
+      return [f.attachment];
+    });
+    const pending = f.capture();
+    await entered.promise;
+    // An advancing attached source must not relabel the already-projected
+    // entries with a later header, prefix or event hash.
+    const advancing = f.nativeData as unknown as {
+      meta: { createdAt: number };
+      inheritedEventCount: number;
+      events: SessionInspection['events'][number][];
+    };
+    advancing.meta.createdAt++;
+    advancing.inheritedEventCount = 1;
+    advancing.events[6] = {
+      ...advancing.events[6]!,
+      time: 9000,
+    };
+    advancing.events.push({
+      seq: advancing.events.length,
+      time: 9001,
+      type: 'turn/start',
+      data: { turn: 2 },
+    } as SessionInspection['events'][number]);
+    drained.release();
+    const saved = await pending;
+    expect(saved.snapshot.source).toMatchObject({
+      headerHash: hostHistoryDigest(original.meta),
+      inheritedEventCount: original.inheritedEventCount,
+      throughSeq: original.events.length - 1,
+      eventHashes: original.events.map(hostHistoryDigest),
+    });
+    expect(saved.snapshot.lastTurn.reason).toBe('interrupted');
+    expect(
+      (
+        await new HostHistoryStore(f.root).read(
+          f.binding,
+          new AbortController().signal,
+        )
+      )?.snapshot,
+    ).toEqual(saved.snapshot);
+  });
+
+  it.each(['tool-result', 'attachment'] as const)(
+    'refuses restored same-cursor %s conflicts even when the longest prefix is read first',
+    async (conflict) => {
+      const f = await fixture();
+      const original = await f.capture();
+      f.native.inspect.mockResolvedValue({
+        ...f.nativeData,
+        events: [
+          ...f.nativeData.events,
+          {
+            seq: f.nativeData.events.length,
+            time: 9000,
+            type: 'turn/start',
+            data: { turn: 2 },
+          },
+        ],
+      } as SessionInspection);
+      const latest = await f.capture();
+      const branch = structuredClone(original.snapshot);
+      if (conflict === 'attachment')
+        branch.attachments[0]!.checksum = `sha256:${'0'.repeat(64)}`;
+      else {
+        const tool = branch.entries.find((entry) => entry.kind === 'tool')!;
+        if (tool.kind !== 'tool' || !tool.result)
+          throw new Error('Fixture lacks the original recorded tool result');
+        tool.result.text = 'conflicting restored tool result';
+      }
+      const branchDigest = hostHistoryDigest(branch);
+      const directory = join(f.root, hostHistoryDigest(f.binding).slice(7));
+      const name = (digest: string) => `${digest.slice(7)}.json`;
+      // Restore a set of individually valid immutable files, as can also
+      // result from racing publishers. No file replaces an original.
+      await writeFile(
+        join(directory, name(branchDigest)),
+        JSON.stringify(branch),
+        { flag: 'wx', mode: 0o600 },
+      );
+      spoolIO.historyOrder = {
+        directory,
+        names: [name(latest.digest), name(original.digest), name(branchDigest)],
+      };
+      const reopened = new HostHistoryStore(f.root);
+      for (const digest of [undefined, original.digest, latest.digest])
+        await expect(
+          reopened.read(f.binding, new AbortController().signal, digest),
+        ).rejects.toBeInstanceOf(HostHistoryIntegrityError);
+      expect((await f.handlers.history(f.request({ limit: 100 }))).status).toBe(
+        409,
+      );
+      expect(
+        await readFile(join(directory, name(original.digest)), 'utf8'),
+      ).toBe(JSON.stringify(original.snapshot));
+    },
+  );
+
+  it('reopens paginated unfinished tool data without upgrading an old cursor to a later result or attachment', async () => {
+    const f = await fixture();
+    f.native.inspect.mockResolvedValue({
+      ...f.nativeData,
+      events: f.nativeData.events.slice(0, 6),
+    });
+    f.attachments.mockResolvedValue([]);
+    const prefix = await f.capture();
+    const first: HostHistoryPage = await (
+      await f.handlers.history(f.request({ limit: 1 }))
+    ).json();
+    expect(first.nextCursor).not.toBeNull();
+    f.native.inspect.mockResolvedValue(f.nativeData);
+    f.attachments.mockResolvedValue([f.attachment]);
+    const later = await f.capture();
+    f.native.inspect.mockRejectedValue(new Error('VM/model/auth offline'));
+    // Reconstruct both the store and BFF: no prior in-memory history survives.
+    const reopened = createDEntryHistoryHandlers({
+      resources: f.resources,
+      binding: f.bindingPort,
+      store: new HostHistoryStore(f.root),
+      context: async () => f.context,
+      files: f.files,
+    });
+    const old: HostHistoryPage = await (
+      await reopened.history(f.request({ limit: 100, ...first.nextCursor! }))
+    ).json();
+    expect(old.snapshotDigest).toBe(prefix.digest);
+    expect(old.notice).toBe('unfinished');
+    expect(old.entries.find((entry) => entry.kind === 'tool')).toMatchObject({
+      callId: 'effect-call',
+      arguments: '{"value":1}',
+      outcome: 'unfinished',
+      result: null,
+    });
+    expect(old.attachments).toEqual([]);
+    expect(old.nextCursor).toBeNull();
+    const current: HostHistoryPage = await (
+      await reopened.history(f.request({ limit: 100 }))
+    ).json();
+    expect(current.snapshotDigest).toBe(later.digest);
+    expect(
+      current.entries.find((entry) => entry.kind === 'tool'),
+    ).toMatchObject({
+      outcome: 'outcome-unknown',
+      result: { seq: 6, text: '原生结果未知。' },
+    });
+    expect(current.attachments).toEqual([f.attachment]);
+    expect(f.native.inspect).toHaveBeenCalledTimes(2);
+    expect(f.execution).toEqual({ vmStarts: 0, modelRequests: 0, replays: 0 });
+  });
+
+  it.each([
+    {
+      fault: 'crash-prefix',
+      length: 6,
+      notice: 'unfinished',
+      outcome: 'unfinished',
+    },
+    {
+      fault: 'stream-loss',
+      length: 7,
+      notice: 'unfinished',
+      outcome: 'outcome-unknown',
+    },
+    {
+      fault: 'native-interrupted',
+      length: 10,
+      notice: 'interrupted',
+      outcome: 'outcome-unknown',
+    },
+  ] as const)(
+    'rereads a $fault record after reopening without repairing or replaying the old execution',
+    async ({ length, notice, outcome }) => {
+      const f = await fixture();
+      f.native.inspect.mockResolvedValue({
+        ...f.nativeData,
+        events: f.nativeData.events.slice(0, length),
+      });
+      if (length < 7) f.attachments.mockResolvedValue([]);
+      const saved = await f.capture();
+      f.native.inspect.mockRejectedValue(new Error('Source remains offline'));
+      const refreshAuthentication = vi.fn(() => {
+        throw new Error('Cold history must not refresh native authentication');
+      });
+      // Deliberately unavailable runtime: the BFF only has host storage ports.
+      Object.assign(f.native, { refreshAuthentication });
+      for (let reopen = 0; reopen < 2; reopen++) {
+        const handlers = createDEntryHistoryHandlers({
+          resources: f.resources,
+          binding: f.bindingPort,
+          store: new HostHistoryStore(f.root),
+          context: async () => f.context,
+        });
+        const response = await handlers.history(f.request({ limit: 100 }));
+        expect(response.status).toBe(200);
+        const page: HostHistoryPage = await response.json();
+        expect(page.snapshotDigest).toBe(saved.digest);
+        expect(page.notice).toBe(notice);
+        expect(page.externalEffects).toBe('unverified');
+        expect(
+          page.entries.find((entry) => entry.kind === 'tool'),
+        ).toMatchObject({
+          callId: 'effect-call',
+          outcome,
+        });
+        expect(Object.keys(handlers).sort()).toEqual(['download', 'history']);
+      }
+      expect(f.native.inspect).toHaveBeenCalledTimes(1);
+      expect(f.native.resolveAgent).not.toHaveBeenCalled();
+      expect(f.native.prompt).not.toHaveBeenCalled();
+      expect(refreshAuthentication).not.toHaveBeenCalled();
+      expect(f.execution).toEqual({
+        vmStarts: 0,
+        modelRequests: 0,
+        replays: 0,
+      });
+    },
+  );
+
+  it('keeps commit-before-ack unknown on reread; an explicit new execution has its own identity', async () => {
+    const f = await fixture();
+    // Test-only business/execute owner: v1 has no frozen API for either.
+    // This proves history isolation, not a production receipt binding or VM kill.
+    const effects = new Map<string, number>();
+    const execute = vi.fn(async (executionId: string, loseAck: boolean) => {
+      effects.set(executionId, (effects.get(executionId) ?? 0) + 1);
+      if (loseAck) throw new Error('Committed before ACK was lost');
+    });
+    await expect(execute('old-execution', true)).rejects.toThrow('ACK');
+    const original = await f.capture();
+    const request = f.request({ limit: 100 });
+    for (let reopen = 0; reopen < 2; reopen++) {
+      const handlers = createDEntryHistoryHandlers({
+        resources: f.resources,
+        binding: f.bindingPort,
+        store: new HostHistoryStore(f.root),
+        context: async () => f.context,
+      });
+      const page: HostHistoryPage = await (
+        await handlers.history(request)
+      ).json();
+      expect(page.externalEffects).toBe('unverified');
+      expect(page.entries.find((entry) => entry.kind === 'tool')).toMatchObject(
+        {
+          outcome: 'outcome-unknown',
+        },
+      );
+    }
+    expect([...effects]).toEqual([['old-execution', 1]]);
+    expect(execute).toHaveBeenCalledTimes(1);
+    // Only this separate explicit call executes; a history read cannot invoke it.
+    await execute('explicit-new-execution', false);
+    expect([...effects]).toEqual([
+      ['old-execution', 1],
+      ['explicit-new-execution', 1],
+    ]);
+    expect(
+      (
+        await new HostHistoryStore(f.root).read(
+          f.binding,
+          new AbortController().signal,
+          original.digest,
+        )
+      )?.snapshot,
+    ).toEqual(original.snapshot);
+    expect(f.native.resolveAgent).not.toHaveBeenCalled();
+    expect(f.native.prompt).not.toHaveBeenCalled();
+  });
+
+  it.each(['inspect', 'attachments'] as const)(
+    'joins a revoked pending %s export before rejecting, without publishing a late result',
+    async (stage) => {
+      const f = await fixture();
+      const entered = gate();
+      const aborted = gate();
+      const drained = gate();
+      const reason = new DataAccessError('authorization_denied');
+      const hold = async (signal: AbortSignal) => {
+        signal.addEventListener('abort', aborted.release, { once: true });
+        entered.release();
+        await drained.promise;
+        signal.removeEventListener('abort', aborted.release);
+      };
+      if (stage === 'inspect')
+        f.native.inspect.mockImplementationOnce(async (_id, signal) => {
+          await hold(signal!);
+          return f.nativeData;
+        });
+      else
+        f.attachments.mockImplementationOnce(async (_binding, signal) => {
+          await hold(signal);
+          return [f.attachment];
+        });
+      const publish = vi.spyOn(f.store, 'publish');
+      let settled = false;
+      const pending = f.capture();
+      const outcome = pending.then(
+        () => {
+          settled = true;
+          return null;
+        },
+        (error: unknown) => {
+          settled = true;
+          return error;
+        },
+      );
+      await entered.promise;
+      f.revoked.abort(reason);
+      await aborted.promise;
+      expect(settled).toBe(false);
+      expect(publish).not.toHaveBeenCalled();
+      drained.release();
+      expect(await outcome).toBe(reason);
+      expect(publish).not.toHaveBeenCalled();
+      expect(
+        await new HostHistoryStore(f.root).read(
+          f.binding,
+          new AbortController().signal,
+        ),
+      ).toBeNull();
+    },
+  );
+
+  it('rereads an export committed before its acknowledgement was lost without recapturing or executing', async () => {
+    const f = await fixture();
+    const publish = f.store.publish.bind(f.store);
+    const committed = gate();
+    const ack = gate();
+    let digest!: string;
+    vi.spyOn(f.store, 'publish').mockImplementationOnce(
+      async (snapshot, signal) => {
+        digest = await publish(snapshot, signal);
+        committed.release();
+        await ack.promise;
+        throw new Error('Checkpoint committed; acknowledgement lost');
+      },
+    );
+    const pending = f.capture();
+    const rejected = expect(pending).rejects.toThrow('acknowledgement lost');
+    await committed.promise;
+    const reopened = new HostHistoryStore(f.root);
+    expect(
+      (await reopened.read(f.binding, new AbortController().signal))?.digest,
+    ).toBe(digest);
+    ack.release();
+    await rejected;
+    f.native.inspect.mockRejectedValue(new Error('Source offline after crash'));
+    const page: HostHistoryPage = await (
+      await f.handlers.history(f.request({ limit: 100 }))
+    ).json();
+    expect(page.snapshotDigest).toBe(digest);
+    expect(page.externalEffects).toBe('unverified');
+    expect(f.native.inspect).toHaveBeenCalledTimes(1);
+    expect(f.store.publish).toHaveBeenCalledTimes(1);
+    expect(f.execution).toEqual({ vmStarts: 0, modelRequests: 0, replays: 0 });
+  });
+
+  it.each(['root', 'config', 'request'] as const)(
+    'joins pending acquire and a late handle close after %s revocation',
+    async (scope) => {
+      const f = await fixture();
+      const saved = await f.capture();
+      const entered = gate();
+      const aborted = gate();
+      const acquired = gate();
+      const closing = gate();
+      const closed = gate();
+      f.files.acquire.mockImplementationOnce(
+        async (_context, _objectId, signal) => {
+          signal.addEventListener('abort', aborted.release, { once: true });
+          entered.release();
+          await acquired.promise;
+          signal.removeEventListener('abort', aborted.release);
+          return f.owner;
+        },
+      );
+      f.owner.close.mockImplementationOnce(async () => {
+        closing.release();
+        await closed.promise;
+      });
+      const cancel = new AbortController();
+      let settled = false;
+      const pending = f.handlers.download(
+        f.request(
+          {
+            snapshotDigest: saved.digest,
+            objectId: f.object.id,
+          },
+          cancel.signal,
+        ),
+      );
+      void pending.then(() => {
+        settled = true;
+      });
+      await entered.promise;
+      const reason = new DataAccessError('authorization_denied');
+      if (scope === 'request') cancel.abort(reason);
+      else {
+        // Test-only 271/config authority: no production config notification
+        // interface is invented. The owner must revoke its real resource signal.
+        if (scope === 'config')
+          f.bindingPort.mockResolvedValue({
+            ...f.binding,
+            configurationDigest: hostHistoryDigest({ changed: true }),
+          });
+        f.revoked.abort(reason);
+      }
+      await aborted.promise;
+      expect(settled).toBe(false);
+      expect(f.owner.close).not.toHaveBeenCalled();
+      acquired.release();
+      await closing.promise;
+      expect(settled).toBe(false);
+      closed.release();
+      expect((await pending).status).toBe(403);
+      expect(f.owner.open).not.toHaveBeenCalled();
+      expect(f.owner.close).toHaveBeenCalledTimes(1);
+      expect(spoolIO.files).toEqual([]);
+    },
+  );
+
+  it.each(['root', 'config'] as const)(
+    'joins a late history binding after %s revocation and admits no storage read',
+    async (scope) => {
+      const f = await fixture();
+      await f.capture();
+      const entered = gate();
+      const aborted = gate();
+      const drained = gate();
+      const binding = vi.fn(
+        async (_resource: DEntryNativeResource, signal: AbortSignal) => {
+          signal.addEventListener('abort', aborted.release, { once: true });
+          entered.release();
+          await drained.promise;
+          signal.removeEventListener('abort', aborted.release);
+          return f.binding;
+        },
+      );
+      const store = new HostHistoryStore(f.root);
+      const read = vi.spyOn(store, 'read');
+      const handlers = createDEntryHistoryHandlers({
+        resources: f.resources,
+        binding,
+        store,
+        context: async () => f.context,
+      });
+      let settled = false;
+      const pending = handlers.history(f.request({ limit: 100 }));
+      void pending.then(() => {
+        settled = true;
+      });
+      await entered.promise;
+      if (scope === 'config')
+        f.binding.configurationDigest = hostHistoryDigest({ changed: true });
+      f.revoked.abort(new DataAccessError('authorization_denied'));
+      await aborted.promise;
+      expect(settled).toBe(false);
+      drained.release();
+      expect((await pending).status).toBe(403);
+      expect(read).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['root', 'config', 'object'] as const)(
+    'joins pending object reauthorization and close after %s revocation',
+    async (scope) => {
+      const f = await fixture();
+      const saved = await f.capture();
+      const entered = gate();
+      const aborted = gate();
+      const drained = gate();
+      const closing = gate();
+      const closed = gate();
+      f.owner.reauthorize.mockImplementationOnce(async (signal) => {
+        signal.addEventListener('abort', aborted.release, { once: true });
+        entered.release();
+        await drained.promise;
+        signal.removeEventListener('abort', aborted.release);
+        return f.object;
+      });
+      f.owner.close.mockImplementationOnce(async () => {
+        closing.release();
+        await closed.promise;
+      });
+      let settled = false;
+      const pending = f.handlers.download(
+        f.request({
+          snapshotDigest: saved.digest,
+          objectId: f.object.id,
+        }),
+      );
+      void pending.then(() => {
+        settled = true;
+      });
+      await entered.promise;
+      const reason = new DataAccessError('authorization_denied');
+      if (scope === 'object') f.objectRevoked.abort(reason);
+      else {
+        if (scope === 'config')
+          f.bindingPort.mockResolvedValue({
+            ...f.binding,
+            configurationDigest: hostHistoryDigest({ changed: true }),
+          });
+        f.revoked.abort(reason);
+      }
+      await aborted.promise;
+      expect(settled).toBe(false);
+      expect(f.owner.close).not.toHaveBeenCalled();
+      drained.release();
+      await closing.promise;
+      expect(settled).toBe(false);
+      closed.release();
+      expect((await pending).status).toBe(403);
+      expect(f.owner.open).not.toHaveBeenCalled();
+      expect(f.owner.close).toHaveBeenCalledTimes(1);
+      expect(spoolIO.files).toEqual([]);
+    },
+  );
+
+  it.each(['root-source', 'configuration'] as const)(
+    'fails closed when the production %s is unbound, without reading storage or opening a file',
+    async (missing) => {
+      const f = await fixture();
+      const saved = await f.capture();
+      const store = new HostHistoryStore(f.root);
+      const read = vi.spyOn(store, 'read');
+      const unavailable = new DEntryDependencyUnavailable('native-route');
+      if (missing === 'root-source')
+        f.resources.resolve.mockRejectedValue(unavailable);
+      else f.bindingPort.mockRejectedValue(unavailable);
+      const handlers = createDEntryHistoryHandlers({
+        resources: f.resources,
+        binding: f.bindingPort,
+        store,
+        context: async () => f.context,
+        files: f.files,
+      });
+      for (const response of [
+        await handlers.history(f.request({ limit: 100 })),
+        await handlers.download(
+          f.request({ snapshotDigest: saved.digest, objectId: f.object.id }),
+        ),
+      ]) {
+        expect(response.status).toBe(503);
+        expect(await response.json()).toMatchObject({
+          error: { code: 'DEPENDENCY_UNAVAILABLE', retryable: false },
+        });
+      }
+      expect(read).not.toHaveBeenCalled();
+      expect(f.files.acquire).not.toHaveBeenCalled();
+      expect(f.native.inspect).toHaveBeenCalledTimes(1);
+      expect(f.execution).toEqual({
+        vmStarts: 0,
+        modelRequests: 0,
+        replays: 0,
+      });
+    },
+  );
 });

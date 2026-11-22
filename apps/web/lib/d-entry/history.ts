@@ -112,7 +112,8 @@ export interface DEntryHistoryPorts {
    * VM, refresh model credentials, or call native resolveAgent for a read. */
   resources: DEntryNativeResourcePort;
   /** Current trusted host mapping. Return the recorded thread configuration;
-   * never infer an instance/profile/release from browser selectors or env. */
+   * never infer an instance/profile/release from browser selectors or env.
+   * Cancellation settles only after the owner's pending reads have joined. */
   binding(
     resource: DEntryNativeResource,
     signal: AbortSignal,
@@ -160,9 +161,11 @@ export function createDEntryHistoryHandlers(ports: DEntryHistoryPorts) {
     const binding = HostHistoryBindingSchema.parse(
       await ports.binding(resource, signal),
     );
+    signal.throwIfAborted();
     if (!matches(binding, resource, identity.workspaceId))
       throw new DataAccessError('authorization_denied');
     const stored = await ports.store.read(binding, signal, digest);
+    signal.throwIfAborted();
     if (!stored) throw new DataAccessError('not_found');
     if (
       hostHistoryDigest(stored.snapshot) !== stored.digest ||
@@ -287,6 +290,7 @@ export function createDEntryHistoryHandlers(ports: DEntryHistoryPorts) {
             )
               throw new DataAccessError('authorization_denied');
             const currentBinding = await ports.binding(resource, signal);
+            signal.throwIfAborted();
             if (
               hostHistoryDigest(currentBinding) !==
               hostHistoryDigest(stored.binding)
