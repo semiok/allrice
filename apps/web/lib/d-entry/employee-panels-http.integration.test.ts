@@ -329,8 +329,8 @@ suite(
       );
       expect(list.viewerId).toBe(p.context.actor.id);
       expect(list.files.map((file) => file.fileName).sort()).toEqual([
-        '同名 (2).txt',
         '同名.txt',
+        '同名（2）.txt',
       ]);
       expect(list.quotableFileIds.sort()).toEqual(
         [first.objectId, second.objectId].sort(),
