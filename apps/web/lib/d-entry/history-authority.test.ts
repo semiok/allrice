@@ -399,58 +399,143 @@ describe('formal 271 history composition contract', () => {
     },
   );
 
-  it.each(['eof', 'cancel', 'revoke'] as const)(
+  it.each([
+    'eof',
+    'cancel',
+    'revoke',
+    'early-response-assertion',
+    'initialization-failure',
+  ] as const)(
     'keeps subscription distinct from object owner and joins streamed %s',
     async (mode) => {
       const f = await fixture(),
         closing = gate(),
         closed = gate();
-      f.subscription.close.mockImplementationOnce(async () => {
-        closing.release();
-        await closed.promise;
+      let closePromise: Promise<void> | undefined;
+      let closeFinished = false;
+      f.subscription.close.mockImplementationOnce(() => {
+        closePromise = (async () => {
+          closing.release();
+          await closed.promise;
+          await turn();
+          closeFinished = true;
+        })();
+        return closePromise;
       });
-      const response = await createDEntryHistoryRouteHandlers(f.ports).download(
-        f.request(true),
+      if (mode === 'initialization-failure')
+        f.files.acquire.mockRejectedValueOnce(
+          new DataAccessError('authorization_denied'),
+        );
+      const initializationClosed = new Error(
+        'Download entered authority close before returning a response',
       );
-      expect(response.status).toBe(200);
-      expect(f.subscription.close).not.toHaveBeenCalled();
+      let injectedAssertion: unknown;
+      let pending: Promise<Response> | undefined;
+      let response: Response | undefined;
       let settled = false;
-      let operation: Promise<unknown>;
-      if (mode === 'cancel') operation = response.body!.cancel();
-      else {
-        operation = response.arrayBuffer();
+      let operation: Promise<unknown> | undefined;
+      let outcome: Promise<{ value: unknown } | { error: unknown }> | undefined;
+      const exercise = async () => {
+        try {
+          pending = createDEntryHistoryRouteHandlers(f.ports).download(
+            f.request(true),
+          );
+          // Failed initialization may already be awaiting our closed gate.
+          // Enter finally instead of awaiting that blocked request forever.
+          const ready = await Promise.race([
+            pending.then((response) => ({ response })),
+            closing.promise.then(() => undefined),
+          ]);
+          if (!ready) throw initializationClosed;
+          response = ready.response;
+          expect(response.status).toBe(200);
+          expect(f.subscription.close).not.toHaveBeenCalled();
+          if (mode === 'early-response-assertion') {
+            try {
+              expect(response.status, 'controlled early response failure').toBe(
+                201,
+              );
+            } catch (error) {
+              injectedAssertion = error;
+              throw error;
+            }
+          }
+          if (mode === 'cancel') operation = response.body!.cancel();
+          else {
+            operation = response.arrayBuffer();
+            if (mode === 'revoke')
+              f.revoked.abort(new DataAccessError('authorization_denied'));
+          }
+          outcome = operation.then(
+            (value) => {
+              settled = true;
+              return { value };
+            },
+            (error: unknown) => {
+              settled = true;
+              return { error };
+            },
+          );
+          await closing.promise;
+          await turn();
+          expect(settled).toBe(false);
+          expect(f.owner.close).toHaveBeenCalledTimes(1);
+          expect(f.subscription.close).toHaveBeenCalledTimes(1);
+        } finally {
+          closed.release();
+          const [request] = await Promise.allSettled([pending]);
+          if (request?.status === 'fulfilled') response ??= request.value;
+          // A failed response assertion leaves an unconsumed spool body.
+          // Drain it and every actual Promise without replacing the assertion.
+          await Promise.allSettled([
+            operation,
+            outcome,
+            (async () => {
+              if (response?.body && !response.bodyUsed && !response.body.locked)
+                await response.body.cancel();
+            })(),
+          ]);
+          await Promise.allSettled([closePromise]);
+        }
+        const result = await outcome!;
+        if (mode === 'eof')
+          expect(
+            new Uint8Array((result as { value: ArrayBuffer }).value),
+          ).toEqual(f.bytes);
         if (mode === 'revoke')
-          f.revoked.abort(new DataAccessError('authorization_denied'));
-      }
-      const outcome = operation.then(
-        (value) => {
-          settled = true;
-          return { value };
-        },
-        (error: unknown) => {
-          settled = true;
-          return { error };
-        },
-      );
-      try {
-        await closing.promise;
-        await turn();
-        expect(settled).toBe(false);
-        expect(f.owner.close).toHaveBeenCalledTimes(1);
-        expect(f.subscription.close).toHaveBeenCalledTimes(1);
-      } finally {
-        closed.release();
-        await outcome;
-      }
-      const result = await outcome;
-      if (mode === 'eof')
-        expect(
-          new Uint8Array((result as { value: ArrayBuffer }).value),
-        ).toEqual(f.bytes);
-      if (mode === 'revoke')
-        expect(result).toMatchObject({
-          error: { code: 'authorization_denied' },
-        });
+          expect(result).toMatchObject({
+            error: { code: 'authorization_denied' },
+          });
+      };
+      if (
+        mode === 'early-response-assertion' ||
+        mode === 'initialization-failure'
+      ) {
+        const failure = await exercise().then(
+          () => {
+            throw new Error('Controlled failure did not occur');
+          },
+          (error: unknown) => error,
+        );
+        expect(failure).toBe(
+          mode === 'early-response-assertion'
+            ? injectedAssertion
+            : initializationClosed,
+        );
+        expect(response?.bodyUsed).toBe(true);
+        expect(response?.body?.locked).toBe(false);
+        if (mode === 'early-response-assertion') {
+          expect(injectedAssertion).toBeInstanceOf(Error);
+          expect(f.owner.close).toHaveBeenCalledTimes(1);
+        } else {
+          expect(response?.status).toBe(403);
+          expect(f.owner.close).not.toHaveBeenCalled();
+          expect(f.owner.open).not.toHaveBeenCalled();
+        }
+      } else await exercise();
+      expect(closeFinished).toBe(true);
+      expect(f.subscription.close).toHaveBeenCalledTimes(1);
+      expect(f.subscription.close.mock.results[0]?.value).toBe(closePromise);
     },
   );
 
