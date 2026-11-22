@@ -373,6 +373,15 @@ export {
 
 export * from './workbench-files.ts';
 export {
+  createDeliverablesPort,
+  DeliverableReadError,
+  type DeliverablesPortOptions,
+} from './deliverables-port.ts';
+export {
+  createEnterpriseMaterialsPort,
+  type EnterpriseMaterialsPortOptions,
+} from './enterprise-materials-port.ts';
+export {
   runManualAutomation,
   getManualAutomationRun,
   ManualAutomationRunError,

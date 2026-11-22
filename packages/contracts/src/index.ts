@@ -187,6 +187,8 @@ export * from './brand-content-templates.ts';
 
 export * from './automation-catalog.ts';
 export * from './workbench-files.ts';
+export * from './deliverables-port.ts';
+export * from './enterprise-materials-port.ts';
 
 export * from './brand-content-feedback.ts';
 export * from './bootstrap-context.ts';

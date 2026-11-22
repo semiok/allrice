@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { legacyReferenceFixture } from './legacy-reference.fixture.ts';
 import { allocateWorkbenchFileName } from './workbench-file-name.ts';
+import { createDeliverablesPort } from './deliverables-port.ts';
+import { createEnterpriseMaterialsPort } from './enterprise-materials-port.ts';
+import {
+  claimReferenceProcessing,
+  finishReferenceProcessing,
+} from './reference-processing.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
 import type { RequestContext, WorkbenchFileSharing } from '@allrice/contracts';
@@ -39,6 +45,7 @@ import {
 import { readReferenceSelection } from './reference-runtime.ts';
 import { listWorkspaceFiles } from './workspace/service.ts';
 import {
+  DataAccessError,
   getStoredFile,
   createStorageMetadata,
   markStorageReady,
@@ -775,6 +782,407 @@ suite(
         releaseFirst();
         await first;
       }
+    }, 30000);
+    it('uses the personal business Port for my files, favorites across employees and exact verified text', async () => {
+      const t = await setup();
+      // Explicit 273 qualification substitute; real membership/resource ACLs
+      // still run in the owner. This does not bind a production employee.
+      const testQualification = vi.fn(async () => {});
+      const port = createDeliverablesPort({
+        storage: storage(),
+        requireCurrentAccess: testQualification,
+      });
+      const signal = new AbortController().signal;
+      const input = uploadInput(t.owner);
+      const original = await port.upload(t.owner, input, signal);
+      expect(await port.upload(t.owner, input, signal)).toEqual(original);
+      const next = await port.upload(
+        t.owner,
+        { ...input, requestId: randomUUID() },
+        signal,
+      );
+      expect(next.objectId).not.toBe(original.objectId);
+      await port.favorite(
+        t.owner,
+        { target: original, body: { favorite: true } },
+        signal,
+      );
+      await port.favorite(
+        t.owner,
+        { target: original, body: { favorite: true } },
+        signal,
+      );
+      const favorites = await port.list(
+        t.owner,
+        {
+          workspaceId: t.owner.workspaceId!,
+          category: 'favorite',
+          employeeInstanceId: randomUUID(),
+        },
+        signal,
+      );
+      expect(favorites.files.map((file) => file.objectId)).toEqual([
+        original.objectId,
+      ]);
+      expect(favorites.files[0]!.fileName).toBe('收入口径.txt');
+      const file = await readWorkbenchFile(t.owner, original.objectId);
+      const exact = {
+        objectId: original.objectId,
+        checksum: file.object.checksum,
+      };
+      const text = await port.readExact(
+        t.owner,
+        { ...exact, offset: 2, limit: 5 },
+        signal,
+      );
+      expect(text).toMatchObject({
+        id: original.objectId,
+        checksum: file.object.checksum,
+        content: '按已经确认的回款统计收入。'.slice(2, 7),
+        offset: 2,
+        nextOffset: 7,
+        truncated: true,
+      });
+      const resource = await port.authorizedResource(t.owner, exact, signal);
+      expect(Object.keys(resource).sort()).toEqual([
+        'fileName',
+        'mediaType',
+        'open',
+        'sizeBytes',
+        'source',
+      ]);
+      expect(await new Response(await resource.open(signal)).text()).toBe(
+        '按已经确认的回款统计收入。',
+      );
+      await expect(
+        port.readExact(
+          t.owner,
+          { ...exact, checksum: `sha256:${'0'.repeat(64)}` },
+          signal,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        port.authorizedResource(t.maintainer, exact, signal),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await port.favorite(
+        t.owner,
+        { target: original, body: { favorite: false } },
+        signal,
+      );
+      expect(
+        (
+          await port.list(
+            t.owner,
+            { workspaceId: t.owner.workspaceId!, category: 'favorite' },
+            signal,
+          )
+        ).files,
+      ).toEqual([]);
+      expect(testQualification).toHaveBeenCalled();
+      const unbound = createDeliverablesPort({ storage: storage() });
+      await expect(
+        unbound.list(t.owner, { workspaceId: t.owner.workspaceId! }, signal),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+    }, 30000);
+    it('does not return corrupt bytes or a new stream segment after qualification is revoked, and joins cancellation', async () => {
+      const t = await setup();
+      const actualStorage = storage();
+      const uploaded = await uploadWorkbenchFile(
+        t.owner,
+        uploadInput(t.owner),
+        actualStorage,
+      );
+      const stored = await readWorkbenchFile(t.owner, uploaded.objectId);
+      const input = {
+        objectId: uploaded.objectId,
+        checksum: stored.object.checksum,
+      };
+      const signal = new AbortController().signal;
+      let enabled = true;
+      const testQualification = async () => {
+        if (!enabled) throw new DataAccessError('authorization_denied');
+      };
+      const corrupt = createDeliverablesPort({
+        requireCurrentAccess: testQualification,
+        storage: {
+          ...actualStorage,
+          async get() {
+            return new Blob(['corrupt']).stream();
+          },
+        },
+      });
+      await expect(
+        corrupt.readExact(t.owner, input, signal),
+      ).rejects.toMatchObject({ code: 'TOOL_FILE_CHECKSUM_MISMATCH' });
+      const upstreamCanceled = vi.fn(async () => {});
+      const port = createDeliverablesPort({
+        requireCurrentAccess: testQualification,
+        storage: {
+          ...actualStorage,
+          async get() {
+            return new ReadableStream<Uint8Array>({
+              pull(controller) {
+                controller.enqueue(new TextEncoder().encode('按'));
+              },
+              cancel: upstreamCanceled,
+            });
+          },
+        },
+      });
+      const resource = await port.authorizedResource(t.owner, input, signal);
+      const stream = await resource.open(signal);
+      enabled = false;
+      await expect(new Response(stream).arrayBuffer()).rejects.toMatchObject({
+        code: 'authorization_denied',
+      });
+      expect(upstreamCanceled).toHaveBeenCalledTimes(1);
+      enabled = true;
+      const cancellation = new AbortController();
+      const nextResource = await port.authorizedResource(
+        t.owner,
+        input,
+        cancellation.signal,
+      );
+      const nextStream = await nextResource.open(cancellation.signal);
+      let releaseCancel!: () => void;
+      let cancelStarted!: () => void;
+      const cancelFinished = new Promise<void>((resolve) => {
+        releaseCancel = resolve;
+      });
+      const cancelEntered = new Promise<void>((resolve) => {
+        cancelStarted = resolve;
+      });
+      upstreamCanceled.mockImplementationOnce(async () => {
+        cancelStarted();
+        await cancelFinished;
+      });
+      cancellation.abort(new Error('native request canceled'));
+      let settled = false;
+      const read = new Response(nextStream).arrayBuffer();
+      void read.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      try {
+        await cancelEntered;
+        await Promise.resolve();
+        expect(settled).toBe(false);
+      } finally {
+        releaseCancel();
+        await expect(read).rejects.toThrow('native request canceled');
+      }
+      expect(upstreamCanceled).toHaveBeenCalledTimes(2);
+    }, 30000);
+    it('uses the materials Port for independent saves and current personal, department and company publication queries', async () => {
+      const t = await setup();
+      const actualStorage = storage();
+      // Explicit qualification substitute only. Audience, live memberships,
+      // publisher maintenance and exact selection remain real owner checks.
+      const port = createEnterpriseMaterialsPort({
+        storage: actualStorage,
+        requireCurrentAccess: async () => {},
+      });
+      const signal = new AbortController().signal;
+      const input = {
+        ...uploadInput(t.owner),
+        scope: 'personal' as const,
+        purpose: '本人的固定资料',
+      };
+      const first = await port.save(t.owner, input, signal);
+      expect(await port.save(t.owner, input, signal)).toEqual(first);
+      const second = await port.save(
+        t.owner,
+        { ...input, requestId: randomUUID() },
+        signal,
+      );
+      expect(second.sourceId).not.toBe(first.sourceId);
+      expect(second.revisionId).not.toBe(first.revisionId);
+      const firstFile = await getReferenceFile(
+        t.owner,
+        t.owner.workspaceId!,
+        first.revisionId,
+      );
+      const secondFile = await getReferenceFile(
+        t.owner,
+        t.owner.workspaceId!,
+        second.revisionId,
+      );
+      expect([firstFile.fileName, secondFile.fileName]).toEqual([
+        '收入口径.txt',
+        '收入口径（2）.txt',
+      ]);
+      expect(
+        (
+          await port.listCurrent(
+            t.owner,
+            { workspaceId: t.owner.workspaceId! },
+            signal,
+          )
+        ).references
+          .map((file) => file.revisionId)
+          .sort(),
+      ).toEqual([first.revisionId, second.revisionId].sort());
+      expect(
+        await new Response(await actualStorage.get(firstFile.object)).text(),
+      ).toBe('按已经确认的回款统计收入。');
+      const replacement = {
+        ...input,
+        sourceId: first.sourceId,
+        expectedRevision: 1,
+      };
+      await expect(port.save(t.owner, replacement, signal)).rejects.toThrow();
+      await expect(
+        port.save(
+          t.owner,
+          {
+            ...input,
+            contentBase64: Buffer.from('改变原请求').toString('base64'),
+          },
+          signal,
+        ),
+      ).rejects.toMatchObject({ code: 'request_conflict' });
+      const companyText = '验收全文中的回款出处。';
+      const published = await port.publishUpload(
+        t.owner,
+        {
+          ...uploadInput(t.owner),
+          fileName: '公司固定资料.txt',
+          origin: 'upload',
+          contentBase64: Buffer.from(companyText).toString('base64'),
+          audience: { scope: 'company', departmentIds: [] },
+        },
+        signal,
+      );
+      const pending = await port.query(
+        t.a,
+        { sourceId: published.sourceId },
+        signal,
+      );
+      expect(pending.references.map((file) => file.revisionId)).toEqual([
+        published.revisionId,
+      ]);
+      expect(pending.fullTextCoverage).toEqual({ ready: 0, unavailable: 1 });
+      await fixture.db`update allrice_knowledge_processing set updated_at='2000-01-01' where revision_id=${published.revisionId}`;
+      const claim = await claimReferenceProcessing();
+      expect(claim?.revisionId).toBe(published.revisionId);
+      await finishReferenceProcessing(
+        claim!,
+        [{ content: companyText, start: 0, end: companyText.length }],
+        {
+          text: companyText,
+          kind: 'text',
+          warnings: [],
+          units: [{ label: '正文', start: 0, end: companyText.length }],
+        },
+      );
+      const found = await port.query(
+        t.a,
+        { query: '回款出处', sourceId: published.sourceId },
+        signal,
+      );
+      expect(found.fullTextCoverage).toEqual({ ready: 1, unavailable: 0 });
+      expect(found.matches[0]).toMatchObject({
+        revisionId: published.revisionId,
+        content: companyText,
+        locations: [{ label: '正文' }],
+      });
+      const selected = await port.captureSelection(
+        t.a,
+        { workspaceId: t.a.workspaceId!, revisionId: published.revisionId },
+        signal,
+      );
+      expect(selected.selection).toMatchObject({
+        sourceId: published.sourceId,
+        revisionId: published.revisionId,
+        checksum: claim!.object.checksum,
+      });
+      const department = await port.publishUpload(
+        t.owner,
+        {
+          ...uploadInput(t.owner),
+          fileName: '部门固定资料.txt',
+          origin: 'upload',
+          audience: {
+            scope: 'departments',
+            departmentIds: [t.departments[0]!],
+          },
+        },
+        signal,
+      );
+      const personal = await port.publishUpload(
+        t.owner,
+        {
+          ...uploadInput(t.owner),
+          fileName: '个人固定资料.txt',
+          origin: 'upload',
+          audience: { scope: 'personal', departmentIds: [] },
+        },
+        signal,
+      );
+      expect(
+        (await port.query(t.a, { sourceId: department.sourceId }, signal))
+          .references,
+      ).toHaveLength(1);
+      expect(
+        (await port.query(t.b, { sourceId: department.sourceId }, signal))
+          .references,
+      ).toEqual([]);
+      expect(
+        (await port.query(t.a, { sourceId: personal.sourceId }, signal))
+          .references,
+      ).toEqual([]);
+      await expect(
+        port.changePublication(
+          t.a,
+          {
+            target: { sourceId: published.sourceId },
+            body: {
+              workspaceId: t.a.workspaceId!,
+              requestId: randomUUID(),
+              expectedRevision: 1,
+              action: 'delete',
+            },
+          },
+          signal,
+        ),
+      ).rejects.toThrow();
+      const changed = {
+        target: { sourceId: published.sourceId },
+        body: {
+          workspaceId: t.owner.workspaceId!,
+          requestId: randomUUID(),
+          expectedRevision: 1,
+          action: 'audience' as const,
+          audience: { scope: 'personal' as const, departmentIds: [] },
+        },
+      };
+      await port.changePublication(t.owner, changed, signal);
+      expect(
+        (await port.query(t.a, { sourceId: published.sourceId }, signal))
+          .references,
+      ).toEqual([]);
+      await expect(
+        port.changePublication(
+          t.owner,
+          { ...changed, body: { ...changed.body, requestId: randomUUID() } },
+          signal,
+        ),
+      ).rejects.toMatchObject({ code: 'version_conflict' });
+      await expect(
+        port.captureSelection(
+          t.a,
+          { workspaceId: t.a.workspaceId!, revisionId: published.revisionId },
+          signal,
+        ),
+      ).rejects.toThrow();
+      const unbound = createEnterpriseMaterialsPort({ storage: actualStorage });
+      await expect(unbound.query(t.owner, {}, signal)).rejects.toMatchObject({
+        code: 'authorization_denied',
+      });
     }, 30000);
     it.each(['departments', 'company'] as const)(
       'keeps a legacy %s original owner-only without migrating its policy',

@@ -34,6 +34,7 @@ import {
 } from './artifact-review.ts';
 import { businessDeliverablePredicate } from './organization-dashboard.ts';
 import { personalWorkbenchOrigins } from './workbench-file-personal.ts';
+import { availableWorkbenchFileName } from './workbench-file-name.ts';
 import { getDatabase } from './core/client.ts';
 import { isIndexableReferenceSource } from './reference-fulltext.ts';
 import { isPlatformAdmin } from './providers/model-pool.ts';
@@ -466,6 +467,7 @@ export async function prepareReferenceUpload(
   contextInput: RequestContext,
   input: unknown,
   binding?: { originObjectId: string },
+  options?: { namePolicy: 'independent-material' },
 ) {
   const v = ReferenceUploadInputSchema.parse(input),
     context = scoped(contextInput, v.workspaceId);
@@ -473,6 +475,7 @@ export async function prepareReferenceUpload(
     throw new DataAccessError('authentication_required');
   if (v.scope !== 'platform' && (v.scope !== 'personal' || v.sourceId))
     throw new DataAccessError('authorization_denied');
+  if (options && v.sourceId) throw new ReferenceLibraryError('invalid_content');
   const { contentBase64, ...metadata } = v;
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(contentBase64) || contentBase64.length % 4)
     throw new ReferenceLibraryError('invalid_content');
@@ -533,10 +536,13 @@ export async function prepareReferenceUpload(
       requestInput,
     );
     if (prior) return readReferenceReservation(tx, context, prior, binding);
+    const fileName = options
+      ? await independentReferenceFileName(tx, context, v.fileName)
+      : v.fileName;
     const saved = await reserveReferenceFile(
       tx,
       context,
-      v,
+      { ...v, fileName },
       sourceOwnership,
       checksum,
       bytes.length,
@@ -556,6 +562,28 @@ export async function prepareReferenceUpload(
     return saved;
   });
   return { ...result, bytes };
+}
+
+/** The existing quota mutex serializes pending reservations as well as ready
+ * files. Only the current publisher's names participate; no foreign title leak.
+ * Call after original-request lookup, so replay never reallocates a suffix. */
+async function independentReferenceFileName(
+  sql: Sql,
+  context: RequestContext,
+  requested: string,
+) {
+  const rows = await sql<{ file_name: string }[]>`
+    select r.file_name from allrice_knowledge_sources s
+    join allrice_knowledge_revisions r on r.knowledge_source_id=s.id and r.status='published'
+    join allrice_storage_objects o on o.id=r.file_object_id
+      and o.state in ('pending','ready') and o.deleted_at is null
+      and (o.retention_until is null or o.retention_until>clock_timestamp())
+    where s.organization_id=${context.organizationId} and s.workspace_id=${context.workspaceId!}
+      and s.created_by=${context.actor.id} and s.status='active'`;
+  return availableWorkbenchFileName(
+    requested,
+    new Set(rows.map((row) => row.file_name)),
+  );
 }
 
 function referenceOwnership(
@@ -1073,6 +1101,7 @@ export async function publishReference(
   contextInput: RequestContext,
   input: unknown,
   storage: StoragePort,
+  options?: { namePolicy: 'independent-material' },
 ) {
   const v = ReferencePublishInputSchema.parse(input);
   const parameters = { purpose: v.purpose, audience: v.audience };
@@ -1214,7 +1243,9 @@ export async function publishReference(
       if (!bytes) throw new ReferenceLibraryError('invalid_content');
       const fileName =
         v.origin === 'upload'
-          ? v.fileName
+          ? options
+            ? await independentReferenceFileName(tx, context, v.fileName)
+            : v.fileName
           : DeliverableVersionSchema.shape.fileName.parse(file!.row.file_name);
       const mediaType =
         v.origin === 'upload' ? v.mediaType : file!.object.mediaType;

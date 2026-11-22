@@ -416,6 +416,30 @@ export async function captureWorkbenchFileReference(
   return reference;
 }
 
+/** Owner primitive for one eligible original, without loading directory
+ * presentation, employee filters or reference-publication projections. */
+export async function readPersonalWorkbenchFile(
+  contextInput: RequestContext,
+  objectIdInput: string,
+) {
+  if (!contextInput.workspaceId)
+    throw new DataAccessError('authorization_denied');
+  const context = scoped(contextInput, contextInput.workspaceId);
+  const objectId = UuidSchema.parse(objectIdInput);
+  const db = getDatabase();
+  const [eligible] = await db<{ id: string }[]>`
+    with ${personalWorkbenchOrigins(db, {
+      organizationId: context.organizationId,
+      workspaceId: context.workspaceId!,
+      ownerId: context.actor.id,
+    })} select id from origins where id=${objectId}`;
+  if (!eligible) throw new DataAccessError('not_found');
+  const file = await readWorkbenchFile(context, objectId);
+  if (file.object.ownerId !== context.actor.id)
+    throw new DataAccessError('not_found');
+  return file;
+}
+
 /** Personal directory only. Keep the shared catalog's audience and latest-series
  * semantics below intact for its existing reference and technical consumers. */
 export async function readWorkbenchDeliverables(
