@@ -1,4 +1,8 @@
-import { UuidSchema, runtimeStaticPreviewPolicy } from '@allrice/contracts';
+import {
+  CompanyAssetMutationSchema,
+  UuidSchema,
+  runtimeStaticPreviewPolicy,
+} from '@allrice/contracts';
 import { z } from 'zod';
 import {
   DataAccessError,
@@ -55,11 +59,14 @@ export async function companyAssetsHttp(
           { error: { message: '请求来源不匹配，请刷新页面。' } },
           { status: 403, headers },
         );
+      const command = CompanyAssetMutationSchema.parse(
+        await readAdminJson(request, 100_000),
+      );
       return Response.json(
         await createBusinessRuntimeCaller().mutateCompanyAsset(
           context,
           org,
-          await readAdminJson(request, 100_000),
+          command,
           getStorageAdapter(),
           administration,
           request.signal,

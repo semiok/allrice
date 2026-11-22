@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { CompanyAssetMutation } from '@allrice/contracts';
 import type * as Database from '@allrice/database';
 import { CompanyAssetError, DataAccessError } from '@allrice/database';
 const p = vi.hoisted(() => ({
@@ -44,6 +45,20 @@ const context = {
   actor: { type: 'user', id: randomUUID() },
   organizationId: org,
   workspaceId: ws,
+};
+const saveCommand: CompanyAssetMutation = {
+  operation: 'save',
+  assetId: id,
+  expectedRevision: 3,
+  content: {
+    kind: 'rule',
+    title: '公司交付要求',
+    body: '交付前核对依据。',
+    category: '交付',
+    appliesToEmployeeIds: [],
+    taskKeywords: [],
+    slots: [],
+  },
 };
 const file = {
   object: {
@@ -230,21 +245,36 @@ describe('company publication HTTP authority and exact bytes', () => {
     expect(
       (
         await companyAssetsHttp(
-          request('', 'POST', { operation: 'save' }, 'https://foreign.test'),
+          request('', 'POST', saveCommand, 'https://foreign.test'),
         )
       ).status,
     ).toBe(403);
     expect(p.mutate).not.toHaveBeenCalled();
-    const save = request('', 'POST', { operation: 'save' });
+    const save = request('', 'POST', saveCommand);
     expect((await companyAssetsHttp(save)).status).toBe(200);
     expect(p.mutate).toHaveBeenCalledWith(
       context,
       org,
-      { operation: 'save' },
+      saveCommand,
       p.storage,
       false,
       save.signal,
     );
+  });
+  it('keeps invalid input on the existing validation response before invoking a business caller', async () => {
+    for (const invalid of [
+      { operation: 'save' },
+      { ...saveCommand, administration: true },
+    ]) {
+      const response = await companyAssetsHttp(request('', 'POST', invalid));
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({
+        error: { code: 'VALIDATION_FAILED', retryable: false },
+      });
+    }
+    expect(p.member).toHaveBeenCalledTimes(2);
+    expect(p.caller).not.toHaveBeenCalled();
+    expect(p.mutate).not.toHaveBeenCalled();
   });
   it('composes the named source reader only after actual platform-admin admission', async () => {
     const read = request('sources=1');
