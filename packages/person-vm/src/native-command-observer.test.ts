@@ -426,6 +426,37 @@ describe('command memory observer (synthetic kernel/native sources; not DSH/VM a
     },
   );
 
+  it('allows already-admitted descendants on reentry but refuses release until the exact child is empty', () => {
+    const g = guest();
+    expect(g.baseline().exitCode).toBe(0);
+    expect(g.admit().exitCode).toBe(0);
+    const receipt = g.files.get(receiptPath);
+    g.files.set(`${childPath}/cgroup.procs`, `${cfg.pid}\n99\n77`);
+    expect(g.run('admitted').exitCode).toBe(0);
+    expect(g.files.get(receiptPath)).toBe(receipt);
+    g.finish();
+    g.files.set(`${childPath}/cgroup.procs`, '77');
+    g.files.set(`${childPath}/cgroup.events`, 'populated 1\nfrozen 0');
+    const release = vi.fn();
+    g.onCleanup(release);
+    expect(g.run('complete-and-release')).toMatchObject({
+      exitCode: 1,
+      data: { error: 'child-not-joined' },
+    });
+    expect(release).not.toHaveBeenCalled();
+    expect(g.files.get(receiptPath)).toBe(receipt);
+    expect(g.directories.has(childPath)).toBe(true);
+    g.files.set(`${childPath}/cgroup.procs`, '');
+    g.files.set(`${childPath}/cgroup.events`, 'populated 0\nfrozen 0');
+    expect(g.run('complete-and-release')).toMatchObject({
+      exitCode: 0,
+      data: { childJoined: true, childReleased: true },
+    });
+    expect(release.mock.calls).toEqual([['before-rmdir'], ['before-unlink']]);
+    expect(g.directories.has(childPath)).toBe(false);
+    expect(g.files.has(receiptPath)).toBe(false);
+  });
+
   it('rejects a real ordinary directory with the exact cgroup2 error', async () => {
     const directory = await realpath(
       await mkdtemp(join(tmpdir(), 'allrice-observer-ordinary-')),

@@ -149,7 +149,7 @@ try {
     if (receipt.version !== 1 || receipt.executionRef !== cfg.executionRef || receipt.pid !== cfg.pid || receipt.bootId !== bootId || !decimal(receipt.startTicks) || receipt.child?.path !== childPath || receipt.child?.device !== child.device || receipt.child?.inode !== child.inode || receipt.beforeMembership !== cfg.dshGroup.slice(cfg.cgroupRoot.length) || !decimal(receipt.baseline?.oom) || !decimal(receipt.baseline?.oomKill)) fail('receipt-identity-mismatch');
     if (phase === 'admitted') {
       const admitted = members(childPath, child.device), alreadyAdmitted = receipt.stage === 'admitted';
-      if ((!alreadyAdmitted && receipt.stage !== 'baseline') || (alreadyAdmitted && receipt.admittedMembership !== childPath.slice(cfg.cgroupRoot.length)) || birth() !== receipt.startTicks || membership() !== childPath.slice(cfg.cgroupRoot.length) || populated(childPath, child.device) !== 1 || !admitted.includes(String(cfg.pid)) || admitted.some(pid => pid !== String(cfg.pid) && pid !== String(process.pid))) fail('admitted-membership-mismatch');
+      if ((!alreadyAdmitted && receipt.stage !== 'baseline') || (alreadyAdmitted && receipt.admittedMembership !== childPath.slice(cfg.cgroupRoot.length)) || birth() !== receipt.startTicks || membership() !== childPath.slice(cfg.cgroupRoot.length) || populated(childPath, child.device) !== 1 || !admitted.includes(String(cfg.pid)) || (!alreadyAdmitted && admitted.some(pid => pid !== String(cfg.pid) && pid !== String(process.pid)))) fail('admitted-membership-mismatch');
       if (!alreadyAdmitted) {
         receipt = { ...receipt, stage: 'admitted', admittedMembership: membership() };
         const fd = fs.openSync(receiptPath, fs.constants.O_WRONLY | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW);

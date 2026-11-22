@@ -82,12 +82,18 @@ allrice_memory_exit() {
   allrice_memory_oom_after=$(awk '$1=="oom_kill" {print $2}' "$allrice_memory_child/memory.events.local" 2>/dev/null)
   allrice_memory_local_after=$(awk '$1=="oom" {print $2}' "$allrice_memory_child/memory.events.local" 2>/dev/null)
   if [ "${allrice_memory_oom_after:-0}" -gt "$allrice_memory_oom_before" ]; then
-    if [ "${allrice_memory_local_after:-0}" -gt "$allrice_memory_local_before" ]; then
-      printf 'COMMAND_MEMORY_LIMIT: 该命令内存/交换额度不足，请分批处理，会话保留\n' >&2
+    if [ "$allrice_memory_receipt" = 1 ]; then
+      # A child-group victim need not be this surviving shell. Keep its real
+      # status; only the joined external observer can project further facts.
+      printf '命令组观察到 OOM 事件，具体进程及命令退出原因未确认\n' >&2
     else
-      printf 'COMMAND_OOM_KILLED: 该命令被内存回收终止，原因需核实，会话保留\n' >&2
+      if [ "${allrice_memory_local_after:-0}" -gt "$allrice_memory_local_before" ]; then
+        printf 'COMMAND_MEMORY_LIMIT: 该命令内存/交换额度不足，请分批处理，会话保留\n' >&2
+      else
+        printf 'COMMAND_OOM_KILLED: 该命令被内存回收终止，原因需核实，会话保留\n' >&2
+      fi
+      allrice_memory_status=137
     fi
-    allrice_memory_status=137
   fi
   # Leave the child before rmdir. Surviving descendants keep their memcg;
   # never kill/replay a command merely to make cleanup look successful.

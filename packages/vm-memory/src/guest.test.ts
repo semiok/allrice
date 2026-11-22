@@ -263,6 +263,7 @@ async function receiptBashGuest() {
   );
   const preload = join(f.directory, 'synthetic-kernel.cjs');
   const trace = join(f.directory, 'receipt-writes.jsonl');
+  const memberReads = join(f.directory, 'receipt-member-reads.jsonl');
   await writeFile(
     preload,
     `const fs = require('node:fs');
@@ -271,15 +272,21 @@ const env = process.env, pid = process.argv[2], phase = process.argv[3];
 const child = env.ALLRICE_MEMORY_COMMANDS_GROUP + '/command-' + pid;
 const receipt = env.ALLRICE_MEMORY_RECEIPT_DIRECTORY + '/' + env.ALLRICE_MEMORY_EXECUTION_REF + '.json';
 const procs = () => original.readFileSync(child + '/cgroup.procs', 'utf8').trim();
+// Emulate the kernel's migration before admitted. Persist one source so Bash's
+// real awk and the Node writer read identical membership across exec reentry.
+if (phase === 'admitted' && procs().split('\\n').includes(pid)) {
+  const extra = child + '/synthetic-members';
+  if (original.existsSync(extra)) original.writeFileSync(child + '/cgroup.procs', procs() + '\\n' + original.readFileSync(extra, 'utf8').trim() + '\\n');
+  original.writeFileSync(env.ALLRICE_MEMORY_PROC_ROOT + '/' + pid + '/cgroup', '0::' + child.slice(env.ALLRICE_MEMORY_CGROUP_ROOT.length));
+  original.writeFileSync(child + '/cgroup.events', 'populated 1\\nfrozen 0');
+}
 fs.statfsSync = (p, ...args) => ({ ...original.statfsSync(p, ...args), type: p === env.ALLRICE_MEMORY_PROC_ROOT ? 0x9fa0n : 0x63677270n });
 fs.openSync = (p, ...args) => { const fd = original.openSync(p, ...args); descriptors.set(fd, p); return fd; };
 fs.closeSync = fd => { descriptors.delete(fd); return original.closeSync(fd); };
 fs.readFileSync = (fd, ...args) => {
   const p = typeof fd === 'number' ? descriptors.get(fd) : fd;
-  if (p === env.ALLRICE_MEMORY_PROC_ROOT + '/' + pid + '/cgroup')
-    return '0::' + (procs() ? child.slice(env.ALLRICE_MEMORY_CGROUP_ROOT.length) : '/dsh');
-  if (p === child + '/cgroup.events') return 'populated ' + (procs() ? '1' : '0') + '\\nfrozen 0';
   const value = original.readFileSync(fd, ...args);
+  if (p === child + '/cgroup.procs') original.appendFileSync(${JSON.stringify(memberReads)}, JSON.stringify({ phase, members: value.trim() }) + '\\n');
   if (phase === 'admitted' && env.SYNTHETIC_RECEIPT_FAILURE === 'birth' && p === env.ALLRICE_MEMORY_PROC_ROOT + '/' + pid + '/stat') return value.replace('12345', '54321');
   return value;
 };
@@ -306,6 +313,7 @@ fs.writeFileSync = (fd, value, ...args) => {
     receiptDirectory,
     receipt: join(receiptDirectory, 'synthetic-dispatch-nonce.json'),
     trace,
+    memberReads,
     writer,
   };
 }
@@ -713,7 +721,7 @@ describe.sequential(
     it('receipt模式exec同PID重入只读校验，不重写首次baseline或receipt字节', async () => {
       const f = await receiptBashGuest();
       const result = await f.run(
-        'cp "$ALLRICE_MEMORY_RECEIPT_DIRECTORY/$ALLRICE_MEMORY_EXECUTION_REF.json" "$ALLRICE_MEMORY_CGROUP_ROOT/before.json"; printf "oom 3\\noom_kill 2\\n" > "$allrice_memory_child/memory.events"; exec /bin/bash -c \'cmp "$ALLRICE_MEMORY_CGROUP_ROOT/before.json" "$ALLRICE_MEMORY_RECEIPT_DIRECTORY/$ALLRICE_MEMORY_EXECUTION_REF.json" || exit 91; printf "once\\n"; exit 4\'',
+        'cat "$ALLRICE_MEMORY_PROC_ROOT/$$/cgroup" > "$ALLRICE_MEMORY_CGROUP_ROOT/before-cgroup"; cp "$ALLRICE_MEMORY_RECEIPT_DIRECTORY/$ALLRICE_MEMORY_EXECUTION_REF.json" "$ALLRICE_MEMORY_CGROUP_ROOT/before.json"; printf "oom 3\\noom_kill 2\\n" > "$allrice_memory_child/memory.events"; exec /bin/bash -c \'cmp "$ALLRICE_MEMORY_CGROUP_ROOT/before.json" "$ALLRICE_MEMORY_RECEIPT_DIRECTORY/$ALLRICE_MEMORY_EXECUTION_REF.json" || exit 91; printf "once\\n"; exit 4\'',
       );
       expect(result).toMatchObject({
         code: 4,
@@ -736,6 +744,118 @@ describe.sequential(
         oom: '0',
         oomKill: '0',
       });
+      const receipt = JSON.parse(await readFile(f.receipt, 'utf8'));
+      expect(await readFile(join(f.directory, 'before-cgroup'), 'utf8')).toBe(
+        '0::' + receipt.admittedMembership,
+      );
+    });
+
+    it('已admitted的同PID真实Bash重入允许合成存活成员，仍不重写receipt', async () => {
+      const f = await receiptBashGuest();
+      const result = await f.run(
+        'printf "77\\n" > "$allrice_memory_child/synthetic-members"; cp "$ALLRICE_MEMORY_RECEIPT_DIRECTORY/$ALLRICE_MEMORY_EXECUTION_REF.json" "$ALLRICE_MEMORY_CGROUP_ROOT/before.json"; exec /bin/bash -c \'cmp "$ALLRICE_MEMORY_CGROUP_ROOT/before.json" "$ALLRICE_MEMORY_RECEIPT_DIRECTORY/$ALLRICE_MEMORY_EXECUTION_REF.json" || exit 91; printf "once\\n"; exit 4\'',
+      );
+      expect(result).toMatchObject({
+        code: 4,
+        signal: null,
+        stdout: 'once\n',
+        stderr: '',
+      });
+      const reads = (await readFile(f.memberReads, 'utf8'))
+        .trim()
+        .split('\n')
+        .map((line) => JSON.parse(line));
+      expect(
+        reads.some(
+          (entry) =>
+            entry.phase === 'admitted' &&
+            entry.members.split('\n').includes('77'),
+        ),
+      ).toBe(true);
+      expect((await readFile(f.trace, 'utf8')).trim().split('\n')).toHaveLength(
+        2,
+      );
+      expect(await readFile(f.receipt, 'utf8')).toBe(
+        await readFile(join(f.directory, 'before.json'), 'utf8'),
+      );
+      const receipt = JSON.parse(await readFile(f.receipt, 'utf8'));
+      expect(
+        await readFile(join(receipt.child.path, 'cgroup.procs'), 'utf8'),
+      ).toContain('\n77\n');
+    });
+
+    it('统一membership夹具不掩盖实际Bash重入的错组拒绝', async () => {
+      const f = await receiptBashGuest();
+      const result = await f.run(
+        'printf "0::/dsh" > "$ALLRICE_MEMORY_PROC_ROOT/$$/cgroup"; exec /bin/bash -c \'printf must-not-run\'',
+      );
+      expect(result).toMatchObject({ code: 75, signal: null, stdout: '' });
+      expect(result.stderr).toContain('COMMAND_MEMORY_SETUP_FAILED');
+      expect((await readFile(f.trace, 'utf8')).trim().split('\n')).toHaveLength(
+        2,
+      );
+      const receipt = JSON.parse(await readFile(f.receipt, 'utf8'));
+      expect(
+        await readFile(
+          join(f.env.ALLRICE_MEMORY_PROC_ROOT!, String(receipt.pid), 'cgroup'),
+          'utf8',
+        ),
+      ).toBe('0::/dsh');
+    });
+
+    it.each(
+      [0, 9].flatMap((exit) =>
+        [
+          { kind: 'local', events: 'oom 1\noom_kill 1\n' },
+          { kind: 'unattributed', events: 'oom 0\noom_kill 1\n' },
+        ].map((event) => ({ ...event, exit })),
+      ),
+    )(
+      'receipt组事件$kind不改存活shell原exit=$exit，不冒称主命令死亡',
+      async ({ events, exit }) => {
+        const f = await receiptBashGuest();
+        f.env.SYNTHETIC_EVENTS = events;
+        f.env.SYNTHETIC_EXIT = String(exit);
+        const result = await f.run(
+          'printf "%s" "$SYNTHETIC_EVENTS" > "$allrice_memory_child/memory.events.local"; printf "%s" "$SYNTHETIC_EVENTS" > "$allrice_memory_child/memory.events"; printf "once\\n"; exit "$SYNTHETIC_EXIT"',
+        );
+        expect(result).toMatchObject({
+          code: exit,
+          signal: null,
+          stdout: 'once\n',
+          stderr: '命令组观察到 OOM 事件，具体进程及命令退出原因未确认\n',
+        });
+        expect(result.stderr).not.toContain('COMMAND_MEMORY_LIMIT');
+        expect(result.stderr).not.toContain('COMMAND_OOM_KILLED');
+        const receipt = JSON.parse(await readFile(f.receipt, 'utf8'));
+        expect(receipt).toMatchObject({
+          stage: 'admitted',
+          baseline: { oom: '0', oomKill: '0' },
+        });
+        expect((await stat(receipt.child.path)).isDirectory()).toBe(true);
+        expect(
+          await readFile(
+            join(receipt.child.path, 'memory.events.local'),
+            'utf8',
+          ),
+        ).toBe(events);
+      },
+    );
+
+    it('receipt模式exec非Bash仍保留原137和工件，不靠组事件猜退出原因', async () => {
+      const f = await receiptBashGuest();
+      const result = await f.run(
+        'printf "oom 1\\noom_kill 1\\n" > "$allrice_memory_child/memory.events.local"; printf "once\\n"; exec /bin/sh -c \'exit 137\'',
+      );
+      expect(result).toMatchObject({
+        code: 137,
+        signal: null,
+        stdout: 'once\n',
+        stderr: '',
+      });
+      const receipt = JSON.parse(await readFile(f.receipt, 'utf8'));
+      expect(receipt.stage).toBe('admitted');
+      expect((await stat(receipt.child.path)).isDirectory()).toBe(true);
     });
 
     it.each(['memory.high', 'memory.max'] as const)(
