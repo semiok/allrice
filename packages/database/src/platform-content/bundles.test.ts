@@ -7,7 +7,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import * as filesystem from 'node:fs/promises';
+import type * as FsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -17,6 +17,22 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadPlatformContentCatalog } from './catalog.ts';
 import { skillBundleChecksum, skillBytesChecksum } from '../skill-bundles.ts';
 import { createBuiltinSkillSourcesPort } from '../capabilities/builtin-skill-sources.ts';
+
+const sourceIo = vi.hoisted(() => ({
+  onOpen: undefined as
+    undefined | ((handle: Awaited<ReturnType<typeof FsPromises.open>>) => void),
+}));
+vi.mock('node:fs/promises', async () => {
+  const actual = await vi.importActual<typeof FsPromises>('node:fs/promises');
+  return {
+    ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      sourceIo.onOpen?.(handle);
+      return handle;
+    },
+  };
+});
 
 const temporary: string[] = [];
 async function fixture() {
@@ -111,6 +127,8 @@ async function fixture() {
   };
 }
 afterEach(async () => {
+  sourceIo.onOpen = undefined;
+  vi.restoreAllMocks();
   for (const path of temporary.splice(0)) {
     if (!path.startsWith(join(tmpdir(), 'allrice-skillbundle-')))
       throw Error('unsafe test cleanup');
@@ -124,7 +142,6 @@ describe('P18 real file assembly stays in reviewed resource tree', () => {
       const f = await fixture();
       const controller = new AbortController();
       const reason = new Error('source read canceled');
-      const originalOpen = filesystem.open;
       let beginRead!: () => void, resumeRead!: () => void;
       let beginClose!: () => void, resumeClose!: () => void;
       const reading = new Promise<void>((resolve) => {
@@ -142,8 +159,7 @@ describe('P18 real file assembly stays in reviewed resource tree', () => {
       let closed = false,
         settled = false;
       let readOptions: unknown;
-      vi.spyOn(filesystem, 'open').mockImplementation(async (...args) => {
-        const handle = await originalOpen(...args);
+      sourceIo.onOpen = (handle) => {
         const originalRead = handle.readFile.bind(handle);
         const originalClose = handle.close.bind(handle);
         vi.spyOn(handle, 'readFile').mockImplementation(async (options) => {
@@ -159,8 +175,7 @@ describe('P18 real file assembly stays in reviewed resource tree', () => {
           closed = true;
           if (closeFailure) throw Error('/private/source/close failed');
         });
-        return handle;
-      });
+      };
       const result = createBuiltinSkillSourcesPort(f.directory)
         .listSources(controller.signal)
         .then(
@@ -199,6 +214,7 @@ describe('P18 real file assembly stays in reviewed resource tree', () => {
         resumeRead();
         resumeClose();
         await result;
+        sourceIo.onOpen = undefined;
         vi.restoreAllMocks();
       }
     },

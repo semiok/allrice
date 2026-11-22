@@ -257,6 +257,8 @@ export async function loadPlatformContentCatalog(
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
     let readFailures: unknown[] = [];
+    let closeFailures: unknown[] = [];
+    let bytes: Buffer | undefined;
     try {
       signal?.throwIfAborted();
       const stat = await handle.stat();
@@ -269,26 +271,28 @@ export async function loadPlatformContentCatalog(
       )
         throw Error('platform_skill_resource_unsafe');
       signal?.throwIfAborted();
-      const bytes = await handle.readFile({ signal });
+      bytes = await handle.readFile({ signal });
       signal?.throwIfAborted();
-      return bytes;
     } catch (error) {
       const failure =
         signal?.aborted && error instanceof Error && error.name === 'AbortError'
           ? signal.reason
           : error;
       readFailures = [failure];
-      throw failure;
     } finally {
       try {
         await handle.close();
       } catch (error) {
-        throw new AggregateError(
-          [...readFailures, error],
-          'platform_skill_resource_close_failed',
-        );
+        closeFailures = [error];
       }
     }
+    if (closeFailures.length)
+      throw new AggregateError(
+        [...readFailures, ...closeFailures],
+        'platform_skill_resource_close_failed',
+      );
+    if (readFailures.length) throw readFailures[0];
+    return bytes!;
   };
   const input = JSON.parse(
     (await readAsset('skills/catalog.json')).toString('utf8'),
