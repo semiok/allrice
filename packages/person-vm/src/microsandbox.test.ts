@@ -11,6 +11,7 @@ import {
   open,
   type FileHandle,
   writeFile,
+  symlink,
 } from 'node:fs/promises';
 import { join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
@@ -22,13 +23,22 @@ import { MicrosandboxPersonVm } from './microsandbox.ts';
 import { runCommand } from './process.ts';
 import { context, currentReceipt, harness, signal } from './test-support.ts';
 import { PersonVmService } from './person-vm.ts';
+import type { ReadonlyDshDirectory } from './readonly-artifact.ts';
 import type { PersonVmMemoryGuestPlan } from './guest-bootstrap.ts';
 import type { PersonVmWebRoster, PersonVmWebStartup } from './web-endpoints.ts';
 
 const temporary: string[] = [];
+const readonlyRoots: string[] = [];
+async function unsealFixture(path: string) {
+  const s = await lstat(path);
+  if (!s.isDirectory()) return;
+  await chmod(path, 0o700);
+  for (const name of await readdir(path)) await unsealFixture(join(path, name));
+}
 afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  for (const path of readonlyRoots.splice(0)) await unsealFixture(path);
   for (const path of temporary.splice(0))
     await rm(path, { recursive: true, force: true });
 });
@@ -45,7 +55,10 @@ async function socketDirectory() {
   return path;
 }
 
-async function bootstrapFixture(mode = 'ok') {
+async function bootstrapFixture(
+  mode = 'ok',
+  readonlyDshDirectory?: ReadonlyDshDirectory,
+) {
   const root = await directory(),
     mount = join(root, 'mount');
   const binary = join(root, 'msb-bootstrap-fixture');
@@ -62,11 +75,13 @@ else if(a[0]==='list')console.log(JSON.stringify(v.name?[{name:v.name,status:v.s
 else if(a[0]==='pull'){}
 else if(a[0]==='create'){
  v.name=a[a.indexOf('--name')+1];v.status='Running';
+ v.mounts=a.flatMap((arg,i)=>arg==='--mount-dir'?[a[i+1].split(':')]:[]).map(([host,guest,ro])=>({type:'Bind',host,guest,options:{readonly:ro==='ro',noexec:false,nosuid:false,nodev:false},stat_virtualization:'strict',host_permissions:'private',follow_root_symlinks:false,quota_mib:null}));
  v.ports=a.flatMap((arg,i)=>arg==='-p'?[a[i+1].split(':')]:[]).map(([host_bind,h,g])=>({host_bind,host_port:Number(h),guest_port:Number(g),protocol:'tcp'}));
 }
 else if(a[0]==='inspect'){
  const ports=v.ports??[],active=mode.startsWith('web-inspect')?[]:ports;
- console.log(JSON.stringify({name:v.name,status:v.status,config:{network:{ports}},active_config:{network:{ports:active}},pending_changes:[]}));
+ const mounts=v.mounts??[],activeMounts=mode==='artifact-inspect-drift'?mounts.map(m=>({...m,options:{...m.options,readonly:false}})):mounts;
+ console.log(JSON.stringify({name:v.name,status:v.status,config:{network:{ports},mounts},active_config:{network:{ports:active},mounts:activeMounts},pending_changes:[]}));
 }
 else if(a[0]==='start')v.status='Running';
 else if(a[0]==='stop'){if(!['lost-id-unknown-stop','auth-unknown-stop','web-inspect-unknown-stop'].includes(mode))v.status='Stopped';}
@@ -106,7 +121,10 @@ save();
     binary,
     libkrunfw: join(root, 'fw'),
     agentd: join(root, 'agentd'),
-    image: 'registry/node@sha256:' + 'a'.repeat(64),
+    image: readonlyDshDirectory
+      ? readonlyImage
+      : 'registry/node@sha256:' + 'a'.repeat(64),
+    readonlyDshDirectory,
     rootDiskGiB: 20,
     socketRoot: await socketDirectory(),
   });
@@ -163,7 +181,162 @@ save();
   };
 }
 
+const readonlyImage =
+  'docker.io/library/node@sha256:af0bb4bf5b7318e3269417a7684a9e116c3c22eaf05382578b0d0d33de597ad2';
+async function readonlyFixture() {
+  const root = await directory(),
+    artifactSha256 = createHash('sha256')
+      .update('synthetic archive')
+      .digest('hex');
+  const release = join(root, artifactSha256),
+    hostDirectory = join(release, 'public');
+  await mkdir(join(hostDirectory, 'node_modules/.bin'), {
+    recursive: true,
+    mode: 0o700,
+  });
+  readonlyRoots.push(hostDirectory);
+  const bins =
+    'anthropic-ai-sdk cordis crc32 dsh dsoffice is-docker is-inside-container js-yaml node-which pi-ai playwright playwright-core semver which-command xlsx yaml'.split(
+      ' ',
+    );
+  const text = 'synthetic code\n';
+  await writeFile(join(hostDirectory, 'node_modules/code.js'), text, {
+    mode: 0o444,
+  });
+  for (const name of bins)
+    await symlink('../code.js', join(hostDirectory, 'node_modules/.bin', name));
+  const files = [
+    { path: 'node_modules', kind: 'directory', mode: 0o755 },
+    { path: 'node_modules/.bin', kind: 'directory', mode: 0o755 },
+    {
+      path: 'node_modules/code.js',
+      kind: 'file',
+      mode: 0o644,
+      bytes: Buffer.byteLength(text),
+      sha256: createHash('sha256').update(text).digest('hex'),
+    },
+    ...bins.map((name) => ({
+      path: `node_modules/.bin/${name}`,
+      kind: 'symlink',
+      mode: 0o755,
+      target: '../code.js',
+    })),
+  ];
+  for (const dir of ['node_modules/.bin', 'node_modules', '.'])
+    await chmod(join(hostDirectory, dir), 0o555);
+  const manifest = JSON.stringify({
+    platform: 'linux-arm64-gnu',
+    containsAuthFiles: false,
+    archive: { bytes: 512, sha256: artifactSha256 },
+    files,
+  });
+  await writeFile(join(release, 'manifest.json'), manifest, { mode: 0o600 });
+  const seals: Record<string, string[]> = {};
+  for (const path of ['.', ...files.map((e) => e.path)]) {
+    const s = await lstat(join(hostDirectory, path), { bigint: true });
+    seals[path] = [String(s.dev), String(s.ino), String(s.ctimeNs)];
+  }
+  const c = {
+    hostDirectory,
+    guestDirectory: `/opt/allrice/dsh/${artifactSha256}`,
+    artifactSha256,
+    manifestSha256: createHash('sha256').update(manifest).digest('hex'),
+    descriptorPath: join(release, 'descriptor.json'),
+  };
+  await writeFile(
+    c.descriptorPath,
+    JSON.stringify({
+      kind: 'allrice-dsh-readonly-directory-v1',
+      ...c,
+      manifestBytes: Buffer.byteLength(manifest),
+      archiveBytes: 512,
+      baseImage: readonlyImage,
+      dshVersion: '0.2.1-rc.2',
+      nodeVersion: '22.23.2',
+      publisherSha256: 'a'.repeat(64),
+      gateSha256: 'b'.repeat(64),
+      seals,
+    }),
+    { mode: 0o600 },
+  );
+  return c;
+}
+
 describe('Microsandbox public CLI protocol through real child processes (no actual VM)', () => {
+  it('readonly code首次create走真实provider/child入口；准确mount及active inspect，stop后原绑定start再次完整核验', async () => {
+    const c = await readonlyFixture(),
+      f = await bootstrapFixture('ok', c);
+    await f.service.prewarm(f.rc, { trigger: 'page' }, signal());
+    const binding = await f.service.resolve(f.rc, signal()),
+      calls = await f.calls();
+    const creation = calls.find((args) => args[0] === 'create')!;
+    expect(
+      creation.flatMap((arg, index) =>
+        arg === '--mount-dir' ? [creation[index + 1]] : [],
+      ),
+    ).toEqual([`${c.hostDirectory}:${c.guestDirectory}:ro`]);
+    expect(creation[creation.indexOf('--pull') + 1]).toBe('never');
+    expect(creation[creation.indexOf('--net-default') + 1]).toBe('deny');
+    expect(creation[creation.indexOf('--max-memory') + 1]).toBe('2048M');
+    expect(
+      (await lstat(join(f.mount, 'microsandbox/allrice-readonly-dsh.json')))
+        .mode & 0o777,
+    ).toBe(0o600);
+    await f.native.stop(binding, signal());
+    await f.native.start(binding, signal());
+    expect(await f.native.status(binding, signal())).toBe('running');
+    expect(
+      (await f.calls()).filter((args) => args[0] === 'start'),
+    ).toHaveLength(1);
+    await rm(c.descriptorPath);
+    await expect(f.native.ping(binding, signal())).rejects.toMatchObject({
+      code: 'PROVIDER_FAILED',
+    });
+    // Source loss must not gate stop/status or physical cleanup.
+    await f.native.stop(binding, signal());
+    expect(await f.native.status(binding, signal())).toBe('stopped');
+  });
+  it('source qualification失败不pull/create/start；真实prepare/status和失败detach仍可收敛', async () => {
+    const c = await readonlyFixture();
+    await rm(c.descriptorPath);
+    const f = await bootstrapFixture('ok', c);
+    await expect(
+      f.service.prewarm(f.rc, { trigger: 'page' }, signal()),
+    ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
+    expect(
+      (await f.calls()).some((args) =>
+        ['pull', 'create', 'start'].includes(args[0]!),
+      ),
+    ).toBe(false);
+    expect(f.h.log).toContain('disk:detach');
+  });
+  it('create真正成功而active只读inspect不符必须失败并真实stop，不能report ready', async () => {
+    const c = await readonlyFixture(),
+      f = await bootstrapFixture('artifact-inspect-drift', c);
+    await expect(
+      f.service.prewarm(f.rc, { trigger: 'page' }, signal()),
+    ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
+    const calls = await f.calls();
+    expect(calls.some((args) => args[0] === 'create')).toBe(true);
+    expect(calls.some((args) => args[0] === 'stop')).toBe(true);
+    expect(f.h.log).toContain('disk:detach');
+  });
+  it('runtime启动后source损坏且callback失败，confirmed native stop清理不被artifact检查拦截', async () => {
+    const c = await readonlyFixture(),
+      f = await bootstrapFixture('ok', c);
+    let runtimeEntered = false;
+    f.h.runtime.start = async () => {
+      runtimeEntered = true;
+      await rm(c.descriptorPath);
+      throw new Error('synthetic startup failure');
+    };
+    await expect(
+      f.service.prewarm(f.rc, { trigger: 'page' }, signal()),
+    ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
+    expect(runtimeEntered).toBe(true);
+    expect((await f.calls()).some((args) => args[0] === 'stop')).toBe(true);
+    expect(f.h.log).toContain('disk:detach');
+  });
   function roster(
     f: Awaited<ReturnType<typeof bootstrapFixture>>,
     count = 2,

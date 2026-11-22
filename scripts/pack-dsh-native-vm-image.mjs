@@ -1,7 +1,9 @@
-/** Input gate only. No extraction, builder, registry, or Microsandbox calls.
+/** Release input gate and explicit host readonly-directory publisher.
+ * No builder, registry, or Microsandbox calls.
  * Release locks are host-owned; the CLI cannot override them. An accepted
  * descriptor is not an OCI image or evidence of flat/runtime readiness. */
 import { constants } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { open, readFile, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { isAbsolute, posix, resolve } from 'node:path';
@@ -23,6 +25,27 @@ const recipe = new URL(
   import.meta.url,
 );
 const cli = 'node_modules/@deepseek-ai/dsh/lib/bin.js';
+const DSH_BIN_NAMES = Object.freeze([
+  'anthropic-ai-sdk',
+  'cordis',
+  'crc32',
+  'dsh',
+  'dsoffice',
+  'is-docker',
+  'is-inside-container',
+  'js-yaml',
+  'node-which',
+  'pi-ai',
+  'playwright',
+  'playwright-core',
+  'semver',
+  'which-command',
+  'xlsx',
+  'yaml',
+]);
+const publisher = fileURLToPath(
+  new URL('./publish-dsh-native-directory.py', import.meta.url),
+);
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 function fail(code) {
   throw Object.assign(new Error(code), { code });
@@ -30,7 +53,7 @@ function fail(code) {
 const digest = (value) =>
   typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 
-export function assertStrictDshMembers(files) {
+export function assertStrictDshMembers(files, permittedLinks = new Map()) {
   if (!Array.isArray(files) || !files.length) fail('DSH_IMAGE_MEMBERS_INVALID');
   const entries = new Map();
   for (const entry of files) {
@@ -45,8 +68,9 @@ export function assertStrictDshMembers(files) {
     )
       fail('DSH_IMAGE_MEMBER_PATH_INVALID');
     if (entries.has(path)) fail('DSH_IMAGE_MEMBER_DUPLICATE');
-    if (entry.kind === 'symlink') fail('DSH_IMAGE_SYMLINK_FORBIDDEN');
-    if (!['file', 'directory'].includes(entry.kind))
+    if (entry.kind === 'symlink' && permittedLinks.get(path) !== entry.target)
+      fail('DSH_IMAGE_SYMLINK_FORBIDDEN');
+    if (!['file', 'directory', 'symlink'].includes(entry.kind))
       fail('DSH_IMAGE_MEMBER_TYPE_FORBIDDEN');
     if (
       !Number.isInteger(entry.mode) ||
@@ -67,10 +91,31 @@ export function assertStrictDshMembers(files) {
   for (const path of entries.keys()) {
     let parent = posix.dirname(path);
     while (parent !== '.') {
-      if (entries.has(parent) && entries.get(parent).kind !== 'directory')
+      if (entries.get(parent)?.kind !== 'directory')
         fail('DSH_IMAGE_MEMBER_PARENT_INVALID');
       parent = posix.dirname(parent);
     }
+  }
+  for (const entry of entries.values()) {
+    if (entry.kind !== 'symlink') continue;
+    const target = entry.target;
+    if (
+      typeof target !== 'string' ||
+      !target ||
+      target.includes('\0') ||
+      target.includes('\\') ||
+      posix.isAbsolute(target)
+    )
+      fail('DSH_IMAGE_SYMLINK_FORBIDDEN');
+    const resolved = posix.normalize(
+      posix.join(posix.dirname(entry.path), target),
+    );
+    if (
+      resolved === '..' ||
+      resolved.startsWith('../') ||
+      entries.get(resolved)?.kind !== 'file'
+    )
+      fail('DSH_IMAGE_SYMLINK_FORBIDDEN');
   }
   return entries;
 }
@@ -111,10 +156,7 @@ async function readLockedFile(path, bytes, expectedDigest, contents = false) {
 
 /** A trusted release caller supplies locks; tests use small synthetic locks.
  * These are never accepted from CLI/env, guest claims, or the input manifest. */
-export async function validateLocalDshImageInputs(
-  input,
-  locks = DSH_IMAGE_LOCK,
-) {
+async function qualifiedManifest(input, locks) {
   for (const key of [
     'manifestSha256',
     'archiveSha256',
@@ -144,8 +186,22 @@ export async function validateLocalDshImageInputs(
     manifest.archive?.bytes !== locks.archiveBytes
   )
     fail('DSH_IMAGE_MANIFEST_LOCK_MISMATCH');
-  // Deliberately rejects the current 16 symlinks before any 1GB archive read.
-  const entries = assertStrictDshMembers(manifest.files);
+  // The manifest bytes were authenticated above. Only its exact original bin
+  // paths/target strings may authorize a link; never derive trust from tar data.
+  const links = manifest.files?.filter((entry) => entry.kind === 'symlink');
+  if (
+    !Array.isArray(links) ||
+    links.length !== DSH_BIN_NAMES.length ||
+    DSH_BIN_NAMES.some(
+      (name) =>
+        !links.some((entry) => entry.path === `node_modules/.bin/${name}`),
+    )
+  )
+    fail('DSH_IMAGE_SYMLINK_FORBIDDEN');
+  const entries = assertStrictDshMembers(
+    manifest.files,
+    new Map(links.map((entry) => [entry.path, entry.target])),
+  );
   const cliSha256 = locks.cliSha256;
   const lockSha256 = locks.packageLockSha256;
   if (
@@ -153,6 +209,14 @@ export async function validateLocalDshImageInputs(
     entries.get('package-lock.json')?.sha256 !== lockSha256
   )
     fail('DSH_IMAGE_CODE_PIN_MISMATCH');
+  return manifest;
+}
+
+export async function validateLocalDshImageInputs(
+  input,
+  locks = DSH_IMAGE_LOCK,
+) {
+  await qualifiedManifest(input, locks);
   await readLockedFile(input.archive, locks.archiveBytes, locks.archiveSha256);
   return Object.freeze({
     kind: 'allrice-dsh-local-image-input-v1',
@@ -167,12 +231,104 @@ export async function validateLocalDshImageInputs(
     nodeVersion: '22.23.2',
     dshVersion: '0.2.1-rc.2',
     cliPath: `/opt/allrice/dsh/rc2-306d3e31/${cli}`,
-    cliSha256,
-    lockSha256,
+    cliSha256: locks.cliSha256,
+    lockSha256: locks.packageLockSha256,
     buildExecuted: false,
     imageDigest: null,
     flatPrepared: false,
     runtimeReady: false,
+  });
+}
+
+/** Host-only release caller. Cooperative abort waits for the actual Python close;
+ * an outer deadline/kill is not proof of rollback or publication outcome. */
+export async function publishReadonlyDshDirectory(
+  input,
+  { locks = DSH_IMAGE_LOCK, signal, cleanupSignal } = {},
+) {
+  signal?.throwIfAborted();
+  cleanupSignal?.throwIfAborted();
+  if (
+    typeof input.parent !== 'string' ||
+    !isAbsolute(input.parent) ||
+    resolve(input.parent) !== input.parent ||
+    input.parent.includes(':') ||
+    input.parent.includes('\0')
+  )
+    fail('DSH_IMAGE_HOST_PATH');
+  await qualifiedManifest(input, locks); // Archive hash/copy happens once in Python.
+  signal?.throwIfAborted();
+  cleanupSignal?.throwIfAborted();
+  const request = {
+    ...input,
+    locks,
+    gateSha256: sha256(await readFile(fileURLToPath(import.meta.url))),
+  };
+  return new Promise((fulfil, reject) => {
+    const child = spawn('/usr/bin/python3', [publisher], {
+      env: {
+        PATH: '/usr/bin:/bin',
+        LANG: 'C.UTF-8',
+        PYTHONDONTWRITEBYTECODE: '1',
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let failed = false,
+      bytes = 0;
+    const pieces = [];
+    const abort = () => {
+      child.kill('SIGTERM');
+    };
+    const kill = () => {
+      failed = true;
+      child.kill('SIGKILL');
+    };
+    signal?.addEventListener('abort', abort, { once: true });
+    cleanupSignal?.addEventListener('abort', kill, { once: true });
+    child.stdout.on('data', (chunk) => {
+      bytes += chunk.length;
+      if (bytes > 64 * 1024)
+        kill(); // Only a compact publication receipt, never the tree seal.
+      else pieces.push(chunk);
+    });
+    child.stderr.resume();
+    child.on('error', () => {
+      failed = true;
+    });
+    child.stdin.on('error', () => {
+      failed = true;
+      abort();
+    });
+    child.on('close', (code, termination) => {
+      signal?.removeEventListener('abort', abort);
+      cleanupSignal?.removeEventListener('abort', kill);
+      if (
+        failed ||
+        code !== 0 ||
+        termination ||
+        signal?.aborted ||
+        cleanupSignal?.aborted
+      ) {
+        reject(
+          Object.assign(new Error('DSH_IMAGE_PUBLISH_FAILED'), {
+            code: 'DSH_IMAGE_PUBLISH_FAILED',
+          }),
+        );
+        return;
+      }
+      try {
+        fulfil(JSON.parse(Buffer.concat(pieces).toString('utf8')));
+      } catch {
+        reject(
+          Object.assign(new Error('DSH_IMAGE_PUBLISH_FAILED'), {
+            code: 'DSH_IMAGE_PUBLISH_FAILED',
+          }),
+        );
+      }
+    });
+    child.stdin.end(JSON.stringify(request));
+    if (signal?.aborted) abort();
+    if (cleanupSignal?.aborted) kill();
   });
 }
 
@@ -181,7 +337,10 @@ if (
   resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
   try {
-    const [archive, manifest, output, ...extra] = process.argv.slice(2);
+    const args = process.argv.slice(2);
+    const publish = args[0] === '--publish-readonly';
+    if (publish) args.shift();
+    const [archive, manifest, output, ...extra] = args;
     if (
       extra.length ||
       ![archive, manifest, output].every(
@@ -189,14 +348,34 @@ if (
       )
     )
       fail('DSH_IMAGE_USAGE');
-    const descriptor = await validateLocalDshImageInputs({ archive, manifest });
-    await writeFile(output, JSON.stringify(descriptor, null, 2) + '\n', {
-      mode: 0o600,
-      flag: 'wx',
-    });
-    process.stdout.write(
-      JSON.stringify({ inputValidated: true, imageReady: false }) + '\n',
-    );
+    if (publish) {
+      const controller = new globalThis.AbortController();
+      const abort = () => controller.abort();
+      process.on('SIGTERM', abort);
+      process.on('SIGINT', abort);
+      try {
+        const result = await publishReadonlyDshDirectory(
+          { archive, manifest, parent: output },
+          { signal: controller.signal },
+        );
+        process.stdout.write(JSON.stringify(result) + '\n');
+      } finally {
+        process.removeListener('SIGTERM', abort);
+        process.removeListener('SIGINT', abort);
+      }
+    } else {
+      const descriptor = await validateLocalDshImageInputs({
+        archive,
+        manifest,
+      });
+      await writeFile(output, JSON.stringify(descriptor, null, 2) + '\n', {
+        mode: 0o600,
+        flag: 'wx',
+      });
+      process.stdout.write(
+        JSON.stringify({ inputValidated: true, imageReady: false }) + '\n',
+      );
+    }
   } catch (error) {
     const code =
       typeof error?.code === 'string' && error.code.startsWith('DSH_IMAGE_')

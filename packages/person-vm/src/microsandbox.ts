@@ -9,6 +9,13 @@ import {
 import { privateDirectory } from './encrypted-disk.ts';
 import { hostEnvironment, runCommand, type CommandRunner } from './process.ts';
 import { bootstrapMicrosandbox } from './microsandbox-bootstrap.ts';
+import {
+  assertReadonlyArtifactInspection,
+  checkedReadonlyDshDirectory,
+  readonlyArtifactReference,
+  verifyReadonlyDshDirectory,
+  type ReadonlyDshDirectory,
+} from './readonly-artifact.ts';
 import type {
   PersonVmGuestBootstrapPort,
   PersonVmMemoryGuestPlan,
@@ -83,13 +90,23 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
       libkrunfw: string;
       agentd: string;
       image: string;
+      readonlyDshDirectory?: ReadonlyDshDirectory;
       rootDiskGiB: number;
       socketRoot: string;
       runner?: CommandRunner;
       jobCleanupTimeoutMs?: number;
     },
   ) {
-    this.options = { ...options };
+    this.options = {
+      ...options,
+      ...(options.readonlyDshDirectory
+        ? {
+            readonlyDshDirectory: checkedReadonlyDshDirectory(
+              options.readonlyDshDirectory,
+            ),
+          }
+        : {}),
+    };
     this.run = options.runner ?? runCommand;
     if (
       ![
@@ -131,6 +148,51 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
         MSB_CONFIG_PATH: paths.config,
       },
     });
+  }
+  private async artifact(
+    binding: PersonVmBinding,
+    signal: AbortSignal,
+    create = false,
+  ) {
+    const c = this.options.readonlyDshDirectory;
+    if (!c) return;
+    const descriptorSha256 = await verifyReadonlyDshDirectory(
+      c,
+      this.options.image,
+      signal,
+    );
+    const paths = this.homes.get(binding.vmId);
+    if (!paths) throw new PersonVmError('PROVIDER_FAILED');
+    await readonlyArtifactReference(
+      paths.home,
+      binding,
+      c,
+      create,
+      signal,
+      descriptorSha256,
+    );
+  }
+  private async assertArtifact(
+    binding: PersonVmBinding,
+    signal: AbortSignal,
+    running = true,
+  ) {
+    const c = this.options.readonlyDshDirectory;
+    if (!c) return;
+    await this.artifact(binding, signal);
+    const inspection: unknown = JSON.parse(
+      await this.command(
+        binding,
+        ['inspect', this.name(binding), '--format', 'json'],
+        signal,
+      ),
+    );
+    assertReadonlyArtifactInspection(
+      inspection,
+      this.name(binding),
+      c,
+      running,
+    );
   }
   async prepare(binding: PersonVmBinding, mount: string, signal: AbortSignal) {
     const home = join(this.options.socketRoot, binding.vmId);
@@ -225,6 +287,7 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
     }
     if ((await this.status(binding, signal)) !== 'absent')
       throw new PersonVmError('PROVIDER_FAILED');
+    await this.artifact(binding, signal, true);
     await this.command(
       binding,
       ['pull', this.options.image, '--materialize', 'flat', '--quiet'],
@@ -254,6 +317,11 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
       '--workdir',
       '/work',
     ];
+    if (this.options.readonlyDshDirectory)
+      args.push(
+        '--mount-dir',
+        `${this.options.readonlyDshDirectory.hostDirectory}:${this.options.readonlyDshDirectory.guestDirectory}:ro`,
+      );
     for (const port of receipt.gatewayPorts)
       args.push('--net-rule', `allow:egress@host:tcp:${port}`);
     if (web) {
@@ -267,6 +335,7 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
     }
     // No native idle-timeout: detached DSH jobs may be active without touching it.
     await this.command(binding, args, signal);
+    await this.assertArtifact(binding, signal);
   }
   async prepareWebEndpoints(
     binding: PersonVmBinding,
@@ -311,6 +380,14 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
         signal,
       ),
     );
+    await this.artifact(receipt.binding, signal);
+    if (this.options.readonlyDshDirectory)
+      assertReadonlyArtifactInspection(
+        inspection,
+        this.name(receipt.binding),
+        this.options.readonlyDshDirectory,
+        true,
+      );
     assertWebEndpointInspection(
       inspection,
       this.name(receipt.binding),
@@ -319,7 +396,9 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
     );
   }
   async start(binding: PersonVmBinding, signal: AbortSignal) {
+    await this.assertArtifact(binding, signal, false);
     await this.command(binding, ['start', this.name(binding)], signal);
+    await this.assertArtifact(binding, signal);
   }
   async stop(binding: PersonVmBinding, signal: AbortSignal) {
     const state = await this.status(binding, signal);
@@ -331,6 +410,7 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
   }
   async ping(binding: PersonVmBinding, signal: AbortSignal) {
     await this.command(binding, ['ping', this.name(binding)], signal);
+    await this.assertArtifact(binding, signal);
   }
   async bootstrap(scope: PersonVmStartingScope, plan: PersonVmMemoryGuestPlan) {
     const paths = this.homes.get(scope.binding.vmId);
