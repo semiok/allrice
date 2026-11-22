@@ -146,6 +146,24 @@ function initialize(config, io = fs, run = cp.execFileSync) {
       .includes('memory')
   )
     throw Error('command_memory_subtree_not_enabled');
+  if (config.receiptDirectory !== undefined) {
+    const receipt = config.receiptDirectory;
+    if (
+      typeof receipt !== 'string' ||
+      !path.isAbsolute(receipt) ||
+      receipt === '/' ||
+      path.normalize(receipt) !== receipt ||
+      /[\s\0]/.test(receipt)
+    )
+      throw Error('invalid_command_receipt_directory');
+    io.mkdirSync(receipt, { recursive: true, mode: 0o700 });
+    if (
+      !io.lstatSync(receipt).isDirectory() ||
+      io.realpathSync(receipt) !== receipt
+    )
+      throw Error('invalid_command_receipt_directory');
+    io.chmodSync(receipt, 0o700);
+  }
   return {
     contractVersion: 1,
     policyRef: config.policyRef,

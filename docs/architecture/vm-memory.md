@@ -4,7 +4,7 @@
 
 ## 公开合同与五面
 
-公开入口`@allrice/vm-memory`（包0.1.0、`VM_MEMORY_CONTRACT_VERSION=1`），仅import `@allrice/person-vm` 公共barrel中的 `PersonVmBinding`。本次合同来自上述历史fbbc源码；allowlist在`packages/vm-memory/src/index.ts`，具名type/error在`src/contract.ts`，方法在`src/admission.ts`和`src/guest-config.ts`。历史 `7d13ffc39bc6583bf9ecc4bf1f352116879a0952` 曾固定旧gateway装配，不是当前n3的装配证据。可信observer、hardcap回读及owner实际启动/命令关联仍待公开交付；已有type不等于装配完成。
+公开入口`@allrice/vm-memory`（包0.1.0、`VM_MEMORY_CONTRACT_VERSION=1`），import `@allrice/person-vm` 公共barrel中的 `PersonVmBinding` 与下述同一 receipt 程序。本次合同来自上述历史fbbc源码；allowlist在`packages/vm-memory/src/index.ts`，具名type/error在`src/contract.ts`，方法在`src/admission.ts`和`src/guest-config.ts`。历史 `7d13ffc39bc6583bf9ecc4bf1f352116879a0952` 曾固定旧gateway装配，不是当前n3的装配证据。可信observer、hardcap回读及owner实际启动/命令关联仍待公开交付；已有type不等于装配完成。
 
 | 面        | 明确归属                                                                                                                                                                                                                                                                                                                              |
 | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -51,6 +51,16 @@ source订阅先于读取，通知缓冲；source负责断连、失效、takeover
 初始化拒绝错误已有swap、不重格式化活动swap；所有组先读cgroup.events populated（包含后代）并预检，才写新组限额；现存组差异限额即使空也拒绝，同配置限额只读校验，不提供running重配。populated=0不能阻止下一刻新命令入组，首次新组初始化仍必须由owner门禁覆盖check+write+readback。已有bootstrap plan/managed launch候选不等于实际所有合法来源受同一fence约束；本模块没有该全域保证，R1-02尚未整体关闭；仅传starting字符串、调用running-only resolve/assertCurrentBinding或raw class.exec不能替代门禁。失败退出75。原生bash EXIT trap按自己的`memory.events.local`增量判断OOM；`oom_kill`来自任何OOM killer，只有同时见本child的`oom`增量才称`COMMAND_MEMORY_LIMIT`，否则`COMMAND_OOM_KILLED`明确原因需核。137本身不当OOM。局部OOM复用样机中文说明和137，不制造原生isError/成功或执行第二遍。同PID的exec bash重入先验证进程starttime、当前统一cgroup路径和相同限额，再复用首次导出的数字OOM基线；不会mkdir -p或重置基线，身份/配置不符则拒绝。该验证是guest root协作事实，不授予外部身份。退出前移出child再删除空组；仍有后代时组保留，native进程owner须真实收尾，不能为了清理回执杀未知任务。
 
 R1-04仍未关闭：EXIT trap仅在shell存活且仍拥有trap时尽力生成解释。合法exec node/python替换shell，或shell自身遭SIGKILL/OOM时，不能靠trap自动解释；必须保留原生exit/signal与会话事实，不能把137/SIGKILL猜成OOM，也不能用共享父组计数增量归因并发单命令。自动可读局部OOM要求仍保留，尚未兑现全路径覆盖。
+
+### 可选 command receipt 工件
+
+`createVmMemoryGuestPlan` 可显式传 `commandReceipt: {nodeExecutable, receiptDirectory}`。Node 是实际 guest 的绝对路径，receipt 目录位于本次本人加密持久盘内；initialize 创建并核 canonical 目录，权限0700。plan 生成 `allrice-memory/command-observer.cjs`，仅用薄 argv/env 适配复用 person-vm 公开 `PERSON_VM_COMMAND_MEMORY_PROGRAM`，保持 version1 与 baseline/admitted/complete/complete-and-release 四阶段，不复制 reader 或另建命令执行器。
+
+plan 提供 `ALLRICE_MEMORY_RECEIPT_NODE`、`ALLRICE_MEMORY_RECEIPT_WRITER`、`ALLRICE_MEMORY_RECEIPT_DIRECTORY`，不生成或为整个 DSH 设置 `ALLRICE_MEMORY_EXECUTION_REF`。真实命令 owner 须在派发前逐次注入唯一 nonce，并在同一操作中保留真实 managed job 与 nonce；两者交 observer，不能把 DSH 主进程 job 当工具子命令。没有 nonce 时保持旧调用；显式 nonce 为空/非法、缺 receipt 参数、重复 nonce 或 fork 继承另一 PID 的关联时，以既有 `COMMAND_MEMORY_SETUP_FAILED` 拒绝负载。
+
+receipt 模式先建独立空 child、写限额并读回，PID 仍在 DSH 组时以 wx/0600 写 baseline；迁同 PID 后在用户负载前 admitted 核 birth、membership、child inode 与原计数。exec bash 同 PID 重入严格核原 admitted receipt，只读且不重置 baseline。此模式 EXIT 保留 child/receipt，失败也不假释放；原生命令 owner 在实际 job join 后调用 observer，只有 PID 消失、child 真空且 populated=0、身份/计数稳定，complete-and-release 才删除两项。取消、写入半途或缺失证书仍交原 owner 收尾，probe join 本身不证明已释放；本片不补造 recovery executor，不杀 DSH。
+
+当前真实 DSH 原生命令工具到 `PersonVmManagedJob` 的公开 adapter 仍是 `sourceAtSha=null/symbol=null`，逐次 nonce 注入未装配。本片 Bash/Node 回归使用明确合成的 cgroup2/proc 来源，只验证公开工件顺序、拒绝及保留行为，不证明实际 DSH 工具接通、VM 存活、物理硬帽或具体 OOM victim。公开 JobExit 仍无真实 terminating signal；137 与同 child 组计数不能补为主进程 OOM 归因，guest root 协作不构成隔离或宿主权威。
 
 已核DSH 0.2.1-rc.2公开SubprocessHandle.done/terminate/waitForExit、ShellExecution.done/result/observed及tools/post-execute/result；它们提供精确原生命令的退出/输出或tool outcome，但没有普通child的可靠PID birth/cgroup/OOM关联。最小拟议上游接缝须由现有native process owner在同一execution范围创建并持有唯一command resource关联，在入组前取本child baseline，完成/managed range收束后由被执行shell之外的owner读取本child计数，并返回可核的关联及未知状态；不改写原始退出、取消、输出或工具成功。并发child、存活后代、exec替换和shell死亡都须纳入该公开合同。这里不臆造签名、不接private handle、不另造executor或服务，待原生owner公开冻结后再实施。
 

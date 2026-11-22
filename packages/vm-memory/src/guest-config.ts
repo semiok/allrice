@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { isAbsolute, join, normalize } from 'node:path';
+import { PERSON_VM_COMMAND_MEMORY_PROGRAM } from '@allrice/person-vm';
 import {
   VM_MEMORY_CONTRACT_VERSION,
   VM_PHYSICAL_MEMORY_BYTES,
@@ -24,6 +25,12 @@ export async function createVmMemoryGuestPlan(input: {
   policy: VmMemoryPolicy;
   /** Actual approval/config release reference, not permission granted by a string. */
   policyRef: string;
+  /** Explicit cooperative receipt setup. The real command owner supplies a
+   * fresh execution nonce per dispatch; the plan never creates one. */
+  commandReceipt?: Readonly<{
+    nodeExecutable: string;
+    receiptDirectory: string;
+  }>;
 }): Promise<VmMemoryGuestPlan> {
   if (typeof input.policyRef !== 'string' || !input.policyRef.trim())
     throw new Error('approved_memory_policy_required');
@@ -58,6 +65,22 @@ export async function createVmMemoryGuestPlan(input: {
   )
     throw new Error('invalid_guest_memory_directory');
   const directory = join(root, 'allrice-memory');
+  const receipt = input.commandReceipt
+    ? { ...input.commandReceipt }
+    : undefined;
+  if (
+    receipt &&
+    (![receipt.nodeExecutable, receipt.receiptDirectory].every(
+      (value) =>
+        typeof value === 'string' &&
+        isAbsolute(value) &&
+        value !== '/' &&
+        normalize(value) === value &&
+        !/[\s\0]/.test(value),
+    ) ||
+      !receipt.receiptDirectory.startsWith(root + '/'))
+  )
+    throw new Error('invalid_command_receipt_configuration');
   const cgroupRoot = '/sys/fs/cgroup';
   const dshGroup = join(cgroupRoot, 'allrice-dsh');
   const commandsGroup = join(cgroupRoot, 'allrice-commands');
@@ -70,6 +93,7 @@ export async function createVmMemoryGuestPlan(input: {
     procRoot: '/proc',
     policy,
     policyRef: input.policyRef,
+    ...(receipt ? { receiptDirectory: receipt.receiptDirectory } : {}),
   };
   const names = [
     'initialize.cjs',
@@ -92,6 +116,25 @@ export async function createVmMemoryGuestPlan(input: {
     contents: JSON.stringify(config) + '\n',
     mode: 0o600,
   });
+  const receiptWriter = join(directory, 'command-observer.cjs');
+  if (receipt)
+    files.push({
+      path: receiptWriter,
+      // Adapt the staged-file argv to the exact public -e program. This is
+      // parameter plumbing, not another receipt format or command executor.
+      contents: `const env = process.env;
+process.argv = [process.argv[0], JSON.stringify({
+  cgroupRoot: env.ALLRICE_MEMORY_CGROUP_ROOT,
+  commandsGroup: env.ALLRICE_MEMORY_COMMANDS_GROUP,
+  dshGroup: env.ALLRICE_MEMORY_DSH_GROUP,
+  procRoot: env.ALLRICE_MEMORY_PROC_ROOT,
+  receiptDirectory: env.ALLRICE_MEMORY_RECEIPT_DIRECTORY,
+  executionRef: env.ALLRICE_MEMORY_EXECUTION_REF,
+  pid: Number(process.argv[2]),
+}), process.argv[3]];
+${PERSON_VM_COMMAND_MEMORY_PROGRAM}`,
+      mode: 0o700,
+    });
   return {
     files,
     initialize: {
@@ -110,6 +153,13 @@ export async function createVmMemoryGuestPlan(input: {
       ALLRICE_MEMORY_COMMAND_OOM_SCORE: String(policy.commandOomScoreAdj),
       ALLRICE_MEMORY_DSH_OOM_SCORE: String(policy.dshOomScoreAdj),
       ALLRICE_MEMORY_PROC_ROOT: '/proc',
+      ...(receipt
+        ? {
+            ALLRICE_MEMORY_RECEIPT_NODE: receipt.nodeExecutable,
+            ALLRICE_MEMORY_RECEIPT_WRITER: receiptWriter,
+            ALLRICE_MEMORY_RECEIPT_DIRECTORY: receipt.receiptDirectory,
+          }
+        : {}),
     },
   };
 }

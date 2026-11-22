@@ -339,6 +339,93 @@ describe('command memory observer (synthetic kernel/native sources; not DSH/VM a
     },
   );
 
+  it('creates a nonce receipt exclusively and only reads an already-admitted receipt on same-birth reentry', () => {
+    const g = guest();
+    expect(g.baseline().exitCode).toBe(0);
+    const baseline = g.files.get(receiptPath);
+    expect(g.baseline().exitCode).toBe(1);
+    expect(g.files.get(receiptPath)).toBe(baseline);
+    expect(g.admit().exitCode).toBe(0);
+    const admitted = g.files.get(receiptPath);
+    // A read-only reentry must preserve even the original serialization.
+    g.files.set(receiptPath, admitted! + '\n');
+    expect(g.run('admitted').exitCode).toBe(0);
+    expect(g.files.get(receiptPath)).toBe(admitted! + '\n');
+    const wrongMembership = JSON.stringify({
+      ...JSON.parse(admitted!),
+      admittedMembership: '/dsh',
+    });
+    g.files.set(receiptPath, wrongMembership);
+    expect(g.run('admitted').exitCode).toBe(1);
+    expect(g.files.get(receiptPath)).toBe(wrongMembership);
+    g.files.set(receiptPath, admitted! + '\n');
+    g.files.set(
+      `${cfg.procRoot}/${cfg.pid}/stat`,
+      `${cfg.pid} (reused) ${['S', ...Array<string>(18).fill('0'), '4321'].join(' ')}`,
+    );
+    expect(g.run('admitted').exitCode).toBe(1);
+    expect(g.files.get(receiptPath)).toBe(admitted! + '\n');
+  });
+
+  it.each(['admitted', 'complete-and-release'] as const)(
+    'rejects missing, truncated or mismatched receipts before %s can certify a child',
+    (phase) => {
+      const corruptions = [
+        ['missing', null],
+        ['truncated', '{"version":1'],
+        ['version', { version: 2 }],
+        ['nonce', { executionRef: 'another-execution' }],
+        ['pid', { pid: cfg.pid + 1 }],
+        ['boot', { bootId: 'ffffffff-ffff-ffff-ffff-ffffffffffff' }],
+        ['birth', { startTicks: 'not-a-birth' }],
+        [
+          'child-path',
+          { child: { path: cfg.commandsGroup, device: '5', inode: '27' } },
+        ],
+        [
+          'child-device',
+          { child: { path: childPath, device: '6', inode: '27' } },
+        ],
+        [
+          'child-inode',
+          { child: { path: childPath, device: '5', inode: '28' } },
+        ],
+        ['baseline', { baseline: { oom: '4', oomKill: '-1' } }],
+        ['origin', { beforeMembership: '/commands' }],
+        ['stage', { stage: 'complete' }],
+      ] as const;
+      for (const [failure, patch] of corruptions) {
+        const g = guest();
+        expect(g.baseline().exitCode).toBe(0);
+        if (phase === 'complete-and-release') {
+          expect(g.admit().exitCode).toBe(0);
+          g.finish();
+        }
+        const text = g.files.get(receiptPath)!;
+        if (patch === null) g.files.delete(receiptPath);
+        else
+          g.files.set(
+            receiptPath,
+            typeof patch === 'string'
+              ? patch
+              : JSON.stringify({ ...JSON.parse(text), ...patch }),
+          );
+        const corrupted = g.files.get(receiptPath);
+        const release = vi.fn();
+        g.onCleanup(release);
+        const result = phase === 'admitted' ? g.admit() : g.run(phase);
+        expect(result.exitCode, failure).toBe(1);
+        expect(result.data, failure).not.toHaveProperty('childJoined', true);
+        expect(g.files.get(receiptPath), failure).toBe(corrupted);
+        expect(g.directories.has(childPath), failure).toBe(true);
+        expect(release, failure).not.toHaveBeenCalled();
+        expect(g.reads, failure).not.toContain(
+          `${cfg.commandsGroup}/memory.events`,
+        );
+      }
+    },
+  );
+
   it('rejects a real ordinary directory with the exact cgroup2 error', async () => {
     const directory = await realpath(
       await mkdtemp(join(tmpdir(), 'allrice-observer-ordinary-')),
@@ -878,6 +965,17 @@ describe('command memory observer (synthetic kernel/native sources; not DSH/VM a
       'json',
       'foreign-receipt',
       'release-flag',
+      'version',
+      'receipt-version',
+      'pid',
+      'birth',
+      'child-path',
+      'child-identity',
+      'stage',
+      'membership',
+      'baseline',
+      'counter-reset',
+      'joined-flag',
     ] as const) {
       const h = fixture();
       const launch = h.launch.getMockImplementation()!;
@@ -891,6 +989,20 @@ describe('command memory observer (synthetic kernel/native sources; not DSH/VM a
           if (failure === 'foreign-receipt')
             data.receipt.executionRef = 'foreign';
           if (failure === 'release-flag') data.childReleased = false;
+          if (failure === 'version') data.version = 2;
+          if (failure === 'receipt-version') data.receipt.version = 2;
+          if (failure === 'pid') data.receipt.pid++;
+          if (failure === 'birth') data.receipt.startTicks = null;
+          if (failure === 'child-path')
+            data.receipt.child.path = cfg.commandsGroup;
+          if (failure === 'child-identity')
+            data.receipt.child.inode = 'unknown';
+          if (failure === 'stage') data.receipt.stage = 'baseline';
+          if (failure === 'membership')
+            data.receipt.admittedMembership = '/dsh';
+          if (failure === 'baseline') delete data.receipt.baseline.oom;
+          if (failure === 'counter-reset') data.after.oom = '0';
+          if (failure === 'joined-flag') data.childJoined = false;
           return JSON.stringify(data);
         });
         return job;

@@ -2,7 +2,8 @@
 # No retry, sleep, second command runner, or guest-authoritative model admission.
 allrice_memory_fail() {
   printf 'COMMAND_MEMORY_SETUP_FAILED: 命令内存保护未就绪，本次命令未执行，会话保留\n' >&2
-  if [ "${allrice_memory_child_created:-0}" = 1 ]; then
+  if [ "${allrice_memory_receipt:-0}" = 1 ]; then trap - EXIT; fi
+  if [ "${allrice_memory_child_created:-0}" = 1 ] && [ "${allrice_memory_receipt:-0}" = 0 ]; then
     rmdir "$allrice_memory_child" 2>/dev/null || true
   fi
   exit 75
@@ -13,6 +14,27 @@ allrice_memory_fail() {
 [ -n "${ALLRICE_MEMORY_CGROUP_ROOT:-}" ] || allrice_memory_fail
 allrice_memory_child_created=0
 allrice_memory_child="$ALLRICE_MEMORY_COMMANDS_GROUP/command-$$"
+allrice_memory_receipt=0
+if [ "${ALLRICE_MEMORY_EXECUTION_REF+x}" = x ]; then
+  allrice_memory_receipt=1
+  case "$ALLRICE_MEMORY_EXECUTION_REF" in ''|*[!a-zA-Z0-9_-]*) allrice_memory_fail;; esac
+  [ -n "${ALLRICE_MEMORY_RECEIPT_NODE:-}" ] || allrice_memory_fail
+  [ -n "${ALLRICE_MEMORY_RECEIPT_WRITER:-}" ] || allrice_memory_fail
+  [ -n "${ALLRICE_MEMORY_RECEIPT_DIRECTORY:-}" ] || allrice_memory_fail
+  case "$ALLRICE_MEMORY_RECEIPT_NODE" in /*) ;; *) allrice_memory_fail;; esac
+  case "$ALLRICE_MEMORY_RECEIPT_WRITER" in /*) ;; *) allrice_memory_fail;; esac
+  case "$ALLRICE_MEMORY_RECEIPT_DIRECTORY" in /*) ;; *) allrice_memory_fail;; esac
+  # An inherited command association cannot authorize a different shell PID.
+  if [ -n "${ALLRICE_MEMORY_MANAGED_RECEIPT_REF:-}" ]; then
+    [ "${ALLRICE_MEMORY_MANAGED_PID:-}" = "$$" ] || allrice_memory_fail
+    [ "$ALLRICE_MEMORY_MANAGED_RECEIPT_REF" = "$ALLRICE_MEMORY_EXECUTION_REF" ] || allrice_memory_fail
+  fi
+elif [ -n "${ALLRICE_MEMORY_MANAGED_RECEIPT_REF:-}" ]; then
+  allrice_memory_fail
+fi
+allrice_memory_receipt_phase() {
+  "$ALLRICE_MEMORY_RECEIPT_NODE" "$ALLRICE_MEMORY_RECEIPT_WRITER" "$$" "$1" >/dev/null
+}
 # exec bash keeps the PID and sources BASH_ENV again. Verify this exact managed
 # process before reusing its group; never mkdir -p or reset its first baseline.
 allrice_memory_stat=$(cat "$ALLRICE_MEMORY_PROC_ROOT/$$/stat") || allrice_memory_fail
@@ -30,6 +52,9 @@ if [ "${ALLRICE_MEMORY_MANAGED_PID:-}" = "$$" ]; then
   [ "$(cat "$allrice_memory_child/memory.max")" = "${ALLRICE_MEMORY_COMMAND_MAX:?}" ] || allrice_memory_fail
   [ "$(cat "$allrice_memory_child/memory.swap.max")" = "${ALLRICE_MEMORY_COMMAND_SWAP_MAX:?}" ] || allrice_memory_fail
   [ "$(cat "$allrice_memory_child/memory.oom.group")" = 0 ] || allrice_memory_fail
+  if [ "$allrice_memory_receipt" = 1 ]; then
+    [ "${ALLRICE_MEMORY_MANAGED_RECEIPT_REF:-}" = "$ALLRICE_MEMORY_EXECUTION_REF" ] || allrice_memory_fail
+  fi
   allrice_memory_oom_before=${ALLRICE_MEMORY_OOM_BASELINE:-}
   allrice_memory_local_before=${ALLRICE_MEMORY_LOCAL_BASELINE:-}
 else
@@ -45,6 +70,9 @@ else
   allrice_memory_limit=$(cat "$allrice_memory_child/memory.oom.group") && [ "$allrice_memory_limit" = 0 ] || allrice_memory_fail
   allrice_memory_oom_before=$(awk '$1=="oom_kill" {print $2}' "$allrice_memory_child/memory.events.local") || allrice_memory_fail
   allrice_memory_local_before=$(awk '$1=="oom" {print $2}' "$allrice_memory_child/memory.events.local") || allrice_memory_fail
+  if [ "$allrice_memory_receipt" = 1 ]; then
+    allrice_memory_receipt_phase baseline || allrice_memory_fail
+  fi
 fi
 case "$allrice_memory_oom_before" in ''|*[!0-9]*) allrice_memory_fail;; esac
 case "$allrice_memory_local_before" in ''|*[!0-9]*) allrice_memory_fail;; esac
@@ -64,12 +92,18 @@ allrice_memory_exit() {
   # Leave the child before rmdir. Surviving descendants keep their memcg;
   # never kill/replay a command merely to make cleanup look successful.
   printf '%s\n' "$$" > "$ALLRICE_MEMORY_DSH_GROUP/cgroup.procs" 2>/dev/null || true
-  rmdir "$allrice_memory_child" 2>/dev/null || true
+  if [ "$allrice_memory_receipt" = 0 ]; then
+    rmdir "$allrice_memory_child" 2>/dev/null || true
+  fi
   exit "$allrice_memory_status"
 }
 trap allrice_memory_exit EXIT
 printf '%s\n' "$$" > "$allrice_memory_child/cgroup.procs" || allrice_memory_fail
 printf '%s\n' "${ALLRICE_MEMORY_COMMAND_OOM_SCORE:?}" > "$ALLRICE_MEMORY_PROC_ROOT/$$/oom_score_adj" || allrice_memory_fail
+if [ "$allrice_memory_receipt" = 1 ]; then
+  allrice_memory_receipt_phase admitted || allrice_memory_fail
+  export ALLRICE_MEMORY_MANAGED_RECEIPT_REF="$ALLRICE_MEMORY_EXECUTION_REF"
+fi
 export ALLRICE_MEMORY_MANAGED_PID="$$"
 export ALLRICE_MEMORY_MANAGED_START="$allrice_memory_start"
 export ALLRICE_MEMORY_MANAGED_CHILD="$allrice_memory_child"
