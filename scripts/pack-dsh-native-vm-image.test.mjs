@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { watch } from 'node:fs';
 import { createHash } from 'node:crypto';
 import {
   chmod,
@@ -18,6 +17,7 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, posix } from 'node:path';
+import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { test } from 'vitest';
 import {
@@ -477,38 +477,69 @@ test('preexisting unsafe destination and concurrent publication lock are preserv
   }
 });
 
-test('cooperative cancel waits for actual helper close; any committed publication is retained intact', async (t) => {
+test('cooperative cancellation reaches the actual publisher and joins its real child close', async (t) => {
   const f = await fixture(t),
     parent = join(f.root, 'releases');
-  await mkdir(parent, { mode: 0o700 });
-  const controller = new globalThis.AbortController();
-  const watcher = watch(parent, (_event, name) => {
-    if (String(name).includes('.stage-')) controller.abort();
-  });
-  try {
-    await assert.rejects(
-      publishReadonlyDshDirectory(
-        { ...f.input, parent },
-        { locks: f.locks, signal: controller.signal },
+  const child = spawn(
+    '/usr/bin/python3',
+    [
+      '-c',
+      `import importlib.util,json,signal,sys
+spec=importlib.util.spec_from_file_location("publisher",sys.argv[1])
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+def cancelled(signum,frame):
+    module.cancel(signum,frame)
+    print("cancelled",flush=True)
+signal.signal(signal.SIGTERM,cancelled)
+print("ready",flush=True)
+sys.stdin.buffer.read(1)
+try:
+    module.publish(json.loads(sys.argv[2]))
+except RuntimeError as error:
+    sys.exit(1 if str(error)=="DSH_IMAGE_CANCELLED" else 2)
+except BaseException:
+    sys.exit(2)
+sys.exit(0)
+`,
+      fileURLToPath(
+        new URL('./publish-dsh-native-directory.py', import.meta.url),
       ),
-      { code: 'DSH_IMAGE_PUBLISH_FAILED' },
-    );
-  } finally {
-    watcher.close();
-  }
-  const remaining = await readdir(parent);
-  assert.equal(
-    remaining.some((name) => name.includes('.stage-')),
-    false,
+      JSON.stringify({
+        ...f.input,
+        parent,
+        locks: f.locks,
+        gateSha256: 'a'.repeat(64),
+      }),
+    ],
+    {
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { PATH: '/usr/bin:/bin', PYTHONDONTWRITEBYTECODE: '1' },
+    },
   );
-  if (remaining.includes(f.locks.archiveSha256))
-    assert.equal(
-      await readFile(
-        join(parent, f.locks.archiveSha256, 'public', cli),
-        'utf8',
-      ),
-      'synthetic CLI\n',
-    );
+  const joined = once(child, 'close');
+  const output = createInterface({ input: child.stdout });
+  child.stderr.resume();
+  const line = () =>
+    Promise.race([
+      once(output, 'line').then(([text]) => text),
+      joined.then(() => {
+        throw new Error('publisher exited before handshake');
+      }),
+    ]);
+  try {
+    assert.equal(await line(), 'ready');
+    const acknowledged = line();
+    assert.equal(child.kill('SIGTERM'), true);
+    assert.equal(await acknowledged, 'cancelled');
+    child.stdin.end('x');
+    assert.deepEqual(await joined, [1, null]);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null)
+      child.kill('SIGKILL');
+    await joined;
+    output.close();
+  }
+  await assert.rejects(lstat(parent), { code: 'ENOENT' });
   const stopped = new globalThis.AbortController();
   stopped.abort();
   await assert.rejects(
