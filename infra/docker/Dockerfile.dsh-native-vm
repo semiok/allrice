@@ -1,0 +1,9 @@
+# Input-only candidate: pack-dsh-native-vm-image.mjs must accept the exact
+# public manifest/archive before an isolated build context may be prepared.
+# The currently pinned archive contains symlinks and is deliberately rejected.
+FROM node@sha256:af0bb4bf5b7318e3269417a7684a9e116c3c22eaf05382578b0d0d33de597ad2
+USER 0:0
+WORKDIR /work
+COPY public/ /opt/allrice/dsh/rc2-306d3e31/
+LABEL org.allrice.dsh.version="0.2.1-rc.2" \
+      org.allrice.dsh.archive.sha256="306d3e314b50b7a369642de939fea21616f582bcbe7b74f2936a00c2240699b8"
