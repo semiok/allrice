@@ -13,7 +13,7 @@ import {
   writeFile,
   symlink,
 } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { createConnection, createServer } from 'node:net';
@@ -194,7 +194,7 @@ async function readonlyFixture() {
     recursive: true,
     mode: 0o700,
   });
-  readonlyRoots.push(hostDirectory);
+  readonlyRoots.push(release);
   const bins =
     'anthropic-ai-sdk cordis crc32 dsh dsoffice is-docker is-inside-container js-yaml node-which pi-ai playwright playwright-core semver which-command xlsx yaml'.split(
       ' ',
@@ -230,40 +230,38 @@ async function readonlyFixture() {
     archive: { bytes: 512, sha256: artifactSha256 },
     files,
   });
-  await writeFile(join(release, 'manifest.json'), manifest, { mode: 0o600 });
-  const seals: Record<string, string[]> = {};
-  for (const path of ['.', ...files.map((e) => e.path)]) {
-    const s = await lstat(join(hostDirectory, path), { bigint: true });
-    seals[path] = [String(s.dev), String(s.ino), String(s.ctimeNs)];
-  }
+  await writeFile(join(release, 'manifest.json'), manifest, { mode: 0o444 });
   const c = {
     hostDirectory,
     guestDirectory: `/opt/allrice/dsh/${artifactSha256}`,
     artifactSha256,
     manifestSha256: createHash('sha256').update(manifest).digest('hex'),
     descriptorPath: join(release, 'descriptor.json'),
+    treeSha256: createHash('sha256')
+      .update('synthetic verified tree')
+      .digest('hex'),
   };
-  await writeFile(
-    c.descriptorPath,
-    JSON.stringify({
-      kind: 'allrice-dsh-readonly-directory-v1',
-      ...c,
-      manifestBytes: Buffer.byteLength(manifest),
-      archiveBytes: 512,
-      baseImage: readonlyImage,
-      dshVersion: '0.2.1-rc.2',
-      nodeVersion: '22.23.2',
-      publisherSha256: 'a'.repeat(64),
-      gateSha256: 'b'.repeat(64),
-      seals,
-    }),
-    { mode: 0o600 },
-  );
-  return c;
+  const descriptor = JSON.stringify({
+    kind: 'allrice-dsh-readonly-directory-v2',
+    ...c,
+    manifestBytes: Buffer.byteLength(manifest),
+    archiveBytes: 512,
+    baseImage: readonlyImage,
+    dshVersion: '0.2.1-rc.2',
+    nodeVersion: '22.23.2',
+    publisherSha256: 'a'.repeat(64),
+    gateSha256: 'b'.repeat(64),
+  });
+  await writeFile(c.descriptorPath, descriptor, { mode: 0o444 });
+  await chmod(release, 0o555);
+  return {
+    ...c,
+    sealedManifestSha256: createHash('sha256').update(descriptor).digest('hex'),
+  };
 }
 
 describe('Microsandbox public CLI protocol through real child processes (no actual VM)', () => {
-  it('readonly code首次create走真实provider/child入口；准确mount及active inspect，stop后原绑定start再次完整核验', async () => {
+  it('readonly code首次create走真实provider/child入口；准确mount及active inspect，stop后原绑定start对账同版密封manifest', async () => {
     const c = await readonlyFixture(),
       f = await bootstrapFixture('ok', c);
     await f.service.prewarm(f.rc, { trigger: 'page' }, signal());
@@ -288,6 +286,7 @@ describe('Microsandbox public CLI protocol through real child processes (no actu
     expect(
       (await f.calls()).filter((args) => args[0] === 'start'),
     ).toHaveLength(1);
+    await chmod(dirname(c.hostDirectory), 0o755);
     await rm(c.descriptorPath);
     await expect(f.native.ping(binding, signal())).rejects.toMatchObject({
       code: 'PROVIDER_FAILED',
@@ -298,6 +297,7 @@ describe('Microsandbox public CLI protocol through real child processes (no actu
   });
   it('source qualification失败不pull/create/start；真实prepare/status和失败detach仍可收敛', async () => {
     const c = await readonlyFixture();
+    await chmod(dirname(c.hostDirectory), 0o755);
     await rm(c.descriptorPath);
     const f = await bootstrapFixture('ok', c);
     await expect(
@@ -327,6 +327,7 @@ describe('Microsandbox public CLI protocol through real child processes (no actu
     let runtimeEntered = false;
     f.h.runtime.start = async () => {
       runtimeEntered = true;
+      await chmod(dirname(c.hostDirectory), 0o755);
       await rm(c.descriptorPath);
       throw new Error('synthetic startup failure');
     };

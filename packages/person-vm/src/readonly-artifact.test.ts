@@ -52,70 +52,56 @@ async function fixture() {
     recursive: true,
     mode: 0o700,
   });
-  const contents = 'synthetic public code\n';
-  await writeFile(join(hostDirectory, 'node_modules/code.js'), contents, {
-    mode: 0o444,
-  });
+  await writeFile(
+    join(hostDirectory, 'node_modules/code.js'),
+    'synthetic public code\n',
+    { mode: 0o444 },
+  );
   for (const name of bins)
     await symlink('../code.js', join(hostDirectory, 'node_modules/.bin', name));
-  const entries = [
-    { path: 'node_modules', kind: 'directory', mode: 0o755 },
-    { path: 'node_modules/.bin', kind: 'directory', mode: 0o755 },
-    {
-      path: 'node_modules/code.js',
-      kind: 'file',
-      mode: 0o644,
-      bytes: Buffer.byteLength(contents),
-      sha256: sha(contents),
-    },
-    ...bins.map((name) => ({
-      path: `node_modules/.bin/${name}`,
-      kind: 'symlink',
-      mode: 0o755,
-      target: '../code.js',
-    })),
-  ];
   for (const dir of ['node_modules/.bin', 'node_modules', '.'])
     await chmod(join(hostDirectory, dir), 0o555);
-  const manifest = JSON.stringify({
-    platform: 'linux-arm64-gnu',
-    containsAuthFiles: false,
-    archive: { bytes: 512, sha256: artifactSha256 },
-    files: entries,
-  });
-  const c = {
+  const location = {
     hostDirectory,
     guestDirectory: `/opt/allrice/dsh/${artifactSha256}`,
     artifactSha256,
-    manifestSha256: sha(manifest),
+    manifestSha256: sha('original locked member manifest'),
     descriptorPath: join(release, 'descriptor.json'),
   };
-  await writeFile(join(release, 'manifest.json'), manifest, { mode: 0o600 });
-  async function reseal() {
-    const seals: Record<string, string[]> = {};
-    for (const path of ['.', ...entries.map((e) => e.path)]) {
-      const s = await lstat(join(hostDirectory, path), { bigint: true });
-      seals[path] = [String(s.dev), String(s.ino), String(s.ctimeNs)];
-    }
-    await writeFile(
-      c.descriptorPath,
-      JSON.stringify({
-        kind: 'allrice-dsh-readonly-directory-v1',
-        ...c,
-        baseImage: image,
-        archiveBytes: 512,
-        manifestBytes: Buffer.byteLength(manifest),
-        dshVersion: '0.2.1-rc.2',
-        nodeVersion: '22.23.2',
-        publisherSha256: sha('synthetic publisher'),
-        gateSha256: sha('synthetic gate'),
-        seals,
-      }),
-      { mode: 0o600 },
-    );
+  // Synthetic trusted release receipt; actual publisher interoperability is tested in pack's real Python test.
+  const treeSha256 = sha('publisher verified synthetic tree');
+  const descriptor = {
+    kind: 'allrice-dsh-readonly-directory-v2',
+    ...location,
+    baseImage: image,
+    archiveBytes: 512,
+    manifestBytes: 100,
+    dshVersion: '0.2.1-rc.2',
+    nodeVersion: '22.23.2',
+    publisherSha256: sha('synthetic publisher'),
+    gateSha256: sha('synthetic gate'),
+    treeSha256,
+  };
+  const raw = JSON.stringify(descriptor);
+  const c = { ...location, treeSha256, sealedManifestSha256: sha(raw) };
+  await writeFile(c.descriptorPath, raw, { mode: 0o444 });
+  await writeFile(
+    join(release, 'manifest.json'),
+    'original audit-only member manifest',
+    { mode: 0o444 },
+  );
+  await chmod(release, 0o555);
+  async function changeSeal(
+    changes: Record<string, unknown>,
+    trustedPin = false,
+  ) {
+    const raw = JSON.stringify({ ...descriptor, ...changes });
+    await chmod(c.descriptorPath, 0o644);
+    await writeFile(c.descriptorPath, raw);
+    await chmod(c.descriptorPath, 0o444);
+    if (trustedPin) c.sealedManifestSha256 = sha(raw);
   }
-  await reseal();
-  return { root, c, entries, reseal };
+  return { root, c, changeSeal };
 }
 const signal = () => new AbortController().signal;
 function inspection(c: ReadonlyDshDirectory) {
@@ -142,12 +128,12 @@ function inspection(c: ReadonlyDshDirectory) {
   };
 }
 
-it('actual sealed files and all16 links qualify; config is a frozen host copy', async () => {
+it('trusted release pins sealed bytes and tree version; config is frozen and all16 links stay public', async () => {
   const { c } = await fixture(),
     config = checkedReadonlyDshDirectory(c);
   await expect(
     verifyReadonlyDshDirectory(config, image, signal()),
-  ).resolves.toBe(sha(await readFile(c.descriptorPath, 'utf8')));
+  ).resolves.toBe(c.sealedManifestSha256);
   expect(Object.isFrozen(config)).toBe(true);
   c.hostDirectory = '/different';
   expect(config.hostDirectory).not.toBe(c.hostDirectory);
@@ -156,37 +142,59 @@ it('actual sealed files and all16 links qualify; config is a frozen host copy', 
       await readlink(join(config.hostDirectory, 'node_modules/.bin', name)),
     ).toBe('../code.js');
 });
-it('full actual byte hash rejects tampering even if local seal metadata was refreshed', async () => {
-  const f = await fixture(),
-    path = join(f.c.hostDirectory, 'node_modules/code.js');
-  await chmod(path, 0o644);
-  await writeFile(path, 'changed public bytes\n');
-  await chmod(path, 0o444);
-  await f.reseal(); // Explicitly removes the inode/time guard to exercise actual content verification.
-  await expect(
-    verifyReadonlyDshDirectory(f.c, image, signal()),
-  ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
+it('runtime hashes only sealed manifest; trusted published payload and original member list are not rescanned', async () => {
+  const f = await fixture();
+  // Deliberate host-only fixture mutation establishes the scope: guest readonly is a separate native enforcement test.
+  await chmod(join(f.c.hostDirectory, 'node_modules/code.js'), 0o000);
+  await chmod(join(dirname(f.c.hostDirectory), 'manifest.json'), 0o000);
+  await expect(verifyReadonlyDshDirectory(f.c, image, signal())).resolves.toBe(
+    f.c.sealedManifestSha256,
+  );
 });
-it('missing, extra, changed mode, linked root and substituted symlink targets all reject', async () => {
+it('sealed-byte hash and tree hash have independent trusted expectations; version drift cannot self-authorize', async () => {
   for (const mutate of [
     async (f: Awaited<ReturnType<typeof fixture>>) => {
-      await chmod(join(f.c.hostDirectory, 'node_modules/code.js'), 0o644);
+      await f.changeSeal({ nodeVersion: 'wrong' });
     },
     async (f: Awaited<ReturnType<typeof fixture>>) => {
-      await chmod(f.c.hostDirectory, 0o755);
-      await writeFile(join(f.c.hostDirectory, 'extra'), 'no');
+      f.c.sealedManifestSha256 = 'a'.repeat(64);
     },
     async (f: Awaited<ReturnType<typeof fixture>>) => {
-      await chmod(join(f.c.hostDirectory, 'node_modules/.bin'), 0o755);
-      const p = join(f.c.hostDirectory, 'node_modules/.bin/dsh');
-      await rm(p);
-      await symlink('/outside', p);
+      f.c.treeSha256 = 'b'.repeat(64);
     },
     async (f: Awaited<ReturnType<typeof fixture>>) => {
-      await chmod(join(f.c.hostDirectory, 'node_modules'), 0o755);
-      await rm(join(f.c.hostDirectory, 'node_modules/code.js'));
+      await f.changeSeal({ treeSha256: 'c'.repeat(64) }, true);
     },
     async (f: Awaited<ReturnType<typeof fixture>>) => {
+      f.c.manifestSha256 = 'd'.repeat(64);
+    },
+    async (f: Awaited<ReturnType<typeof fixture>>) => {
+      await f.changeSeal({ guestDirectory: '/other-version' }, true);
+    },
+    async (f: Awaited<ReturnType<typeof fixture>>) => {
+      await f.changeSeal({ nodeVersion: 'wrong' }, true);
+    },
+  ]) {
+    const f = await fixture();
+    await mutate(f);
+    await expect(
+      verifyReadonlyDshDirectory(f.c, image, signal()),
+    ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
+  }
+});
+it('code root/direct parent modes, expected paths, missing manifest and aborted reads fail closed', async () => {
+  for (const mutate of [
+    async (f: Awaited<ReturnType<typeof fixture>>) => {
+      await chmod(f.c.hostDirectory, 0o775);
+    },
+    async (f: Awaited<ReturnType<typeof fixture>>) => {
+      await chmod(dirname(f.c.hostDirectory), 0o775);
+    },
+    async (f: Awaited<ReturnType<typeof fixture>>) => {
+      await chmod(f.c.descriptorPath, 0o644);
+    },
+    async (f: Awaited<ReturnType<typeof fixture>>) => {
+      await chmod(dirname(f.c.hostDirectory), 0o755);
       await rm(f.c.descriptorPath);
     },
   ]) {
@@ -210,22 +218,8 @@ it('missing, extra, changed mode, linked root and substituted symlink targets al
   await expect(
     verifyReadonlyDshDirectory(linked, image, signal()),
   ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
-});
-it('wrong source pins, metadata permissions and already aborted reads cannot qualify', async () => {
-  const f = await fixture();
-  await expect(
-    verifyReadonlyDshDirectory(
-      { ...f.c, manifestSha256: 'a'.repeat(64) },
-      image,
-      signal(),
-    ),
-  ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
   await expect(
     verifyReadonlyDshDirectory(f.c, 'other-image', signal()),
-  ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
-  await chmod(f.c.descriptorPath, 0o644);
-  await expect(
-    verifyReadonlyDshDirectory(f.c, image, signal()),
   ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
   const controller = new AbortController();
   controller.abort();

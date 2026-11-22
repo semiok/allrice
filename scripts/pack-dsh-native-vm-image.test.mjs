@@ -369,13 +369,13 @@ test('real Python safe publisher preserves exact16 links, seals full tree and re
   const receipt = await publish('first-publication');
   const root = receipt.hostDirectory,
     descriptor = JSON.parse(await readFile(receipt.descriptorPath));
-  assert.equal(descriptor.kind, 'allrice-dsh-readonly-directory-v1');
+  assert.equal(descriptor.kind, 'allrice-dsh-readonly-directory-v2');
   assert.equal(
     descriptor.baseImage,
     'docker.io/library/node@sha256:af0bb4bf5b7318e3269417a7684a9e116c3c22eaf05382578b0d0d33de597ad2',
   );
   assert.equal((await lstat(root)).mode & 0o777, 0o555);
-  assert.equal((await lstat(receipt.descriptorPath)).mode & 0o777, 0o600);
+  assert.equal((await lstat(receipt.descriptorPath)).mode & 0o777, 0o444);
   for (const [i, name] of DSH_BIN_NAMES.entries()) {
     const path = join(root, 'node_modules/.bin', name);
     assert.equal((await lstat(path)).isSymbolicLink(), true);
@@ -383,16 +383,43 @@ test('real Python safe publisher preserves exact16 links, seals full tree and re
     assert.equal((await lstat(await realpath(path))).isFile(), true);
   }
   assert.equal(await readFile(join(root, cli), 'utf8'), 'synthetic CLI\n');
+  assert.equal((await lstat(dirname(root))).mode & 0o777, 0o555);
+  const records = [
+    ['.', 'directory', 0o555],
+    ...f.manifest.files.map((e) =>
+      e.kind === 'directory'
+        ? [e.path, 'directory', 0o555]
+        : e.kind === 'symlink'
+          ? [e.path, 'symlink', e.target]
+          : [e.path, 'file', 0o444, e.bytes, e.sha256],
+    ),
+  ];
+  records.sort((a, b) => Buffer.compare(Buffer.from(a[0]), Buffer.from(b[0])));
+  assert.equal(receipt.treeSha256, sha(JSON.stringify(records)));
+  assert.equal(descriptor.treeSha256, receipt.treeSha256);
+  assert.equal(
+    receipt.sealedManifestSha256,
+    sha(await readFile(receipt.descriptorPath)),
+  );
+  for (const entry of f.manifest.files)
+    if (entry.kind === 'file')
+      assert.equal((await lstat(join(root, entry.path))).mode & 0o777, 0o444);
+
   const inode = (await lstat(root)).ino;
   assert.deepEqual(await publish('verified-reuse'), receipt);
   assert.equal((await lstat(root)).ino, inode);
-  await chmod(join(root, cli), 0o644);
-  await writeFile(join(root, cli), 'corrupted');
+  const wrongVersion = JSON.stringify({
+    ...descriptor,
+    nodeVersion: 'wrong-version',
+  });
+  await chmod(receipt.descriptorPath, 0o644);
+  await writeFile(receipt.descriptorPath, wrongVersion);
+  await chmod(receipt.descriptorPath, 0o444);
   await assert.rejects(
     publishReadonlyDshDirectory({ ...f.input, parent }, { locks: f.locks }),
     { code: 'DSH_IMAGE_PUBLISH_FAILED' },
   );
-  assert.equal(await readFile(join(root, cli), 'utf8'), 'corrupted'); // Never repair or overwrite.
+  assert.equal(await readFile(receipt.descriptorPath, 'utf8'), wrongVersion); // Never repair or overwrite.
 });
 
 test('actual tar type/mode/link drift and partial data failure roll back only the owned private stage', async (t) => {
