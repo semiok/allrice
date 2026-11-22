@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { getEventListeners } from 'node:events';
 import type { PersonalSkillDefinition } from '@allrice/contracts';
-import type { Sql } from 'postgres';
+import postgres, { type Sql } from 'postgres';
 import type * as DatabaseClient from '../core/client.ts';
 import {
   afterAll,
@@ -271,8 +271,23 @@ suite(
     });
 
     it('joins the real pending SELECT when its own fixture backend is terminated', async () => {
-      const x = await install(),
-        target = await f.db.reserve();
+      const x = await install();
+      const [fixture] = await f.db<
+        { schema: string; application_name: string }[]
+      >`select current_schema() schema,current_setting('application_name') application_name`;
+      if (
+        !fixture ||
+        !/^p25_[a-f0-9]{32}$/.test(fixture.schema) ||
+        fixture.application_name !== fixture.schema
+      )
+        throw Error('owned isolated fixture required');
+      const applicationName = `met285-victim-${randomUUID()}`;
+      const url = new URL(process.env.ALLRICE_TEST_DATABASE_URL!);
+      url.searchParams.set('options', `-csearch_path=${fixture.schema}`);
+      url.searchParams.set('application_name', applicationName);
+      // Own the victim pool: a killed reserved handle must never be released
+      // into the shared fixture pool. max:1 keeps identity and read on one backend.
+      const target = postgres(url.toString(), { max: 1, connect_timeout: 5 });
       let blocker: Awaited<ReturnType<Sql['reserve']>> | undefined;
       let caught: Promise<unknown> | undefined;
       const abort = new AbortController(),
@@ -291,8 +306,8 @@ suite(
           (select backend_start::text from pg_stat_activity where pid=pg_backend_pid()) backend_start`;
         if (
           !identity ||
-          !/^p25_[a-f0-9]{32}$/.test(identity.schema) ||
-          identity.application_name !== identity.schema
+          identity.schema !== fixture.schema ||
+          identity.application_name !== applicationName
         )
           throw Error('owned isolated fixture backend required');
         blocker = await f.db.reserve();
@@ -335,7 +350,7 @@ suite(
         const nativeFailure = Promise.resolve(queries[0]!).catch(
           (error: unknown) => error,
         );
-        // Exact PID/start/app from our reserved connection; never a shared or
+        // Exact PID/start/app from our private client; never a shared or
         // enumerated victim. The controller is another connection of this fixture.
         const [termination] = await f.db<{ terminated: boolean }[]>`
           select pg_terminate_backend(pid) terminated from pg_stat_activity
@@ -356,11 +371,19 @@ suite(
           try {
             await caught;
           } finally {
-            blocker?.release();
-            target.release();
+            try {
+              blocker?.release();
+            } finally {
+              // Also join closure if termination happened but its ACK failed.
+              await target.end();
+            }
           }
         }
       }
+      const [healthy] = await f.db<
+        { schema: string; application_name: string }[]
+      >`select current_schema() schema,current_setting('application_name') application_name`;
+      expect(healthy).toEqual(fixture);
     });
 
     it('propagates the original failed current check without exposing prepared bytes', async () => {
