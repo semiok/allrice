@@ -2,6 +2,7 @@ import type { ReservedSql, Sql, TransactionSql } from 'postgres';
 import type {
   CompanyAssetMutation,
   EmployeeContentMutation,
+  EmployeeBusinessTargetProjection,
   MemoryOriginSelectorProjection,
   RequestContext,
   StoragePort,
@@ -14,12 +15,27 @@ import {
 import { mutateEmployeeContent } from '../employees/employee-content.ts';
 import { DataAccessError } from '../data.ts';
 import { queryLegacyOriginForCaller } from './legacy-origin.ts';
+import { readEmployeeBusinessCurrentPreflight } from './current-preflight.ts';
 
-/** Trusted host composition of existing maintenance callers, not a native
- * execution/current-scope producer. Each caller retains its own SQL authority,
- * locks, CAS and dedicated transaction. No SQL handle leaves this factory. */
+/** Trusted host composition of existing maintenance callers and current
+ * preflight. Preflight is no caller transaction fence or native execution fact.
+ * Existing callers retain authority, locks, CAS and their dedicated transaction.
+ * No SQL handle leaves this factory. */
 export function createBusinessRuntimeCaller() {
   return Object.freeze({
+    /** Read-only current qualification, outside any later caller transaction. */
+    readEmployeeBusinessCurrentPreflight(
+      context: RequestContext,
+      target: EmployeeBusinessTargetProjection,
+      signal?: AbortSignal,
+    ) {
+      return readEmployeeBusinessCurrentPreflight(
+        context,
+        target,
+        getDatabase(),
+        signal,
+      );
+    },
     listCompanyRuleSources(
       context: RequestContext,
       organizationId: string,

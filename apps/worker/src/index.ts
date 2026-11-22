@@ -18,8 +18,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { createNativeRunDiagnosticsHttpHandler } from './native-run-diagnostics-http.js';
-import { createDEntryHttpHandler } from './d-entry/http.js';
+import { createDEntryHttpHandler, dEntryHttpDefaults } from './d-entry/http.js';
 import { createDEntryMuxHandler } from './d-entry/mux.js';
+import { createWorkerCurrentBusinessRuntime } from './business-runtime/current-producer.js';
 import { createWorkerReadinessResponder } from './worker-readiness.js';
 
 import {
@@ -430,8 +431,21 @@ const nativeRunDiagnosticsHttp = createNativeRunDiagnosticsHttpHandler(
   httpAborter.signal,
 );
 const respondWorkerReadiness = createWorkerReadinessResponder();
-const dEntryHttp = createDEntryHttpHandler(undefined, httpAborter.signal);
-const dEntryMux = createDEntryMuxHandler(undefined, httpAborter.signal);
+const currentBusiness = createWorkerCurrentBusinessRuntime({
+  lifetime: httpAborter.signal,
+});
+const dEntryDependencies = {
+  ...dEntryHttpDefaults,
+  identity: currentBusiness.identity,
+};
+const dEntryHttp = createDEntryHttpHandler(
+  dEntryDependencies,
+  httpAborter.signal,
+);
+const dEntryMux = createDEntryMuxHandler(
+  dEntryDependencies,
+  httpAborter.signal,
+);
 const server = createServer(async (request, response) => {
   if (await dEntryHttp(request, response, stopping)) return;
   if (await nativeRunDiagnosticsHttp(request, response, stopping)) return;
