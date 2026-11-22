@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import posixpath
+import re
 import signal
 import stat
 import sys
@@ -463,7 +464,11 @@ if __name__ == '__main__':
     signal.signal(signal.SIGINT, cancel)
     try:
         print(json.dumps(publish(json.load(sys.stdin))))
-    except BaseException:
+    except BaseException as error:
         # Neither paths, tar bytes, traceback nor inherited environment reach logs.
-        print(json.dumps({'code': 'DSH_IMAGE_PUBLISH_FAILED'}), file=sys.stderr)
+        reason = str(error) if isinstance(error, RuntimeError) else ''
+        if not re.fullmatch(r'DSH_IMAGE_[A-Z_]{1,64}', reason):
+            reason = 'OS_ERROR' if isinstance(error, OSError) else 'UNEXPECTED_ERROR'
+        print(json.dumps({'code': 'DSH_IMAGE_PUBLISH_FAILED', 'reason': reason,
+                          'errno': error.errno if isinstance(error, OSError) else None}), file=sys.stderr)
         sys.exit(1)

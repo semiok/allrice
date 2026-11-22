@@ -274,8 +274,10 @@ export async function publishReadonlyDshDirectory(
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let failed = false,
-      bytes = 0;
-    const pieces = [];
+      bytes = 0,
+      errorBytes = 0;
+    const pieces = [],
+      errors = [];
     const abort = () => {
       child.kill('SIGTERM');
     };
@@ -291,7 +293,10 @@ export async function publishReadonlyDshDirectory(
         kill(); // Only a compact publication receipt, never the tree seal.
       else pieces.push(chunk);
     });
-    child.stderr.resume();
+    child.stderr.on('data', (chunk) => {
+      errorBytes += chunk.length;
+      if (errorBytes <= 1024) errors.push(chunk);
+    }); // Always consume; no raw stderr reaches the error/log.
     child.on('error', () => {
       failed = true;
     });
@@ -309,10 +314,32 @@ export async function publishReadonlyDshDirectory(
         signal?.aborted ||
         cleanupSignal?.aborted
       ) {
+        let detail;
+        try {
+          const value = JSON.parse(Buffer.concat(errors).toString('utf8'));
+          if (
+            errorBytes <= 1024 &&
+            typeof value.reason === 'string' &&
+            /^(DSH_IMAGE_[A-Z_]{1,64}|OS_ERROR|UNEXPECTED_ERROR)$/.test(
+              value.reason,
+            )
+          )
+            detail = {
+              reason: value.reason,
+              errno: Number.isInteger(value.errno) ? value.errno : null,
+            };
+        } catch {
+          // Malformed diagnostics never change failure or join semantics.
+        }
         reject(
-          Object.assign(new Error('DSH_IMAGE_PUBLISH_FAILED'), {
-            code: 'DSH_IMAGE_PUBLISH_FAILED',
-          }),
+          Object.assign(
+            new Error('DSH_IMAGE_PUBLISH_FAILED', {
+              cause: { childExitCode: code, termination, detail },
+            }),
+            {
+              code: 'DSH_IMAGE_PUBLISH_FAILED',
+            },
+          ),
         );
         return;
       }

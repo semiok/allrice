@@ -353,10 +353,20 @@ test('link rules reject absolute/escaping/dangling/link-to-link and absent or li
 test('real Python safe publisher preserves exact16 links, seals full tree and reuses without replacement', async (t) => {
   const f = await fixture(t),
     parent = join(f.root, 'releases');
-  const receipt = await publishReadonlyDshDirectory(
-    { ...f.input, parent },
-    { locks: f.locks },
-  );
+  const publish = async (phase) => {
+    try {
+      return await publishReadonlyDshDirectory(
+        { ...f.input, parent },
+        { locks: f.locks },
+      );
+    } catch (error) {
+      throw new Error(
+        `${phase}: ${JSON.stringify({ code: error?.code, cause: error?.cause })}`,
+        { cause: error },
+      );
+    }
+  };
+  const receipt = await publish('first-publication');
   const root = receipt.hostDirectory,
     descriptor = JSON.parse(await readFile(receipt.descriptorPath));
   assert.equal(descriptor.kind, 'allrice-dsh-readonly-directory-v1');
@@ -374,13 +384,7 @@ test('real Python safe publisher preserves exact16 links, seals full tree and re
   }
   assert.equal(await readFile(join(root, cli), 'utf8'), 'synthetic CLI\n');
   const inode = (await lstat(root)).ino;
-  assert.deepEqual(
-    await publishReadonlyDshDirectory(
-      { ...f.input, parent },
-      { locks: f.locks },
-    ),
-    receipt,
-  );
+  assert.deepEqual(await publish('verified-reuse'), receipt);
   assert.equal((await lstat(root)).ino, inode);
   await chmod(join(root, cli), 0o644);
   await writeFile(join(root, cli), 'corrupted');
