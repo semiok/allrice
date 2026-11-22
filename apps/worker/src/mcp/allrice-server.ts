@@ -12,6 +12,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import {
   ApiErrorSchema,
+  DeliverableReadInputProjectionSchema,
   ExecutionGenerationSchema,
   MemoryOrdinalInputSchema,
   ReferenceArchiveListInputSchema,
@@ -134,6 +135,11 @@ export interface AllriceMcpServices {
     input: z.input<typeof RememberPersonalMemoryInputSchema>,
     signal: AbortSignal,
   ): Promise<CallToolResult>;
+  deliverableRead?(
+    scope: AllriceMcpScope,
+    input: z.input<typeof DeliverableReadInputProjectionSchema>,
+    signal: AbortSignal,
+  ): Promise<CallToolResult>;
 }
 
 /** Public host callbacks for MET-281/283 adapters. These are the exact existing
@@ -165,6 +171,9 @@ export type AllriceMcpDeliverableDocumentRead = NonNullable<
 >;
 export type AllriceMcpMemoryRemember = NonNullable<
   AllriceMcpServices['memoryRemember']
+>;
+export type AllriceMcpDeliverableRead = NonNullable<
+  AllriceMcpServices['deliverableRead']
 >;
 /** Only these existing thrown payloads are validated and disclosed. Native
  * CallToolResult.isError remains the owner's ordinary tool-failure channel. */
@@ -297,6 +306,14 @@ const tools: Tool[] = [
       'Save current human-message content as a candidate requiring confirmation.',
     inputSchema: rememberSchema,
   },
+  {
+    name: 'deliverable_read',
+    description: 'Read an authorized exact deliverable object and checksum.',
+    inputSchema: ToolSchema.shape.inputSchema.parse(
+      z.toJSONSchema(DeliverableReadInputProjectionSchema, { io: 'input' }),
+    ),
+    annotations: { readOnlyHint: true },
+  },
 ];
 const moduleForTool = {
   reference_read: 'enterprise-materials',
@@ -308,6 +325,7 @@ const moduleForTool = {
   reference_archive_read: 'enterprise-materials',
   deliverable_document_read: 'deliverables',
   memory_remember: 'employee-memory',
+  deliverable_read: 'deliverables',
 } as const;
 type BusinessTool = keyof typeof moduleForTool;
 const bindingSchema = z.object({
@@ -456,6 +474,9 @@ export function createAllriceMcpServer(
       case 'memory_remember':
         bound = !!services.memoryRemember;
         break;
+      case 'deliverable_read':
+        bound = !!services.deliverableRead;
+        break;
     }
     return (
       bound &&
@@ -559,6 +580,12 @@ export function createAllriceMcpServer(
           result = await services!.memoryRemember!(
             scope,
             RememberPersonalMemoryInputSchema.parse(args),
+            signal,
+          );
+        } else if (name === 'deliverable_read') {
+          result = await services!.deliverableRead!(
+            scope,
+            DeliverableReadInputProjectionSchema.parse(args),
             signal,
           );
         } else if (name === 'deliverable_create') {

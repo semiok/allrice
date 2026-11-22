@@ -27,30 +27,31 @@
 
 代际依赖采用 271 owner 正式回交的 `c1aaee8017e960da1c64a8fa885c16a7bcbe895f:packages/contracts/src/d-entry.ts` 原字节（blob `5a2009a7a37b442e965af579f21f02de81b52897`），本树 contracts barrel 仅增加该文件 export；共同依赖 common.ts 与 n3 base 同 blob。没有合入旧 #899 或 271 身份/监听实现。`ExecutionGenerationSchema`/`ExecutionGeneration` 只校产品写代际，不证明当前身份、native call、VM ready 或生产装配。旧单文件缺导出的首败保留；新组合仍须自身门禁和独立增审，接口仍为 candidate，未正式验收。
 
-## n4 M2 可选接口首片：6/7 注册
+## n4 M2 可选接口：7/7 注册，业务装配待 owner
 
-本片仅扩同一服务的六个可选 callback、具名 alias 和原生工具，`contractVersion=1` 不变；旧三 callback、四个既有工具 JSON 和取消端口保持。六项只消费 M1 源已有公开 schema，不实现业务。第七项 `deliverable_read` 等待 MET-281 正式 `DeliverableReadInputProjectionSchema` 交接，本片无该 callback/注册，不复制候选合同或创建相似 schema。
+本片仅扩同一服务的七个可选 callback、具名 alias 和原生工具，`contractVersion=1` 不变；旧三 callback、四个既有工具 JSON 和取消端口保持。六项沿 M1 源已有公开 schema。第七项 `deliverable_read` 消费 MET-281 正式 `c685918d443e530d5583c1b1da257a97e81525bf:packages/contracts/src/deliverables-port.ts` 原字节（blob `971c53bcfd422370b34367d784b33ae318a39b13`），barrel 仅追加该 export；其 28 个相对依赖与消费基点 67d 全部同 blob。没有合业务支、复制实现或创建相似 schema。
 
 以下每个 callback 都为 `(scope: AllriceMcpScope, input: z.input<typeof InputSchema>, signal: AbortSignal) => Promise<CallToolResult>`；公开 alias 是其 `NonNullable<AllriceMcpServices['method']>`。只有真实 owner callback 绑定且模块/代际现权允许时才 list/call；没有绑定时隐藏并沿 DEPENDENCY_UNAVAILABLE 拒绝，不能落入 deliverableCreate。
 
-| raw wire / method / public alias                                                        | InputSchema                       | module               |
-| --------------------------------------------------------------------------------------- | --------------------------------- | -------------------- |
-| reference_search / referenceSearch / AllriceMcpReferenceSearch                          | ReferenceSearchInputSchema        | enterprise-materials |
-| reference_read_image / referenceReadImage / AllriceMcpReferenceReadImage                | ReferenceReadImageInputSchema     | enterprise-materials |
-| reference_archive_list / referenceArchiveList / AllriceMcpReferenceArchiveList          | ReferenceArchiveListInputSchema   | enterprise-materials |
-| reference_archive_read / referenceArchiveRead / AllriceMcpReferenceArchiveRead          | ReferenceArchiveReadInputSchema   | enterprise-materials |
-| deliverable_document_read / deliverableDocumentRead / AllriceMcpDeliverableDocumentRead | WorkspaceDocumentReadArgsSchema   | deliverables         |
-| memory_remember / memoryRemember / AllriceMcpMemoryRemember                             | RememberPersonalMemoryInputSchema | employee-memory      |
+| raw wire / method / public alias                                                        | InputSchema                          | module               |
+| --------------------------------------------------------------------------------------- | ------------------------------------ | -------------------- |
+| reference_search / referenceSearch / AllriceMcpReferenceSearch                          | ReferenceSearchInputSchema           | enterprise-materials |
+| reference_read_image / referenceReadImage / AllriceMcpReferenceReadImage                | ReferenceReadImageInputSchema        | enterprise-materials |
+| reference_archive_list / referenceArchiveList / AllriceMcpReferenceArchiveList          | ReferenceArchiveListInputSchema      | enterprise-materials |
+| reference_archive_read / referenceArchiveRead / AllriceMcpReferenceArchiveRead          | ReferenceArchiveReadInputSchema      | enterprise-materials |
+| deliverable_document_read / deliverableDocumentRead / AllriceMcpDeliverableDocumentRead | WorkspaceDocumentReadArgsSchema      | deliverables         |
+| memory_remember / memoryRemember / AllriceMcpMemoryRemember                             | RememberPersonalMemoryInputSchema    | employee-memory      |
+| deliverable_read / deliverableRead / AllriceMcpDeliverableRead                          | DeliverableReadInputProjectionSchema | deliverables         |
 
-五个读取注册为只读提示；remember 不标只读或幂等。memory wire JSON 直接复用既有 workspace.memory.remember 完整 schema，运行时仍用 RememberPersonalMemoryInputSchema：strict 内容-only summary/details/memoryClass，details 省略默认 null、memoryClass 默认 work_note，保旧 Unicode/长度约束与归一规则。不接受 guest source/身份/worker/lease/approved。
+六个读取注册为只读提示；remember 不标只读或幂等。deliverable_read 使用独立的可选 deliverableRead callback，输入为 strict objectId/checksum，offset 默认 0、最多 2000000，limit 默认及最多 4000，返回原生 CallToolResult；不借 documentRead 读取其他对象。owner 沿 DeliverableReadMcpProjectionSchema 的 id/checksum/downloadUrl/fileName/mediaType/content/offset/totalCharacters/truncated/nextOffset 公开投影，不能把 host resource 或 series/version 对象直接序列化。memory wire JSON 直接复用既有 workspace.memory.remember 完整 schema，运行时仍用 RememberPersonalMemoryInputSchema：strict 内容-only summary/details/memoryClass，details 省略默认 null、memoryClass 默认 work_note，保旧 Unicode/长度约束与归一规则。不接受 guest source/身份/worker/lease/approved。
 
 memoryRemember 只返回原生 CallToolResult；真实候选事务、真人消息/steering 来源及 operation receipt 归 MET-283。成功仅投影真实候选回执且 requiresConfirmation=true，不能生成 active、伪造 source/native call 或补 3.x Run。普通业务旧错误沿 owner 的具名 isError 投影；本服务不新增任意 thrown error 透传或业务 result schema。
 
-CallToolResultSchema 保原生 text/image/resource/structuredContent，不替业务 owner 做 allowlist。图片须有真实获权 bytes，attachment 元数据不是模型已读；搜索结果、图/归档 receipt 与文档 PDF/Office 薄投影仍待 MET-281 交付。host StorageObject.key、路径、凭据及 series/version 内部对象不得直接作为 guest 结果。没有绑定的业务能力不以协议 fixture 冒充。
+CallToolResultSchema 保原生 text/image/resource/structuredContent，不替业务 owner 做 allowlist。图片须有真实获权 bytes，attachment 元数据不是模型已读；搜索结果、图/归档 receipt 与文档 PDF/Office 薄投影的真实 MCP callback 装配仍归 MET-281。host StorageObject.key、路径、凭据及 series/version 内部对象不得直接作为 guest 结果。没有绑定的业务能力不以协议 fixture 冒充。
 
 已验证的 thrown ApiError/ReferenceSelectionError 现在与普通返回一起经过原 post-current 复核，未失权时原 payload 不变。selection IDs 仅允许 reference_read 及新增三项 exact-pin 图/归档工具的输入 revisionId；搜索不接受该错误披露。remember 后失权提示候选可能已提交，沿原 call 对账，不暗示回滚；旧 create 提示不变。
 
-新增 callback 仍共用原 operation/AbortSignal、whenIdle 和 revoke/close 的真实 Promise join，绝不取消先返回并遗留事务。当前只有接口/注册 6/7，真实 271/273 身份资格、4.0 载体与 281/283 业务尚待绑定；不表示全部业务 ready。新增 SDK 协议回归及原完整文件须由 root 在固定头执行；源码或静态检查不算运行通过。
+新增 callback 仍共用原 operation/AbortSignal、whenIdle 和 revoke/close 的真实 Promise join，绝不取消先返回并遗留事务。当前只有接口/注册 7/7，真实 271/273 身份资格、4.0 载体与 281/283 业务尚待绑定；不表示全部业务 ready。67d 六口的 83 项受影响执行由 root 持有原件，不延伸为本次第七口通过；本增量的 SDK 协议回归及受影响完整文件仍须绑定新头执行，源码或静态检查不算运行通过。
 
 ## 原生对照与 SaaS 边界
 

@@ -10,6 +10,8 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import {
   ApiErrorSchema,
+  DeliverableReadInputProjectionSchema,
+  DeliverableReadMcpProjectionSchema,
   ReferenceArchiveReadInputSchema,
   ReferenceSelectionErrorSchema,
 } from '@allrice/contracts';
@@ -29,6 +31,7 @@ import {
   type AllriceMcpReferenceArchiveRead,
   type AllriceMcpDeliverableDocumentRead,
   type AllriceMcpMemoryRemember,
+  type AllriceMcpDeliverableRead,
 } from './allrice-server.js';
 
 const id = (n: number) =>
@@ -603,6 +606,287 @@ describe('AllRice M2 six optional native SDK callbacks (protocol fixtures only)'
     );
     expect(f.services.memoryRemember).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('AllRice M2 deliverable_read (protocol fixtures, no business carrier)', () => {
+  const input = { objectId: id(30), checksum: pin.checksum };
+  const projection = DeliverableReadMcpProjectionSchema.parse({
+    id: input.objectId,
+    checksum: input.checksum,
+    downloadUrl: 'allrice-fixture://deliverable',
+    fileName: 'protocol.txt',
+    mediaType: 'text/plain',
+    content: 'protocol fixture, no business carrier',
+    offset: 0,
+    totalCharacters: 37,
+    truncated: false,
+    nextOffset: null,
+  });
+  const native: CallToolResult = {
+    content: [
+      { type: 'text', text: JSON.stringify(projection) },
+      { type: 'image', data: 'iVBORw0KGgo=', mimeType: 'image/png' },
+      {
+        type: 'resource',
+        resource: {
+          uri: 'allrice-fixture://deliverable',
+          text: projection.content,
+        },
+      },
+    ],
+    structuredContent: projection,
+  };
+  function readFixture() {
+    const f = fixture();
+    return {
+      ...f,
+      services: {
+        ...f.services,
+        deliverableRead: vi.fn<AllriceMcpDeliverableRead>(async () => native),
+      },
+    };
+  }
+
+  it('lists the exact input projection and preserves defaults, explicit paging and native output', async () => {
+    const f = readFixture();
+    const { client, controller } = await connect(f);
+    expect(controller.contractVersion).toBe(1);
+    const tool = (await client.listTools()).tools.find(
+      (item) => item.name === 'deliverable_read',
+    )!;
+    expect(tool.inputSchema).toEqual(
+      z.toJSONSchema(DeliverableReadInputProjectionSchema, { io: 'input' }),
+    );
+    expect(tool.inputSchema).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['objectId', 'checksum'],
+    });
+    expect(tool.annotations?.readOnlyHint).toBe(true);
+    for (const args of [input, { ...input, offset: 2_000_000, limit: 1 }]) {
+      expect(
+        await client.callTool({ name: 'deliverable_read', arguments: args }),
+      ).toEqual(native);
+      expect(f.services.deliverableRead).toHaveBeenLastCalledWith(
+        f.scope,
+        { offset: 0, limit: 4000, ...args },
+        expect.any(AbortSignal),
+      );
+    }
+    expect(f.services.deliverableRead).toHaveBeenCalledTimes(2);
+    expect(f.services.deliverableCreate).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing pins, invalid bounds and guest authority before dispatch', async () => {
+    const f = readFixture();
+    const { client } = await connect(f);
+    const invalid = [
+      {},
+      { objectId: input.objectId },
+      { checksum: input.checksum },
+      { ...input, checksum: 'changed' },
+      { ...input, objectId: 'not-a-uuid' },
+      { ...input, offset: -1 },
+      { ...input, offset: 2_000_001 },
+      { ...input, offset: 0.5 },
+      { ...input, limit: 0 },
+      { ...input, limit: 4001 },
+      { ...input, limit: null },
+      ...[
+        'personId',
+        'tenantId',
+        'employeeInstanceId',
+        'nativeCallRef',
+        'approved',
+        'key',
+        'seriesId',
+        'versionId',
+        'path',
+      ].map((key) => ({ ...input, [key]: 'guest authority' })),
+    ];
+    for (const args of invalid)
+      await expect(
+        client.callTool({ name: 'deliverable_read', arguments: args }),
+      ).rejects.toMatchObject({ code: ErrorCode.InvalidParams });
+    expect(f.services.deliverableRead).not.toHaveBeenCalled();
+    expect(f.services.deliverableCreate).not.toHaveBeenCalled();
+  });
+
+  it.each(['unbound', 'module disabled', 'generation mismatch'])(
+    'does not list or dispatch with %s and never borrows documentRead',
+    async (reason) => {
+      const f = readFixture();
+      const documentRead = vi.fn<AllriceMcpDeliverableDocumentRead>(
+        async () => native,
+      );
+      const services: AllriceMcpServices = {
+        ...f.services,
+        deliverableDocumentRead: documentRead,
+        executionGeneration: reason === 'generation mismatch' ? '3.x' : '4.0',
+      };
+      if (reason === 'unbound') delete services.deliverableRead;
+      if (reason === 'module disabled') f.scope.enabledModules = [];
+      const { client } = await connect({ host: f.host, services });
+      expect(
+        (await client.listTools()).tools.map((tool) => tool.name),
+      ).not.toContain('deliverable_read');
+      expect(
+        await client.callTool({ name: 'deliverable_read', arguments: input }),
+      ).toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringContaining('DEPENDENCY_UNAVAILABLE') }],
+      });
+      expect(f.services.deliverableRead).not.toHaveBeenCalled();
+      expect(documentRead).not.toHaveBeenCalled();
+      expect(f.services.deliverableCreate).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['module', 'config', 'native call', 'named error'])(
+    'withholds a completed read after the current %s changes',
+    async (change) => {
+      const f = readFixture();
+      f.services.deliverableRead.mockImplementation(async () => {
+        if (change === 'config') f.scope.moduleConfigRevisionRef = 'new-config';
+        else if (change === 'native call') f.scope.nativeCallRef = 'new-call';
+        else f.scope.enabledModules = [];
+        if (change === 'named error')
+          throw ApiErrorSchema.parse({
+            error: {
+              code: 'AUTHORIZATION_DENIED',
+              message: 'owner refusal withheld',
+              requestId: id(6),
+              retryable: false,
+            },
+          });
+        return native;
+      });
+      const { client } = await connect(f);
+      const result = await client.callTool({
+        name: 'deliverable_read',
+        arguments: input,
+      });
+      expect(result).toMatchObject({
+        isError: true,
+        content: [{ text: expect.stringContaining('AUTHORIZATION_DENIED') }],
+      });
+      expect(JSON.stringify(result)).not.toContain(projection.content);
+      expect(JSON.stringify(result)).not.toContain('owner refusal withheld');
+      expect(f.services.deliverableRead).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('keeps named API errors but refuses reference IDs and redacts unknown failures', async () => {
+    const f = readFixture();
+    const payload = ApiErrorSchema.parse({
+      error: {
+        code: 'AUTHORIZATION_DENIED',
+        message: 'original owner refusal',
+        requestId: id(6),
+        retryable: false,
+      },
+    });
+    f.services.deliverableRead.mockRejectedValue(payload);
+    const { client } = await connect(f);
+    expect(
+      await client.callTool({ name: 'deliverable_read', arguments: input }),
+    ).toMatchObject({
+      isError: true,
+      content: [{ text: JSON.stringify(payload) }],
+    });
+    f.services.deliverableRead.mockRejectedValue(
+      ReferenceSelectionErrorSchema.parse({
+        error: {
+          code: 'REFERENCE_SELECTION_UNAVAILABLE',
+          message: 'private reference',
+          requestId: id(6),
+          retryable: false,
+          referenceRevisionIds: [id(99)],
+        },
+      }),
+    );
+    await expect(
+      client.callTool({ name: 'deliverable_read', arguments: input }),
+    ).rejects.toMatchObject({
+      code: ErrorCode.InternalError,
+      message: expect.stringContaining('Invalid module selection error'),
+    });
+    f.services.deliverableRead.mockRejectedValue(
+      new Error('SQL host key private stack'),
+    );
+    await expect(
+      client.callTool({ name: 'deliverable_read', arguments: input }),
+    ).rejects.toMatchObject({
+      code: ErrorCode.InternalError,
+      message: expect.stringContaining('AllRice business service failed'),
+    });
+  });
+
+  it.each(['client cancel', 'revoke', 'close'] as const)(
+    'joins the same callback after %s without redispatch',
+    async (mode) => {
+      const f = readFixture();
+      const entered = gate(),
+        aborted = gate(),
+        finish = gate();
+      let joined = false;
+      f.services.deliverableRead.mockImplementation(
+        async (_scope, _input, signal) => {
+          signal.addEventListener('abort', () => aborted.resolve(), {
+            once: true,
+          });
+          entered.resolve();
+          try {
+            await finish.promise;
+            return native;
+          } finally {
+            joined = true;
+          }
+        },
+      );
+      const { client, controller } = await connect(f);
+      const abort = new AbortController();
+      const rejected = expect(
+        client.callTool(
+          { name: 'deliverable_read', arguments: input },
+          undefined,
+          { signal: abort.signal },
+        ),
+      ).rejects.toThrow();
+      let ending = Promise.resolve();
+      let closed = false;
+      try {
+        await entered.promise;
+        if (mode === 'client cancel') {
+          abort.abort();
+          await rejected;
+        } else
+          ending = controller[mode]().then(() => {
+            closed = true;
+          });
+        await aborted.promise;
+        let idle = false;
+        const waiting = controller.whenIdle().then(() => {
+          idle = true;
+        });
+        await Promise.resolve();
+        expect(joined).toBe(false);
+        expect(idle).toBe(false);
+        expect(closed).toBe(false);
+        finish.resolve();
+        await waiting;
+        await ending;
+        await rejected;
+        expect(joined).toBe(true);
+        expect(f.services.deliverableRead).toHaveBeenCalledTimes(1);
+      } finally {
+        finish.resolve();
+        await controller.whenIdle();
+        await ending;
+        await rejected;
+      }
+    },
+  );
 });
 
 describe('AllRice native SDK MCP managed boundary (contract fixtures, no production gateway)', () => {
