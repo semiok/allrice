@@ -209,17 +209,25 @@ suite('host caller transaction bindings with original SQL owners', () => {
     sql: Awaited<ReturnType<typeof observer>>,
     blocker: number,
   ) {
-    let pid = 0;
+    const [observerIdentity] = await sql<
+      { application_name: string; pid: number }[]
+    >`select current_setting('application_name') as application_name,pg_backend_pid() as pid`;
+    if (!observerIdentity?.application_name || observerIdentity.pid <= 0)
+      throw new Error('Actual observer connection identity required');
+    let pids: number[] = [];
     await expect
       .poll(async () => {
-        const [row] = await sql<
+        const rows = await sql<
           { pid: number }[]
         >`select pid from pg_stat_activity
-        where application_name=${f.schema} and pid<>pg_backend_pid()
-          and ${blocker}=any(pg_blocking_pids(pid)) order by pid limit 1`;
-        return (pid = row?.pid ?? 0);
+        where application_name=${observerIdentity.application_name} and pid<>${observerIdentity.pid}
+          and ${blocker}=any(pg_blocking_pids(pid)) order by pid`;
+        return (pids = rows.map((row) => row.pid));
       })
-      .toBeGreaterThan(0);
+      .toHaveLength(1);
+    const [pid] = pids;
+    if (pid === undefined) throw new Error('Exactly one blocked PID required');
+    expect(pid).toBeGreaterThan(0);
     return pid;
   }
   async function pauseRevision(assetId: string, deferred = false) {
