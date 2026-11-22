@@ -201,7 +201,7 @@ export function createEmployeePanelsHandlers(
         query,
         request.signal,
       );
-      const options = await scope.materials.options(
+      const options = await scope.materials.publicationOptions(
         scope.context,
         { workspaceId: scope.selection.workspaceId },
         request.signal,
@@ -212,7 +212,7 @@ export function createEmployeePanelsHandlers(
     }),
     publicationOptions: route(false, async (scope, _params, request) => ({
       viewerId: scope.context.actor.id,
-      options: await scope.materials.options(
+      options: await scope.materials.publicationOptions(
         scope.context,
         { workspaceId: scope.selection.workspaceId },
         request.signal,

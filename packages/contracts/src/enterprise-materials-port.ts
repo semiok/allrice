@@ -163,6 +163,11 @@ export interface EnterpriseMaterialsPort {
     input: z.input<typeof MaterialsScopeQueryProjectionSchema>,
     signal: AbortSignal,
   ): Promise<z.infer<typeof ReferenceLibraryOptionsSchema>>;
+  publicationOptions(
+    context: RequestContext,
+    input: z.input<typeof MaterialsScopeQueryProjectionSchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof ReferenceLibraryOptionsSchema>>;
   query(
     context: RequestContext,
     input: z.input<typeof ReferencePublicationQuerySchema>,

@@ -519,7 +519,7 @@ export async function readReferenceWriteReceipt(
       join allrice_knowledge_sources s on s.id=a.source_id
       where s.organization_id=${context.organizationId} and s.workspace_id=${value.workspaceId}
         and a.actor_id=${context.actor.id} and a.request_id=${value.requestId} and s.id=${value.sourceId}
-        and s.created_by=${context.actor.id}`;
+        and (${value.operation !== 'change-publication'} or s.created_by=${context.actor.id})`;
     if (
       row &&
       !(
@@ -529,6 +529,14 @@ export async function readReferenceWriteReceipt(
       ).safeParse(row.input).success
     )
       row = undefined;
+    if (row && value.operation === 'change-source') {
+      // Reuse retry's current maintenance boundary and lock order, without
+      // replaying the action or changing its actor/request ledger.
+      const sourceId = row.source_id;
+      await db.begin(async (tx) => {
+        await referenceSourceAccess(context, sourceId, tx, true, false, true);
+      });
+    }
   } else if (
     ['publish-file', 'publish-upload', 'capture'].includes(value.operation)
   ) {

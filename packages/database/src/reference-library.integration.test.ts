@@ -46,6 +46,7 @@ import {
   listReferenceRevisions,
   changeReference,
   referenceLibraryOptions,
+  readReferenceWriteReceipt,
 } from './reference-library.ts';
 import {
   claimReferenceProcessing,
@@ -887,6 +888,104 @@ suite(
       await expect(
         f.db`update allrice_knowledge_sources set ownership=${f.db.json({ scope: 'company', organizationId: a.company.organizationId })} where id=${p.sourceId}`,
       ).rejects.toThrow('immutable');
+    });
+    it('reconciles only the current maintainer own retry key on another publisher source without replay or writes', async () => {
+      for (const scope of ['department', 'company'] as const) {
+        const a = await setup();
+        const maintainer = a.otherReader;
+        if (scope === 'company')
+          await f.db`update allrice_organization_people set content_maintenance_level='company'
+            where organization_id=${a.company.organizationId} and user_id=${maintainer.actor.id}`;
+        const source = await upload(
+          a.owner,
+          input(a.owner, scope, {
+            departmentId: scope === 'department' ? a.other.id : undefined,
+          }),
+        );
+        await f.db`update allrice_knowledge_processing set state='failed',failure='controlled retry'
+          where revision_id=${source.revisionId}`;
+        const requestId = randomUUID();
+        const action = {
+          workspaceId: maintainer.workspaceId!,
+          requestId,
+          expectedRevision: 1,
+          action: 'retry' as const,
+        };
+        await changeReference(maintainer, source.sourceId, action);
+        const query = {
+          workspaceId: maintainer.workspaceId!,
+          requestId,
+          sourceId: source.sourceId,
+          operation: 'change-source' as const,
+        };
+        const before = {
+          actions:
+            await f.db`select * from allrice_knowledge_reference_actions where source_id=${source.sourceId} order by actor_id,request_id`,
+          audits:
+            await f.db`select * from allrice_audit_events where resource_id=${source.sourceId} order by id`,
+          processing:
+            await f.db`select * from allrice_knowledge_processing where revision_id=${source.revisionId}`,
+        };
+        expect(before.actions).toMatchObject([
+          {
+            actor_id: maintainer.actor.id,
+            request_id: requestId,
+            input: action,
+          },
+        ]);
+        expect(before.actions).toHaveLength(1);
+        const receipt = await readReferenceWriteReceipt(maintainer, query);
+        expect(receipt).toEqual({
+          requestId,
+          operation: 'change-source',
+          status: 'recorded',
+          inputDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
+          result: { sourceId: source.sourceId },
+          ready: null,
+        });
+        expect(await readReferenceWriteReceipt(maintainer, query)).toEqual(
+          receipt,
+        );
+        expect(await readReferenceWriteReceipt(a.owner, query)).toMatchObject({
+          status: 'unknown',
+          result: null,
+        });
+        expect(await readReferenceWriteReceipt(a.reader, query)).toMatchObject({
+          status: 'unknown',
+          result: null,
+        });
+        expect(
+          await readReferenceWriteReceipt(maintainer, {
+            ...query,
+            operation: 'change-publication',
+          }),
+        ).toMatchObject({ status: 'unknown', result: null });
+        expect(
+          await readReferenceWriteReceipt(maintainer, {
+            ...query,
+            requestId: randomUUID(),
+          }),
+        ).toMatchObject({ status: 'unknown', result: null });
+        expect(
+          await readReferenceWriteReceipt(maintainer, {
+            ...query,
+            sourceId: randomUUID(),
+          }),
+        ).toMatchObject({ status: 'unknown', result: null });
+        await f.db`update allrice_organization_people set content_maintenance_level='personal'
+          where organization_id=${a.company.organizationId} and user_id=${maintainer.actor.id}`;
+        await expect(
+          readReferenceWriteReceipt(maintainer, query),
+        ).rejects.toThrow('not_found');
+        expect({
+          actions:
+            await f.db`select * from allrice_knowledge_reference_actions where source_id=${source.sourceId} order by actor_id,request_id`,
+          audits:
+            await f.db`select * from allrice_audit_events where resource_id=${source.sourceId} order by id`,
+          processing:
+            await f.db`select * from allrice_knowledge_processing where revision_id=${source.revisionId}`,
+        }).toEqual(before);
+      }
     });
     it('rechecks current department and active identity instead of trusting cached memberships', async () => {
       const a = await setup(),

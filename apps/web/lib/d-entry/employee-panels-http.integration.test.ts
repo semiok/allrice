@@ -19,6 +19,7 @@ import {
   claimReferenceProcessing,
   finishReferenceProcessing,
 } from '../../../../packages/database/src/reference-processing.ts';
+import { referenceLibraryOptions } from '../../../../packages/database/src/reference-library.ts';
 import { createEmployeePanelsHandlers } from './employee-panels-http';
 import { employeePanelsDependencies } from './employee-panels-context';
 import {
@@ -558,6 +559,69 @@ suite(
       expect(Buffer.from(await bytes.arrayBuffer())).toEqual(
         Buffer.from(input.contentBase64, 'base64'),
       );
+    });
+    it('offers every active company department for personal and department publishers without widening maintenance options', async () => {
+      for (const level of ['personal', 'department'] as const) {
+        const p = await person();
+        await release(p);
+        const a = randomUUID(),
+          b = randomUUID(),
+          archived = randomUUID();
+        for (const [id, name] of [
+          [a, 'A'],
+          [b, 'B'],
+          [archived, 'Old'],
+        ])
+          await f.db`insert into allrice_departments(id,organization_id,name,create_request_id,create_name,archived_at)
+            values(${id!},${p.context.organizationId},${name!},${randomUUID()},${name!},${id === archived ? new Date() : null})`;
+        await f.db`insert into allrice_organization_people(organization_id,user_id,display_name,department_id,content_maintenance_level)
+          values(${p.context.organizationId},${p.context.actor.id},'Publisher',${a},${level})
+          on conflict(organization_id,user_id) do update set department_id=excluded.department_id,content_maintenance_level=excluded.content_maintenance_level`;
+        const maintenance = await referenceLibraryOptions(
+          p.context,
+          p.selection.workspaceId,
+        );
+        expect(
+          maintenance.departments.map((department) => department.id),
+        ).toEqual([a]);
+        const options = await p.client.publicationOptions(
+          { workspaceId: p.selection.workspaceId },
+          signal(),
+        );
+        expect(options.viewerId).toBe(p.context.actor.id);
+        expect(options.options).toMatchObject({
+          writable: true,
+          maintenanceLevel: level,
+          departmentId: a,
+        });
+        expect(
+          options.options.departments.map((department) => department.id),
+        ).toEqual([a, b]);
+        const published = await p.client.publishUpload(
+          {
+            ...uploadInput(p, '跨部门.txt'),
+            origin: 'upload',
+            purpose: '发布到B',
+            audience: { scope: 'departments', departmentIds: [b] },
+          },
+          signal(),
+        );
+        const query = await p.client.queryMaterials(
+          {
+            workspaceId: p.selection.workspaceId,
+            query: { sourceId: published.sourceId },
+          },
+          signal(),
+        );
+        expect(query.options.departments).toEqual(options.options.departments);
+        expect(query.references[0]?.publication?.audience).toEqual({
+          scope: 'departments',
+          departmentIds: [b],
+        });
+        expect(
+          await f.db`select id from allrice_runs where organization_id=${p.context.organizationId}`,
+        ).toHaveLength(0);
+      }
     });
     it('publishes an upload, returns true options/current viewer and preserves metadata CAS and retry', async () => {
       const p = await person();

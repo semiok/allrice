@@ -28,6 +28,7 @@ import {
   prepareReferenceUpload,
   publishReference,
   referenceLibraryOptions,
+  referencePublicationOptions,
   getAuthorizedReferenceFile,
   readReferenceWriteReceipt,
 } from './reference-library.ts';
@@ -182,6 +183,16 @@ export function createEnterpriseMaterialsPort(
       const value = MaterialsScopeQueryProjectionSchema.parse(input);
       const context = await current(contextInput, value.workspaceId, signal);
       const result = await referenceLibraryOptions(context, value.workspaceId);
+      await current(context, value.workspaceId, signal);
+      return ReferenceLibraryOptionsSchema.parse(result);
+    },
+    async publicationOptions(contextInput, input, signal) {
+      const value = MaterialsScopeQueryProjectionSchema.parse(input);
+      const context = await current(contextInput, value.workspaceId, signal);
+      const result = await referencePublicationOptions(
+        context,
+        value.workspaceId,
+      );
       await current(context, value.workspaceId, signal);
       return ReferenceLibraryOptionsSchema.parse(result);
     },
