@@ -76,7 +76,7 @@ export function bindCallerSourceQueries(
   signal?: AbortSignal,
 ) {
   let accepting = true;
-  const active = new Set<Promise<unknown>>();
+  const queries = new Set<Promise<unknown>>();
 
   function run<T>(work: () => SourceQuery<T>, ownsCancellation = true) {
     if (!accepting) throw new DataAccessError('authorization_denied');
@@ -124,12 +124,10 @@ export function bindCallerSourceQueries(
         if (ownsCancellation) signal?.removeEventListener('abort', cancel);
       }
     })();
-    active.add(promise);
-    // Observe cleanup without creating a detached rejecting finally Promise.
-    void promise.then(
-      () => active.delete(promise),
-      () => active.delete(promise),
-    );
+    // A settled, unawaited source failure must still prevent caller commit.
+    // Retain only this lexical transaction's actual work until close.
+    queries.add(promise);
+    void promise.catch(() => {});
     return promise;
   }
 
@@ -149,7 +147,7 @@ export function bindCallerSourceQueries(
     },
     async close() {
       accepting = false;
-      const results = await Promise.allSettled([...active]);
+      const results = await Promise.allSettled([...queries]);
       const errors = results.flatMap((result) =>
         result.status === 'rejected' ? [result.reason] : [],
       );
@@ -171,6 +169,11 @@ export async function closeCallerSourceQueries(
     await binding.close();
   } catch (error) {
     if (!failure) throw error;
+    if (
+      error instanceof AggregateError &&
+      error.errors.every((item: unknown) => item === failure.error)
+    )
+      return;
     throw new AggregateError(
       [failure.error, error],
       'caller_and_source_cleanup_failed',
