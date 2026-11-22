@@ -17,7 +17,7 @@ import { queryLegacyOriginForCaller } from './legacy-origin.ts';
 
 /** Trusted host composition of existing maintenance callers, not a native
  * execution/current-scope producer. Each caller retains its own SQL authority,
- * locks, CAS and db.begin. No transaction capability leaves this factory. */
+ * locks, CAS and reserved transaction. No SQL handle leaves this factory. */
 export function createBusinessRuntimeCaller() {
   return Object.freeze({
     listCompanyRuleSources(
@@ -63,7 +63,7 @@ export function createBusinessRuntimeCaller() {
 type SourceQuery<T> = PromiseLike<T> & { cancel?: () => unknown };
 
 /** @internal NOT exported by the database barrel. Created only in the original
- * caller's db.begin closure, after its own authority/lock admission. Source SQL
+ * caller's transaction callback, after its own authority/lock admission. Source SQL
  * stays in its business owner. The memory owner may consume the bound G5 method
  * below; it receives neither tx nor a transferable participation token.
  *
