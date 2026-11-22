@@ -395,13 +395,14 @@ def publish(request):
                     os.close(root)
                 write_new(root_stage, 'manifest.json', raw, 0o444)
                 write_new(root_stage, 'descriptor.json', sealed, 0o444)
-                os.fchmod(root_stage, 0o555)
                 os.fsync(root_stage)
                 check()
                 if final in os.listdir(parent):
                     raise RuntimeError('DSH_IMAGE_DESTINATION_EXISTS')
                 os.rename(stage, final, src_dir_fd=parent, dst_dir_fd=parent)
                 renamed = True
+                os.fchmod(root_stage, 0o555)
+                os.fsync(root_stage)
                 os.fsync(parent)
             finally:
                 os.close(root_stage)
