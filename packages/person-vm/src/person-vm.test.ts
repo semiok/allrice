@@ -20,20 +20,29 @@ import {
 
 describe('host lifecycle service entrypoints (synthetic runtime; not real VM acceptance)', () => {
   it('isolated command environment needs no NODE_ENV and never inherits the host', async () => {
-    const output = await runCommand({
-      executable: process.execPath,
-      args: [
-        '-e',
-        'process.stdout.write(JSON.stringify({allowed:process.env.ALLRICE_PROCESS_ALLOWED,onlyAllowed:Object.keys(process.env).every(key=>key==="ALLRICE_PROCESS_ALLOWED"),nodeEnvPresent:Object.hasOwn(process.env,"NODE_ENV")}))',
-      ],
-      env: { ALLRICE_PROCESS_ALLOWED: 'synthetic' },
-      signal: signal(),
-    });
-    expect(JSON.parse(output)).toEqual({
-      allowed: 'synthetic',
-      onlyAllowed: true,
-      nodeEnvPresent: false,
-    });
+    vi.stubEnv('ALLRICE_PROCESS_HOST_SENTINEL', 'synthetic-host-only');
+    vi.stubEnv('NODE_ENV', 'test');
+    try {
+      const output = await runCommand({
+        executable: process.execPath,
+        args: [
+          '-e',
+          // Darwin CoreFoundation may initialize this key after exec. Every
+          // other unexpected key still fails, including the host sentinel.
+          'process.stdout.write(JSON.stringify({allowed:process.env.ALLRICE_PROCESS_ALLOWED,onlyAllowed:Object.keys(process.env).every(key=>key==="ALLRICE_PROCESS_ALLOWED"||(process.platform==="darwin"&&key==="__CF_USER_TEXT_ENCODING")),hostSentinelPresent:Object.hasOwn(process.env,"ALLRICE_PROCESS_HOST_SENTINEL"),nodeEnvPresent:Object.hasOwn(process.env,"NODE_ENV")}))',
+        ],
+        env: { ALLRICE_PROCESS_ALLOWED: 'synthetic' },
+        signal: signal(),
+      });
+      expect(JSON.parse(output)).toEqual({
+        allowed: 'synthetic',
+        onlyAllowed: true,
+        hostSentinelPresent: false,
+        nodeEnvPresent: false,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
   it('nativeWeb必须事前具备confirmed-stop退役口；无副作用且旧无Web runtime仍可用', async () => {
     const h = harness(),
