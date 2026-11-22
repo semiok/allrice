@@ -170,6 +170,154 @@ suite(
       return { pin, definition, source, manifest, read };
     }
 
+    it('discovers real current pins and reads their exact package bodies without a Run', async () => {
+      const installed = [await install(), await install(true)];
+      const source = createPostgresPersonalSkillPackageSource(f.db, host);
+      const signal = new AbortController().signal;
+      const pins = await source.listPackagePins(signal);
+      expect(pins).toEqual(
+        installed
+          .map((item) => item.pin)
+          .sort((a, b) => a.bindingId.localeCompare(b.bindingId)),
+      );
+      for (const pin of pins) {
+        const original = installed.find(
+          (item) => item.pin.versionId === pin.versionId,
+        )!;
+        const result = await source.readPackage(pin, signal);
+        expect(result.pin).toEqual(pin);
+        expect(result.definition).toEqual(original.definition);
+        expect(result.bodyBytes).toEqual(
+          new TextEncoder().encode(original.definition.content),
+        );
+        expect(result.bodyChecksum).toBe(hash(original.definition.content));
+        expect(result.manifest).toEqual(original.manifest);
+        expect(result).not.toHaveProperty('resourceBytes');
+      }
+    });
+
+    it('rechecks current for an empty real catalog and preserves its rejection', async () => {
+      const source = createPostgresPersonalSkillPackageSource(f.db, host);
+      const signal = new AbortController().signal;
+      expect(await source.listPackagePins(signal)).toEqual([]);
+      expect(host.requireCurrent).toHaveBeenCalledTimes(2);
+      const denied = Error(
+        'contract substitute: empty catalog is not authority',
+      );
+      host.requireCurrent
+        .mockImplementationOnce(async () => {})
+        .mockRejectedValueOnce(denied);
+      await expect(source.listPackagePins(signal)).rejects.toBe(denied);
+    });
+
+    it.each([
+      'organizationId',
+      'ownerId',
+      'workspaceId',
+      'instanceId',
+    ] as const)(
+      'does not list another exact %s scope even with a current substitute',
+      async (field) => {
+        await install();
+        const target = {
+          ...host,
+          context: {
+            ...host.context,
+            workspaceId: null,
+            actor: { ...host.context.actor },
+          },
+          scope: { ...host.scope },
+        };
+        if (field === 'ownerId') target.context.actor.id = randomUUID();
+        else if (field === 'organizationId')
+          target.context.organizationId = randomUUID();
+        else target.scope[field] = randomUUID();
+        expect(
+          await createPostgresPersonalSkillPackageSource(
+            f.db,
+            target,
+          ).listPackagePins(new AbortController().signal),
+        ).toEqual([]);
+        expect(host.requireCurrent).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it.each(['disabled', 'uninstalled'] as const)(
+      'omits a real %s installation/binding',
+      async (kind) => {
+        const x = await install();
+        if (kind === 'disabled')
+          await f.db`update allrice_personal_skill_bindings set enabled=false where id=${x.pin.bindingId}`;
+        else
+          await f.db`update allrice_personal_skill_installations set state='uninstalled' where id=${x.pin.installationId}`;
+        expect(
+          await createPostgresPersonalSkillPackageSource(
+            f.db,
+            host,
+          ).listPackagePins(new AbortController().signal),
+        ).toEqual([]);
+      },
+    );
+
+    it('keeps first-statement selectors across pointer updates and selects the new version next time', async () => {
+      const x = await install(),
+        nextId = randomUUID();
+      const next = {
+        ...x.definition,
+        content: 'A new current body',
+        checksum: hash('A new current body'),
+      };
+      host.requireCurrent
+        .mockImplementationOnce(async () => {})
+        .mockImplementationOnce(async () => {
+          await f.db.begin(async (tx) => {
+            await tx`insert into allrice_personal_skill_versions(id,organization_id,owner_id,installation_id,version,source,original_text,definition,definition_checksum)
+            values(${nextId},${host.context.organizationId},${host.context.actor.id},${x.pin.installationId},2,${tx.json(x.source)},${next.content},${tx.json(next)},${runtimePolicyDigest(next)})`;
+            await tx`update allrice_personal_skill_installations set current_version_id=${nextId},revision=revision+1 where id=${x.pin.installationId}`;
+          });
+        });
+      const source = createPostgresPersonalSkillPackageSource(f.db, host),
+        signal = new AbortController().signal;
+      expect(await source.listPackagePins(signal)).toEqual([x.pin]);
+      const pins = await source.listPackagePins(signal);
+      expect(pins).toEqual([
+        {
+          ...x.pin,
+          versionId: nextId,
+          definitionChecksum: runtimePolicyDigest(next),
+        },
+      ]);
+      expect((await source.readPackage(x.pin, signal)).definition).toEqual(
+        x.definition,
+      );
+      expect((await source.readPackage(pins[0]!, signal)).definition).toEqual(
+        next,
+      );
+    });
+
+    it.each(['disabled', 'epoch', 'uninstalled'] as const)(
+      'refuses prepared pins after real %s revocation during current IO',
+      async (kind) => {
+        const x = await install();
+        host.requireCurrent
+          .mockImplementationOnce(async () => {})
+          .mockImplementationOnce(async () => {
+            if (kind === 'uninstalled')
+              await f.db`update allrice_personal_skill_installations set state='uninstalled' where id=${x.pin.installationId}`;
+            else if (kind === 'disabled')
+              await f.db`update allrice_personal_skill_bindings set enabled=false where id=${x.pin.bindingId}`;
+            else
+              await f.db`update allrice_personal_skill_bindings set epoch=epoch+1 where id=${x.pin.bindingId}`;
+          });
+        await expect(
+          createPostgresPersonalSkillPackageSource(f.db, host).listPackagePins(
+            new AbortController().signal,
+          ),
+        ).rejects.toMatchObject({ code: 'unavailable' });
+        expect(host.requireCurrent).toHaveBeenCalledTimes(2);
+      },
+    );
+
     it.each([false, true])(
       'reads real frozen definition bytes and manifest/null (package=%s)',
       async (packaged) => {

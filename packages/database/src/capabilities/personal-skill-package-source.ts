@@ -101,6 +101,65 @@ export function createPostgresPersonalSkillPackageSource(db: Sql, host: Host) {
   const requireCurrent = host.requireCurrent;
   const context = { ...originalContext, workspaceId: scope.workspaceId };
   return {
+    /** First-statement selectors, not a transferable grant or a globally fresh
+     * catalog. Exact reads still recheck authority and each binding. */
+    async listPackagePins(signal: AbortSignal): Promise<PersonalSkillPin[]> {
+      return joined(signal, async (query) => {
+        if (context.actor.type !== 'user')
+          throw new DataAccessError('authentication_required');
+        if (
+          originalContext.workspaceId !== null &&
+          originalContext.workspaceId.toLowerCase() !== scope.workspaceId
+        )
+          throw new DataAccessError('authorization_denied');
+        if (typeof requireCurrent !== 'function') return unavailable();
+        await requireCurrent(signal);
+        signal.throwIfAborted();
+        const rows = await query(db<
+          {
+            binding_id: string;
+            installation_id: string;
+            epoch: number;
+            version_id: string;
+            definition_checksum: string;
+            package_checksum: string | null;
+          }[]
+        >`select b.id binding_id,b.installation_id,b.epoch,v.id version_id,
+            v.definition_checksum,v.package_checksum
+          from allrice_personal_skill_bindings b
+          join allrice_personal_skill_installations i on i.id=b.installation_id and i.state='installed'
+            and i.organization_id=b.organization_id and i.owner_id=b.owner_id
+          join allrice_personal_skill_versions v on v.id=i.current_version_id and v.installation_id=i.id
+          where b.organization_id=${context.organizationId} and b.workspace_id=${context.workspaceId}
+            and b.owner_id=${context.actor.id} and b.instance_id=${scope.instanceId} and b.enabled
+            and v.organization_id=${context.organizationId} and v.owner_id=${context.actor.id}
+          order by b.id`);
+        const pins = rows.map((row) =>
+          PersonalSkillPinSchema.parse({
+            organizationId: context.organizationId,
+            ownerId: context.actor.id,
+            instanceId: scope.instanceId,
+            installationId: row.installation_id,
+            versionId: row.version_id,
+            bindingId: row.binding_id,
+            bindingEpoch: row.epoch,
+            definitionChecksum: row.definition_checksum,
+            ...(row.package_checksum === null
+              ? {}
+              : { packageChecksum: row.package_checksum }),
+          }),
+        );
+        await requireCurrent(signal);
+        signal.throwIfAborted();
+        for (const pin of pins) {
+          const [binding] = await query(
+            personalSkillPinState(context, pin, db),
+          );
+          assertPinState(binding, pin);
+        }
+        return pins;
+      });
+    },
     async readPackage(
       input: unknown,
       signal: AbortSignal,

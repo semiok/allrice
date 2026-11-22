@@ -3,14 +3,16 @@
 `createPostgresPersonalSkillPackageSource` reads the existing private Skill
 installation/binding/version data. DSH still owns Skill loading and execution.
 This source has no production identity/provider mount, registry, MCP tool,
-catalog, resource reader, scheduler or background process.
+employee UI catalog, resource reader, scheduler or background process.
 
 ## Owner boundary and public surface
 
 The capability allowlist is the concrete factory plus the
-`PersonalSkillPackageRead` DTO. Its only method is
-`readPackage(pin: unknown, signal: AbortSignal)`. The database barrel exports
-only those two names; internal helpers are not public.
+`PersonalSkillPackageRead` DTO. The factory provides
+`readPackage(pin: unknown, signal: AbortSignal)` and
+`listPackagePins(signal: AbortSignal): Promise<PersonalSkillPin[]>`.
+The database barrel still exports only those two names; internal helpers are
+not public. Pins use the existing `PersonalSkillPinSchema` contract.
 
 The caller retains its SQL client and supplies trusted `context`, an existing
 `EmployeeModuleScopeSchema` scope, and a required host-only
@@ -29,6 +31,21 @@ The compact query is shared with the existing 3.x guard, whose outer employee
 authorization and hash/null checks stay intact. An exact version need not be
 the installation's current pointer: ordinary updates retain authorized pins,
 while uninstall, disable and binding epoch changes still revoke them.
+
+`listPackagePins` selects this owner's installed, enabled personal bindings in
+the bound workspace/employee and their current installation version in one
+statement. It returns exact selectors, including absent legacy package pins,
+not bodies, resource bytes, management permissions or an employee catalog.
+Only a successful empty query returns an empty list; missing current or failed
+SQL never becomes an empty success. Empty results still recheck current.
+
+After the second current check, each selected pin gets an independent compact
+binding/hash check. A failed check rejects the whole result. These are selectors
+from the first statement, not an atomic globally fresh snapshot or a transferable
+grant. An ordinary pointer update can leave that selected old version readable;
+the next list selects the new pointer. `readPackage` always rechecks authority
+and binding before exposing the exact body. Native discovery/loading still
+belongs to DSH; the production provider/config consumer remains unbound.
 
 Current authority is checked before and after the body read. The first SELECT
 joins binding eligibility and the exact version/body in one statement snapshot.

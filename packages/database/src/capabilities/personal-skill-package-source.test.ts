@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { getEventListeners } from 'node:events';
 import type {
   PersonalSkillDefinition,
   RequestContext,
@@ -335,6 +336,201 @@ describe('exact personal package core; current/SQL are explicit contract substit
     await handled;
     expect(f.current).toHaveBeenCalledTimes(2);
     expect(f.select).toHaveBeenCalledTimes(2);
+    expect(f.begin).not.toHaveBeenCalled();
+  });
+});
+
+describe('personal package pin discovery; current/SQL are contract substitutes', () => {
+  function catalogFixture(packaged = false) {
+    const f = fixture(packaged);
+    const row = {
+      binding_id: f.pin.bindingId,
+      installation_id: f.pin.installationId,
+      epoch: f.pin.bindingEpoch,
+      version_id: f.pin.versionId,
+      definition_checksum: f.pin.definitionChecksum,
+      package_checksum: f.version.package_checksum,
+    };
+    f.select.mockImplementationOnce(() => pending(Promise.resolve([row])));
+    const list = () =>
+      createPostgresPersonalSkillPackageSource(f.db, f.host).listPackagePins(
+        f.abort.signal,
+      );
+    return { ...f, row, list };
+  }
+
+  it.each([false, true])(
+    'returns exact selectors (package=%s)',
+    async (packaged) => {
+      const f = catalogFixture(packaged);
+      expect(await f.list()).toStrictEqual([f.pin]);
+      expect(f.current.mock.calls).toEqual([
+        [f.abort.signal],
+        [f.abort.signal],
+      ]);
+      expect(f.select).toHaveBeenCalledTimes(2);
+      expect(f.begin).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rechecks current even for an actually empty result', async () => {
+    const f = catalogFixture();
+    f.select.mockReset().mockImplementation(() => pending(Promise.resolve([])));
+    expect(await f.list()).toEqual([]);
+    expect(f.current).toHaveBeenCalledTimes(2);
+    expect(f.select).toHaveBeenCalledOnce();
+    expect(f.begin).not.toHaveBeenCalled();
+  });
+
+  it.each(['current', 'workspace', 'actor', 'aborted'] as const)(
+    'rejects invalid %s without IO',
+    async (kind) => {
+      const f = catalogFixture();
+      if (kind === 'current')
+        f.host.requireCurrent = undefined as unknown as typeof f.current;
+      if (kind === 'workspace') f.context.workspaceId = randomUUID();
+      if (kind === 'actor') f.context.actor = { type: 'system', id: 'allrice' };
+      if (kind === 'aborted') f.abort.abort();
+      const read = f.list();
+      if (kind === 'aborted')
+        await expect(read).rejects.toBe(f.abort.signal.reason);
+      else
+        await expect(read).rejects.toMatchObject({
+          code:
+            kind === 'current'
+              ? 'unavailable'
+              : kind === 'actor'
+                ? 'authentication_required'
+                : 'authorization_denied',
+        });
+      expect(f.current).not.toHaveBeenCalled();
+      expect(f.select).not.toHaveBeenCalled();
+      expect(f.begin).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps null workspace resolution and refuses to silently drop malformed pins', async () => {
+    const f = catalogFixture();
+    f.context.workspaceId = null;
+    expect(await f.list()).toStrictEqual([f.pin]);
+    const g = catalogFixture();
+    g.row.definition_checksum = 'not a checksum';
+    await expect(g.list()).rejects.toBeDefined();
+    expect(g.current).toHaveBeenCalledOnce();
+  });
+
+  it.each([1, 2])(
+    'joins current call %s and retains its error before cancellation',
+    async (position) => {
+      const f = catalogFixture(),
+        started = deferred<void>(),
+        gate = deferred<void>();
+      if (position === 2) f.current.mockImplementationOnce(async () => {});
+      f.current.mockImplementationOnce(async () => {
+        started.resolve();
+        await gate.promise;
+      });
+      const read = f.list(),
+        settled = vi.fn(),
+        handled = read.then(settled, settled);
+      await started.promise;
+      const denied = Error('current denied');
+      f.abort.abort();
+      await Promise.resolve();
+      expect(settled).not.toHaveBeenCalled();
+      gate.reject(denied);
+      const error = (await read.catch(
+        (reason: unknown) => reason,
+      )) as AggregateError;
+      await handled;
+      expect(error.errors).toEqual([denied, f.abort.signal.reason]);
+      expect(error.errors[0]).toBe(denied);
+      expect(error.errors[1]).toBe(f.abort.signal.reason);
+      expect(error.cause).toBe(denied);
+      expect(f.select).toHaveBeenCalledTimes(position - 1);
+      expect(f.begin).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    'joins catalog query failure (cancel=%s)',
+    async (cancel) => {
+      const f = catalogFixture(),
+        started = deferred<void>(),
+        sql = deferred<unknown[]>();
+      const request = pending(sql.promise),
+        original = Error('native catalog SELECT failed');
+      f.select.mockReset().mockImplementation(() => {
+        started.resolve();
+        return request;
+      });
+      const read = f.list(),
+        settled = vi.fn(),
+        handled = read.then(settled, settled);
+      await started.promise;
+      expect(getEventListeners(f.abort.signal, 'abort')).toHaveLength(1);
+      if (cancel) f.abort.abort();
+      await Promise.resolve();
+      expect(settled).not.toHaveBeenCalled();
+      expect(request.cancel).toHaveBeenCalledTimes(cancel ? 1 : 0);
+      sql.reject(original);
+      const error = await read.catch((reason: unknown) => reason);
+      await handled;
+      if (cancel) {
+        expect((error as AggregateError).errors).toEqual([
+          original,
+          f.abort.signal.reason,
+        ]);
+        expect((error as AggregateError).errors[0]).toBe(original);
+        expect((error as AggregateError).errors[1]).toBe(f.abort.signal.reason);
+        expect((error as Error).cause).toBe(original);
+      } else expect(error).toBe(original);
+      expect(getEventListeners(f.abort.signal, 'abort')).toHaveLength(0);
+      expect(f.current).toHaveBeenCalledOnce();
+      expect(f.select).toHaveBeenCalledOnce();
+      expect(f.begin).not.toHaveBeenCalled();
+    },
+  );
+
+  it('joins the final compact check and never returns partial pins after cancellation', async () => {
+    const f = catalogFixture(),
+      started = deferred<void>(),
+      sql = deferred<unknown[]>();
+    const request = pending(sql.promise);
+    f.select
+      .mockReset()
+      .mockImplementationOnce(() =>
+        pending(
+          Promise.resolve([
+            f.row,
+            {
+              ...f.row,
+              binding_id: randomUUID(),
+              installation_id: randomUUID(),
+              version_id: randomUUID(),
+            },
+          ]),
+        ),
+      )
+      .mockImplementationOnce(() => pending(Promise.resolve([f.version])))
+      .mockImplementationOnce(() => {
+        started.resolve();
+        return request;
+      });
+    const read = f.list(),
+      settled = vi.fn(),
+      handled = read.then(settled, settled);
+    await started.promise;
+    f.abort.abort();
+    await Promise.resolve();
+    expect(settled).not.toHaveBeenCalled();
+    expect(request.cancel).toHaveBeenCalledOnce();
+    sql.resolve([f.version]);
+    await expect(read).rejects.toBe(f.abort.signal.reason);
+    await handled;
+    expect(getEventListeners(f.abort.signal, 'abort')).toHaveLength(0);
+    expect(f.current).toHaveBeenCalledTimes(2);
+    expect(f.select).toHaveBeenCalledTimes(3);
     expect(f.begin).not.toHaveBeenCalled();
   });
 });
