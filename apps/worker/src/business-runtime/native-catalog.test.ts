@@ -342,9 +342,9 @@ it.each(['group', 'native'] as const)(
 it('the concrete installer binds real readonly producer calls; catalog installation still leaves root/RPC/resource closed', async () => {
   const f = fixture(),
     signal = new AbortController().signal;
-  await expect(
+  expect(() =>
     dEntryNativeOwnerPort.resolve(f.base.context, f.base.identity, signal),
-  ).rejects.toBeInstanceOf(DEntryNativeUnavailable);
+  ).toThrow(DEntryNativeUnavailable);
   const startup = {
     catalog: vi.fn(() => ({ ...f.publication(), owner: f.native })),
   };
@@ -392,9 +392,9 @@ it('the concrete installer binds real readonly producer calls; catalog installat
   expect(f.base.owner.readSessions).not.toHaveBeenCalled();
   expect(f.native.readSessionsFor).not.toHaveBeenCalled();
   await installed.close();
-  await expect(
+  expect(() =>
     dEntryNativeOwnerPort.resolve(f.base.context, f.base.identity, signal),
-  ).rejects.toBeInstanceOf(DEntryNativeUnavailable);
+  ).toThrow(DEntryNativeUnavailable);
 });
 
 it('lifetime abort uninstalls synchronously and revokes previously issued discovery without substituting another Host', async () => {
@@ -413,8 +413,8 @@ it('lifetime abort uninstalls synchronously and revokes previously issued discov
   );
   f.lifetime.abort();
   expect(owner.revoked.aborted).toBe(true);
-  await expect(
+  expect(() =>
     dEntryNativeOwnerPort.resolve(f.base.context, f.base.identity, signal),
-  ).rejects.toBeInstanceOf(DEntryNativeUnavailable);
+  ).toThrow(DEntryNativeUnavailable);
   expect(f.native.close).not.toHaveBeenCalled();
 });
