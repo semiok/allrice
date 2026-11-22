@@ -1049,7 +1049,12 @@ export async function claimNextBridgeCommand(token: string) {
   const command = await sql.begin(async (transaction) => {
     const [candidate] = await transaction<
       { id: string; folder_event_id: string | null }[]
-    >`select id,folder_event_id from allrice_bridge_commands where device_id=${device.id} and status='queued' and timeout_at>clock_timestamp() and capability=any(${device.capabilities}) order by created_at limit 1`;
+    >`select c.id,c.folder_event_id from allrice_bridge_commands c
+      where c.device_id=${device.id} and c.status='queued' and c.timeout_at>clock_timestamp() and c.capability=any(${device.capabilities})
+        and (c.capability not like 'local.file.%' or c.session_id is null or exists(select 1 from allrice_chat_sessions s
+          where s.id=c.session_id and s.organization_id=c.organization_id and s.workspace_id=c.workspace_id
+            and s.owner_id=c.owner_id and s.execution_generation='3.x'))
+      order by c.created_at limit 1`;
     if (!candidate) return null;
     if (candidate.folder_event_id) {
       try {
@@ -1072,11 +1077,14 @@ export async function claimNextBridgeCommand(token: string) {
     }
     const rows = await transaction<CommandRow[]>`
       with candidate as (
-        select id from allrice_bridge_commands
-        where id = ${candidate.id} and device_id = ${device.id} and status = 'queued'
-          and timeout_at > now()
-          and capability=any(${device.capabilities})
-        order by created_at for update skip locked limit 1
+        select c.id from allrice_bridge_commands c
+        where c.id = ${candidate.id} and c.device_id = ${device.id} and c.status = 'queued'
+          and c.timeout_at > now()
+          and c.capability=any(${device.capabilities})
+          and (c.capability not like 'local.file.%' or c.session_id is null or exists(select 1 from allrice_chat_sessions s
+            where s.id=c.session_id and s.organization_id=c.organization_id and s.workspace_id=c.workspace_id
+              and s.owner_id=c.owner_id and s.execution_generation='3.x'))
+        order by c.created_at for update skip locked limit 1
       )
       update allrice_bridge_commands command
       set status = 'claimed', lease_token = ${leaseToken},

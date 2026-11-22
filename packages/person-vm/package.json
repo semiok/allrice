@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./admission": {
+      "types": "./dist/admission.d.ts",
+      "default": "./dist/admission.js"
     }
   },
   "scripts": {

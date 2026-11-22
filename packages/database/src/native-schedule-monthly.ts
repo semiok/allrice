@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { assertChatExecutionGeneration } from './conversation/execution-generation.ts';
 import { isDeepStrictEqual } from 'node:util';
 import type { TransactionSql } from 'postgres';
 import type {
@@ -204,7 +205,8 @@ export async function lockOrdinaryMonthlyAdmissions(
           and s.workspace_id=a.workspace_id and s.owner_id=a.user_id
         where a.id=${c.dispatch.employeeAssignmentId} and a.organization_id=${scope.organizationId}
           and a.workspace_id=${scope.workspaceId} and a.user_id=${scope.ownerId} and a.active and e.status='active'
-          and e.employee_key not like 'platform-%' and i.archived_at is null and s.archived_at is null for share of a,e,i,s`;
+          and e.employee_key not like 'platform-%' and i.archived_at is null and s.archived_at is null
+          and s.execution_generation='3.x' for share of a,e,i,s`;
       allowed =
         !!target &&
         p.session_id === c.dispatch.businessSessionId &&
@@ -245,6 +247,7 @@ export async function enrollOrdinaryMonthlyTaskInTransaction(
   requestDigest: string,
   reference: NativeOnceReference,
 ): Promise<RecurringPlan> {
+  await assertChatExecutionGeneration(tx, { ...scope, sessionId }, '3.x');
   requireCalendar(ordinaryMonthlyEnabled(), 'disabled');
   const now = await instant(tx),
     P = nextMonthlyBusinessTarget(input.rule, now);
