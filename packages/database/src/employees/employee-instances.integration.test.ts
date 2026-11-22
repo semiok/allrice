@@ -279,12 +279,35 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
     async (missing) => {
       const f = await setup();
       await preparePersonNativeWebRoster(f.a.context);
-      await fixture.db`delete from allrice_employee_instance_revisions where instance_id=${f.assignment.id}`;
-      if (missing === 'general')
-        await fixture.db`delete from allrice_employee_instances where id=${f.assignment.id}`;
+      const [company] =
+        await fixture.db`select slug from allrice_organizations where id=${f.a.organizationId}`;
+      // A real new member inherits the published assignment before any Hub or
+      // roster preparation. Never erase immutable revision history to fake it.
+      const member = await principal(company!.slug);
+      const assignments = await fixture.db<{ id: string }[]>`
+        select a.id from allrice_employee_assignments a
+        join allrice_platform_employee_tenant_assignments d
+          on d.organization_id=a.organization_id and d.workspace_id=a.workspace_id
+            and d.tenant_employee_id=a.employee_id and d.active
+        where a.organization_id=${member.organizationId} and a.workspace_id=${member.workspaceId}
+          and a.user_id=${member.user.id} and a.active and d.employee_id=${f.source.employeeId}`;
+      expect(assignments).toHaveLength(1);
+      const assignmentId = assignments[0]!.id;
+      if (missing === 'revision')
+        await fixture.db`insert into allrice_employee_instances
+          (id,organization_id,workspace_id,owner_id,assignment_id,kind,creation_version_id)
+          select id,organization_id,workspace_id,user_id,id,'general',employee_version_id
+          from allrice_employee_assignments where id=${assignmentId}`;
+      const [state] = await fixture.db`select
+        exists(select 1 from allrice_employee_instances where id=${assignmentId}) general,
+        exists(select 1 from allrice_employee_instance_revisions where instance_id=${assignmentId}) revision`;
+      expect(state).toEqual({
+        general: missing === 'revision',
+        revision: false,
+      });
       const before = await rosterCounts();
       await expect(
-        readPersonNativeWebRoster(f.a.context),
+        readPersonNativeWebRoster(member.context),
       ).rejects.toMatchObject({
         code: 'WEB_ENDPOINTS_PREPARING',
       });
@@ -315,11 +338,14 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       revisionId: f.source.revisionId,
       expectedVersion: null,
     });
-    await getEmployeeWorkspace(f.a.context, second.workspaceId);
     const assignments =
-      await fixture.db`select id from allrice_employee_assignments
-      where workspace_id=${second.workspaceId} and user_id=${f.a.user.id} and active`;
+      await fixture.db`select a.id,exists(select 1 from allrice_employee_instances i
+        where i.id=a.id and i.kind='general') materialized from allrice_employee_assignments a
+      where a.workspace_id=${second.workspaceId} and a.user_id=${f.a.user.id} and a.active`;
     expect(assignments.length).toBeGreaterThan(0);
+    expect(assignments.every((assignment) => !assignment.materialized)).toBe(
+      true,
+    );
     const before = await rosterCounts();
     await expect(readPersonNativeWebRoster(f.a.context)).rejects.toMatchObject({
       code: 'WEB_ENDPOINTS_PREPARING',
