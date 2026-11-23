@@ -21,6 +21,10 @@ import { createNativeRunDiagnosticsHttpHandler } from './native-run-diagnostics-
 import { createDEntryHttpHandler, dEntryHttpDefaults } from './d-entry/http.js';
 import { createDEntryMuxHandler } from './d-entry/mux.js';
 import { createWorkerCurrentBusinessRuntime } from './business-runtime/current-producer.js';
+import {
+  createProductionPersonVmHost,
+  ProductionPersonVmHostUnavailable,
+} from './person-vm/production-host.js';
 import { createWorkerReadinessResponder } from './worker-readiness.js';
 
 import {
@@ -425,6 +429,22 @@ function refreshDshRuntimeInventory() {
 }
 
 const httpAborter = new AbortController();
+// Required runtime/egress/ingress producers are not fabricated at bootstrap.
+// A missing source leaves the native ports uninstalled and management intact.
+const personVmHost = createProductionPersonVmHost({
+  lifetime: httpAborter.signal,
+}).then(
+  (host) => ({ state: 'installed' as const, host }),
+  (error: unknown) => {
+    console.info('[MET-273] person VM Host unavailable', {
+      code:
+        error instanceof ProductionPersonVmHostUnavailable
+          ? error.code
+          : 'HOST_CONSTRUCTION_UNCONFIRMED',
+    });
+    return { state: 'uninstalled' as const, error };
+  },
+);
 const nativeRunDiagnosticsHttp = createNativeRunDiagnosticsHttpHandler(
   undefined,
   undefined,
@@ -948,6 +968,15 @@ function shutdown(signal: string) {
         })),
         { name: 'automation', run: () => automationTicks.current() },
         { name: 'employee_test', run: () => platformEmployeeTestTask },
+        {
+          name: 'person_vm_host',
+          run: async () => {
+            const result = await personVmHost;
+            if (result.state === 'installed') return result.host.close();
+            if (!(result.error instanceof ProductionPersonVmHostUnavailable))
+              throw result.error;
+          },
+        },
       ],
       waitForProducerRoots: () => producerLifecycle.waitForCurrentRoots(),
       stopCloudProjects: stopCloudProjectServices,
