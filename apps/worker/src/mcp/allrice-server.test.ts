@@ -2,11 +2,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import {
+  CallToolResultSchema,
   ErrorCode,
   McpError,
   ToolListChangedNotificationSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { ReferenceSelectionErrorSchema } from '@allrice/contracts';
+import {
+  ApiErrorSchema,
+  ReferenceSelectionErrorSchema,
+} from '@allrice/contracts';
 import { riceToolDefinitions } from '../tool-broker/definitions.js';
 import {
   ALLRICE_MCP_CONTRACT_VERSION,
@@ -15,6 +19,7 @@ import {
   type AllriceMcpScope,
   type AllriceMcpServices,
   type AllriceMcpMemoryRead,
+  type AllriceMcpMemoryRemember,
   type AllriceMcpServerPort,
 } from './allrice-server.js';
 
@@ -94,6 +99,290 @@ async function connect(options: Parameters<typeof createAllriceMcpServer>[0]) {
 }
 afterEach(async () => {
   for (const close of opened.splice(0).reverse()) await close();
+});
+
+function memoryFixture() {
+  const f = fixture();
+  return {
+    ...f,
+    services: {
+      ...f.services,
+      memoryRemember: vi.fn<AllriceMcpMemoryRemember>(async () => ({
+        content: [{ type: 'text', text: 'candidate protocol fixture' }],
+      })),
+    },
+  };
+}
+
+describe('memory-only optional MCP callback over the native SDK (protocol fixtures)', () => {
+  it('advertises the exact existing remember schema and dispatches normalized content through the named callback', async () => {
+    const f = memoryFixture();
+    const { client } = await connect(f);
+    const catalog = (await client.listTools()).tools;
+    expect(catalog.map((tool) => tool.name)).toEqual([
+      'identity_read',
+      'reference_read',
+      'memory_read',
+      'deliverable_create',
+      'memory_remember',
+    ]);
+    const remember = catalog.find((tool) => tool.name === 'memory_remember')!;
+    expect(remember.inputSchema).toEqual(
+      JSON.parse(
+        JSON.stringify(
+          riceToolDefinitions.find(
+            (tool) => tool.name === 'workspace.memory.remember',
+          )!.inputSchema,
+        ),
+      ),
+    );
+    expect(remember.inputSchema.type).toBe('object');
+    expect(remember.inputSchema.additionalProperties).toBe(false);
+    expect(remember.annotations?.readOnlyHint).not.toBe(true);
+    const result = await client.callTool({
+      name: 'memory_remember',
+      arguments: { summary: '  human\npreference  ' },
+    });
+    expect(CallToolResultSchema.parse(result)).toEqual({
+      content: [{ type: 'text', text: 'candidate protocol fixture' }],
+    });
+    expect(f.services.memoryRemember).toHaveBeenCalledExactlyOnceWith(
+      f.scope,
+      { summary: 'human preference', details: null, memoryClass: 'work_note' },
+      expect.any(AbortSignal),
+    );
+    expect(f.services.deliverableCreate).not.toHaveBeenCalled();
+    expect(f.services.memoryRead).not.toHaveBeenCalled();
+  });
+
+  it.each(['missing callback', 'module disabled', 'wrong generation'])(
+    'hides and refuses memory_remember with %s before business work',
+    async (reason) => {
+      const f = memoryFixture();
+      const services: AllriceMcpServices = { ...f.services };
+      if (reason === 'missing callback') delete services.memoryRemember;
+      else if (reason === 'module disabled') f.scope.enabledModules = [];
+      else services.executionGeneration = '3.x';
+      const { client } = await connect({ host: f.host, services });
+      expect(
+        (await client.listTools()).tools.map((tool) => tool.name),
+      ).not.toContain('memory_remember');
+      expect(
+        await client.callTool({
+          name: 'memory_remember',
+          arguments: { summary: 'fact' },
+        }),
+      ).toMatchObject({ isError: true });
+      expect(f.services.memoryRemember).not.toHaveBeenCalled();
+      expect(f.services.deliverableCreate).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects invalid pairs and all guest authority fields without dispatch', async () => {
+    const f = memoryFixture();
+    const { client } = await connect(f);
+    const invalid: Record<string, unknown>[] = [
+      {},
+      { summary: 'a'.repeat(41) },
+      { summary: 'fact', details: 'a'.repeat(2001) },
+      { summary: 'fact', memoryClass: 'invented' },
+      ...[
+        'personId',
+        'tenantId',
+        'workspaceId',
+        'employeeInstanceId',
+        'worker',
+        'approved',
+        'nativeCallRef',
+        'sourceId',
+        'source',
+        'metadata',
+      ].map((field) => ({ summary: 'fact', [field]: 'guest authority' })),
+    ];
+    for (const args of invalid)
+      await expect(
+        client.callTool({ name: 'memory_remember', arguments: args }),
+      ).rejects.toMatchObject({ code: ErrorCode.InvalidParams });
+    expect(f.services.memoryRemember).not.toHaveBeenCalled();
+  });
+
+  it('preserves named memory errors only after the current authority postcheck', async () => {
+    const f = memoryFixture();
+    const named = ApiErrorSchema.parse({
+      error: {
+        code: 'AUTHORIZATION_DENIED',
+        message: 'original named memory refusal',
+        requestId: id(6),
+        retryable: false,
+      },
+    });
+    f.services.memoryRemember.mockRejectedValue(named);
+    const { client } = await connect(f);
+    expect(
+      await client.callTool({
+        name: 'memory_remember',
+        arguments: { summary: 'fact' },
+      }),
+    ).toMatchObject({
+      isError: true,
+      content: [{ text: JSON.stringify(named) }],
+    });
+    expect(f.host.current).toHaveBeenCalledTimes(2);
+    f.services.memoryRemember.mockImplementation(async () => {
+      f.scope.enabledModules = [];
+      throw named;
+    });
+    const withheld = await client.callTool({
+      name: 'memory_remember',
+      arguments: { summary: 'fact' },
+    });
+    expect(withheld).toMatchObject({ isError: true });
+    expect(JSON.stringify(withheld)).not.toContain(
+      'original named memory refusal',
+    );
+    expect(JSON.stringify(withheld)).toContain(
+      'Candidate may already be committed',
+    );
+    expect(f.services.memoryRemember).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the original named selection error path behind the same postcheck', async () => {
+    const f = fixture();
+    const named = ReferenceSelectionErrorSchema.parse({
+      error: {
+        code: 'REFERENCE_SELECTION_UNAVAILABLE',
+        message: 'original named selection refusal',
+        requestId: id(6),
+        retryable: false,
+        referenceRevisionIds: [pin.revisionId],
+      },
+    });
+    f.services.referenceRead = async () => {
+      f.scope.enabledModules = [];
+      throw named;
+    };
+    const { client } = await connect(f);
+    const withheld = await client.callTool({
+      name: 'reference_read',
+      arguments: pin,
+    });
+    expect(withheld).toMatchObject({ isError: true });
+    expect(JSON.stringify(withheld)).not.toContain(
+      'original named selection refusal',
+    );
+    expect(JSON.stringify(withheld)).toContain('AUTHORIZATION_DENIED');
+    expect(f.host.current).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['module revocation', 'call reassociation', 'config change'])(
+    'withholds a completed candidate after %s and requires original-call reconciliation',
+    async (change) => {
+      const f = memoryFixture();
+      let committed = 0;
+      f.services.memoryRemember.mockImplementation(async () => {
+        committed++;
+        if (change === 'module revocation') f.scope.enabledModules = [];
+        else if (change === 'call reassociation')
+          f.scope.nativeCallRef = 'another-call';
+        else f.scope.moduleConfigRevisionRef = 'another-config';
+        return {
+          content: [
+            { type: 'text', text: 'committed candidate fixture receipt' },
+          ],
+        };
+      });
+      const { client } = await connect(f);
+      const result = await client.callTool({
+        name: 'memory_remember',
+        arguments: { summary: 'fact' },
+      });
+      expect(result).toMatchObject({ isError: true });
+      expect(JSON.stringify(result)).toContain(
+        'Candidate may already be committed; reconcile the original call before retrying.',
+      );
+      expect(JSON.stringify(result)).not.toContain(
+        'committed candidate fixture receipt',
+      );
+      expect(committed).toBe(1);
+      expect(f.services.memoryRemember).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['cancel', 'revoke', 'close'] as const)(
+    '%s joins the actual pending memory callback without redispatch or late delivery',
+    async (action) => {
+      const f = memoryFixture();
+      const entered = gate(),
+        aborted = gate(),
+        finish = gate();
+      let joined = false,
+        committed = 0;
+      let incoming: AbortSignal | undefined;
+      f.services.memoryRemember.mockImplementation(
+        async (_scope, _input, signal) => {
+          incoming = signal;
+          committed++;
+          signal.addEventListener('abort', () => aborted.resolve(), {
+            once: true,
+          });
+          entered.resolve();
+          try {
+            await finish.promise;
+            return {
+              content: [
+                { type: 'text', text: 'late candidate fixture receipt' },
+              ],
+            };
+          } finally {
+            joined = true;
+          }
+        },
+      );
+      const { client, controller } = await connect(f);
+      const abort = new AbortController();
+      const request = client
+        .callTool(
+          { name: 'memory_remember', arguments: { summary: 'fact' } },
+          undefined,
+          { signal: abort.signal },
+        )
+        .then(
+          (result) => ({ kind: 'resolved' as const, result }),
+          (error: unknown) => ({ kind: 'rejected' as const, error }),
+        );
+      let shutdown: Promise<void> | undefined;
+      let idle = false,
+        closed = false;
+      await entered.promise;
+      const waiting = controller.whenIdle().then(() => {
+        idle = true;
+      });
+      try {
+        expect(incoming?.aborted).toBe(false); // whenIdle only waits.
+        if (action === 'cancel') abort.abort();
+        else
+          shutdown = controller[action]().then(() => {
+            closed = true;
+          });
+        await aborted.promise;
+        await Promise.resolve();
+        expect(joined).toBe(false);
+        expect(idle).toBe(false);
+        expect(closed).toBe(false);
+        expect(committed).toBe(1);
+        expect(f.services.memoryRemember).toHaveBeenCalledTimes(1);
+      } finally {
+        finish.resolve();
+        await shutdown;
+        await waiting;
+        await request;
+      }
+      expect(joined).toBe(true);
+      expect(committed).toBe(1);
+      expect(f.services.memoryRemember).toHaveBeenCalledTimes(1);
+      expect(await request).toMatchObject({ kind: 'rejected' });
+    },
+  );
 });
 
 describe('AllRice native SDK MCP managed boundary (contract fixtures, no production gateway)', () => {

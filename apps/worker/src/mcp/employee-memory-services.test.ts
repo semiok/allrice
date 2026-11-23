@@ -1,6 +1,13 @@
 import type { EmployeeMemoryPort } from '@allrice/database';
-import type { AllriceMcpScope } from './allrice-server.ts';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  createAllriceMcpServer,
+  type AllriceMcpScope,
+  type AllriceMcpServices,
+} from './allrice-server.ts';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fixtures = vi.hoisted(() => ({
   identity: vi.fn(),
@@ -56,6 +63,40 @@ const port: Pick<EmployeeMemoryPort, 'readOrdinal' | 'remember'> = {
   remember: fixtures.remember,
 };
 const live = () => new AbortController().signal;
+const sdkConnections: (() => Promise<void>)[] = [];
+async function connectMemoryServices(services: AllriceMcpServices) {
+  const controller = createAllriceMcpServer({
+    host: {
+      binding: {
+        personId: scope.personId,
+        organizationId: scope.organizationId,
+        workspaceId: scope.workspaceId,
+        employeeInstanceId: scope.employeeInstanceId,
+        allriceThreadRef: scope.allriceThreadRef,
+        nativeSessionRef: scope.nativeSessionRef,
+        executionGeneration: scope.executionGeneration,
+      },
+      current: async () => scope,
+    },
+    services,
+  });
+  const client = new Client({
+    name: 'memory-adapter-contract-fixture',
+    version: '1',
+  });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  sdkConnections.push(async () => {
+    await controller.close();
+    await client.close();
+  });
+  await controller.server.connect(serverTransport);
+  await client.connect(clientTransport);
+  return client;
+}
+afterEach(async () => {
+  for (const close of sdkConnections.splice(0).reverse()) await close();
+});
 beforeEach(() => {
   vi.resetAllMocks();
   fixtures.identity.mockResolvedValue({});
@@ -72,6 +113,83 @@ beforeEach(() => {
   });
 });
 describe('formal MCP memory callbacks with explicit contracts', () => {
+  it('composes the real SDK server and memory adapter before explicit identity/business contract fixtures', async () => {
+    const actual = vi.fn().mockResolvedValue(target);
+    const services = bindEmployeeMemoryMcpServices({
+      port,
+      targets: { actual },
+    });
+    const client = await connectMemoryServices(services);
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+      'identity_read',
+      'memory_read',
+      'memory_remember',
+    ]);
+    expect(
+      await client.callTool({ name: 'memory_read', arguments: { number: 1 } }),
+    ).toMatchObject({
+      content: [{ text: 'complete already-metered detail' }],
+    });
+    const result = await client.callTool({
+      name: 'memory_remember',
+      arguments: {
+        summary: '  stable\npreference  ',
+        details: 'complete condition',
+      },
+    });
+    expect(result.content).toEqual([
+      {
+        type: 'text',
+        text: JSON.stringify({
+          id: id(8),
+          summary: '待确认候选',
+          memoryClass: 'work_note',
+          state: 'pending',
+          requiresConfirmation: true,
+        }),
+      },
+    ]);
+    expect(JSON.stringify(result)).not.toContain('not disclosed');
+    expect(JSON.stringify(result)).not.toContain('pairDigest');
+    expect(actual).toHaveBeenCalledTimes(2);
+    expect(fixtures.identity).toHaveBeenCalledTimes(2);
+    expect(fixtures.identity).toHaveBeenLastCalledWith(
+      scope.requestContext,
+      { workspaceId: id(3), employeeInstanceId: id(4), threadId: id(5) },
+      'execute',
+      expect.any(AbortSignal),
+    );
+    expect(fixtures.read).toHaveBeenCalledExactlyOnceWith(
+      scope.requestContext,
+      target,
+      { number: 1 },
+      expect.any(AbortSignal),
+    );
+    expect(fixtures.remember).toHaveBeenCalledExactlyOnceWith(
+      scope.requestContext,
+      target,
+      {
+        summary: 'stable preference',
+        details: 'complete condition',
+        memoryClass: 'work_note',
+      },
+      expect.any(AbortSignal),
+    );
+  });
+  it('keeps a missing real target producer closed over the actual SDK-to-adapter path', async () => {
+    const client = await connectMemoryServices(
+      bindEmployeeMemoryMcpServices({ port }),
+    );
+    await expect(
+      client.callTool({
+        name: 'memory_remember',
+        arguments: { summary: 'fact' },
+      }),
+    ).rejects.toMatchObject({ code: ErrorCode.InternalError });
+    expect(fixtures.identity).not.toHaveBeenCalled();
+    expect(fixtures.remember).not.toHaveBeenCalled();
+    expect(fixtures.read).not.toHaveBeenCalled();
+  });
   it('keeps production target/B/call producer missing and refuses without invoking business or identity reads', async () => {
     const services = bindEmployeeMemoryMcpServices({ port });
     for (const operation of [

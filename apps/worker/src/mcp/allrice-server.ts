@@ -16,6 +16,7 @@ import {
   MemoryOrdinalInputSchema,
   ReferenceReadInputSchema,
   ReferenceSelectionErrorSchema,
+  RememberPersonalMemoryInputSchema,
   RequestContextSchema,
   UuidSchema,
   type DeliveryFormat,
@@ -98,6 +99,11 @@ export interface AllriceMcpServices {
     input: AllriceMcpDeliverableInput,
     signal: AbortSignal,
   ): Promise<CallToolResult>;
+  memoryRemember?(
+    scope: AllriceMcpScope,
+    input: z.input<typeof RememberPersonalMemoryInputSchema>,
+    signal: AbortSignal,
+  ): Promise<CallToolResult>;
 }
 
 /** Public host callbacks for MET-281/283 adapters. These are the exact existing
@@ -110,6 +116,9 @@ export type AllriceMcpMemoryRead = NonNullable<
 >;
 export type AllriceMcpDeliverableCreate = NonNullable<
   AllriceMcpServices['deliverableCreate']
+>;
+export type AllriceMcpMemoryRemember = NonNullable<
+  AllriceMcpServices['memoryRemember']
 >;
 /** Only these existing thrown payloads are validated and disclosed. Native
  * CallToolResult.isError remains the owner's ordinary tool-failure channel. */
@@ -152,6 +161,13 @@ const validateDelivery =
   new AjvJsonSchemaValidator().getValidator<AllriceMcpDeliverableInput>(
     deliverySchema,
   );
+const rememberSourceSchema = riceToolDefinitions.find(
+  (tool) => tool.name === 'workspace.memory.remember',
+)!.inputSchema;
+const rememberWireSchema: unknown = JSON.parse(
+  JSON.stringify(rememberSourceSchema),
+);
+const rememberSchema = ToolSchema.shape.inputSchema.parse(rememberWireSchema);
 const tools: Tool[] = [
   {
     name: 'identity_read',
@@ -185,11 +201,18 @@ const tools: Tool[] = [
       'Save generated deliverable bytes and return its real version.',
     inputSchema: deliverySchema,
   },
+  {
+    name: 'memory_remember',
+    description:
+      'Save current human-message content as a candidate requiring confirmation.',
+    inputSchema: rememberSchema,
+  },
 ];
 const moduleForTool = {
   reference_read: 'enterprise-materials',
   memory_read: 'employee-memory',
   deliverable_create: 'deliverables',
+  memory_remember: 'employee-memory',
 } as const;
 type BusinessTool = keyof typeof moduleForTool;
 const bindingSchema = z.object({
@@ -309,14 +332,23 @@ export function createAllriceMcpServer(
     const services = options.services;
     if (!services || services.executionGeneration !== scope.executionGeneration)
       return false;
-    const method =
-      name === 'reference_read'
-        ? services.referenceRead
-        : name === 'memory_read'
-          ? services.memoryRead
-          : services.deliverableCreate;
+    let bound = false;
+    switch (name) {
+      case 'reference_read':
+        bound = !!services.referenceRead;
+        break;
+      case 'memory_read':
+        bound = !!services.memoryRead;
+        break;
+      case 'deliverable_create':
+        bound = !!services.deliverableCreate;
+        break;
+      case 'memory_remember':
+        bound = !!services.memoryRemember;
+        break;
+    }
     return (
-      !!method &&
+      bound &&
       scope.enabledModules.includes(moduleForTool[name as BusinessTool])
     );
   }
@@ -383,6 +415,12 @@ export function createAllriceMcpServer(
             MemoryOrdinalInputSchema.parse(args),
             signal,
           );
+        } else if (name === 'memory_remember') {
+          result = await services!.memoryRemember!(
+            scope,
+            RememberPersonalMemoryInputSchema.parse(args),
+            signal,
+          );
         } else {
           const validated = validateDelivery(args);
           if (!validated.valid)
@@ -417,7 +455,7 @@ export function createAllriceMcpServer(
             'Invalid module selection error',
           );
         if (known.success || selection.success)
-          return {
+          result = {
             isError: true,
             content: [
               {
@@ -428,10 +466,11 @@ export function createAllriceMcpServer(
               },
             ],
           };
-        throw new McpError(
-          ErrorCode.InternalError,
-          'AllRice business service failed',
-        );
+        else
+          throw new McpError(
+            ErrorCode.InternalError,
+            'AllRice business service failed',
+          );
       }
       signal.throwIfAborted();
       // A current host cutoff also prevents a stale, completed read being
@@ -447,7 +486,9 @@ export function createAllriceMcpServer(
           'AUTHORIZATION_DENIED',
           name === 'deliverable_create'
             ? 'Current access is unavailable. Publication may already be committed; reconcile the original call before retrying.'
-            : 'Current access is unavailable.',
+            : name === 'memory_remember'
+              ? 'Current access is unavailable. Candidate may already be committed; reconcile the original call before retrying.'
+              : 'Current access is unavailable.',
         );
       return CallToolResultSchema.parse(result);
     }),
