@@ -352,7 +352,7 @@ suite(
         object,
         revoked: objectRevoked.signal,
         reauthorize: async () => object,
-        open: async () => storage.get(object),
+        open: vi.fn(async () => storage.get(object)),
         close: vi.fn(async () => undefined),
       };
       const files = {
