@@ -465,6 +465,9 @@ export function createRowLockAudit(
     let scope: ts.Node = declaration.parent;
     while (!functionLike(scope) && !ts.isSourceFile(scope))
       scope = scope.parent;
+    // A file-level object can escape through exports or another returned
+    // factory. A scan of this file cannot prove its methods unchanged.
+    if (!functionLike(scope)) return value;
     const visit = (node: ts.Node) => {
       if (!safe || ts.isTypeNode(node)) return;
       if (
@@ -519,6 +522,12 @@ export function createRowLockAudit(
           ts.isVariableDeclaration(declaration) &&
           ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const
         ) {
+          let owner: ts.Node = declaration.parent;
+          while (!functionLike(owner) && !ts.isSourceFile(owner))
+            owner = owner.parent;
+          // The returned literal must be fresh within this factory, not a
+          // persistent object captured from a surrounding/exported producer.
+          if (owner !== factory) return unknown();
           const literal = receiverValue(value);
           if (ts.isObjectLiteralExpression(literal))
             return { objects: new Set([literal]), known: true };

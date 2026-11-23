@@ -343,6 +343,27 @@ export function ${name}(ports: { enabled?: boolean } = {}) {
   }
   return { history: () => read() };
 }`;
+  files['lib/shared.ts'] = `
+export interface Store { read(): Promise<void>; }
+export const shared: Store = { async read() {} };
+export function factory(): Store { return shared; }
+const privateShared: Store = { async read() {} };
+export function privateFactory(): Store { return privateShared; }
+`;
+  files['lib/arm.ts'] = `
+import { shared, privateFactory } from './shared.ts';
+import { sql } from './db.ts';
+export function arm() {
+  shared.read = async () => {
+    await sql\`select * from exported_alias_rows for share\`;
+  };
+}
+export function armPrivate() {
+  privateFactory().read = async () => {
+    await sql\`select * from private_module_alias_rows for share\`;
+  };
+}
+`;
   const route = (name: string, body: string) => {
     files[`apps/web/app/api/${name}/route.ts`] =
       `import { sql } from '../../../../../lib/db.ts';\n` +
@@ -541,6 +562,21 @@ export const POST = () => handle(true);`,
     route(
       `factory-${name}`,
       `export const GET = () => factories.${name}().aliasRead();`,
+    );
+
+  for (const { name, arm, factory } of [
+    { name: 'exported-alias', arm: 'arm', factory: 'factory' },
+    {
+      name: 'private-module-alias',
+      arm: 'armPrivate',
+      factory: 'privateFactory',
+    },
+  ])
+    route(
+      name,
+      `import { ${factory} } from '../../../../../lib/shared.ts';
+import { ${arm} } from '../../../../../lib/arm.ts';
+export async function GET() { ${arm}(); await ${factory}().read(); }`,
     );
 
   beforeAll(async () => {
@@ -754,6 +790,15 @@ export const POST = () => handle(true);`,
       const uncertain = audit.routeLocks(['GET'], `factory-${name}/`);
       expect(uncertain.entries).toBe(1);
       expect(uncertain.unresolved).toContain('lib/factories.ts aliasRead');
+    }
+  });
+
+  it('keeps cross-file exported and module-captured objects unresolved after a real method replacement', () => {
+    const audit = createRowLockAudit(project);
+    for (const name of ['exported-alias', 'private-module-alias']) {
+      const actual = audit.routeLocks(['GET'], `${name}/`);
+      expect(actual.entries).toBe(1);
+      expect(actual.unresolved).toContain('lib/shared.ts read');
     }
   });
 
