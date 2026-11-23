@@ -12,26 +12,49 @@ import {
   parseDEntryHistoryRequest,
   type DEntryHistoryPorts,
 } from './history';
-import { DEntryDependencyUnavailable } from './release-policy';
+import type { createColdHistorySource } from './history-source';
 import { dEntryErrorResponse } from './responses';
 
-/** Existing projection ports only, not a proposed 273 carrier. Until that owner
- * supplies its cold source/config/checkpoint/storage, production passes none.
- * Tests may explicitly compose those existing ports with contract substitutes. */
+type ColdHistorySource = ReturnType<typeof createColdHistorySource>;
+type ColdHistoryInput = {
+  signal: AbortSignal;
+  selection: NonNullable<
+    Parameters<typeof createColdHistorySource>[0]['selection']
+  >;
+};
+
+/** A trusted Host supplies its existing sealed source store through this
+ * synchronous constructor. No source discovery, raw-store fallback or new
+ * authority is acquired here; the cold loader owns its actual read promises. */
 type ProjectionPorts = Partial<
-  Pick<DEntryHistoryPorts, 'binding' | 'store' | 'files' | 'context'>
->;
+  Pick<DEntryHistoryPorts, 'files' | 'context'>
+> & {
+  createColdSource?(input: ColdHistoryInput): ColdHistorySource;
+};
 
 /** Host-only, per-request composition. History never enters the native/live
  * owner, release admission, root creation, VM, model or credential lifecycle. */
 export function createDEntryHistoryRouteHandlers(ports: ProjectionPorts = {}) {
   async function serve(request: Request, method: 'history' | 'download') {
     let subscription: DEntryAuthoritySubscription | undefined;
+    let cold: ColdHistorySource | undefined;
     let closing: Promise<void> | undefined;
     let bodyOwnsAuthority = false;
     let signal = request.signal;
     const close = () =>
-      (closing ??= subscription?.close() ?? Promise.resolve());
+      (closing ??= (async () => {
+        const results = await Promise.allSettled(
+          [() => cold?.close(), () => subscription?.close()].map(
+            async (release) => release(),
+          ),
+        );
+        const errors = results.flatMap((result) =>
+          result.status === 'rejected' ? [result.reason] : [],
+        );
+        if (errors.length === 1) throw errors[0];
+        if (errors.length > 1)
+          throw new AggregateError(errors, 'History authority close failed');
+      })());
     try {
       try {
         const input = parseDEntryHistoryRequest(request, method);
@@ -54,7 +77,8 @@ export function createDEntryHistoryRouteHandlers(ports: ProjectionPorts = {}) {
           pin.identity,
           request.signal,
         );
-        signal = AbortSignal.any([request.signal, subscription.revoked]);
+        const authority = subscription;
+        signal = AbortSignal.any([request.signal, authority.revoked]);
         signal.throwIfAborted();
         const readPin = async (active: AbortSignal) => {
           active.throwIfAborted();
@@ -72,7 +96,7 @@ export function createDEntryHistoryRouteHandlers(ports: ProjectionPorts = {}) {
           return current;
         };
         await readPin(signal);
-        if (!ports.binding || !ports.store)
+        if (!ports.createColdSource)
           return apiProblem({
             status: 503,
             code: 'DEPENDENCY_UNAVAILABLE',
@@ -80,10 +104,21 @@ export function createDEntryHistoryRouteHandlers(ports: ProjectionPorts = {}) {
               'MET-273 cold history source/config/checkpoint/storage is not bound',
             retryable: false,
           });
+        const projection = ports.createColdSource({
+          signal,
+          selection: {
+            nativeSessionId: input.nativeSessionId,
+            ...(input.snapshotDigest
+              ? { snapshotDigest: input.snapshotDigest }
+              : {}),
+          },
+        });
+        cold = projection;
+        signal.throwIfAborted();
         const handlers = createDEntryHistoryHandlers({
           context: async () => context,
-          store: ports.store,
-          binding: ports.binding,
+          store: projection.store,
+          binding: projection.binding,
           files: ports.files,
           closeAuthority: close,
           resources: {
@@ -91,20 +126,34 @@ export function createDEntryHistoryRouteHandlers(ports: ProjectionPorts = {}) {
               const current = await readPin(active);
               if (!sameDEntryIdentity(current.identity, identity))
                 throw new DataAccessError('authorization_denied');
-              // 271 supplies the root only. Without 273's cold ancestry source
-              // a browser-selected child cannot become an authorized resource.
-              if (nativeSessionId !== current.rootNativeSessionId)
-                throw new DEntryDependencyUnavailable('native-route');
+              const resource = await projection.resolveColdResource(
+                context,
+                current,
+                nativeSessionId,
+                active,
+              );
+              active.throwIfAborted();
+              if (
+                resource.organizationId !== current.identity.organizationId ||
+                resource.personId !== current.identity.personId ||
+                resource.employeeInstanceId !==
+                  current.identity.employeeInstanceId ||
+                resource.threadId !== selection.threadId ||
+                resource.nativeSessionId !== nativeSessionId ||
+                resource.rootNativeSessionId !== current.rootNativeSessionId ||
+                (nativeSessionId === current.rootNativeSessionId &&
+                  (resource.parentNativeSessionId !== null ||
+                    resource.bindingRef !== current.rootBindingRef))
+              )
+                throw new DataAccessError('authorization_denied');
+              await readPin(active);
               return {
-                organizationId: current.identity.organizationId,
-                personId: current.identity.personId,
-                employeeInstanceId: current.identity.employeeInstanceId,
-                threadId: selection.threadId,
-                nativeSessionId: current.rootNativeSessionId,
-                rootNativeSessionId: current.rootNativeSessionId,
-                parentNativeSessionId: null,
-                bindingRef: current.rootBindingRef,
-                revoked: subscription!.revoked,
+                ...resource,
+                revoked: AbortSignal.any([
+                  active,
+                  authority.revoked,
+                  resource.revoked,
+                ]),
               };
             },
           },

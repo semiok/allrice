@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
 import { DataAccessError } from '@allrice/database';
+import { DEntryDependencyUnavailable } from './release-policy';
 import {
   HostHistorySnapshotSchema,
   type HostHistoryBinding,
@@ -191,7 +192,52 @@ async function fixture() {
   const spoolDirectory = await mkdtemp(`${tmpdir()}/met274-authority-`);
   roots.push(spoolDirectory);
   const files = { spoolDirectory, acquire: vi.fn(async () => owner) };
-  const ports = { binding: bind, store, files };
+  function makeColdSource(input: {
+    signal: AbortSignal;
+    selection: Readonly<{ nativeSessionId: string; snapshotDigest?: string }>;
+  }) {
+    return {
+      binding: bind,
+      store,
+      close: vi.fn(async (): Promise<void> => undefined),
+      resolveColdResource: vi.fn(
+        async (
+          currentContext: RequestContext,
+          current: Database.DEntryHistoryRootPin,
+          nativeSessionId: string,
+          active: AbortSignal,
+        ) => {
+          active.throwIfAborted();
+          if (
+            currentContext.organizationId !== current.identity.organizationId ||
+            nativeSessionId !== input.selection.nativeSessionId ||
+            nativeSessionId !== current.rootNativeSessionId
+          )
+            throw new DEntryDependencyUnavailable('native-route');
+          return {
+            organizationId: current.identity.organizationId,
+            personId: current.identity.personId,
+            employeeInstanceId: current.identity.employeeInstanceId,
+            threadId: binding.threadId,
+            nativeSessionId,
+            rootNativeSessionId: current.rootNativeSessionId,
+            parentNativeSessionId: null,
+            bindingRef: current.rootBindingRef,
+            revoked: input.signal,
+          };
+        },
+      ),
+    };
+  }
+  const scopes: ReturnType<typeof makeColdSource>[] = [];
+  const createColdSource = vi.fn(
+    (input: Parameters<typeof makeColdSource>[0]) => {
+      const scope = makeColdSource(input);
+      scopes.push(scope);
+      return scope;
+    },
+  );
+  const ports = { createColdSource, files };
   const selection = {
     workspaceId: binding.workspaceId,
     employeeInstanceId: binding.employeeInstanceId,
@@ -218,6 +264,8 @@ async function fixture() {
     revoked,
     objectRevoked,
     ports,
+    createColdSource,
+    scopes,
     store,
     bind,
     files,
@@ -306,8 +354,7 @@ describe('formal 271 history composition contract', () => {
   it('does not use the 271 subscription as an attachment ACL owner', async () => {
     const f = await fixture();
     const response = await createDEntryHistoryRouteHandlers({
-      binding: f.bind,
-      store: f.store,
+      createColdSource: f.createColdSource,
     }).download(f.request(true));
     expect(response.status).toBe(503);
     expect(await response.json()).toMatchObject({
@@ -552,4 +599,160 @@ describe('formal 271 history composition contract', () => {
     expect((await historyGET(new Request(url))).status).toBe(400);
     expect(db.root).not.toHaveBeenCalled();
   });
+
+  it('creates one fresh cold loader only after parse, login, watch and readPin', async () => {
+    const f = await fixture();
+    const create = f.createColdSource.getMockImplementation()!;
+    const url = new URL(f.request().url);
+    url.searchParams.set('snapshotDigest', f.digest);
+    f.createColdSource.mockImplementationOnce((input) => {
+      expect(db.login).toHaveBeenCalledTimes(1);
+      expect(db.watch).toHaveBeenCalledTimes(1);
+      expect(db.root).toHaveBeenCalledTimes(2);
+      expect(input.selection).toEqual({
+        nativeSessionId: f.pin.rootNativeSessionId,
+        snapshotDigest: f.digest,
+      });
+      expect(input.signal.aborted).toBe(false);
+      return create(input);
+    });
+    const handlers = createDEntryHistoryRouteHandlers(f.ports);
+    expect((await handlers.history(new Request(url))).status).toBe(200);
+    expect((await handlers.history(f.request())).status).toBe(200);
+    expect(f.createColdSource).toHaveBeenCalledTimes(2);
+    expect(f.scopes).toHaveLength(2);
+    expect(f.scopes[0]).not.toBe(f.scopes[1]);
+    for (const scope of f.scopes) {
+      expect(scope.resolveColdResource).toHaveBeenCalled();
+      expect(scope.close).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('does not fall back to raw projection when the cold constructor rejects', async () => {
+    const f = await fixture();
+    f.createColdSource.mockImplementationOnce(() => {
+      throw new DEntryDependencyUnavailable('native-route');
+    });
+    const response = await createDEntryHistoryRouteHandlers(f.ports).history(
+      f.request(),
+    );
+    expect(response.status).toBe(503);
+    expect(f.createColdSource).toHaveBeenCalledTimes(1);
+    expect(f.scopes).toHaveLength(0);
+    expect(f.bind).not.toHaveBeenCalled();
+    expect(f.store.read).not.toHaveBeenCalled();
+    expect(f.subscription.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('owns a returned cold handle before checking cancellation again', async () => {
+    const f = await fixture();
+    const create = f.createColdSource.getMockImplementation()!;
+    const cancel = new AbortController();
+    f.createColdSource.mockImplementationOnce((input) => {
+      const scope = create(input);
+      cancel.abort(new DataAccessError('authorization_denied'));
+      return scope;
+    });
+    const response = await createDEntryHistoryRouteHandlers(f.ports).history(
+      f.request(false, cancel.signal),
+    );
+    expect(response.status).toBe(403);
+    expect(f.scopes).toHaveLength(1);
+    expect(f.scopes[0]!.close).toHaveBeenCalledTimes(1);
+    expect(f.subscription.close).toHaveBeenCalledTimes(1);
+    expect(f.bind).not.toHaveBeenCalled();
+    expect(f.store.read).not.toHaveBeenCalled();
+  });
+
+  it('rejects a root replacement during the actual cold resolver await', async () => {
+    const f = await fixture(),
+      entered = gate(),
+      released = gate();
+    const create = f.createColdSource.getMockImplementation()!;
+    f.createColdSource.mockImplementationOnce((input) => {
+      const scope = create(input);
+      const resolve = scope.resolveColdResource.getMockImplementation()!;
+      scope.resolveColdResource.mockImplementationOnce(async (...args) => {
+        const resource = await resolve(...args);
+        entered.release();
+        await released.promise;
+        return resource;
+      });
+      return scope;
+    });
+    const pending = createDEntryHistoryRouteHandlers(f.ports).history(
+      f.request(),
+    );
+    try {
+      await Promise.race([
+        entered.promise,
+        pending.then(() => {
+          throw new Error('History settled before the cold resolver barrier');
+        }),
+      ]);
+      db.root.mockResolvedValue({ ...f.pin, rootBindingRef: randomUUID() });
+    } finally {
+      released.release();
+      await Promise.allSettled([pending]);
+    }
+    expect((await pending).status).toBe(403);
+    expect(f.bind).not.toHaveBeenCalled();
+    expect(f.store.read).not.toHaveBeenCalled();
+    expect(f.scopes[0]!.close).toHaveBeenCalledTimes(1);
+    expect(f.subscription.close).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['cold', 'subscription', 'both'] as const)(
+    'joins both real close promises when %s close rejects',
+    async (failure) => {
+      const f = await fixture(),
+        coldEntered = gate(),
+        authorityEntered = gate(),
+        coldReleased = gate(),
+        authorityReleased = gate();
+      const create = f.createColdSource.getMockImplementation()!;
+      f.createColdSource.mockImplementationOnce((input) => {
+        const scope = create(input);
+        scope.close.mockImplementationOnce(async () => {
+          coldEntered.release();
+          await coldReleased.promise;
+          if (failure !== 'subscription') throw new Error('cold close unknown');
+        });
+        return scope;
+      });
+      f.subscription.close.mockImplementationOnce(async () => {
+        authorityEntered.release();
+        await authorityReleased.promise;
+        if (failure !== 'cold') throw new Error('authority close unknown');
+      });
+      let settled = false;
+      const pending = createDEntryHistoryRouteHandlers(f.ports).history(
+        f.request(),
+      );
+      void pending.then(() => {
+        settled = true;
+      });
+      try {
+        await Promise.race([
+          Promise.all([coldEntered.promise, authorityEntered.promise]),
+          pending.then(() => {
+            throw new Error('History settled before both close barriers');
+          }),
+        ]);
+        await turn();
+        expect(settled).toBe(false);
+        if (failure === 'subscription') authorityReleased.release();
+        else coldReleased.release();
+        await turn();
+        expect(settled).toBe(false);
+      } finally {
+        coldReleased.release();
+        authorityReleased.release();
+        await Promise.allSettled([pending]);
+      }
+      expect((await pending).status).toBe(500);
+      expect(f.scopes[0]!.close).toHaveBeenCalledTimes(1);
+      expect(f.subscription.close).toHaveBeenCalledTimes(1);
+    },
+  );
 });
