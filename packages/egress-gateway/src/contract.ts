@@ -108,11 +108,13 @@ export interface EgressProvisioner {
   /** Durable allocation owned by host: stable for vmId, including across restart. */
   endpoint(
     vmId: string,
+    gatewayPorts: readonly number[],
     signal: AbortSignal,
   ): Promise<{ host: string; port: number; guestOrigin: string }>;
   /** Trusted disk/config writer installs only into this exact VM/epoch, before boot. */
   install(
     binding: PersonVmBinding,
+    mount: string,
     access: GuestEgressAccess,
     signal: AbortSignal,
   ): Promise<void>;

@@ -63,6 +63,24 @@ async function fixture(
     ),
     allow: vi.fn(async () => {}),
   };
+  const mount = '/synthetic/mounted-vm-a';
+  const provisioner = {
+    endpoint: vi.fn(async () => ({
+      host: '127.0.0.1',
+      port,
+      guestOrigin: `http://127.0.0.1:${port}`,
+    })),
+    install: vi.fn(
+      async (
+        _binding: PersonVmBinding,
+        _mount: string,
+        value: GuestEgressAccess,
+      ) => {
+        access = value;
+      },
+    ),
+    remove: vi.fn(remove),
+  };
   const gateway = createEgressGateway({
     policy: {
       routes: createOkxMarketRoutes({
@@ -84,23 +102,19 @@ async function fixture(
     revokeModel: async (b) => {
       revoked.push(b);
     },
-    provisioner: {
-      endpoint: async () => ({
-        host: '127.0.0.1',
-        port,
-        guestOrigin: `http://127.0.0.1:${port}`,
-      }),
-      install: async (_b, a) => {
-        access = a;
-      },
-      remove,
-    },
+    provisioner,
     ...extra,
   });
-  let receipt = await gateway.prepare(binding, signal());
+  let receipt = await gateway.prepare(
+    binding,
+    { gatewayPorts: [], mount },
+    signal(),
+  );
   cleanup.push(() => gateway.revoke(receipt, 'stop', signal()));
   return {
     gateway,
+    mount,
+    provisioner,
     upstream,
     authority,
     revoked,
@@ -112,7 +126,11 @@ async function fixture(
     },
     async next() {
       current = { ...binding, instanceId: 'instance-b', leaseEpoch: 2 };
-      receipt = await gateway.prepare(current, signal());
+      receipt = await gateway.prepare(
+        current,
+        { gatewayPorts: receipt.gatewayPorts, mount },
+        signal(),
+      );
       return receipt;
     },
     async read(
@@ -143,6 +161,62 @@ describe('trusted VM HTTP egress (VM and identity owners are explicit fixtures)'
       'https://www.okx.com/api/v5/market/candles?instId=ETH-USDT&bar=4H&limit=10',
     );
     expect(JSON.stringify(f.receipt)).not.toContain(f.access.capability);
+  });
+  it('same empty or persisted lease ports and the installed mount reuse one actual receipt', async () => {
+    const f = await fixture();
+    const receipt = f.receipt,
+      access = f.access;
+    for (const gatewayPorts of [[], receipt.gatewayPorts]) {
+      await expect(
+        f.gateway.prepare(binding, { gatewayPorts, mount: f.mount }, signal()),
+      ).resolves.toBe(receipt);
+    }
+    expect(f.provisioner.endpoint).toHaveBeenCalledTimes(1);
+    expect(f.provisioner.install).toHaveBeenCalledTimes(1);
+    expect(f.provisioner.install).toHaveBeenCalledWith(
+      binding,
+      f.mount,
+      access,
+      expect.any(AbortSignal),
+    );
+    expect(f.provisioner.remove).not.toHaveBeenCalled();
+    await f.gateway.assertActive(receipt, signal());
+    expect(f.access).toBe(access);
+    expect(await (await f.read()).json()).toEqual(candles);
+  });
+  it('conflicting persisted ports reject only that preparation and preserve the installed owner', async () => {
+    const f = await fixture();
+    const port = f.receipt.gatewayPorts[0];
+    if (port === undefined) throw Error('missing allocated port');
+    const failed = f.gateway.prepare(
+      binding,
+      { gatewayPorts: [port === 65535 ? 65534 : port + 1], mount: f.mount },
+      signal(),
+    );
+    await expect(failed).rejects.toBeInstanceOf(EgressError);
+    await expect(failed).rejects.toMatchObject({ code: 'POLICY_INVALID' });
+    expect(f.provisioner.endpoint).toHaveBeenCalledTimes(1);
+    expect(f.provisioner.install).toHaveBeenCalledTimes(1);
+    expect(f.provisioner.remove).not.toHaveBeenCalled();
+    expect(f.revoked).toEqual([]);
+    await f.gateway.assertActive(f.receipt, signal());
+    expect(await (await f.read()).json()).toEqual(candles);
+  });
+  it('another mount rejects only that preparation without reinstalling or revoking valid access', async () => {
+    const f = await fixture();
+    const failed = f.gateway.prepare(
+      binding,
+      { gatewayPorts: f.receipt.gatewayPorts, mount: f.mount + '/another' },
+      signal(),
+    );
+    await expect(failed).rejects.toBeInstanceOf(EgressError);
+    await expect(failed).rejects.toMatchObject({ code: 'POLICY_INVALID' });
+    expect(f.provisioner.endpoint).toHaveBeenCalledTimes(1);
+    expect(f.provisioner.install).toHaveBeenCalledTimes(1);
+    expect(f.provisioner.remove).not.toHaveBeenCalled();
+    expect(f.revoked).toEqual([]);
+    await f.gateway.assertActive(f.receipt, signal());
+    expect(await (await f.read()).json()).toEqual(candles);
   });
   it('rejects unauthenticated host callers and forged identity before upstream', async () => {
     const f = await fixture();
@@ -212,9 +286,13 @@ describe('trusted VM HTTP egress (VM and identity owners are explicit fixtures)'
     await denied.body?.cancel();
     expect((await f.read()).status).toBe(200);
     expect(f.revoked).toEqual([binding]);
-    await expect(f.gateway.prepare(binding, signal())).rejects.toThrow(
-      'STALE_BINDING',
-    );
+    await expect(
+      f.gateway.prepare(
+        binding,
+        { gatewayPorts: f.receipt.gatewayPorts, mount: f.mount },
+        signal(),
+      ),
+    ).rejects.toThrow('STALE_BINDING');
   });
   it('aborts and drains in-flight upstream reads when revoking, including model drain', async () => {
     let began!: () => void;

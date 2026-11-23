@@ -87,6 +87,7 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
     const port = (server.address() as { port: number }).port;
     await new Promise<void>((resolve) => server.close(() => resolve()));
     let access!: GuestEgressAccess;
+    let installedMount!: string;
     const admitted = latch<PersonVmAdmissionPermit>();
     const waiting = latch<void>();
     const finished = latch<void>();
@@ -220,7 +221,8 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
           port,
           guestOrigin: `http://127.0.0.1:${port}`,
         }),
-        install: async (_binding, value) => {
+        install: async (_binding, mount, value) => {
+          installedMount = mount;
           access = value;
         },
         remove: async () => {},
@@ -228,7 +230,11 @@ suite('egress frozen admission through real PG owner and HTTP', () => {
     });
     await vm.prewarm(rc, { trigger: 'page' }, caller.signal);
     const binding = await vm.resolve(rc, caller.signal);
-    const receipt = await gateway.prepare(binding, caller.signal);
+    const receipt = await gateway.prepare(
+      binding,
+      { gatewayPorts: [port], mount: installedMount },
+      caller.signal,
+    );
     cleanup.push(() =>
       gateway.revoke(receipt, 'stop', new AbortController().signal),
     );

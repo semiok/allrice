@@ -32,6 +32,7 @@ type BindingState = {
   server: Server;
   inflight: Set<Promise<unknown>>;
   active: boolean;
+  installedMount: string | null;
   origin: string;
 };
 function close(server: Server) {
@@ -375,20 +376,35 @@ export function createEgressGateway(
       );
   }
   const port: PersonVmEgressPort = {
-    prepare(bindingInput, signal) {
+    prepare(bindingInput, preparation, signal) {
       const binding = Object.freeze({ ...bindingInput });
+      const gatewayPorts = Object.freeze([...preparation.gatewayPorts]);
+      const mount = preparation.mount;
       return serial(binding.vmId, async () => {
         signal.throwIfAborted();
         const previous = states.get(binding.vmId);
         if (previous) {
-          if (exact(previous.receipt.binding, binding) && previous.active)
+          if (exact(previous.receipt.binding, binding) && previous.active) {
+            // An initial empty lease port list may retry before its save ACK.
+            // It reuses the actual allocated receipt, never allocates again.
+            if (
+              previous.installedMount !== mount ||
+              (gatewayPorts.length > 0 &&
+                (gatewayPorts.length !== previous.receipt.gatewayPorts.length ||
+                  gatewayPorts.some(
+                    (port, i) => port !== previous.receipt.gatewayPorts[i],
+                  )))
+            )
+              throw new EgressError('POLICY_INVALID');
             return previous.receipt;
+          }
           if (binding.leaseEpoch <= previous.receipt.binding.leaseEpoch)
             throw new EgressError('STALE_BINDING');
           await retire(previous, signal);
         }
         const endpoint = await options.provisioner.endpoint(
           binding.vmId,
+          gatewayPorts,
           signal,
         );
         const origin = new URL(endpoint.guestOrigin);
@@ -401,6 +417,8 @@ export function createEgressGateway(
           origin.username ||
           origin.password ||
           Number(origin.port || 80) !== endpoint.port ||
+          (gatewayPorts.length > 0 &&
+            (gatewayPorts.length !== 1 || gatewayPorts[0] !== endpoint.port)) ||
           (previous && previous.receipt.gatewayPorts[0] !== endpoint.port)
         )
           throw new EgressError('POLICY_INVALID');
@@ -415,6 +433,7 @@ export function createEgressGateway(
           controller: new AbortController(),
           inflight: new Set(),
           active: false,
+          installedMount: null,
           server: createServer(),
           origin: endpoint.guestOrigin,
         };
@@ -524,10 +543,12 @@ export function createEgressGateway(
           });
           await options.provisioner.install(
             binding,
+            mount,
             { origin: endpoint.guestOrigin, capability: state.capability },
             signal,
           );
           signal.throwIfAborted();
+          state.installedMount = mount;
           state.active = true;
           return receipt;
         } catch (error) {

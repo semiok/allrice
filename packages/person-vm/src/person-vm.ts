@@ -397,6 +397,7 @@ export class PersonVmService
       signal,
     );
     await this.options.native.prepare(bindingOf(row), mount, signal);
+    return mount;
   }
   private async ready(row: VmRecord, signal: AbortSignal) {
     if (!this.options.runtime || !this.options.egress || !row.egressReceipt)
@@ -518,9 +519,24 @@ export class PersonVmService
       signal.throwIfAborted();
       await lease.guard();
       const binding = bindingOf(row);
+      if (row.diskTier === 'cold') {
+        await this.options.disk.move(
+          { vmId: row.vmId, tier: 'cold' },
+          'warm',
+          signal,
+        );
+        row.diskTier = 'warm';
+        await lease.save(row);
+      }
+      const mount = await this.mounted(row, signal, lease);
+      await lease.guard();
       const receipt = this.receipt(
         binding,
-        await this.options.egress.prepare(binding, signal),
+        await this.options.egress.prepare(
+          binding,
+          { gatewayPorts: Object.freeze([...row.gatewayPorts]), mount },
+          signal,
+        ),
       );
       row.egressReceipt = receipt;
       await lease.save(row);
@@ -532,16 +548,6 @@ export class PersonVmService
         throw new PersonVmError('EGRESS_BINDING_INVALID');
       if (!row.nativeCreated) row.gatewayPorts = [...receipt.gatewayPorts];
       await lease.save(row);
-      if (row.diskTier === 'cold') {
-        await this.options.disk.move(
-          { vmId: row.vmId, tier: 'cold' },
-          'warm',
-          signal,
-        );
-        row.diskTier = 'warm';
-        await lease.save(row);
-      }
-      await this.mounted(row, signal, lease);
       await lease.guard();
       await this.options.egress.assertActive(receipt, signal);
       let web: PersonVmWebStartup | undefined;

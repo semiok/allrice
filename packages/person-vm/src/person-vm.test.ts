@@ -506,6 +506,7 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
   it('进入员工页和首次输入共用本人的盘/VM，read不会把persisted running冒称ready', async () => {
     const h = harness(),
       rc = context();
+    const prepareEgress = vi.spyOn(h.egress, 'prepare');
     const first = await h.service.prewarm(rc, { trigger: 'page' }, signal());
     const second = await h.service.prewarm(rc, { trigger: 'input' }, signal());
     expect(first.ready).toBe(true);
@@ -517,6 +518,17 @@ describe('host lifecycle service entrypoints (synthetic runtime; not real VM acc
     );
     expect(h.log.indexOf('egress:prepare')).toBeLessThan(
       h.log.indexOf('native:create'),
+    );
+    expect(prepareEgress).toHaveBeenCalledTimes(1);
+    expect(prepareEgress.mock.calls[0]?.[1]).toEqual({
+      gatewayPorts: [],
+      mount: '/synthetic/' + first.vmId,
+    });
+    expect(h.log.indexOf('disk:attach')).toBeLessThan(
+      h.log.indexOf('egress:prepare'),
+    );
+    expect(h.log.indexOf('native:prepare')).toBeLessThan(
+      h.log.indexOf('egress:prepare'),
     );
   });
   it('global person uniqueness拒绝跨企业冲突，不暗建每企业VM', async () => {

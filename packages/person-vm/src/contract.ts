@@ -35,6 +35,7 @@ export type PersonVmEgressReceipt = Readonly<{
 export interface PersonVmEgressPort {
   prepare(
     binding: PersonVmBinding,
+    preparation: Readonly<{ gatewayPorts: readonly number[]; mount: string }>,
     signal: AbortSignal,
   ): Promise<PersonVmEgressReceipt>;
   /** Local exact-receipt liveness only. Must not call back into VM binding
