@@ -1,14 +1,37 @@
 /** Synthetic seal/source double and real private files; no native artifacts run. */
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
+import type { FileHandle } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as turn } from 'node:timers/promises';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type MockInstance,
+} from 'vitest';
 import { readPlatformPersonVmConfiguration } from '@allrice/contracts';
 import type { ServiceBuildIdentity } from '@allrice/database';
 
-const source = vi.hoisted(() => ({ build: vi.fn() }));
+const source = vi.hoisted<{
+  build: ReturnType<typeof vi.fn>;
+  opened?: (file: FileHandle) => void;
+}>(() => ({ build: vi.fn() }));
+vi.mock('node:fs/promises', async (original) => {
+  const actual = await original<typeof fs>();
+  return {
+    ...actual,
+    async open(...args: Parameters<typeof actual.open>) {
+      const file = await actual.open(...args);
+      source.opened?.(file);
+      return file;
+    },
+  };
+});
 vi.mock('@allrice/database', async () => ({
   readServiceBuildIdentity: source.build,
   ServiceBuildManifestSchema: (
@@ -169,6 +192,7 @@ async function seal(config: unknown = value(), include = true) {
   return manifest;
 }
 beforeEach(async () => {
+  source.opened = undefined;
   vi.resetAllMocks();
   originalArgv = process.argv;
   root = await fs.realpath(
@@ -331,8 +355,6 @@ describe('private production Host configuration', () => {
     ).rejects.toBeInstanceOf(ProductionHostConfigurationUnavailable);
   });
   it('withholds validated configuration when cancellation arrives during the actual file close', async () => {
-    const file = await fs.open(join(root, '.local/person-vm-host.json'), 'r');
-    const closeFile = file.close.bind(file);
     let enter!: () => void, release!: () => void;
     const entered = new Promise<void>((done) => {
       enter = done;
@@ -342,13 +364,16 @@ describe('private production Host configuration', () => {
     });
     let closed = false,
       settled = false;
-    const close = vi.spyOn(file, 'close').mockImplementation(async () => {
-      enter();
-      await gate;
-      await closeFile();
-      closed = true;
-    });
-    vi.spyOn(fs, 'open').mockResolvedValueOnce(file);
+    let close: MockInstance<FileHandle['close']> | undefined;
+    source.opened = (file) => {
+      const closeFile = file.close.bind(file);
+      close = vi.spyOn(file, 'close').mockImplementation(async () => {
+        enter();
+        await gate;
+        await closeFile();
+        closed = true;
+      });
+    };
     const abort = new AbortController(),
       reason = Error('cancel actual close');
     const outcome = readProductionHostConfiguration(abort.signal).then(
@@ -375,9 +400,6 @@ describe('private production Host configuration', () => {
     expect(closed).toBe(true);
   });
   it('joins the actual open/read/close before returning cancellation', async () => {
-    const file = await fs.open(join(root, '.local/person-vm-host.json'), 'r');
-    const read = file.readFile.bind(file),
-      close = vi.spyOn(file, 'close');
     let enter!: () => void, release!: () => void;
     const entered = new Promise<void>((done) => {
       enter = done;
@@ -385,12 +407,16 @@ describe('private production Host configuration', () => {
     const gate = new Promise<void>((done) => {
       release = done;
     });
-    vi.spyOn(file, 'readFile').mockImplementation(async () => {
-      enter();
-      await gate;
-      return read();
-    });
-    vi.spyOn(fs, 'open').mockResolvedValueOnce(file);
+    let close: MockInstance<FileHandle['close']> | undefined;
+    source.opened = (file) => {
+      const read = file.readFile.bind(file);
+      close = vi.spyOn(file, 'close');
+      vi.spyOn(file, 'readFile').mockImplementation(async () => {
+        enter();
+        await gate;
+        return read();
+      });
+    };
     const abort = new AbortController(),
       reason = Error('cancel private read');
     let settled = false;
