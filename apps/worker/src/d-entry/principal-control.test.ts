@@ -163,10 +163,13 @@ describe('Node control uses the real generated issuer over the same native Peer 
           // A genuine native hint extends the same queue while its current
           // list is held. No hint payload supplies a grant or a baseline.
           fixture.host.emit('api-session/added', summary('child', 'root'));
-          expect(
-            fixture.host.remoteAccess.snapshotFor(scope.opened.principal)
-              .grants,
-          ).toEqual([]);
+          const baseline = fixture.host.remoteAccess.snapshotFor(
+            scope.opened.principal,
+          );
+          expect(baseline.owner).toBe(false);
+          if (baseline.owner)
+            throw Error('issued Peer received owner baseline');
+          expect(baseline.grants).toEqual([]);
           expect(completed).toBe(0);
           expect(fixture.catalog.pages).toHaveLength(0);
           expect(fixture.catalog.follows).toHaveLength(0);
