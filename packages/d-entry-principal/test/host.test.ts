@@ -100,6 +100,42 @@ describe('public rc.2 Host issuer, generated faces and real in-process Node carr
     await close(scope.handle, scope.iterator);
   });
 
+  it.each(['child', 'page'] as const)('%s close joins a held session/follow setup read before exact closed/end, without late follow or sibling loss', async (mode) => {
+    const fixture = await setup(), scope = await opened(fixture);
+    const otherIssue = { ...fixture.selected, scopeId: randomUUID() };
+    const other = TYPERT_REMOTE.methods['allricePrincipal/openScope'].invoke(fixture.node.remote, { issue: otherIssue });
+    const otherIterator = other[Symbol.asyncIterator]();
+    expect(await otherIterator.next()).toMatchObject({ value: { type: 'opened' } });
+    const entered = deferred(), release = deferred();
+    let readSettled = false;
+    fixture.catalog.beforeList = async () => { entered.resolve(); await release.promise; readSettled = true; };
+    const native = vi.spyOn(fixture.host.typertGateway.wireStream, 'open');
+    const handle = TYPERT_REMOTE.methods['allricePrincipal/streamScoped'].invoke(fixture.node.remote, { call: { scopeId: fixture.selected.scopeId, endpoint: 'session/follow', args: { request: { address: { kind: 'session', sessionId: SessionId('root') } } } } });
+    const iterator = handle[Symbol.asyncIterator]();
+    const pending = iterator.next();
+    let finished = false;
+    void pending.then(() => { finished = true; }, () => { finished = true; });
+    await entered.promise;
+    const pageClosing = mode === 'page' ? close(scope.handle, scope.iterator) : undefined;
+    if (mode === 'child') { handle.send('close'); handle.end(); }
+    let pageFinished = false;
+    void pageClosing?.then(() => { pageFinished = true; });
+    await Promise.resolve();
+    expect(readSettled).toBe(false); expect(finished).toBe(false); expect(pageFinished).toBe(false);
+    expect(fixture.catalog.follows).toHaveLength(0);
+    release.resolve();
+    expect(await pending).toEqual({ done: false, value: { type: 'closed', scopeId: fixture.selected.scopeId } });
+    expect(readSettled).toBe(true);
+    expect(await iterator.next()).toMatchObject({ done: true });
+    expect(fixture.catalog.follows).toHaveLength(0);
+    expect(native.mock.calls.some((call) => call[0] === 'session/follow')).toBe(false);
+    if (pageClosing) await pageClosing;
+    else await close(scope.handle, scope.iterator);
+    fixture.catalog.beforeList = undefined;
+    expect(await TYPERT_REMOTE.methods['allricePrincipal/invokeScoped'].invoke(fixture.node.remote, { call: { scopeId: otherIssue.scopeId, endpoint: 'session/page', args: { request: { address: { kind: 'session', sessionId: SessionId('root') }, throughSeq: 0 } } } })).toMatchObject({ ok: true });
+    await close(other, otherIterator);
+  });
+
   it('rejects a different parent, undeclared global/control/list actions and raw nested extras before normal decode can erase them', async () => {
     const fixture = await setup(); const scope = await opened(fixture);
     const other = fixture.host.connection.createPeer({ principal: { kind: 'owner' }, interactions: 'none' });

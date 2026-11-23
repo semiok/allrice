@@ -127,6 +127,89 @@ describe('Node control uses the real generated issuer over the same native Peer 
     expect(observed.returnJoined).toBe(true); await fixture.control.close();
   });
 
+  it.each(['child', 'page'] as const)('%s close waits for an actual session/follow setup read and consumes exact closed/end without poisoning another activity', async (mode) => {
+    const fixture = await setup();
+    const activity = fixture.control.acquire(fixture.selected, new AbortController().signal);
+    const scope = await activity.run(new AbortController().signal);
+    const otherIssue = { ...fixture.selected, scopeId: randomUUID() };
+    const other = fixture.control.acquire(otherIssue, new AbortController().signal);
+    const otherScope = await other.run(new AbortController().signal);
+    const original = fixture.wire.open;
+    if (!original) throw Error('actual carrier missing');
+    const frames: unknown[] = [];
+    let ended = false;
+    vi.spyOn(fixture.wire, 'open').mockImplementation((channel, endpoint, payload, signal, uplink) => {
+      const source = original(channel, endpoint, payload, signal, uplink);
+      if (endpoint !== 'allricePrincipal/streamScoped') return source;
+      return { async *[Symbol.asyncIterator]() { for await (const row of source) { frames.push(row); yield row; } ended = true; } };
+    });
+    const entered = deferred(), release = deferred(), child = new AbortController();
+    let readSettled = false;
+    fixture.catalog.beforeList = async () => { entered.resolve(); await release.promise; readSettled = true; };
+    const stream = scope.stream({ scopeId: fixture.selected.scopeId, endpoint: 'session/follow', args: { request: { address: { kind: 'session', sessionId: SessionId('root') } } } }, child.signal)[Symbol.asyncIterator]();
+    const pending = stream.next(); void pending.catch(() => {});
+    await entered.promise;
+    if (mode === 'child') child.abort();
+    const closing = mode === 'page' ? activity.close() : pending.then(() => {}, () => {});
+    let finished = false;
+    void closing.then(() => { finished = true; }, () => { finished = true; });
+    await Promise.resolve();
+    expect(readSettled).toBe(false); expect(finished).toBe(false);
+    expect(frames).toEqual([]); expect(ended).toBe(false); expect(fixture.catalog.follows).toHaveLength(0);
+    release.resolve(); await closing;
+    await expect(pending).rejects.toBeDefined();
+    expect(readSettled).toBe(true);
+    expect(frames).toEqual([{ type: 'closed', scopeId: fixture.selected.scopeId }]);
+    expect(ended).toBe(true); expect(fixture.catalog.follows).toHaveLength(0);
+    if (mode === 'child') expect(scope.revoked.aborted).toBe(false);
+    await activity.close();
+    expect(otherScope.revoked.aborted).toBe(false); expect(fixture.carrier.signal.aborted).toBe(false);
+    fixture.catalog.beforeList = undefined;
+    expect(await otherScope.invoke({ scopeId: otherIssue.scopeId, endpoint: 'session/page', args: { request: { address: { kind: 'session', sessionId: SessionId('root') }, throughSeq: 0 } } }, new AbortController().signal)).toMatchObject({ endpoint: 'session/page' });
+    await other.close(); await fixture.control.close();
+  });
+
+  it.each(['active', 'child-close'] as const)('preserves a real setup business failure with details during %s, without synthesizing a closed ACK', async (mode) => {
+    const fixture = await setup();
+    const activity = fixture.control.acquire(fixture.selected, new AbortController().signal);
+    const scope = await activity.run(new AbortController().signal);
+    const entered = deferred(), release = deferred(), child = new AbortController();
+    const failure = new RemoteError('subagent/catalog-diagnostic', 'actual setup catalog diagnostic', { parentSessionId: SessionId('root'), childSessionId: SessionId('child'), reason: 'unavailable' });
+    fixture.catalog.beforeList = async () => { entered.resolve(); await release.promise; throw failure; };
+    const stream = scope.stream({ scopeId: fixture.selected.scopeId, endpoint: 'session/follow', args: { request: { address: { kind: 'session', sessionId: SessionId('root') } } } }, child.signal)[Symbol.asyncIterator]();
+    const pending = stream.next(); void pending.catch(() => {});
+    await entered.promise;
+    if (mode === 'child-close') child.abort();
+    release.resolve();
+    await expect(pending).rejects.toMatchObject({ code: failure.code, message: failure.message, details: failure.details });
+    expect(fixture.catalog.follows).toHaveLength(0);
+    const closing = activity.close(); expect(activity.close()).toBe(closing);
+    await expect(closing).rejects.toThrow('PRINCIPAL_JOIN_UNKNOWN');
+    await expect(closing).rejects.toMatchObject({ cause: { errors: [expect.objectContaining({ message: 'PRINCIPAL_JOIN_UNKNOWN', cause: expect.objectContaining({ code: failure.code, message: failure.message, details: failure.details }) })] } });
+    await fixture.control.drainLocal();
+    await expect(fixture.control.close()).rejects.toThrow('PRINCIPAL_JOIN_UNKNOWN');
+  });
+
+  it('keeps carrier loss during a held setup remote unknown and never dispatches a late follow', async () => {
+    const fixture = await setup();
+    const activity = fixture.control.acquire(fixture.selected, new AbortController().signal);
+    const scope = await activity.run(new AbortController().signal);
+    const entered = deferred(), release = deferred();
+    fixture.catalog.beforeList = async () => { entered.resolve(); await release.promise; };
+    const stream = scope.stream({ scopeId: fixture.selected.scopeId, endpoint: 'session/follow', args: { request: { address: { kind: 'session', sessionId: SessionId('root') } } } }, new AbortController().signal)[Symbol.asyncIterator]();
+    const pending = stream.next(); void pending.catch(() => {});
+    await entered.promise; fixture.carrier.abort(Error('actual carrier lost'));
+    const drained = fixture.control.drainLocal();
+    let finished = false;
+    void drained.then(() => { finished = true; }, () => { finished = true; });
+    await Promise.resolve(); expect(finished).toBe(false);
+    release.resolve(); await drained;
+    await expect(pending).rejects.toBeDefined();
+    expect(fixture.catalog.follows).toHaveLength(0);
+    await expect(activity.close()).rejects.toThrow('PRINCIPAL_JOIN_UNKNOWN');
+    await expect(fixture.control.close()).rejects.toThrow('PRINCIPAL_JOIN_UNKNOWN');
+  });
+
   it.each(['before', 'after'] as const)('preserves native code/message/details on a %s-first-frame failure while close remains sticky unknown', async (position) => {
     const fixture = await setup();
     const activity = fixture.control.acquire(fixture.selected, new AbortController().signal);

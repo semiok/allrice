@@ -265,8 +265,17 @@ class PrincipalService extends TypertRemoteService {
     scope.children.add(child);
     let failed = false;
     try {
-      await setup;
-      while (!gate.abort.signal.aborted) {
+      try { await setup; }
+      catch (error) {
+        const failure = remoteErrorOf(error);
+        const ownAbort = (gate.abort.signal.aborted && error === gate.abort.signal.reason)
+          || (scope.abort.signal.aborted && error === scope.abort.signal.reason);
+        const nativeCancel = failure?.code === 'gateway/cancelled' && failure.cause === active.reason;
+        // Setup still joins the actual read. Only this child/page's exact
+        // mechanical cancellation may continue to the same close memo/ACK.
+        if (signal.aborted || !active.aborted || (!ownAbort && !nativeCancel)) throw error;
+      }
+      while (!active.aborted) {
         if (!iterator) throw closed();
         pending = Promise.resolve(iterator.next());
         let next: IteratorResult<unknown>;
