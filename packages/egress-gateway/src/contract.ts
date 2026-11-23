@@ -105,7 +105,8 @@ export type GuestEgressAccess = Readonly<{
   capability: string;
 }>;
 export interface EgressProvisioner {
-  /** Durable allocation owned by host: stable for vmId, including across restart. */
+  /** Configured addressing only. Empty lease ports select port 0 for actual
+   * listener allocation; nonempty ports must select that durable VM row port. */
   endpoint(
     vmId: string,
     gatewayPorts: readonly number[],

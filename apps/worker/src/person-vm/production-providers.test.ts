@@ -95,3 +95,65 @@ it('missing trusted artifacts prevent provider use and any native command', asyn
   );
   expect(source.run).not.toHaveBeenCalled();
 });
+
+it('returns the actual readback guest-plan consumer from the same verified configuration snapshot', async () => {
+  const value = await createProductionPersonVmProviders(signal());
+  const mount = join(f.root, 'installed-mount');
+  await mkdir(mount, { mode: 0o700 });
+  const binding = {
+    vmId: randomUUID(),
+    personId: randomUUID(),
+    organizationId: randomUUID(),
+    instanceId: randomUUID(),
+    leaseEpoch: 1,
+  };
+  try {
+    expect(value.memoryGuestPlan).toBe(
+      value.egressInstallation.memoryGuestPlan,
+    );
+    await value.egressInstallation.provisioner.install(
+      binding,
+      mount,
+      {
+        origin: 'http://127.0.0.1:34567',
+        capability: 'synthetic-local-capability',
+      },
+      signal(),
+    );
+    const plan = await value.memoryGuestPlan(binding, signal());
+    const config = plan.files.find((file) =>
+      file.path.endsWith('/allrice-memory/config.json'),
+    );
+    expect(config).toBeDefined();
+    if (!config) throw Error('missing original memory configuration');
+    expect(JSON.parse(config.contents).policy).toEqual(
+      value.configuration.memory.policy,
+    );
+    expect(JSON.parse(config.contents).platformPhysicalBytes).toBe(
+      value.platform.memoryMiB * 1024 ** 2,
+    );
+    expect(plan.env.npm_config_userconfig).toContain('/work/.allrice-egress/');
+    expect(
+      plan.files.find((file) => file.path === plan.env.npm_config_userconfig)
+        ?.contents,
+    ).toContain('registry=http://127.0.0.1:34567/npm/');
+    expect(source.read).toHaveBeenCalledTimes(1);
+    expect(source.run).not.toHaveBeenCalled();
+  } finally {
+    await value.egressInstallation.close();
+  }
+});
+
+it('refuses missing explicit egress at the new constructor without fabricating a destination', async () => {
+  source.read.mockResolvedValue({
+    ...f.loaded,
+    configuration: { ...f.loaded.configuration, egress: undefined },
+  });
+  await expect(
+    createProductionPersonVmProviders(signal()),
+  ).rejects.toMatchObject({ code: 'UNAVAILABLE' });
+  expect(source.run).not.toHaveBeenCalled();
+  await expect(stat(f.loaded.configuration.disk.root)).rejects.toMatchObject({
+    code: 'ENOENT',
+  });
+});

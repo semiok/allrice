@@ -47,8 +47,9 @@ async function freePort() {
 async function fixture(
   extra: Partial<Parameters<typeof createEgressGateway>[0]> = {},
   remove: () => Promise<void> = async () => {},
+  allocate = false,
 ) {
-  const port = await freePort();
+  const port = allocate ? 0 : await freePort();
   let access: GuestEgressAccess | undefined;
   let current = binding;
   const revoked: PersonVmBinding[] = [];
@@ -65,11 +66,14 @@ async function fixture(
   };
   const mount = '/synthetic/mounted-vm-a';
   const provisioner = {
-    endpoint: vi.fn(async () => ({
-      host: '127.0.0.1',
-      port,
-      guestOrigin: `http://127.0.0.1:${port}`,
-    })),
+    endpoint: vi.fn(async (_vmId: string, gatewayPorts: readonly number[]) => {
+      const selected = gatewayPorts[0] ?? port;
+      return {
+        host: '127.0.0.1',
+        port: selected,
+        guestOrigin: `http://127.0.0.1:${selected}`,
+      };
+    }),
     install: vi.fn(
       async (
         _binding: PersonVmBinding,
@@ -161,6 +165,38 @@ describe('trusted VM HTTP egress (VM and identity owners are explicit fixtures)'
       'https://www.okx.com/api/v5/market/candles?instId=ETH-USDT&bar=4H&limit=10',
     );
     expect(JSON.stringify(f.receipt)).not.toContain(f.access.capability);
+  });
+  it('first empty lease allocates the actual listener once and persists its exact port on the next epoch', async () => {
+    const f = await fixture({}, async () => {}, true);
+    const port = f.receipt.gatewayPorts[0];
+    if (port === undefined) throw Error('missing actual listener');
+    expect(port).toBeGreaterThan(0);
+    expect(new URL(f.access.origin).port).toBe(String(port));
+    expect(f.provisioner.endpoint).toHaveBeenNthCalledWith(
+      1,
+      binding.vmId,
+      [],
+      expect.any(AbortSignal),
+    );
+    const first = f.receipt;
+    await expect(
+      f.gateway.prepare(
+        binding,
+        { gatewayPorts: [], mount: f.mount },
+        signal(),
+      ),
+    ).resolves.toBe(first);
+    expect(f.provisioner.endpoint).toHaveBeenCalledTimes(1);
+    expect(f.provisioner.install).toHaveBeenCalledTimes(1);
+    const next = await f.next();
+    expect(next.gatewayPorts).toEqual(first.gatewayPorts);
+    expect(f.provisioner.endpoint).toHaveBeenNthCalledWith(
+      2,
+      binding.vmId,
+      first.gatewayPorts,
+      expect.any(AbortSignal),
+    );
+    expect(await (await f.read()).json()).toEqual(candles);
   });
   it('same empty or persisted lease ports and the installed mount reuse one actual receipt', async () => {
     const f = await fixture();

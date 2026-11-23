@@ -217,6 +217,54 @@ afterEach(async () => {
 });
 
 describe('private production Host configuration', () => {
+  it.each([
+    '0.0.0.0',
+    '::',
+    '0:0:0:0:0:0:0:0',
+    '0000:0000:0000:0000:0000:0000:0000:0000',
+    '0::0',
+    '::0.0.0.0',
+    '0:0:0:0:0:0:0.0.0.0',
+    '::%lo0',
+  ])(
+    'rejects unspecified egress address %s in either field through the real sealed reader',
+    async (address) => {
+      for (const field of ['listenAddress', 'guestGatewayAddress'] as const) {
+        const egress = {
+          listenAddress: '127.0.0.1',
+          guestGatewayAddress: '127.0.0.1',
+        };
+        egress[field] = address;
+        await seal({ ...value(), egress });
+        await expect(
+          readProductionHostConfiguration(signal()),
+        ).rejects.toBeInstanceOf(ProductionHostConfigurationUnavailable);
+      }
+    },
+  );
+  it.each([
+    '127.0.0.1',
+    '10.0.0.1',
+    '203.0.113.9',
+    '::1',
+    '0:0:0:0:0:0:0:1',
+    '2001:db8::1',
+    'fe80::1%en0',
+    '::ffff:192.0.2.1',
+    '::ffff:0.0.0.0',
+  ])(
+    'preserves valid egress address %s through the real sealed reader without another network policy',
+    async (address) => {
+      const egress = {
+        listenAddress: address,
+        guestGatewayAddress: address,
+      };
+      await seal({ ...value(), egress });
+      expect(
+        (await readProductionHostConfiguration(signal())).configuration.egress,
+      ).toEqual(egress);
+    },
+  );
   it('accepts the H2 component fixture through the real private configuration reader', async () => {
     const f = await productionInputsFixture();
     try {

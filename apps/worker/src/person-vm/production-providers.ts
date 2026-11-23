@@ -4,6 +4,7 @@ import {
   MicrosandboxPersonVm,
 } from '@allrice/person-vm';
 import { readVerifiedProductionPersonVmInputs } from './production-artifacts.js';
+import { createProductionEgressInstallation } from './production-egress.js';
 
 /** Real inert provider construction only, not an installed Host or runtime.
  * Nothing boots or allocates a disk here. The final single-service composition
@@ -21,5 +22,12 @@ export async function createProductionPersonVmProviders(signal: AbortSignal) {
     capacityGiB: loaded.configuration.disk.capacityGiB,
   });
   signal.throwIfAborted();
-  return Object.freeze({ ...loaded, native, disk });
+  const egressInstallation = createProductionEgressInstallation(loaded, signal);
+  return Object.freeze({
+    ...loaded,
+    native,
+    disk,
+    egressInstallation,
+    memoryGuestPlan: egressInstallation.memoryGuestPlan,
+  });
 }

@@ -288,6 +288,12 @@ importers:
 
   apps/worker:
     dependencies:
+      '@allrice/egress-gateway':
+        specifier: workspace:*
+        version: link:../../packages/egress-gateway
+      '@allrice/vm-memory':
+        specifier: workspace:*
+        version: link:../../packages/vm-memory
       '@allrice/person-vm':
         specifier: workspace:*
         version: link:../../packages/person-vm

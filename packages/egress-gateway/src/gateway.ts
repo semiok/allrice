@@ -410,7 +410,7 @@ export function createEgressGateway(
         const origin = new URL(endpoint.guestOrigin);
         if (
           !Number.isInteger(endpoint.port) ||
-          endpoint.port < 1 ||
+          endpoint.port < 0 ||
           endpoint.port > 65535 ||
           origin.origin !== endpoint.guestOrigin ||
           origin.protocol !== 'http:' ||
@@ -418,11 +418,10 @@ export function createEgressGateway(
           origin.password ||
           Number(origin.port || 80) !== endpoint.port ||
           (gatewayPorts.length > 0 &&
-            (gatewayPorts.length !== 1 || gatewayPorts[0] !== endpoint.port)) ||
-          (previous && previous.receipt.gatewayPorts[0] !== endpoint.port)
+            (gatewayPorts.length !== 1 || gatewayPorts[0] !== endpoint.port))
         )
           throw new EgressError('POLICY_INVALID');
-        const receipt = Object.freeze({
+        let receipt = Object.freeze({
           binding,
           bindingId: randomUUID(),
           gatewayPorts: Object.freeze([endpoint.port]),
@@ -541,10 +540,29 @@ export function createEgressGateway(
               resolve();
             });
           });
+          const address = state.server.address();
+          if (
+            !address ||
+            typeof address === 'string' ||
+            !Number.isInteger(address.port) ||
+            address.port < 1 ||
+            address.port > 65535 ||
+            (endpoint.port !== 0 && address.port !== endpoint.port)
+          )
+            throw new EgressError('POLICY_INVALID');
+          // The actual bound listener, not a probe or per-process allocation map,
+          // produces the receipt saved by the existing VM lease.
+          origin.port = String(address.port);
+          receipt = Object.freeze({
+            ...receipt,
+            gatewayPorts: Object.freeze([address.port]),
+          });
+          state.receipt = receipt;
+          state.origin = origin.origin;
           await options.provisioner.install(
             binding,
             mount,
-            { origin: endpoint.guestOrigin, capability: state.capability },
+            { origin: origin.origin, capability: state.capability },
             signal,
           );
           signal.throwIfAborted();

@@ -72,6 +72,7 @@ export async function productionInputsFixture() {
       startupTimeoutMs: 10000,
       publicOrigin: 'https://example.test',
     },
+    egress: { listenAddress: '127.0.0.1', guestGatewayAddress: '127.0.0.1' },
     lifecycle: {
       leaseTtlMs: 30000,
       activityMaxAgeMs: 10000,

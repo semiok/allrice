@@ -34,6 +34,18 @@ const guestPath = z
 const positive = z.number().int().positive().safe();
 const bytes = z.number().int().nonnegative().safe();
 const score = z.number().int().min(-1000).max(1000);
+const destinationIp = z.string().refine((value) => {
+  const family = isIP(value);
+  if (family === 4) return value !== '0.0.0.0';
+  if (family !== 6) return false;
+  // A zone identifies an interface, not a different underlying IPv6 address.
+  const address = value.split('%', 1)[0] ?? value;
+  try {
+    return new URL(`http://[${address}]/`).hostname !== '[::]';
+  } catch {
+    return false;
+  }
+});
 const configuration = z
   .object({
     version: z.literal(1),
@@ -112,6 +124,14 @@ const configuration = z
         }),
       })
       .strict(),
+    // Optional for existing H1 reads; required by the real egress constructor.
+    egress: z
+      .object({
+        listenAddress: destinationIp,
+        guestGatewayAddress: destinationIp,
+      })
+      .strict()
+      .optional(),
     lifecycle: z
       .object({
         leaseTtlMs: positive,
