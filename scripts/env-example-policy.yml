@@ -70,6 +70,7 @@ audit:
   apps/rice-bridge/src/local-mcp-supervisor.ts#embedded: Embedded child program/IPC; outside root configuration inventory.
   apps/rice-bridge/src/local-service-supervisor.ts#embedded: Embedded child program/IPC; outside root configuration inventory.
   packages/contracts/src/project-resolution-script.ts#embedded: Generated project-resolution child program; outside root configuration inventory.
+  packages/vm-memory/src/guest-config.ts#embedded: Existing guest command-observer receipt reads only staged memory coordinates and the command execution reference; not host configuration or an enable source.
   packages/project-runtime/src/project-service-supervisor.ts#embedded: Embedded project child program/IPC; outside root configuration inventory.
   packages/project-runtime/src/project-supervisor.ts#embedded: Embedded project child program/IPC; outside root configuration inventory.
   apps/web/server/portal-hosts.mjs#whole: Environment forwarded to configuredPortalEntries with the literal names declared above.
@@ -90,11 +91,12 @@ auditSources:
   apps/web/server/portal-hosts.mjs: e1aac7dc0735860478e564ff33dc77799452589d35ad4fd7744af5f74cf90901
   apps/worker/src/harness/dsh-egress-environment.ts: 315fc969e7e880f139ea06e3be3c8208e0f411fb6fa760e583bbccb6aefa5594
   apps/worker/src/harness/dsh-native-artifact.ts: ffe6bdf780cf13b1cc40666a5233d2a3e8b18df657195e9492a0bba56f5f71fe
-  apps/worker/src/index.ts: 9230e50951cec23ce37a2a1ea39a2f97e114340f40419821451ed458c6c1df35
+  apps/worker/src/index.ts: 330a1adb61a0b5fed82a8f8783efc65b9dbbc9d05b275afe8f8a421cd1dc784d
   packages/contracts/src/project-resolution-script.ts: d4261249ef18115e6293d804a0d14a770e2c0df5b14a5a6db133444dd76ff9ee
   packages/contracts/src/runtime-feature-flags.ts: 9545293314ee45ed2d42dd9393a50123fad67250c4454346c341d0955bb200f9
   packages/contracts/src/runtime-v2/cloud-command-limits.ts: a6c831b9b3c85c016e88a292cf0c2baf8ff3ebc47d00cdec6bca3dc313b1ad6f
   packages/database/src/bootstrap-identity.ts: 1257cdfbc66c5c6038a5f780871a1f653663581a0584a96336cd8b188b9dcaf5
   packages/project-runtime/src/project-service-supervisor.ts: 1ce6b79bcadabceb4b9bf47cb5ce809fe580d3dfc542d22a769f1d57d83223d0
   packages/project-runtime/src/project-supervisor.ts: 7a832d1e0d549be9568485816708d6e274d1fa0bfe0b3544ac6f01e0603b73f2
+  packages/vm-memory/src/guest-config.ts: 58f03b5493c1f492d2b23d088102f4372449da16fcf27ae6b7e0ad551c160af1
   scripts/dev-environment.mjs: 9e5bf7bfaa0ed318e73d54a7eb008422ef36d826f387bf993e60706fcc07be75
