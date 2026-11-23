@@ -60,10 +60,46 @@ describe('real official generator and same-release artifact closure', () => {
         const paths: Record<string, string[]> = JSON.parse(
           await readFile(resolve(root, '../../tsconfig.base.json'), 'utf8'),
         ).compilerOptions.paths;
+        const stagedPaths: Record<string, string[]> = {
+          '@allrice/contracts': [
+            join(scratch, 'packages/contracts/src/index.ts'),
+          ],
+          '@allrice/contracts/native-runtime': [
+            join(scratch, 'packages/contracts/src/native-runtime.ts'),
+          ],
+          '@allrice/d-entry-principal/types': [
+            join(scratch, 'packages/d-entry-principal/src/types.ts'),
+          ],
+        };
         for (const [name, targets] of Object.entries(paths))
           expect(config.compilerOptions.paths[name]).toEqual(
-            targets.map((target) => resolve(root, '../..', target)),
+            stagedPaths[name] ??
+              targets.map((target) => resolve(root, '../..', target)),
           );
+        expect(
+          config.references.map((entry: { path: string }) => entry.path),
+        ).toEqual([
+          join(scratch, 'packages/d-entry-principal'),
+          join(scratch, 'packages/contracts'),
+          join(scratch, 'packages/protocol'),
+        ]);
+        const contracts = resolve(root, '../contracts');
+        expect(
+          await readFile(join(scratch, 'packages/contracts/package.json')),
+        ).toEqual(await readFile(join(contracts, 'package.json')));
+        const contractSources = (
+          await readdir(join(contracts, 'src'), { recursive: true })
+        )
+          .filter(
+            (name) => /\.(?:ts|json)$/.test(name) && !name.endsWith('.test.ts'),
+          )
+          .sort();
+        expect(contractSources).toContain('index.ts');
+        expect(contractSources).toContain('d-entry.ts');
+        for (const name of contractSources)
+          expect(
+            await readFile(join(scratch, 'packages/contracts/src', name)),
+          ).toEqual(await readFile(join(contracts, 'src', name)));
         const analysis = new WorkspaceAnalyzer(options).analyze();
         const face = analysis.faces.find((value) => value.face === 'host');
         if (!face) throw Error('actual Host model missing');

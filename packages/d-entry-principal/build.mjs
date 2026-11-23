@@ -11,7 +11,7 @@ import {
   symlink,
 } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { dirname, resolve, relative, join } from 'node:path';
+import { dirname, resolve, relative, join, sep } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -76,12 +76,27 @@ export async function withPrincipalGeneratorInput(
   try {
     const scratch = await realpath(createdScratch);
     const nativeRoot = join(scratch, 'packages/d-entry-principal');
+    const contractsRoot = join(scratch, 'packages/contracts');
     const protocolRoot = join(scratch, 'packages/protocol');
-    await cp(join(root, 'src'), join(nativeRoot, 'src'), {
-      recursive: true,
-      filter: (path) => !path.endsWith('.test.ts'),
-    });
-    await cp(join(root, 'package.json'), join(nativeRoot, 'package.json'));
+    const sourcePackages = [
+      [root, nativeRoot],
+      [join(workspace, 'packages/contracts'), contractsRoot],
+    ];
+    for (const [originalRoot, stagedRoot] of sourcePackages) {
+      await cp(join(originalRoot, 'src'), join(stagedRoot, 'src'), {
+        recursive: true,
+        filter: (path) => !path.endsWith('.test.ts'),
+      });
+      await cp(
+        join(originalRoot, 'package.json'),
+        join(stagedRoot, 'package.json'),
+      );
+      await symlink(
+        join(originalRoot, 'node_modules'),
+        join(stagedRoot, 'node_modules'),
+        'dir',
+      );
+    }
     const protocolManifest = await readFile(join(protocol, 'package.json'));
     const metadata = JSON.parse(protocolManifest.toString());
     if (
@@ -115,23 +130,29 @@ export async function withPrincipalGeneratorInput(
       'dir',
     );
     await symlink(
-      join(root, 'node_modules'),
-      join(nativeRoot, 'node_modules'),
-      'dir',
-    );
-    await symlink(
       dirname(dirname(protocol)),
       join(protocolRoot, 'node_modules'),
       'dir',
     );
-    // Preserve all original authoring aliases, resolving their existing base;
-    // only protocol identity points at the unchanged temporary declarations.
+    // rc.2 checks each source project with rootDir fixed to the analyzer root.
+    // Keep the real principal/contracts graph within that root, preserving the
+    // existing aliases' targets and every original strict compiler option.
     const original = new WorkspaceCaches().config(join(root, 'tsconfig.json'))
       .parsed.options;
     const paths = Object.fromEntries(
       Object.entries(original.paths ?? {}).map(([name, targets]) => [
         name,
-        targets.map((target) => resolve(original.baseUrl ?? workspace, target)),
+        targets.map((target) => {
+          const absolute = resolve(original.baseUrl ?? workspace, target);
+          const sourcePackage = sourcePackages.find(
+            ([originalRoot]) =>
+              absolute === originalRoot ||
+              absolute.startsWith(`${originalRoot}${sep}`),
+          );
+          return sourcePackage
+            ? resolve(sourcePackage[1], relative(sourcePackage[0], absolute))
+            : absolute;
+        }),
       ]),
     );
     const config = {
@@ -144,10 +165,16 @@ export async function withPrincipalGeneratorInput(
       },
       include: ['src/**/*.ts'],
     };
-    for (const packageRoot of [nativeRoot, protocolRoot])
+    for (const [originalRoot, packageRoot] of [
+      ...sourcePackages,
+      [root, protocolRoot],
+    ])
       await writeFile(
         join(packageRoot, 'tsconfig.json'),
-        JSON.stringify(config),
+        JSON.stringify({
+          ...config,
+          extends: join(originalRoot, 'tsconfig.json'),
+        }),
       );
     await writeFile(
       join(scratch, 'tsconfig.host.json'),
@@ -155,7 +182,9 @@ export async function withPrincipalGeneratorInput(
         ...config,
         include: [],
         files: [],
-        references: [{ path: nativeRoot }, { path: protocolRoot }],
+        references: [nativeRoot, contractsRoot, protocolRoot].map((path) => ({
+          path,
+        })),
       }),
     );
     return await consume({
