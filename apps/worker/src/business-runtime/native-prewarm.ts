@@ -4,6 +4,7 @@ import {
   requireDEntryNativeIdentity,
 } from '@allrice/database';
 import type { PersonVmPort } from '@allrice/person-vm';
+import type { CurrentSelectionPrewarm } from '../person-vm/production-prewarm.js';
 import { DEntryNativeUnavailable } from '../d-entry/native-owner.js';
 import {
   installDEntryNativePrewarmPort,
@@ -13,7 +14,7 @@ import { installAssignedDEntryNativeCatalog } from './native-catalog.js';
 
 /** Consume the existing VM lifecycle; no completed-result or authority cache. */
 export function createDEntryNativePrewarmPort(input: {
-  vm: Pick<PersonVmPort, 'prewarm'>;
+  prewarmCurrent: CurrentSelectionPrewarm;
   lifetime: AbortSignal;
 }) {
   input.lifetime.throwIfAborted();
@@ -42,8 +43,9 @@ export function createDEntryNativePrewarmPort(input: {
         active.throwIfAborted();
         // Browser disconnect/uninstallation cannot kill shared running work.
         // Genuine authority revocation still fences this physical operation.
-        const result = await input.vm.prewarm(
+        const result = await input.prewarmCurrent(
           context,
+          identity,
           { trigger },
           AbortSignal.any([input.lifetime, revoked]),
         );
@@ -75,7 +77,7 @@ export function createDEntryNativePrewarmPort(input: {
 }
 
 export function installDEntryNativePrewarm(input: {
-  vm: Pick<PersonVmPort, 'prewarm'>;
+  prewarmCurrent: CurrentSelectionPrewarm;
   lifetime: AbortSignal;
 }) {
   const assembly = createDEntryNativePrewarmPort(input);
@@ -106,7 +108,8 @@ export function installAssignedDEntryNativeRuntime(
     Parameters<typeof installAssignedDEntryNativeCatalog>[0],
     'vm'
   > & {
-    vm: Pick<PersonVmPort, 'prewarm' | 'resolve' | 'assertCurrentBinding'>;
+    vm: Pick<PersonVmPort, 'resolve' | 'assertCurrentBinding'>;
+    prewarmCurrent: CurrentSelectionPrewarm;
   },
 ) {
   const catalog = installAssignedDEntryNativeCatalog(input);

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { CurrentSelectionPrewarm } from '../person-vm/production-prewarm.js';
 import { afterEach, expect, it, vi } from 'vitest';
 import type * as Database from '@allrice/database';
 import { DataAccessError } from '@allrice/database';
@@ -44,12 +45,25 @@ function fixture() {
     start = vi.spyOn(h.runtime, 'start'),
     stop = vi.spyOn(h.native, 'stop');
   authority.identity.mockResolvedValue(base.identity);
+  // Explicit fixture adapter; production must use the shared H1 authority owner.
+  const prewarmCurrent: CurrentSelectionPrewarm = (...args) =>
+    h.service.prewarm(args[0], args[2], args[3]);
   const assembly = createDEntryNativePrewarmPort({
-    vm: h.service,
+    prewarmCurrent,
     lifetime: lifetime.signal,
   });
   cleanups.push(assembly.close);
-  return { base, h, lifetime, runPrewarm, vm, start, stop, assembly };
+  return {
+    base,
+    h,
+    lifetime,
+    runPrewarm,
+    vm,
+    start,
+    stop,
+    assembly,
+    prewarmCurrent,
+  };
 }
 const signal = () => new AbortController().signal;
 
@@ -226,7 +240,7 @@ it('uninstallation closes admission immediately and joins actual work without ab
     finish = deferred<void>(),
     original = f.runPrewarm;
   const installed = installDEntryNativePrewarm({
-    vm: f.h.service,
+    prewarmCurrent: f.prewarmCurrent,
     lifetime: f.lifetime.signal,
   });
   cleanups.push(installed.close);
@@ -281,7 +295,7 @@ it('the real Worker listener requires current release eligibility and the instal
   expect((await server.request('native-prewarm', body)).status).toBe(503);
   expect(f.vm).not.toHaveBeenCalled();
   const installed = installDEntryNativePrewarm({
-    vm: f.h.service,
+    prewarmCurrent: f.prewarmCurrent,
     lifetime: f.lifetime.signal,
   });
   cleanups.push(installed.close);
@@ -317,7 +331,7 @@ it('browser disconnect through real HTTP does not cancel shared physical startup
     caller = new AbortController(),
     original = f.runPrewarm;
   const installed = installDEntryNativePrewarm({
-    vm: f.h.service,
+    prewarmCurrent: f.prewarmCurrent,
     lifetime: f.lifetime.signal,
   });
   cleanups.push(installed.close);
@@ -414,6 +428,7 @@ it('combined production API rolls back its new catalog registration when prewarm
   expect(() =>
     installAssignedDEntryNativeRuntime({
       vm: f.h.service,
+      prewarmCurrent: f.prewarmCurrent,
       lifetime: f.lifetime.signal,
       startup: {
         catalog: () => {
