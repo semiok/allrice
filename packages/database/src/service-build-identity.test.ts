@@ -322,3 +322,69 @@ it('MET195 diagnostic failure cannot affect successful verification or conceal c
     'DEV_BUILD_IDENTITY_INVALID',
   );
 });
+
+it('seals the exact optional private Host file with the original service manifest', async () => {
+  const f = await fixture(),
+    path = '.local/person-vm-host.json';
+  await writeFile(join(f.root, path), '{"synthetic":"host configuration"}', {
+    mode: 0o600,
+  });
+  const sealed = await prepareServiceBuildManifest({
+    root: f.root,
+    sourceSha: 'a'.repeat(40),
+    sourceTree: 'b'.repeat(40),
+  });
+  expect(sealed.files.filter((file) => file.path === path)).toMatchObject([
+    {
+      scope: 'worker',
+      bytes: Buffer.byteLength('{"synthetic":"host configuration"}'),
+    },
+  ]);
+  await writeFile(
+    join(f.root, '.local/dev-build-identity.json'),
+    JSON.stringify(sealed),
+  );
+  expect((await f.verify('worker'))?.manifestDigest).toBe(
+    sealed.manifestDigest,
+  );
+  await writeFile(join(f.root, path), '{"synthetic":"changed configuration"}');
+  await expect(f.verify('worker')).rejects.toThrow(
+    'DEV_BUILD_IDENTITY_INVALID',
+  );
+});
+it('invalidates an old seal when a private Host configuration is added later', async () => {
+  const f = await fixture();
+  await writeFile(join(f.root, '.local/person-vm-host.json'), '{}', {
+    mode: 0o600,
+  });
+  await expect(f.verify('worker')).rejects.toThrow(
+    'DEV_BUILD_IDENTITY_INVALID',
+  );
+});
+it('refuses a directory tree at the fixed private Host configuration path', async () => {
+  const f = await fixture(),
+    path = join(f.root, '.local/person-vm-host.json');
+  await mkdir(path);
+  await writeFile(join(path, 'configuration.json'), '{}');
+  await expect(
+    prepareServiceBuildManifest({
+      root: f.root,
+      sourceSha: 'a'.repeat(40),
+      sourceTree: 'b'.repeat(40),
+    }),
+  ).rejects.toThrow('DEV_BUILD_IDENTITY_INVALID');
+});
+it('refuses a symlink at the fixed private Host configuration path', async () => {
+  const f = await fixture(),
+    path = join(f.root, '.local/person-vm-host.json');
+  const source = join(f.root, 'other-config.json');
+  await writeFile(source, '{}');
+  await symlink(source, path);
+  await expect(
+    prepareServiceBuildManifest({
+      root: f.root,
+      sourceSha: 'a'.repeat(40),
+      sourceTree: 'b'.repeat(40),
+    }),
+  ).rejects.toThrow('DEV_BUILD_IDENTITY_INVALID');
+});

@@ -348,6 +348,27 @@ export async function prepareServiceBuildManifest(input: {
       await walk(root, 'apps/web/.next/' + entry, 'web', files, input.observe);
   }
   await walk(root, 'apps/worker/dist', 'worker', files, input.observe);
+  // The optional private Host file belongs to this same release seal. Do not
+  // walk a directory here: this exact path must identify one regular file.
+  const personVmConfig = '.local/person-vm-host.json';
+  let hasPersonVmConfig = false;
+  try {
+    const stat = await lstat(join(root, personVmConfig));
+    if (!stat.isFile() || stat.isSymbolicLink())
+      throw Error('DEV_BUILD_IDENTITY_INVALID');
+    hasPersonVmConfig = true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+  if (hasPersonVmConfig) {
+    const bytes = await bytesAt(root, personVmConfig, input.observe);
+    files.push({
+      path: personVmConfig,
+      scope: 'worker',
+      checksum: digest(bytes),
+      bytes: bytes.length,
+    });
+  }
   const packages = await workspacePackages(root, input.observe);
   const graph = await resolveWorkspaceGraph(root, packages, input.observe);
   for (const name of graph.names) {
