@@ -2,8 +2,10 @@ import { fileURLToPath } from 'node:url';
 
 import { defineConfig } from 'vitest/config';
 import { testTags } from './scripts/ci-integration-tests.mjs';
+import { principalFixtureTransform } from './packages/d-entry-principal/test/fixture-transform.js';
 
 export default defineConfig({
+  plugins: [principalFixtureTransform],
   test: {
     setupFiles: ['./scripts/test-proxy.setup.mjs'],
     tags: testTags(),

@@ -198,12 +198,8 @@ describe('real official generator and same-release artifact closure', () => {
       ).toThrow();
   });
   it('publishes a closed manifest only after every generated/Node/Host byte is sealed', async () => {
-    const manifest = JSON.parse(
-      await readFile(
-        resolve(root, 'lib/current-principal.manifest.json'),
-        'utf8',
-      ),
-    );
+    const receiptPath = require.resolve('@allrice/d-entry-principal/artifact');
+    const manifest = JSON.parse(await readFile(receiptPath, 'utf8'));
     expect(manifest).toMatchObject({
       schema: 1,
       package: '@allrice/d-entry-principal',
@@ -221,7 +217,7 @@ describe('real official generator and same-release artifact closure', () => {
     for (const file of manifest.files)
       expect(
         createHash('sha256')
-          .update(await readFile(resolve(root, file.path)))
+          .update(await readFile(resolve(dirname(receiptPath), file.path)))
           .digest('hex'),
       ).toBe(file.sha256);
     expect(

@@ -171,7 +171,9 @@ class Catalog extends TypertRemoteService {
   })
   page(request: SessionPageRequest): SessionPage {
     void request;
-    this.pages.push(this.ctx.invocation.peer);
+    const invocation = this.ctx.invocation;
+    if (!invocation) throw Error('fixture native invocation missing');
+    this.pages.push(invocation.peer);
     return { records: [], hasMore: false };
   }
   @Remote({
@@ -187,7 +189,9 @@ class Catalog extends TypertRemoteService {
     request: SessionFollowRequest,
     signal: AbortSignal,
   ): AsyncIterable<SessionFollowFrame> {
-    this.follows.push(this.ctx.invocation.peer);
+    const invocation = this.ctx.invocation;
+    if (!invocation) throw Error('fixture native invocation missing');
+    this.follows.push(invocation.peer);
     const sessionId =
       request.address.kind === 'session'
         ? request.address.sessionId
