@@ -252,6 +252,176 @@ suite('memory public management port: real transactions without a Run', () => {
     };
   }
 
+  it('reads only stored source fields through personal qualification and the independently audited admin branch', async () => {
+    const f = await setup(),
+      { port, requireCurrentAccess } = permitted();
+    const saved = await port.create(f.context, createInput(f), signal());
+    await fixture.db`update allrice_memories set source_label='',captured_at='2020-02-03T00:00:00Z'::timestamptz where id=${saved.memory.id}`;
+    const target = { ...query(f), memoryId: saved.memory.id };
+    requireCurrentAccess.mockClear();
+    const source = await port.source(f.context, target, signal());
+    expect(source).toEqual({
+      sourceType: 'user',
+      sourceLabel: '',
+      capturedAt: '2020-02-03T00:00:00.000Z',
+    });
+    expect(requireCurrentAccess).toHaveBeenCalledTimes(2);
+    const adminTarget = {
+      organizationId: f.organizationId,
+      ownerId: f.ownerId,
+      instanceId: f.instanceId,
+      memoryId: saved.memory.id,
+    };
+    expect(
+      await createEmployeeMemoryPort().source(admin, adminTarget, signal()),
+    ).toEqual(source);
+    await expect(
+      port.source(f.context, adminTarget, signal()),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    const audits =
+      await fixture.db`select actor_id,resource_id,metadata from allrice_audit_events where organization_id=${f.organizationId} and action='employee_memory.admin_read'`;
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.actor_id).toBe(admin.actor.id);
+    expect(audits[0]!.resource_id).toBe(saved.memory.id);
+    expect(audits[0]!.metadata).toEqual({
+      ownerId: f.ownerId,
+      instanceId: f.instanceId,
+      memoryId: saved.memory.id,
+      schemaVersion: 2,
+      returnedCount: 1,
+    });
+    expect(JSON.stringify(audits)).not.toContain(saved.memory.summary);
+    expect(JSON.stringify(audits)).not.toContain(saved.memory.details!);
+  });
+
+  it('refuses missing qualification, mixed selectors, revoked personal delivery and a revoked real login', async () => {
+    const f = await setup(),
+      { port, requireCurrentAccess } = permitted();
+    const saved = await port.create(f.context, createInput(f), signal());
+    const target = { ...query(f), memoryId: saved.memory.id };
+    await expect(
+      createEmployeeMemoryPort().source(f.context, target, signal()),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+    requireCurrentAccess.mockClear();
+    await expect(
+      port.source(
+        f.context,
+        { ...target, organizationId: f.organizationId, ownerId: f.ownerId },
+        signal(),
+      ),
+    ).rejects.toMatchObject({ name: 'ZodError' });
+    expect(requireCurrentAccess).not.toHaveBeenCalled();
+    const denied = new DataAccessError('authorization_denied');
+    let checks = 0;
+    const changing = createEmployeeMemoryPort({
+      qualification: {
+        async requireCurrentAccess() {
+          if (++checks === 2) throw denied;
+        },
+      },
+    });
+    const before = await snapshot(saved.memory.id);
+    await expect(changing.source(f.context, target, signal())).rejects.toBe(
+      denied,
+    );
+    expect(checks).toBe(2);
+    expect(await snapshot(saved.memory.id)).toEqual(before);
+    const canceled = new AbortController(),
+      reason = Error('source canceled before admission');
+    canceled.abort(reason);
+    await expect(port.source(f.context, target, canceled.signal)).rejects.toBe(
+      reason,
+    );
+    await fixture.db`update allrice_sessions set revoked_at=clock_timestamp() where id=${f.context.sessionId}`;
+    await expect(
+      port.source(f.context, target, signal()),
+    ).rejects.toBeInstanceOf(DataAccessError);
+    expect(await snapshot(saved.memory.id)).toEqual(before);
+  });
+
+  it.each(['personal', 'admin'] as const)(
+    'joins the actual %s source transaction on cancellation, including a committed admin audit',
+    async (audience) => {
+      const f = await setup(),
+        { port } = permitted();
+      const saved = await port.create(f.context, createInput(f), signal());
+      let release!: () => void, entered!: (pid: number) => void;
+      const held = new Promise<void>((done) => {
+        release = done;
+      });
+      const ready = new Promise<number>((done) => {
+        entered = done;
+      });
+      // Isolated relations only. Personal SELECT or admin INSERT must actually
+      // wait in PostgreSQL before cancellation; no timer simulates completion.
+      const blocker = fixture.db.begin(async (tx) => {
+        const [backend] = await tx<
+          { pid: number }[]
+        >`select pg_backend_pid() pid`;
+        if (audience === 'personal')
+          await tx`lock table allrice_memories in access exclusive mode`;
+        else await tx`lock table allrice_audit_events in access exclusive mode`;
+        entered(backend!.pid);
+        await held;
+      });
+      const controller = new AbortController(),
+        reason = Error('original source cancellation');
+      let settled = false;
+      let operation: Promise<unknown> | undefined;
+      try {
+        const blockerPid = await ready;
+        const target =
+          audience === 'personal'
+            ? { ...query(f), memoryId: saved.memory.id }
+            : {
+                organizationId: f.organizationId,
+                ownerId: f.ownerId,
+                instanceId: f.instanceId,
+                memoryId: saved.memory.id,
+              };
+        operation = port.source(
+          audience === 'personal' ? f.context : admin,
+          target,
+          controller.signal,
+        );
+        const outcome = operation.then(
+          (value) => {
+            settled = true;
+            return { value };
+          },
+          (error: unknown) => {
+            settled = true;
+            return { error };
+          },
+        );
+        await vi.waitFor(
+          async () => {
+            const rows =
+              await fixture.db`select pid from pg_stat_activity where ${blockerPid}=any(pg_blocking_pids(pid))`;
+            expect(rows).toHaveLength(1);
+          },
+          { timeout: 5000, interval: 20 },
+        );
+        controller.abort(reason);
+        expect(settled).toBe(false);
+        release();
+        await blocker;
+        expect(await outcome).toEqual({ error: reason });
+        const audits =
+          await fixture.db`select actor_id,metadata from allrice_audit_events where organization_id=${f.organizationId} and action='employee_memory.admin_read'`;
+        expect(audits).toHaveLength(audience === 'admin' ? 1 : 0);
+        if (audience === 'admin')
+          expect(audits[0]!.actor_id).toBe(admin.actor.id);
+        expect(JSON.stringify(audits)).not.toContain(saved.memory.summary);
+        expect(JSON.stringify(audits)).not.toContain(saved.memory.details!);
+      } finally {
+        release();
+        await blocker;
+        await operation?.catch(() => undefined);
+      }
+    },
+  );
+
   it('saves an owner-requested complete pair, reads it, clears details explicitly and withdraws by CAS', async () => {
     // 用户：“请记住：周报优先给出风险和下一步，只用于当前员工的工作周报。”
     const f = await setup();

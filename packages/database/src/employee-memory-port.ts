@@ -9,11 +9,14 @@ import {
   MemoryCorrectCommandProjectionSchema,
   MemoryDetailQueryProjectionSchema,
   MemoryMutationCommandProjectionSchema,
+  MemorySourceQueryProjectionSchema,
   type MemoryAdminDetailQueryProjection,
   type MemoryAdminListQueryProjection,
   type MemoryCorrectCommandProjection,
   type MemoryDetailQueryProjection,
   type MemoryMutationCommandProjection,
+  type MemorySourceQueryProjection,
+  type MemorySourceViewProjection,
   type RequestContext,
 } from '@allrice/contracts';
 import type { z } from 'zod';
@@ -26,7 +29,9 @@ import {
 } from './employee-memory-runtime.ts';
 import {
   getAdminEmployeeMemory,
+  getAdminEmployeeMemorySource,
   getPersonalEmployeeMemory,
+  getPersonalEmployeeMemorySource,
   listAdminEmployeeMemories,
   listPersonalEmployeeMemories,
 } from './employee-memory-management.ts';
@@ -64,6 +69,11 @@ export interface EmployeeMemoryPort {
   readOrdinal: typeof readNativeEmployeeMemoryOrdinal;
   remember: typeof rememberNativeEmployeeMemory;
   reconcileRemember: typeof reconcileNativeEmployeeMemory;
+  source(
+    context: RequestContext,
+    input: MemorySourceQueryProjection,
+    signal: AbortSignal,
+  ): Promise<MemorySourceViewProjection>;
   list(
     context: RequestContext,
     input: ListQuery,
@@ -217,6 +227,27 @@ export function createEmployeeMemoryPort(
       }
     },
     reconcileRemember: reconcileNativeEmployeeMemory,
+    async source(context, input, signal) {
+      const query = MemorySourceQueryProjectionSchema.parse(input);
+      if ('organizationId' in query)
+        return joinOwner(signal, () =>
+          getAdminEmployeeMemorySource(
+            context,
+            query.organizationId,
+            query.ownerId,
+            query.instanceId,
+            query.memoryId,
+          ),
+        );
+      return employee(context, query, signal, () =>
+        getPersonalEmployeeMemorySource(
+          context,
+          query.workspaceId,
+          query.instanceId,
+          query.memoryId,
+        ),
+      );
+    },
     async list(context, input, signal) {
       const query = EmployeeMemoryListQuerySchema.parse(input);
       return employee(context, query, signal, async () =>

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { UuidSchema } from './common.ts';
+import { TimestampSchema, UuidSchema } from './common.ts';
 import {
   CorrectPersonalEmployeeMemoryInputSchema,
   EmployeeMemoryListQuerySchema,
@@ -44,6 +44,36 @@ export const MemoryAdminQueryProjectionSchema = z.union([
   MemoryAdminListQueryProjectionSchema,
   MemoryAdminDetailQueryProjectionSchema,
 ]);
+
+/** Selectors never establish the personal or administrator audience's rights. */
+export const MemorySourceQueryProjectionSchema = z.union([
+  MemoryDetailQueryProjectionSchema,
+  MemoryAdminDetailQueryProjectionSchema,
+]);
+
+/** Current stored label and memory-record capture time, not an immutable source
+ * title, original message timestamp or proof of access to that source. */
+export const MemorySourceViewProjectionSchema = z
+  .object({
+    sourceType: z.enum([
+      'user',
+      'message',
+      'checkpoint',
+      'file',
+      'tool',
+      'connector',
+    ]),
+    sourceLabel: z.string(),
+    capturedAt: TimestampSchema,
+  })
+  .strict();
+
+export type MemorySourceQueryProjection = z.input<
+  typeof MemorySourceQueryProjectionSchema
+>;
+export type MemorySourceViewProjection = z.output<
+  typeof MemorySourceViewProjectionSchema
+>;
 
 export type MemoryDetailQueryProjection = z.input<
   typeof MemoryDetailQueryProjectionSchema

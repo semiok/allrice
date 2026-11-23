@@ -11,6 +11,11 @@ import {
   type RequestContext,
 } from '@allrice/contracts';
 import * as client from './core/client.ts';
+import { DataAccessError } from './data.ts';
+import {
+  getAdminEmployeeMemorySource,
+  getPersonalEmployeeMemorySource,
+} from './employee-memory-management.ts';
 import { createRuntimeFixtureDatabase } from './runtime.fixture.ts';
 import { createRunAuthorityFixture } from './run-authority.fixture.ts';
 import {
@@ -251,6 +256,247 @@ suite(
       });
       return read(f, row.id);
     }
+
+    it('reads the three stored source columns without leaking a source id, metadata or memory body', async () => {
+      const f = await setup();
+      for (const sourceType of [
+        'user',
+        'message',
+        'checkpoint',
+        'file',
+        'tool',
+        'connector',
+      ] as const) {
+        const sourceId = randomUUID();
+        const row = await seedPersonalMemoryPair(fixture.db, f.context, {
+          workspaceId: f.workspace,
+          instanceId: f.assignment,
+          summary: 'source summary sentinel',
+          details: 'private source body sentinel',
+          sourceType,
+          sourceId,
+        });
+        const sourceLabel =
+          sourceType === 'connector' ? '' : `stored ${sourceType} label`;
+        await fixture.db`update allrice_memories set source_label=${sourceLabel},
+          captured_at='2020-01-02T03:04:05Z'::timestamptz,created_at='2025-01-01T00:00:00Z'::timestamptz,
+          metadata=${fixture.db.json({ privateSource: 'private metadata sentinel', sourceId })} where id=${row.id}`;
+        const before = await snapshot(row.id);
+        const source = await getPersonalEmployeeMemorySource(
+          f.context,
+          f.workspace,
+          f.assignment,
+          row.id,
+        );
+        expect(source).toEqual({
+          sourceType,
+          sourceLabel,
+          capturedAt: '2020-01-02T03:04:05.000Z',
+        });
+        expect(JSON.stringify(source)).not.toContain(sourceId);
+        expect(JSON.stringify(source)).not.toContain('sentinel');
+        expect(await snapshot(row.id)).toEqual(before);
+      }
+    });
+
+    it('uses detail scope, ordinary-origin, archive and expiry rules for both source audiences', async () => {
+      const f = await setup(),
+        foreign = await setup();
+      const row = (await add(f)).memory;
+      const other = await createEmployeeInstance(f.context, {
+        workspaceId: f.workspace,
+        assignmentId: f.assignment,
+        requestId: randomUUID(),
+        profile: { name: 'Other source target' },
+      });
+      await expect(
+        getPersonalEmployeeMemorySource(
+          foreign.context,
+          f.workspace,
+          f.assignment,
+          row.id,
+        ),
+      ).rejects.toBeInstanceOf(DataAccessError);
+      await expect(
+        getPersonalEmployeeMemorySource(
+          f.context,
+          f.workspace,
+          other.id,
+          row.id,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        getAdminEmployeeMemorySource(
+          admin,
+          f.org,
+          foreign.user,
+          f.assignment,
+          row.id,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        getAdminEmployeeMemorySource(
+          admin,
+          foreign.org,
+          f.user,
+          f.assignment,
+          row.id,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await fixture.db`update allrice_memories set visibility='workspace' where id=${row.id}`;
+      await expect(
+        getPersonalEmployeeMemorySource(
+          f.context,
+          f.workspace,
+          f.assignment,
+          row.id,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await fixture.db`update allrice_memories set visibility='private',archived_at=clock_timestamp() where id=${row.id}`;
+      await expect(
+        getAdminEmployeeMemorySource(
+          admin,
+          f.org,
+          f.user,
+          f.assignment,
+          row.id,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await fixture.db`update allrice_memories set archived_at=null,captured_at=clock_timestamp()-interval '2 days',expires_at=clock_timestamp()-interval '1 day' where id=${row.id}`;
+      await expect(
+        getPersonalEmployeeMemorySource(
+          f.context,
+          f.workspace,
+          f.assignment,
+          row.id,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        getAdminEmployeeMemorySource(
+          admin,
+          f.org,
+          f.user,
+          f.assignment,
+          row.id,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+
+      const [origin] = await fixture.db<
+        { user_message_id: string }[]
+      >`select user_message_id from allrice_employee_runs where run_id=${f.rootRunId}`;
+      const candidate = await seedPersonalMemoryPair(fixture.db, f.context, {
+        workspaceId: f.workspace,
+        instanceId: f.assignment,
+        summary: 'ordinary source',
+        details: null,
+        sourceType: 'message',
+        sourceId: origin!.user_message_id,
+      });
+      expect(
+        (
+          await getPersonalEmployeeMemorySource(
+            f.context,
+            f.workspace,
+            f.assignment,
+            candidate.id,
+          )
+        ).sourceType,
+      ).toBe('message');
+      await fixture.db`update allrice_employee_runs set method_authoring=true where run_id=${f.rootRunId}`;
+      await expect(
+        getPersonalEmployeeMemorySource(
+          f.context,
+          f.workspace,
+          f.assignment,
+          candidate.id,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        getAdminEmployeeMemorySource(
+          admin,
+          f.org,
+          f.user,
+          f.assignment,
+          candidate.id,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      const [audits] =
+        await fixture.db`select count(*)::int n from allrice_audit_events where organization_id=${f.org} and action='employee_memory.admin_read'`;
+      expect(audits!.n).toBe(0);
+    });
+
+    it('preserves source capture time and the real independent admin scope after owner access ends', async () => {
+      const f = await setup(),
+        row = (await add(f)).memory;
+      const before = await getPersonalEmployeeMemorySource(
+        f.context,
+        f.workspace,
+        f.assignment,
+        row.id,
+      );
+      const edited = await edit(
+        request(f, 'PATCH', undefined, {
+          ...cas(f, row),
+          summary: row.summary,
+          details: row.details,
+          reason: '本人编辑',
+        }),
+        params(row.id),
+      );
+      expect(edited.status).toBe(200);
+      expect(
+        await getPersonalEmployeeMemorySource(
+          f.context,
+          f.workspace,
+          f.assignment,
+          row.id,
+        ),
+      ).toEqual({
+        ...before,
+        sourceLabel: '用户更正',
+      });
+      await fixture.db`update allrice_employee_instances set archived_at=clock_timestamp() where id=${f.assignment}`;
+      await fixture.db`update allrice_employee_assignments set active=false where id=${f.assignment}`;
+      await fixture.db`update allrice_memberships set active=false where id=${f.membership}`;
+      await expect(
+        getPersonalEmployeeMemorySource(
+          f.context,
+          f.workspace,
+          f.assignment,
+          row.id,
+        ),
+      ).rejects.toBeInstanceOf(DataAccessError);
+      expect(
+        await getAdminEmployeeMemorySource(
+          admin,
+          f.org,
+          f.user,
+          f.assignment,
+          row.id,
+        ),
+      ).toEqual({ ...before, sourceLabel: '用户更正' });
+      await expect(
+        getAdminEmployeeMemorySource(
+          f.context,
+          f.org,
+          f.user,
+          f.assignment,
+          row.id,
+        ),
+      ).rejects.toBeInstanceOf(DataAccessError);
+      const [audit] =
+        await fixture.db`select actor_id,metadata from allrice_audit_events where organization_id=${f.org} and action='employee_memory.admin_read'`;
+      expect(audit!.actor_id).toBe(admin.actor.id);
+      expect(audit!.metadata).toEqual({
+        ownerId: f.user,
+        instanceId: f.assignment,
+        memoryId: row.id,
+        schemaVersion: 2,
+        returnedCount: 1,
+      });
+      expect(JSON.stringify(audit)).not.toContain(row.summary);
+      expect(JSON.stringify(audit)).not.toContain(row.details!);
+    });
 
     it('returns an empty full list; creates a complete Unicode pair with server-owned fields and real capturedAt', async () => {
       const f = await setup();

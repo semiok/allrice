@@ -4,6 +4,7 @@ import {
   EmployeeMemoryDetailResponseSchema,
   EmployeeMemoryListSchema,
   EmployeeMemoryRecordSchema,
+  MemorySourceViewProjectionSchema,
   UuidSchema,
   type RequestContext,
 } from '@allrice/contracts';
@@ -86,18 +87,49 @@ export async function assertEmployeeMemoryAdmission(
   if (counts.active === 100) throw new EmployeeMemoryLimitReached();
 }
 
+type ManagedMemoryRow = PersonalMemoryRow & {
+  source_type: string;
+  source_label: string;
+};
+
+async function readManagedRows(
+  tx: TransactionSql,
+  scope: EmployeeMemoryScope,
+  memoryId?: string,
+) {
+  return tx<
+    ManagedMemoryRow[]
+  >`select m.id,m.summary,m.details,m.revision,m.lifecycle_state,m.trust_level,m.captured_at,m.updated_at,m.source_type,m.source_label
+    from allrice_memories m where ${ordinaryMemoryPredicate(tx, scope)} and m.archived_at is null
+      and (m.expires_at is null or m.expires_at>clock_timestamp())
+      ${memoryId ? tx`and m.id=${memoryId}` : tx``}
+    order by case when m.lifecycle_state='durable' and m.trust_level='user_confirmed' then m.updated_at else m.captured_at end desc,m.id desc`;
+}
+
+async function readManagedSource(
+  tx: TransactionSql,
+  scope: EmployeeMemoryScope,
+  memoryId: string,
+) {
+  const [row] = await readManagedRows(tx, scope, memoryId);
+  if (!row) throw new DataAccessError('not_found');
+  // Preserve detail's V2 record validation without exposing its body or CAS.
+  const memory = mapEmployeeMemoryRecord(row);
+  const source = MemorySourceViewProjectionSchema.safeParse({
+    sourceType: row.source_type,
+    sourceLabel: row.source_label,
+    capturedAt: memory.capturedAt,
+  });
+  if (!source.success) throw new EmployeeMemoryContractChanged();
+  return source.data;
+}
+
 async function readManaged(
   tx: TransactionSql,
   scope: EmployeeMemoryScope,
   memoryId?: string,
 ) {
-  const rows = await tx<
-    PersonalMemoryRow[]
-  >`select m.id,m.summary,m.details,m.revision,m.lifecycle_state,m.trust_level,m.captured_at,m.updated_at
-    from allrice_memories m where ${ordinaryMemoryPredicate(tx, scope)} and m.archived_at is null
-      and (m.expires_at is null or m.expires_at>clock_timestamp())
-      ${memoryId ? tx`and m.id=${memoryId}` : tx``}
-    order by case when m.lifecycle_state='durable' and m.trust_level='user_confirmed' then m.updated_at else m.captured_at end desc,m.id desc`;
+  const rows = await readManagedRows(tx, scope, memoryId);
   if (memoryId) {
     if (!rows[0]) throw new DataAccessError('not_found');
     return {
@@ -174,14 +206,35 @@ export async function getPersonalEmployeeMemory(
   );
 }
 
+export async function getPersonalEmployeeMemorySource(
+  context: RequestContext,
+  workspaceInput: string,
+  instanceInput: string,
+  memoryInput: string,
+) {
+  return getDatabase().begin(
+    'isolation level repeatable read read only',
+    async (tx) => {
+      const scope = await employeeMemoryScope(
+        context,
+        UuidSchema.parse(workspaceInput),
+        UuidSchema.parse(instanceInput),
+        tx,
+      );
+      return readManagedSource(tx, scope, UuidSchema.parse(memoryInput));
+    },
+  );
+}
+
 /** Real administrator authority, never a forged owner context. Every successful
- * list/detail read writes its own body-free audit in the same transaction. */
+ * list/detail/source read writes its own body-free audit in the transaction. */
 async function readAdmin(
   context: RequestContext,
   organizationInput: string,
   ownerInput: string,
   instanceInput: string,
   memoryInput?: string,
+  view: 'memory' | 'source' = 'memory',
 ) {
   const organizationId = UuidSchema.parse(organizationInput),
     ownerId = UuidSchema.parse(ownerInput),
@@ -200,19 +253,19 @@ async function readAdmin(
       where i.id=${instanceId} and i.organization_id=${organizationId} and i.owner_id=${ownerId} and w.archived_at is null
         and exists(select 1 from allrice_memberships m where m.organization_id=i.organization_id and m.user_id=i.owner_id)`;
     if (!instance) throw new DataAccessError('not_found');
-    const result = await readManaged(
-      tx,
-      {
-        organizationId,
-        ownerId,
-        instanceId,
-        workspaceId: instance.workspace_id,
-        employeeId: instance.employee_id,
-      },
-      memoryId,
-    );
+    const scope = {
+      organizationId,
+      ownerId,
+      instanceId,
+      workspaceId: instance.workspace_id,
+      employeeId: instance.employee_id,
+    };
+    const result =
+      view === 'source'
+        ? await readManagedSource(tx, scope, UuidSchema.parse(memoryId))
+        : await readManaged(tx, scope, memoryId);
     const returnedCount =
-      'memory' in result ? 1 : result.active.length + result.pending.length;
+      'active' in result ? result.active.length + result.pending.length : 1;
     await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,request_id,metadata)
       values(${organizationId},${instance.workspace_id},${context.actor.id},'employee_memory.admin_read',${memoryId ? 'memory' : 'employee_instance'},${memoryId ?? instanceId},'recorded','administrator_memory_read',${context.requestId},
         ${tx.json({ ownerId, instanceId, schemaVersion: 2, returnedCount, ...(memoryId ? { memoryId } : {}) })})`;
@@ -246,6 +299,25 @@ export async function getAdminEmployeeMemory(
       ownerInput,
       instanceInput,
       memoryInput,
+    ),
+  );
+}
+
+export async function getAdminEmployeeMemorySource(
+  context: RequestContext,
+  organizationInput: string,
+  ownerInput: string,
+  instanceInput: string,
+  memoryInput: string,
+) {
+  return MemorySourceViewProjectionSchema.parse(
+    await readAdmin(
+      context,
+      organizationInput,
+      ownerInput,
+      instanceInput,
+      memoryInput,
+      'source',
     ),
   );
 }
