@@ -1287,6 +1287,7 @@ fs.writeFileSync(f,JSON.stringify(v));
     'writes the configured %s MiB cap to actual provider configuration and snapshots it',
     async (memoryMiB) => {
       const root = await directory();
+      const calls: string[][] = [];
       const options = {
         binary: '/b',
         libkrunfw: '/fw',
@@ -1295,27 +1296,32 @@ fs.writeFileSync(f,JSON.stringify(v));
         rootDiskGiB: 20,
         socketRoot: await socketDirectory(),
         memoryMiB,
-        runner: async () => 'microsandbox 0.7.16',
+        runner: async (command: Parameters<typeof runCommand>[0]) => {
+          calls.push([...command.args]);
+          return command.args[0] === 'list' ? '[]' : 'microsandbox 0.7.16';
+        },
       };
       const expected =
         memoryMiB === undefined ? PERSON_VM_MEMORY_MIB : memoryMiB;
       const native = new MicrosandboxPersonVm(options);
       options.memoryMiB = 1;
-      await native.prepare(
-        {
-          vmId: randomUUID(),
-          personId: randomUUID(),
-          organizationId: randomUUID(),
-          instanceId: randomUUID(),
-          leaseEpoch: 1,
-        },
-        join(root, 'mount'),
-        signal(),
-      );
+      const binding = {
+        vmId: randomUUID(),
+        personId: randomUUID(),
+        organizationId: randomUUID(),
+        instanceId: randomUUID(),
+        leaseEpoch: 1,
+      };
+      await native.prepare(binding, join(root, 'mount'), signal());
       const configuration = JSON.parse(
         await readFile(join(root, 'mount/msb-config.json'), 'utf8'),
       );
       expect(configuration.sandbox_defaults.memory_mib).toBe(expected);
+      await native.create(binding, currentReceipt(binding), signal());
+      const creation = calls.find((args) => args[0] === 'create')!;
+      const expectedCli = memoryMiB === undefined ? '2048M' : '3072M';
+      expect(creation[creation.indexOf('--memory') + 1]).toBe(expectedCli);
+      expect(creation[creation.indexOf('--max-memory') + 1]).toBe(expectedCli);
     },
   );
   it.each([null, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER, '2048'])(
