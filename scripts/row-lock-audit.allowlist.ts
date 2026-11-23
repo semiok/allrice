@@ -95,6 +95,16 @@ export const reviewedUnresolvedCalls: readonly {
       'preview-diagnostics.mjs phase records timing and outcome around await body(); the body may run SQL and is not exempt. Current inline callbacks remain traversed in the caller AST; implementation or callback-shape changes require review.',
   },
   {
+    target: 'packages/database/src/d-entry-authority.ts changed',
+    reason:
+      'MET-260 11528559 exact review: module-private Subscription has one current production registration in watchDEntryAuthority. changed applies in-memory affects then enqueue -> recheck; current authority snapshot checks have no row-lock clauses and watch setup also calls enqueue directly. Implementations remain traversed and lock clauses remain audited; callback/producer changes require review and the existing stale-entry check still applies.',
+  },
+  {
+    target: 'packages/database/src/d-entry-authority.ts lost',
+    reason:
+      'MET-260 11528559 exact review: module-private Subscription has one current production registration in watchDEntryAuthority; lost is invalidate -> abort.abort(error), with no SQL. This unresolved-target review does not stop implementation traversal; callback/producer changes require review and the existing stale-entry check still applies.',
+  },
+  {
     target: 'packages/contracts/src/storage.ts get',
     reason: 'Object storage adapters read blobs; they run no SQL.',
   },
