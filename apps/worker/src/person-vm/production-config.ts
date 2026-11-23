@@ -128,7 +128,10 @@ const configuration = z
     egress: z
       .object({
         listenAddress: destinationIp,
-        guestGatewayAddress: destinationIp,
+        // The guest origin uses WHATWG URL, which has no zone carrier.
+        guestGatewayAddress: destinationIp.refine(
+          (value) => !value.includes('%'),
+        ),
       })
       .strict()
       .optional(),

@@ -17,6 +17,7 @@ import {
 import { readPlatformPersonVmConfiguration } from '@allrice/contracts';
 import type { ServiceBuildIdentity } from '@allrice/database';
 import { productionInputsFixture } from './production-inputs.fixture.js';
+import { createProductionEgressInstallation } from './production-egress.js';
 
 const source = vi.hoisted<{
   build: ReturnType<typeof vi.fn>;
@@ -249,7 +250,6 @@ describe('private production Host configuration', () => {
     '::1',
     '0:0:0:0:0:0:0:1',
     '2001:db8::1',
-    'fe80::1%en0',
     '::ffff:192.0.2.1',
     '::ffff:0.0.0.0',
   ])(
@@ -263,6 +263,65 @@ describe('private production Host configuration', () => {
       expect(
         (await readProductionHostConfiguration(signal())).configuration.egress,
       ).toEqual(egress);
+    },
+  );
+  it('preserves the OS zone on listenAddress without changing the guest destination', async () => {
+    const egress = {
+      listenAddress: 'fe80::1%en0',
+      guestGatewayAddress: '127.0.0.1',
+    };
+    await seal({ ...value(), egress });
+    const loaded = await readProductionHostConfiguration(signal());
+    expect(loaded.configuration.egress).toEqual(egress);
+    const installation = createProductionEgressInstallation(loaded, signal());
+    try {
+      expect(
+        await installation.provisioner.endpoint('synthetic-vm', [], signal()),
+      ).toEqual({
+        host: 'fe80::1%en0',
+        port: 0,
+        guestOrigin: 'http://127.0.0.1:0',
+      });
+    } finally {
+      await installation.close();
+    }
+  });
+  it('rejects a scoped guestGatewayAddress in the real sealed reader instead of dropping its interface', async () => {
+    await seal({
+      ...value(),
+      egress: {
+        listenAddress: '127.0.0.1',
+        guestGatewayAddress: 'fe80::1%en0',
+      },
+    });
+    await expect(
+      readProductionHostConfiguration(signal()),
+    ).rejects.toBeInstanceOf(ProductionHostConfigurationUnavailable);
+  });
+  it.each([
+    ['127.0.0.1', 'http://127.0.0.1:0'],
+    ['0:0:0:0:0:0:0:1', 'http://[::1]:0'],
+  ])(
+    'consumes the sealed guest address %s as endpoint origin %s',
+    async (address, origin) => {
+      await seal({
+        ...value(),
+        egress: { listenAddress: '127.0.0.1', guestGatewayAddress: address },
+      });
+      const loaded = await readProductionHostConfiguration(signal());
+      expect(loaded.configuration.egress?.guestGatewayAddress).toBe(address);
+      const installation = createProductionEgressInstallation(loaded, signal());
+      try {
+        expect(
+          await installation.provisioner.endpoint('synthetic-vm', [], signal()),
+        ).toEqual({
+          host: '127.0.0.1',
+          port: 0,
+          guestOrigin: origin,
+        });
+      } finally {
+        await installation.close();
+      }
     },
   );
   it('accepts the H2 component fixture through the real private configuration reader', async () => {
