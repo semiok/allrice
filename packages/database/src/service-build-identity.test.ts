@@ -388,3 +388,68 @@ it('refuses a symlink at the fixed private Host configuration path', async () =>
     }),
   ).rejects.toThrow('DEV_BUILD_IDENTITY_INVALID');
 });
+
+it('seals the actual vm-memory guest resources alongside its compiled public plan', async () => {
+  const f = await fixture();
+  const resources = [
+    'initialize.cjs',
+    'bash-env.sh',
+    'launch-dsh.sh',
+    'sample.cjs',
+  ];
+  const files: Record<string, string> = {
+    'packages/vm-memory/package.json': JSON.stringify({
+      name: '@allrice/vm-memory',
+      exports: {
+        '.': './dist/index.js',
+        './guest-plan': './dist/guest-config.js',
+      },
+    }),
+    'packages/vm-memory/dist/index.js': 'export const memory = true;',
+    'packages/vm-memory/dist/guest-config.js': 'export const plan = true;',
+    'apps/worker/package.json': JSON.stringify({
+      name: '@allrice/worker',
+      dependencies: {
+        '@allrice/database': 'workspace:*',
+        '@allrice/vm-memory': 'workspace:*',
+      },
+    }),
+  };
+  for (const name of resources)
+    files['packages/vm-memory/guest/' + name] =
+      'synthetic guest resource ' + name;
+  for (const [path, value] of Object.entries(files)) {
+    await mkdir(dirname(join(f.root, path)), { recursive: true });
+    await writeFile(join(f.root, path), value);
+  }
+  await symlink(
+    join(f.root, 'packages/vm-memory'),
+    join(f.root, 'apps/worker/node_modules/@allrice/vm-memory'),
+  );
+  const manifest = await prepareServiceBuildManifest({
+    root: f.root,
+    sourceSha: 'a'.repeat(40),
+    sourceTree: 'b'.repeat(40),
+  });
+  await writeFile(
+    join(f.root, '.local/dev-build-identity.json'),
+    JSON.stringify(manifest),
+  );
+  for (const name of resources)
+    expect(manifest.files).toContainEqual(
+      expect.objectContaining({
+        path: 'packages/vm-memory/guest/' + name,
+        scope: 'graph',
+      }),
+    );
+  expect((await f.verify('worker'))?.manifestDigest).toBe(
+    manifest.manifestDigest,
+  );
+  await writeFile(
+    join(f.root, 'packages/vm-memory/guest/launch-dsh.sh'),
+    'changed after seal',
+  );
+  await expect(f.verify('worker')).rejects.toThrow(
+    'DEV_BUILD_IDENTITY_INVALID',
+  );
+});
