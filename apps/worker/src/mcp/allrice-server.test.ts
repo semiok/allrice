@@ -159,10 +159,12 @@ describe('memory-only optional MCP callback over the native SDK (protocol fixtur
     'hides and refuses memory_remember with %s before business work',
     async (reason) => {
       const f = memoryFixture();
-      const services: AllriceMcpServices = { ...f.services };
+      const services: AllriceMcpServices =
+        reason === 'wrong generation'
+          ? { ...f.services, executionGeneration: '3.x' }
+          : { ...f.services };
       if (reason === 'missing callback') delete services.memoryRemember;
       else if (reason === 'module disabled') f.scope.enabledModules = [];
-      else services.executionGeneration = '3.x';
       const { client } = await connect({ host: f.host, services });
       expect(
         (await client.listTools()).tools.map((tool) => tool.name),
