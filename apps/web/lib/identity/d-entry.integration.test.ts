@@ -1280,7 +1280,7 @@ suite(
           );
           if (change === 'revoked') await revokeSession(f.login.token);
           else if (change === 'expired')
-            await fixture.db`update allrice_sessions set expires_at=clock_timestamp()-interval '1 second' where id=${f.context.sessionId}`;
+            await fixture.db`update allrice_sessions set created_at=clock_timestamp()-interval '2 days',expires_at=clock_timestamp()-interval '1 day' where id=${f.context.sessionId}`;
           else if (change === 'disabled')
             await fixture.db`update allrice_users set status='disabled' where id=${f.user}`;
           else

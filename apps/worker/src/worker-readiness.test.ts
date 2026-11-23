@@ -70,6 +70,7 @@ async function host(options: { detail?: string; arrivals?: number } = {}) {
     createServer,
     process,
     makeHealthResponse,
+    dEntryHttp: async () => false,
     nativeRunDiagnosticsHttp: async () => false,
     stopping: false,
     readDevMaintenance: vi.fn(async () => ({ state: 'open' })),

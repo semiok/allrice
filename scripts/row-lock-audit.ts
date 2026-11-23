@@ -244,6 +244,69 @@ export function createRowLockAudit(
       : symbol;
   }
 
+  // Declaration identity keeps captured defaults separate from shadowed names.
+  const emptyPrefix = '\0empty:';
+  const emptyKey = (parameter: ts.ParameterDeclaration) =>
+    `${emptyPrefix}${parameter.getSourceFile().fileName}:${parameter.pos}`;
+  const facts = (env: Env) =>
+    new Map([...env].filter(([key]) => key.startsWith(emptyPrefix)));
+  const defaultProofs = new Map<ts.ParameterDeclaration, boolean>();
+  function unmodifiedEmptyDefault(parameter: ts.ParameterDeclaration) {
+    const cached = defaultProofs.get(parameter);
+    if (cached !== undefined) return cached;
+    let safe =
+      !!parameter.initializer &&
+      ts.isObjectLiteralExpression(parameter.initializer) &&
+      parameter.initializer.properties.length === 0;
+    const symbol = symbolOf(parameter.name);
+    const visit = (node: ts.Node) => {
+      if (!safe || ts.isTypeNode(node)) return;
+      if (
+        ts.isIdentifier(node) &&
+        node !== parameter.name &&
+        symbolOf(node) === symbol
+      ) {
+        let value: ts.Node = node.parent;
+        // The object itself may not escape through an alias, argument or return.
+        if (
+          !ts.isPropertyAccessExpression(value) ||
+          value.expression !== node
+        ) {
+          safe = false;
+          return;
+        }
+        while (
+          (ts.isPropertyAccessExpression(value.parent) ||
+            ts.isElementAccessExpression(value.parent) ||
+            ts.isParenthesizedExpression(value.parent) ||
+            ts.isAsExpression(value.parent) ||
+            ts.isSatisfiesExpression(value.parent) ||
+            ts.isNonNullExpression(value.parent) ||
+            ts.isTypeAssertionExpression(value.parent)) &&
+          value.parent.expression === value
+        )
+          value = value.parent;
+        const use = value.parent;
+        if (
+          (ts.isBinaryExpression(use) &&
+            use.left === value &&
+            use.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+            use.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+          ts.isDeleteExpression(use) ||
+          ts.isPostfixUnaryExpression(use) ||
+          (ts.isPrefixUnaryExpression(use) &&
+            (use.operator === ts.SyntaxKind.PlusPlusToken ||
+              use.operator === ts.SyntaxKind.MinusMinusToken))
+        )
+          safe = false;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(parameter.parent);
+    defaultProofs.set(parameter, safe);
+    return safe;
+  }
+
   /** The executable node for a declaration, or null when it has no body here. */
   function target(declaration: ts.Declaration, depth = 0): ts.Node | null {
     if (!own(declaration.getSourceFile()) || depth > 8) return null;
@@ -333,6 +396,14 @@ export function createRowLockAudit(
     ) {
       const key = `${node.expression.text}.${node.name.text}`;
       if (env.has(key)) return { value: env.get(key) };
+      const parameter = symbolOf(node.expression)?.valueDeclaration;
+      if (
+        parameter &&
+        ts.isParameter(parameter) &&
+        env.has(emptyKey(parameter)) &&
+        !(node.name.text in Object.prototype)
+      )
+        return { value: undefined };
       // `options?.lock` when the caller passed no `options` at all.
       const base = env.get(node.expression.text);
       return node.questionDotToken &&
@@ -387,10 +458,17 @@ export function createRowLockAudit(
     env: Env,
   ): Env {
     if (!functionLike(callee)) return EMPTY;
-    const out = new Map<string, Value>();
+    const out: Map<string, Value> = facts(env);
     callee.parameters.forEach((parameter, index) => {
+      out.delete(emptyKey(parameter)); // A reentrant call has new arguments.
       if (parameter.dotDotDotToken) return;
       const arg = args[index];
+      if (
+        !args.length &&
+        ts.isIdentifier(parameter.name) &&
+        unmodifiedEmptyDefault(parameter)
+      )
+        out.set(emptyKey(parameter), true);
       let known = arg ? evaluate(arg, env) : { value: undefined };
       if (known && known.value === undefined && parameter.initializer)
         known = evaluate(parameter.initializer, EMPTY);
@@ -603,8 +681,12 @@ export function createRowLockAudit(
               for (const property of node.properties) {
                 if (!property.name || ts.isSpreadAssignment(property)) continue;
                 const name = property.name.getText(file);
-                const member = type.getProperty(name);
-                for (const declaration of member?.declarations ?? []) {
+                // Async returns can be contextualized as T | PromiseLike<T>.
+                // Only index members of this actual executable object literal.
+                const declarations = (
+                  type.isUnion() ? type.types : [type]
+                ).flatMap((part) => part.getProperty(name)?.declarations ?? []);
+                for (const declaration of declarations) {
                   if (
                     !ts.isMethodSignature(declaration) &&
                     !ts.isPropertySignature(declaration)
@@ -685,6 +767,62 @@ export function createRowLockAudit(
       receiverExpression: ts.Expression | undefined,
       self?: ts.Node,
     ) => {
+      let receiver = receiverExpression;
+      if (receiver && ts.isIdentifier(receiver)) {
+        const local = symbolOf(receiver)?.valueDeclaration;
+        receiver =
+          local &&
+          ts.isVariableDeclaration(local) &&
+          ts.getCombinedNodeFlags(local) & ts.NodeFlags.Const
+            ? local.initializer
+            : undefined;
+      }
+      while (receiver && ts.isAwaitExpression(receiver))
+        receiver = receiver.expression;
+      const factoryCall =
+        receiver && ts.isCallExpression(receiver) ? receiver : undefined;
+      const factory = factoryCall
+        ? (
+            symbolOf(
+              ts.isPropertyAccessExpression(factoryCall.expression)
+                ? factoryCall.expression.name
+                : factoryCall.expression,
+            )?.declarations ?? []
+          )
+            .map((candidate) => target(candidate))
+            .find((candidate) => candidate !== null)
+        : undefined;
+      const inside = (member: ts.Node) => {
+        for (let c: ts.Node | undefined = member; c; c = c.parent)
+          if (c === factory) return true;
+        return false;
+      };
+      const enterNext = (next: ts.Node) => {
+        const captured = new Map(env);
+        if (factory && factoryCall && functionLike(factory) && inside(next)) {
+          for (const parameter of factory.parameters)
+            captured.delete(emptyKey(parameter));
+          for (const [key, value] of facts(
+            calleeEnv(factory, factoryCall.arguments, env),
+          ))
+            captured.set(key, value);
+        }
+        const pinned = new Map(
+          call ? calleeEnv(next, call.arguments, captured) : facts(captured),
+        );
+        if (functionLike(next) && !call)
+          for (const parameter of next.parameters)
+            pinned.delete(emptyKey(parameter));
+        let enclosed = false;
+        for (let c = next.parent; c && !enclosed; c = c.parent)
+          enclosed = c === state.node;
+        const literals = [...env].filter(
+          ([key]) => !key.startsWith(emptyPrefix),
+        );
+        summary.callees.push(
+          stateOf(next, enclosed ? new Map([...literals, ...pinned]) : pinned),
+        );
+      };
       const declarations: ts.Declaration[] = [];
       for (const declaration of found) {
         // `const { readX } = await import('./x.ts')` or `= helpers`: follow
@@ -712,33 +850,6 @@ export function createRowLockAudit(
         ) {
           // `factory(…).m()` or `const x = factory(…); x.m()`: only the
           // members that factory itself returns.
-          let receiver = receiverExpression;
-          if (receiver && ts.isIdentifier(receiver)) {
-            const local = symbolOf(receiver)?.valueDeclaration;
-            receiver =
-              local && ts.isVariableDeclaration(local) && local.initializer
-                ? local.initializer
-                : undefined;
-          }
-          while (receiver && ts.isAwaitExpression(receiver))
-            receiver = receiver.expression;
-          const factory =
-            receiver && ts.isCallExpression(receiver)
-              ? (
-                  symbolOf(
-                    ts.isPropertyAccessExpression(receiver.expression)
-                      ? receiver.expression.name
-                      : receiver.expression,
-                  )?.declarations ?? []
-                )
-                  .map((candidate) => target(candidate))
-                  .find((candidate) => candidate !== null)
-              : undefined;
-          const inside = (member: ts.Node) => {
-            for (let c: ts.Node | undefined = member; c; c = c.parent)
-              if (c === factory) return true;
-            return false;
-          };
           const all = implementations(declaration);
           const narrowed = factory ? all.filter(inside) : [];
           const found = (narrowed.length ? narrowed : all)
@@ -767,22 +878,12 @@ export function createRowLockAudit(
               `${where.file} ${declaration.name.getText()}`,
             );
           }
-          for (const next of found)
-            summary.callees.push(
-              stateOf(next, calleeEnv(next, call.arguments, env)),
-            );
+          for (const next of found) enterNext(next);
           continue;
         }
         const next = target(declaration);
         if (!next) continue;
-        const pinned = call ? calleeEnv(next, call.arguments, env) : EMPTY;
-        // A function declared inside this one closes over its pinned values.
-        let enclosed = false;
-        for (let c = next.parent; c && !enclosed; c = c.parent)
-          enclosed = c === state.node;
-        summary.callees.push(
-          stateOf(next, enclosed ? new Map([...env, ...pinned]) : pinned),
-        );
+        enterNext(next);
       }
     };
 
@@ -1164,6 +1265,7 @@ export function createRowLockAudit(
   function describe(state: State) {
     const where = label(state.node);
     const literals = [...state.env]
+      .filter(([key]) => !key.startsWith(emptyPrefix))
       .map(
         ([k, v]) => `${k}=${v === undefined ? 'undefined' : JSON.stringify(v)}`,
       )

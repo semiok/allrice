@@ -176,10 +176,82 @@ export function createStore(): Store {
   };
 }`,
   };
+  files['lib/factories.ts'] = `import { sql } from './db.ts';
+interface Store { read(): Promise<void>; }
+interface Owner { open(): Promise<void>; reauthorize(): Promise<void>; close(): Promise<void>; }
+interface Attachment { acquire(): Promise<Owner>; }
+interface Ports { binding?(): Promise<void>; store?: Store; attachment?: Attachment; }
+export const injected: Ports = {
+  async binding() { await sql\`select * from bindings for share\`; },
+  store: { async read() { await sql\`select * from stores for share\`; } },
+  attachment: { async acquire() {
+    await sql\`select * from attachments for share\`;
+    return {
+      async open() { await sql\`select * from objects for share\`; },
+      async reauthorize() { await sql\`select * from objects for share\`; },
+      async close() {},
+    };
+  } },
+};
+export function cold(ports: Ports = {}) {
+  async function serve() {
+    if (!ports.binding || !ports.store || !ports.attachment) return;
+    await ports.binding(); await ports.store.read();
+    const owner = await ports.attachment.acquire();
+    await owner.open(); await owner.reauthorize(); await owner.close();
+  }
+  return { history: () => serve(), download: () => serve() };
+}
+export function shadow(ports: Ports = {}) {
+  void ports.binding;
+  async function serve(ports: Ports) {
+    if (!ports.binding) return;
+    await sql\`select * from shadowed for share\`;
+  }
+  return { history: () => serve(injected) };
+}
+export function reentry(ports: Ports = {}) {
+  async function serve(again: boolean) {
+    if (again) return reentry(injected).history(false);
+    if (!ports.binding) return;
+    await sql\`select * from reentered for share\`;
+  }
+  return { history: (again = true) => serve(again) };
+}
+interface AsyncLiteral { close(): Promise<void>; }
+export async function asyncLiteral(): Promise<AsyncLiteral> {
+  return { async close() { await sql\`select * from async_rows for share\`; } };
+}
+interface ClassOnly { classRead(): Promise<void>; }
+class ClassStore implements ClassOnly {
+  async classRead() { await sql\`select * from class_rows for share\`; }
+}
+export function classOnly(): ClassOnly { return new ClassStore(); }
+interface Opaque { opaqueClose(): Promise<void>; }
+export declare function opaque(): Promise<Opaque>;
+declare function escape(ports: Ports): void;
+`;
+  for (const [name, change] of Object.entries({
+    mutation: 'ports.binding = injected.binding;',
+    escape: 'escape(ports);',
+    alias: 'const alias = ports; alias.binding = injected.binding;',
+    reassignment: 'ports = injected;',
+    wrapped: '(ports.binding as Ports["binding"]) = injected.binding;',
+  }))
+    files['lib/factories.ts'] += `
+export function ${name}(ports: Ports = {}) {
+  ${change}
+  async function serve() {
+    if (!ports.binding) return;
+    await sql\`select * from ${name}_rows for share\`;
+  }
+  return { history: () => serve() };
+}`;
   const route = (name: string, body: string) => {
     files[`apps/web/app/api/${name}/route.ts`] =
       `import { sql } from '../../../../../lib/db.ts';\n` +
       `import * as reads from '../../../../../lib/reads.ts';\n` +
+      `import * as factories from '../../../../../lib/factories.ts';\n` +
       `void sql; void reads;\n${body}`;
   };
   // Must be reported.
@@ -298,6 +370,48 @@ export const POST = () => handle(true);`,
     'object-literal-false',
     'export async function GET() { await reads.readOptions({ lock: false }); }',
   );
+  route(
+    'factory-default',
+    'export const GET = () => factories.cold().history();',
+  );
+  route(
+    'factory-local-default',
+    'export async function GET() { const h = factories.cold(); await h.download(); }',
+  );
+  for (const [name, argument] of Object.entries({
+    injected: 'factories.injected',
+    unknown: 'JSON.parse("{}")',
+    explicit: '{}',
+  }))
+    route(
+      `factory-${name}`,
+      `export const GET = () => factories.cold(${argument}).history();`,
+    );
+  for (const name of [
+    'mutation',
+    'escape',
+    'alias',
+    'reassignment',
+    'shadow',
+    'reentry',
+    'wrapped',
+  ])
+    route(
+      `factory-${name}`,
+      `export const GET = () => factories.${name}().history();`,
+    );
+  route(
+    'factory-async-literal',
+    'export async function GET() { const h = await factories.asyncLiteral(); await h.close(); }',
+  );
+  route(
+    'factory-class-unknown',
+    'export const GET = () => factories.classOnly().classRead();',
+  );
+  route(
+    'factory-async-unknown',
+    'export async function GET() { const h = await factories.opaque(); await h.opaqueClose(); }',
+  );
 
   beforeAll(async () => {
     project = await realpath(await mkdtemp(join(tmpdir(), 'row-lock-audit-')));
@@ -346,6 +460,19 @@ export const POST = () => handle(true);`,
         'unsafe-const',
         'unsafe-element',
         'unsafe-string',
+        ...[
+          'injected',
+          'unknown',
+          'explicit',
+          'mutation',
+          'escape',
+          'alias',
+          'reassignment',
+          'shadow',
+          'reentry',
+          'async-literal',
+          'wrapped',
+        ].map((name) => `factory-${name}`),
       ].sort(),
     );
   });
@@ -360,6 +487,41 @@ export const POST = () => handle(true);`,
     expect(
       unresolved.filter((entry) => /unsafe-(?:const|element)\//.test(entry)),
     ).toEqual([]);
+  });
+
+  it('prunes only proven unmodified absent factory ports, including a local returned handler', () => {
+    expect(reached).not.toContain('factory-default');
+    expect(reached).not.toContain('factory-local-default');
+    const coldLocks = report.reached.filter(
+      (site) => site.file === 'lib/factories.ts',
+    );
+    for (const name of ['injected', 'unknown', 'explicit'])
+      expect(
+        coldLocks
+          .filter((site) =>
+            site.routes.includes(
+              `apps/web/app/api/factory-${name}/route.ts GET`,
+            ),
+          )
+          .map((site) => site.owner),
+      ).toEqual(
+        expect.arrayContaining([
+          'binding',
+          'read',
+          'acquire',
+          'open',
+          'reauthorize',
+        ]),
+      );
+  });
+
+  it('keeps unsupported class and async implementations unresolved', () => {
+    expect(unresolved).toEqual(
+      expect.arrayContaining([
+        'lib/factories.ts classRead',
+        'lib/factories.ts opaqueClose',
+      ]),
+    );
   });
 
   it('keeps inline callback locks visible after exact review of an unresolved interface call', () => {
