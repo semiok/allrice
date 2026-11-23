@@ -643,9 +643,12 @@ describe('public rc.2 Host issuer, generated faces and real in-process Node carr
         expect(unarySettled).toBe(false);
         expect(streamSettled).toBe(false);
         expect(closed).toBe(false);
-        expect(
-          fixture.host.remoteAccess.snapshotFor(scope.first.principal).grants,
-        ).toEqual([]);
+        const baseline = fixture.host.remoteAccess.snapshotFor(
+          scope.first.principal,
+        );
+        expect(baseline.owner).toBe(false);
+        if (baseline.owner) throw Error('issued Peer received owner baseline');
+        expect(baseline.grants).toEqual([]);
       } finally {
         release.resolve();
       }
@@ -710,9 +713,12 @@ describe('public rc.2 Host issuer, generated faces and real in-process Node carr
         (row) => String(row.sessionId) !== 'root',
       );
       fixture.host.emit('api-session/removed', SessionId('root'));
-      expect(
-        fixture.host.remoteAccess.snapshotFor(scope.first.principal).grants,
-      ).toEqual([]);
+      const baseline = fixture.host.remoteAccess.snapshotFor(
+        scope.first.principal,
+      );
+      expect(baseline.owner).toBe(false);
+      if (baseline.owner) throw Error('issued Peer received owner baseline');
+      expect(baseline.grants).toEqual([]);
       expect(readSettled).toBe(false);
       expect(fixture.catalog.pages).toHaveLength(0);
       expect(fixture.catalog.follows).toHaveLength(0);
