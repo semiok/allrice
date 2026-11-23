@@ -265,14 +265,30 @@ suite(
       await enable(f);
       await expect(
         vm.withCurrentSelection(f.context, f.identity, signal(), async () => {
-          await updateEmployeeInstance(f.context, f.instance.id, {
-            profile: {
-              expressionStyle:
-                f.instance.profile.expressionStyle === 'concise'
-                  ? 'structured'
-                  : 'concise',
+          const updated = await updateEmployeeInstance(
+            f.context,
+            f.instance.id,
+            {
+              workspaceId: f.identity.workspaceId,
+              expectedRevision: f.instance.revision,
+              requestId: randomUUID(),
+              profile: {
+                expressionStyle:
+                  f.instance.profile.expressionStyle === 'concise'
+                    ? 'structured'
+                    : 'concise',
+              },
             },
-          });
+          );
+          expect(updated.revision).toBe(f.instance.revision + 1);
+          expect(updated.profile.expressionStyle).not.toBe(
+            f.instance.profile.expressionStyle,
+          );
+          const persisted = await getEmployeeInstance(f.context, f.instance.id);
+          expect(persisted.revision).toBe(updated.revision);
+          expect(persisted.profile.expressionStyle).toBe(
+            updated.profile.expressionStyle,
+          );
           return 'old revision result';
         }),
       ).rejects.toMatchObject({ code: 'AUTHORIZATION_DENIED' });
