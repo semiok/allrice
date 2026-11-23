@@ -330,6 +330,50 @@ describe('private production Host configuration', () => {
       readProductionHostConfiguration(signal()),
     ).rejects.toBeInstanceOf(ProductionHostConfigurationUnavailable);
   });
+  it('withholds validated configuration when cancellation arrives during the actual file close', async () => {
+    const file = await fs.open(join(root, '.local/person-vm-host.json'), 'r');
+    const closeFile = file.close.bind(file);
+    let enter!: () => void, release!: () => void;
+    const entered = new Promise<void>((done) => {
+      enter = done;
+    });
+    const gate = new Promise<void>((done) => {
+      release = done;
+    });
+    let closed = false,
+      settled = false;
+    const close = vi.spyOn(file, 'close').mockImplementation(async () => {
+      enter();
+      await gate;
+      await closeFile();
+      closed = true;
+    });
+    vi.spyOn(fs, 'open').mockResolvedValueOnce(file);
+    const abort = new AbortController(),
+      reason = Error('cancel actual close');
+    const outcome = readProductionHostConfiguration(abort.signal).then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
+    try {
+      await entered;
+      abort.abort(reason);
+      await turn();
+      expect(settled).toBe(false);
+      expect(closed).toBe(false);
+      expect(close).toHaveBeenCalledOnce();
+    } finally {
+      release();
+      expect(await outcome).toBe(reason);
+    }
+    expect(closed).toBe(true);
+  });
   it('joins the actual open/read/close before returning cancellation', async () => {
     const file = await fs.open(join(root, '.local/person-vm-host.json'), 'r');
     const read = file.readFile.bind(file),

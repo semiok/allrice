@@ -190,6 +190,7 @@ export async function readProductionHostConfiguration(signal: AbortSignal) {
       join(root, configPath),
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
+    let value: ProductionHostConfiguration;
     try {
       signal.throwIfAborted();
       const stat = await file.stat();
@@ -208,19 +209,20 @@ export async function readProductionHostConfiguration(signal: AbortSignal) {
         digest(contents) !== expected.checksum
       )
         unavailable();
-      const value = configuration.parse(JSON.parse(contents.toString('utf8')));
-      return Object.freeze({
-        configuration: value,
-        platform: readPlatformPersonVmConfiguration(),
-        applicationBuild: Object.freeze({
-          sourceSha: build.sourceSha,
-          sourceTree: build.sourceTree,
-          manifestDigest,
-        }),
-      });
+      value = configuration.parse(JSON.parse(contents.toString('utf8')));
     } finally {
       await file.close();
     }
+    signal.throwIfAborted();
+    return Object.freeze({
+      configuration: value,
+      platform: readPlatformPersonVmConfiguration(),
+      applicationBuild: Object.freeze({
+        sourceSha: build.sourceSha,
+        sourceTree: build.sourceTree,
+        manifestDigest,
+      }),
+    });
   } catch {
     signal.throwIfAborted();
     unavailable();

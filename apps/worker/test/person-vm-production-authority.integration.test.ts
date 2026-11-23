@@ -158,6 +158,44 @@ suite(
         vm.authority.authorize(f.context, 'start', signal()),
       ).rejects.toMatchObject({ code: 'AUTHORIZATION_DENIED' });
     });
+    it('uses the verified selector for null-workspace current checks without overriding a conflicting scope or revoked membership', async () => {
+      const f = await setup(),
+        vm = owner();
+      await enable(f);
+      await db.db`update allrice_memberships set workspace_id=${f.identity.workspaceId} where organization_id=${f.context.organizationId} and user_id=${f.context.actor.id}`;
+      const unscoped = await authenticateSession(f.login.token);
+      if (!unscoped) throw Error('original unscoped session required');
+      expect(unscoped.workspaceId).toBeNull();
+      expect(unscoped.memberships.length).toBeGreaterThan(0);
+      expect(
+        unscoped.memberships.every(
+          (membership) => membership.workspaceId === f.identity.workspaceId,
+        ),
+      ).toBe(true);
+      await expect(
+        vm.withCurrentSelection(unscoped, f.identity, signal(), async () => {
+          await vm.authority.authorize(unscoped, 'create', signal());
+          await vm.authority.authorize(unscoped, 'start', signal());
+          return 'current workspace-only member';
+        }),
+      ).resolves.toBe('current workspace-only member');
+      expect(unscoped.workspaceId).toBeNull();
+      const work = vi.fn();
+      await expect(
+        vm.withCurrentSelection(
+          { ...unscoped, workspaceId: randomUUID() },
+          f.identity,
+          signal(),
+          work,
+        ),
+      ).rejects.toMatchObject({ code: 'AUTHORIZATION_DENIED' });
+      expect(work).not.toHaveBeenCalled();
+      await db.db`update allrice_memberships set active=false where organization_id=${f.context.organizationId} and user_id=${f.context.actor.id}`;
+      await expect(
+        vm.withCurrentSelection(unscoped, f.identity, signal(), work),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      expect(work).not.toHaveBeenCalled();
+    });
     it('does not reuse a revoked session from a still-valid RC snapshot', async () => {
       const f = await setup(),
         vm = owner();

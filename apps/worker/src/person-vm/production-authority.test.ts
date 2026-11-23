@@ -300,6 +300,110 @@ describe('production person VM authority', () => {
     expect(closed).toBe(true);
     await expect(outcome).resolves.toMatchObject({ code: 'RUNTIME_NOT_READY' });
   });
+  it.each(['external abort', 'authority close'] as const)(
+    'withholds a staged result when %s happens during the final SQL join',
+    async (kind) => {
+      const vm = owner(),
+        entered = gate(),
+        checked = gate(),
+        release = gate();
+      const abort = new AbortController(),
+        reason = Error('cancel final join');
+      source.principal
+        .mockResolvedValueOnce(principal())
+        .mockImplementationOnce(async () => {
+          entered.resolve();
+          await release.promise;
+          return principal();
+        })
+        .mockImplementationOnce(async () => {
+          checked.resolve();
+          return principal();
+        });
+      let descendant: Promise<unknown> | undefined;
+      let settled = false,
+        closed = false;
+      const outcome = vm
+        .withCurrentSelection(context, identity, abort.signal, async () => {
+          descendant = vm.authority
+            .authorize(context, 'read', signal())
+            .catch((error: unknown) => error);
+          await entered.promise;
+          return 'private result';
+        })
+        .then(
+          () => {
+            settled = true;
+            return null;
+          },
+          (error: unknown) => {
+            settled = true;
+            return error;
+          },
+        );
+      let closing: Promise<void> | undefined;
+      try {
+        await checked.promise;
+        await turn();
+        expect(source.principal).toHaveBeenCalledTimes(3);
+        expect(settled).toBe(false);
+        if (kind === 'external abort') abort.abort(reason);
+        else
+          closing = vm.close().then(() => {
+            closed = true;
+          });
+        await turn();
+        expect(settled).toBe(false);
+        expect(closed).toBe(false);
+      } finally {
+        release.resolve();
+        await descendant;
+        await outcome;
+        await closing;
+      }
+      if (kind === 'external abort') expect(await outcome).toBe(reason);
+      else expect(await outcome).toMatchObject({ code: 'RUNTIME_NOT_READY' });
+    },
+  );
+  it('keeps the primary work error while cancellation joins descendant SQL', async () => {
+    const vm = owner(),
+      entered = gate(),
+      release = gate();
+    const abort = new AbortController(),
+      primary = Error('primary work failure');
+    source.principal
+      .mockResolvedValueOnce(principal())
+      .mockImplementationOnce(async () => {
+        entered.resolve();
+        await release.promise;
+        return principal();
+      });
+    let descendant: Promise<unknown> | undefined,
+      settled = false;
+    const outcome = vm
+      .withCurrentSelection(context, identity, abort.signal, async () => {
+        descendant = vm.authority
+          .authorize(context, 'read', signal())
+          .catch((error: unknown) => error);
+        await entered.promise;
+        throw primary;
+      })
+      .catch((error: unknown) => {
+        settled = true;
+        return error;
+      });
+    try {
+      await entered.promise;
+      await turn();
+      abort.abort(Error('secondary cancellation'));
+      await turn();
+      expect(settled).toBe(false);
+    } finally {
+      release.resolve();
+      await descendant;
+      expect(await outcome).toBe(primary);
+    }
+  });
   it('preserves a selected thread in each original 271 check', async () => {
     const expected = { ...identity, threadId: id(40) };
     source.native.mockResolvedValue(expected);

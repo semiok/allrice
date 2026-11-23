@@ -73,7 +73,10 @@ export function createProductionPersonVmAuthority(lifetime?: AbortSignal) {
     if (!sameDEntryIdentity(identity, expected)) denied();
     // The original gate awaits rollout policy. Re-read the original current
     // principal afterward; old RC memberships cannot survive that async gap.
-    const principal = await readContentPrincipal(context);
+    const principal = await readContentPrincipal({
+      ...context,
+      workspaceId: expected.workspaceId,
+    });
     guard(operation, signal);
     if (
       !principal ||
@@ -156,17 +159,19 @@ export function createProductionPersonVmAuthority(lifetime?: AbortSignal) {
           pending: new Set(),
         };
         return operations.run(operation, async () => {
+          let result: T;
           try {
             await current(operation, operation.signal);
-            const result = await work();
+            result = await work();
             await current(operation, operation.signal);
-            return result;
           } finally {
             operation.active = false;
             // Detached descendants keep the closed scope and cannot authorize.
             // Already started SQL still joins before the operation leaves.
             await Promise.allSettled([...operation.pending]);
           }
+          operation.signal.throwIfAborted();
+          return result;
         });
       });
     },
