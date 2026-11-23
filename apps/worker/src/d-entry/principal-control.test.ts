@@ -5,6 +5,7 @@ import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
 import {
   hostFixture,
   deferred,
+  summary,
   observeNativeFollow,
 } from '../../../../packages/d-entry-principal/test/host-fixture.js';
 import { createDEntryPrincipalControl } from './principal-control.js';
@@ -91,6 +92,213 @@ describe('Node control uses the real generated issuer over the same native Peer 
     expect(fixture.carrier.signal.aborted).toBe(false);
     await fixture.control.close();
   });
+
+  it.each(['remoteAccess/follow', 'session/follow'] as const)(
+    'overlapping pages and %s join every extension of the actual refresh queue and close without unknown',
+    async (endpoint) => {
+      const fixture = await setup();
+      const activity = fixture.control.acquire(
+        fixture.selected,
+        new AbortController().signal,
+      );
+      const scope = await activity.run(new AbortController().signal);
+      const observed = observeNativeFollow(fixture.host, endpoint);
+      const reads: ReturnType<typeof deferred<void>>[] = [];
+      let holding = true;
+      fixture.catalog.beforeList = async () => {
+        if (!holding) return;
+        const read = deferred();
+        reads.push(read);
+        await read.promise;
+      };
+      const invoke = () =>
+        scope.invoke(
+          {
+            scopeId: fixture.selected.scopeId,
+            endpoint: 'session/page',
+            args: {
+              request: {
+                address: { kind: 'session', sessionId: SessionId('root') },
+                throughSeq: 0,
+              },
+            },
+          },
+          new AbortController().signal,
+        );
+      const first = invoke();
+      void first.catch(() => {});
+      await vi.waitFor(() => expect(reads).toHaveLength(1));
+      const second = invoke();
+      void second.catch(() => {});
+      const source = scope.stream(
+        endpoint === 'remoteAccess/follow'
+          ? { endpoint, scopeId: fixture.selected.scopeId, args: {} }
+          : {
+              endpoint,
+              scopeId: fixture.selected.scopeId,
+              args: {
+                request: {
+                  address: { kind: 'session', sessionId: SessionId('root') },
+                },
+              },
+            },
+        new AbortController().signal,
+      );
+      const iterator = source[Symbol.asyncIterator]();
+      const followed = iterator.next();
+      let completed = 0;
+      for (const pending of [first, second, followed])
+        void pending.then(
+          () => completed++,
+          () => completed++,
+        );
+      try {
+        await vi.waitFor(() =>
+          expect(
+            fixture.host.allricePrincipal.scopes.get(fixture.selected.scopeId)
+              ?.children.size,
+          ).toBe(1),
+        );
+        for (let extension = 0; extension < 3; extension++) {
+          // A genuine native hint extends the same queue while its current
+          // list is held. No hint payload supplies a grant or a baseline.
+          fixture.host.emit('api-session/added', summary('child', 'root'));
+          expect(
+            fixture.host.remoteAccess.snapshotFor(scope.opened.principal)
+              .grants,
+          ).toEqual([]);
+          expect(completed).toBe(0);
+          expect(fixture.catalog.pages).toHaveLength(0);
+          expect(fixture.catalog.follows).toHaveLength(0);
+          const count = reads.length;
+          for (const read of reads) read.resolve();
+          await vi.waitFor(() => expect(reads.length).toBeGreaterThan(count));
+        }
+      } finally {
+        holding = false;
+        for (const read of reads) read.resolve();
+      }
+      expect(await first).toMatchObject({ endpoint: 'session/page' });
+      expect(await second).toMatchObject({ endpoint: 'session/page' });
+      expect(await followed).toMatchObject({
+        value: {
+          type: 'item',
+          value: {
+            type: endpoint === 'remoteAccess/follow' ? 'baseline' : 'snapshot',
+          },
+        },
+      });
+      const peer = fixture.catalog.pages[0];
+      expect(peer?.principal).toEqual(scope.opened.principal);
+      expect(fixture.catalog.pages[1]).toBe(peer);
+      if (endpoint === 'session/follow')
+        expect(fixture.catalog.follows[0]).toBe(peer);
+      await observed.pending.promise;
+      await activity.close();
+      expect(observed.pendingSettled).toBe(true);
+      expect(observed.returnJoined).toBe(true);
+      expect(peer?.signal.aborted).toBe(true);
+      expect(fixture.carrier.signal.aborted).toBe(false);
+      await iterator.return?.();
+      await fixture.control.close();
+    },
+  );
+
+  it.each(['page close', 'business revoke'])(
+    '%s synchronously fences overlapping work and joins the held refresh without closing another activity',
+    async (mode) => {
+      const fixture = await setup();
+      const business = new AbortController();
+      const activity = fixture.control.acquire(
+        fixture.selected,
+        business.signal,
+      );
+      const scope = await activity.run(new AbortController().signal);
+      const otherIssue = { ...fixture.selected, scopeId: randomUUID() };
+      const other = fixture.control.acquire(
+        otherIssue,
+        new AbortController().signal,
+      );
+      const otherScope = await other.run(new AbortController().signal);
+      const entered = deferred(),
+        release = deferred();
+      let readSignal: AbortSignal | undefined,
+        readSettled = false;
+      fixture.catalog.beforeList = async (signal) => {
+        readSignal = signal;
+        entered.resolve();
+        await release.promise;
+        readSettled = true;
+      };
+      const call = {
+        scopeId: fixture.selected.scopeId,
+        endpoint: 'session/page' as const,
+        args: {
+          request: {
+            address: { kind: 'session' as const, sessionId: SessionId('root') },
+            throughSeq: 0,
+          },
+        },
+      };
+      const unary = scope.invoke(call, new AbortController().signal);
+      void unary.catch(() => {});
+      await entered.promise;
+      const source = scope.stream(
+        {
+          endpoint: 'remoteAccess/follow',
+          scopeId: fixture.selected.scopeId,
+          args: {},
+        },
+        new AbortController().signal,
+      );
+      const iterator = source[Symbol.asyncIterator]();
+      const pending = iterator.next();
+      void pending.catch(() => {});
+      let closing: Promise<void> | undefined,
+        closed = false;
+      try {
+        await vi.waitFor(() =>
+          expect(
+            fixture.host.allricePrincipal.scopes.get(fixture.selected.scopeId)
+              ?.children.size,
+          ).toBe(1),
+        );
+        if (mode === 'business revoke') business.abort();
+        closing = activity.close();
+        expect(scope.revoked.aborted).toBe(true);
+        void closing.then(
+          () => {
+            closed = true;
+          },
+          () => {
+            closed = true;
+          },
+        );
+        await vi.waitFor(() => expect(readSignal?.aborted).toBe(true));
+        expect(readSettled).toBe(false);
+        expect(closed).toBe(false);
+        expect(fixture.catalog.pages).toHaveLength(0);
+        expect(fixture.catalog.follows).toHaveLength(0);
+      } finally {
+        release.resolve();
+      }
+      await expect(unary).rejects.toBeDefined();
+      await expect(pending).rejects.toBeDefined();
+      await closing;
+      expect(readSettled).toBe(true);
+      expect(fixture.carrier.signal.aborted).toBe(false);
+      expect(otherScope.revoked.aborted).toBe(false);
+      fixture.catalog.beforeList = undefined;
+      expect(
+        await otherScope.invoke(
+          { ...call, scopeId: otherIssue.scopeId },
+          new AbortController().signal,
+        ),
+      ).toMatchObject({ endpoint: 'session/page' });
+      await other.close();
+      await fixture.control.close();
+    },
+  );
 
   it('acquire → close → late run sends zero Remote requests', async () => {
     const fixture = await setup();

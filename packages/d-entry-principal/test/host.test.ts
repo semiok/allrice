@@ -45,6 +45,45 @@ async function close(
   });
   expect(await iterator.next()).toMatchObject({ done: true });
 }
+function page(fixture: Fixture, scopeId = fixture.selected.scopeId) {
+  return TYPERT_REMOTE.methods['allricePrincipal/invokeScoped'].invoke(
+    fixture.node.remote,
+    {
+      call: {
+        scopeId,
+        endpoint: 'session/page',
+        args: {
+          request: {
+            address: { kind: 'session', sessionId: SessionId('root') },
+            throughSeq: 0,
+          },
+        },
+      },
+    },
+  );
+}
+function follow(
+  fixture: Fixture,
+  endpoint: 'remoteAccess/follow' | 'session/follow',
+) {
+  return TYPERT_REMOTE.methods['allricePrincipal/streamScoped'].invoke(
+    fixture.node.remote,
+    {
+      call:
+        endpoint === 'remoteAccess/follow'
+          ? { endpoint, scopeId: fixture.selected.scopeId, args: {} }
+          : {
+              endpoint,
+              scopeId: fixture.selected.scopeId,
+              args: {
+                request: {
+                  address: { kind: 'session', sessionId: SessionId('root') },
+                },
+              },
+            },
+    },
+  );
+}
 
 describe('public rc.2 Host issuer, generated faces and real in-process Node carrier', () => {
   it('registers the generated three descriptors and issues non-owner snapshot/follow on the exact same child Peer', async () => {
@@ -540,6 +579,158 @@ describe('public rc.2 Host issuer, generated faces and real in-process Node carr
       await close(other, otherIterator);
     },
   );
+
+  it.each(['remoteAccess/follow', 'session/follow'] as const)(
+    'page close fences overlapping page/%s before awaiting the real refresh and delivers no late native work',
+    async (endpoint) => {
+      const fixture = await setup(),
+        scope = await opened(fixture);
+      const entered = deferred(),
+        release = deferred();
+      let readSignal: AbortSignal | undefined,
+        readSettled = false;
+      fixture.catalog.beforeList = async (signal) => {
+        readSignal = signal;
+        entered.resolve();
+        await release.promise;
+        readSettled = true;
+      };
+      const unary = page(fixture);
+      let unarySettled = false;
+      void unary.then(
+        () => {
+          unarySettled = true;
+        },
+        () => {
+          unarySettled = true;
+        },
+      );
+      await entered.promise;
+      const native = vi.spyOn(fixture.host.typertGateway.wireStream, 'open');
+      const handle = follow(fixture, endpoint);
+      const iterator = handle[Symbol.asyncIterator]();
+      const first = iterator.next();
+      let streamSettled = false;
+      void first.then(
+        () => {
+          streamSettled = true;
+        },
+        () => {
+          streamSettled = true;
+        },
+      );
+      const closing = (async () => {
+        await vi.waitFor(() =>
+          expect(
+            fixture.host.allricePrincipal.scopes.get(fixture.selected.scopeId)
+              ?.children.size,
+          ).toBe(1),
+        );
+        await close(scope.handle, scope.iterator);
+      })();
+      let closed = false;
+      void closing.then(
+        () => {
+          closed = true;
+        },
+        () => {
+          closed = true;
+        },
+      );
+      try {
+        await vi.waitFor(() => expect(readSignal?.aborted).toBe(true));
+        expect(readSettled).toBe(false);
+        expect(unarySettled).toBe(false);
+        expect(streamSettled).toBe(false);
+        expect(closed).toBe(false);
+        expect(
+          fixture.host.remoteAccess.snapshotFor(scope.first.principal).grants,
+        ).toEqual([]);
+      } finally {
+        release.resolve();
+      }
+      expect(await unary).toMatchObject({ ok: false });
+      expect(await first).toEqual({
+        done: false,
+        value: { type: 'closed', scopeId: fixture.selected.scopeId },
+      });
+      expect(await iterator.next()).toMatchObject({ done: true });
+      await closing;
+      expect(readSettled).toBe(true);
+      expect(native.mock.calls.some((call) => call[0] === endpoint)).toBe(
+        false,
+      );
+      expect(fixture.catalog.pages).toHaveLength(0);
+      expect(fixture.catalog.follows).toHaveLength(0);
+      expect(await page(fixture)).toMatchObject({ ok: false });
+      fixture.catalog.beforeList = undefined;
+      const otherIssue = { ...fixture.selected, scopeId: randomUUID() };
+      const other = TYPERT_REMOTE.methods['allricePrincipal/openScope'].invoke(
+        fixture.node.remote,
+        { issue: otherIssue },
+      );
+      const otherIterator = other[Symbol.asyncIterator]();
+      expect(await otherIterator.next()).toMatchObject({
+        value: { type: 'opened' },
+      });
+      expect(await page(fixture, otherIssue.scopeId)).toMatchObject({
+        ok: true,
+      });
+      await close(other, otherIterator);
+    },
+  );
+
+  it('keeps native root removal fenced while overlapping page/self-follow await a real read, preserves its failure and joins without late delivery', async () => {
+    const fixture = await setup(),
+      scope = await opened(fixture);
+    const entered = deferred(),
+      release = deferred();
+    let readSettled = false;
+    fixture.catalog.beforeList = async () => {
+      entered.resolve();
+      await release.promise;
+      readSettled = true;
+    };
+    const unary = page(fixture);
+    void unary.catch(() => {});
+    await entered.promise;
+    const native = vi.spyOn(fixture.host.typertGateway.wireStream, 'open');
+    const handle = follow(fixture, 'remoteAccess/follow');
+    const iterator = handle[Symbol.asyncIterator]();
+    const first = iterator.next();
+    void first.catch(() => {});
+    try {
+      await vi.waitFor(() =>
+        expect(
+          fixture.host.allricePrincipal.scopes.get(fixture.selected.scopeId)
+            ?.children.size,
+        ).toBe(1),
+      );
+      fixture.catalog.items = fixture.catalog.items.filter(
+        (row) => String(row.sessionId) !== 'root',
+      );
+      fixture.host.emit('api-session/removed', SessionId('root'));
+      expect(
+        fixture.host.remoteAccess.snapshotFor(scope.first.principal).grants,
+      ).toEqual([]);
+      expect(readSettled).toBe(false);
+      expect(fixture.catalog.pages).toHaveLength(0);
+      expect(fixture.catalog.follows).toHaveLength(0);
+    } finally {
+      release.resolve();
+    }
+    expect(await unary).toMatchObject({ ok: false });
+    await expect(first).rejects.toThrow('PRINCIPAL_ROOT_INVALID');
+    expect(await iterator.next()).toMatchObject({ done: true });
+    await close(scope.handle, scope.iterator);
+    expect(readSettled).toBe(true);
+    expect(
+      native.mock.calls.some((call) => call[0] === 'remoteAccess/follow'),
+    ).toBe(false);
+    expect(await page(fixture)).toMatchObject({ ok: false });
+    expect(fixture.catalog.pages).toHaveLength(0);
+    expect(fixture.parent.signal.aborted).toBe(false);
+  });
 
   it('rejects a different parent, undeclared global/control/list actions and raw nested extras before normal decode can erase them', async () => {
     const fixture = await setup();

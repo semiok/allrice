@@ -160,10 +160,7 @@ class Scope implements Projection {
     parent.signal.addEventListener('abort', lost, { once: true });
     const hint = () => {
       if (this.abort.signal.aborted) return;
-      this.active = false;
-      this.bindings = [];
-      this.ctx.remoteAccess.invalidate();
-      void this.own(() => this.refresh()).catch(lost);
+      void this.refresh().catch(lost);
     };
     const added = parent.ctx.on('api-session/added', hint);
     const removed = parent.ctx.on('api-session/removed', hint);
@@ -191,10 +188,14 @@ class Scope implements Projection {
   own<T>(work: () => Promise<T>): Promise<T> {
     if (this.abort.signal.aborted)
       return Promise.reject(this.abort.signal.reason);
-    const task = Promise.resolve().then(() => {
-      this.abort.signal.throwIfAborted();
-      return work();
-    });
+    return this.track(
+      Promise.resolve().then(() => {
+        this.abort.signal.throwIfAborted();
+        return work();
+      }),
+    );
+  }
+  private track<T>(task: Promise<T>): Promise<T> {
     this.jobs.add(task);
     void task.then(
       () => this.jobs.delete(task),
@@ -227,8 +228,21 @@ class Scope implements Projection {
         this.ctx.remoteAccess.invalidate();
       }
     });
-    this.refreshQueue = task;
+    this.refreshQueue = this.track(task);
     return task;
+  }
+  async current<T>(dispatch: () => Promise<T>): Promise<T> {
+    await this.ready;
+    while (true) {
+      const pending = this.refreshQueue;
+      await pending;
+      this.abort.signal.throwIfAborted();
+      if (pending !== this.refreshQueue) continue;
+      if (!this.active) throw closed();
+      // No await between the stable projection and the native guard/dispatch.
+      // Hints extend the same owned read chain; they never grant from payload.
+      return dispatch();
+    }
   }
   close(): Promise<void> {
     if (this.closing) return this.closing;
@@ -308,12 +322,7 @@ class PrincipalService extends TypertRemoteService {
   }
   private scope(id: string, parent: PeerScope) {
     const scope = this.scopes.get(UuidSchema.parse(id));
-    if (
-      !scope ||
-      !scope.active ||
-      scope.parent !== parent ||
-      scope.abort.signal.aborted
-    )
+    if (!scope || scope.parent !== parent || scope.abort.signal.aborted)
       throw closed();
     return scope;
   }
@@ -383,10 +392,11 @@ class PrincipalService extends TypertRemoteService {
       gate.detach();
     }
   }
-  private async native(
+  private async native<T>(
     scope: Scope,
     endpoint: string,
     args: Record<string, unknown>,
+    dispatch: () => Promise<T>,
   ) {
     await scope.refresh();
     const request = object.parse(args.request);
@@ -406,31 +416,33 @@ class PrincipalService extends TypertRemoteService {
       {},
       scope.abort.signal,
     );
-    scope.abort.signal.throwIfAborted();
-    const item = catalog.items.find(
-      (row) => String(row.sessionId) === sessionId,
-    );
-    if (
-      !item ||
-      !scope.bindings.some(
-        (row) =>
-          row.resource.kind === 'session' &&
-          String(row.resource.id) === sessionId,
+    return scope.current(() => {
+      const item = catalog.items.find(
+        (row) => String(row.sessionId) === sessionId,
+      );
+      if (
+        !item ||
+        !scope.bindings.some(
+          (row) =>
+            row.resource.kind === 'session' &&
+            String(row.resource.id) === sessionId,
+        )
       )
-    )
-      throw Error('PRINCIPAL_RESOURCE_DENIED');
-    if (
-      address?.kind === 'subagent' &&
-      String(item.parentSessionId) !== address.parentSessionId
-    )
-      throw Error('PRINCIPAL_PARENT_DENIED');
-    if (
-      writeEndpoints.some((key) => key === endpoint) &&
-      (scope.issue.access !== 'execute' ||
-        sessionId !== scope.issue.root.nativeSessionId ||
-        item.parentSessionId)
-    )
-      throw Error('PRINCIPAL_WRITE_DENIED');
+        throw Error('PRINCIPAL_RESOURCE_DENIED');
+      if (
+        address?.kind === 'subagent' &&
+        String(item.parentSessionId) !== address.parentSessionId
+      )
+        throw Error('PRINCIPAL_PARENT_DENIED');
+      if (
+        writeEndpoints.some((key) => key === endpoint) &&
+        (scope.issue.access !== 'execute' ||
+          sessionId !== scope.issue.root.nativeSessionId ||
+          item.parentSessionId)
+      )
+        throw Error('PRINCIPAL_WRITE_DENIED');
+      return dispatch();
+    });
   }
   @Remote
   async invokeScoped(
@@ -457,15 +469,16 @@ class PrincipalService extends TypertRemoteService {
     return scope.own(async () => {
       const active = AbortSignal.any([signal, scope.abort.signal]);
       active.throwIfAborted();
-      await this.native(scope, key, args);
-      active.throwIfAborted();
-      const slash = key.indexOf('/');
-      const value = await this.ctx.typertGateway.invoke({
-        namespace: key.slice(0, slash),
-        method: key.slice(slash + 1),
-        args,
-        peer: scope.currentPeer(),
-        signal: active,
+      const value = await this.native(scope, key, args, () => {
+        active.throwIfAborted();
+        const slash = key.indexOf('/');
+        return this.ctx.typertGateway.invoke({
+          namespace: key.slice(0, slash),
+          method: key.slice(slash + 1),
+          args,
+          peer: scope.currentPeer(),
+          signal: active,
+        });
       });
       active.throwIfAborted();
       // Literal branches retain the source descriptor/result relationship.
@@ -538,6 +551,7 @@ class PrincipalService extends TypertRemoteService {
     const active = AbortSignal.any([scope.abort.signal, gate.abort.signal]);
     const setup = scope.own(async () => {
       active.throwIfAborted();
+      let nativeArgs: Record<string, unknown> | undefined;
       if (events)
         z.object({ args: z.object({}).strict() })
           .strict()
@@ -550,27 +564,30 @@ class PrincipalService extends TypertRemoteService {
       else {
         if (raw.endpoint !== 'session/follow')
           throw Error('PRINCIPAL_ENDPOINT_DENIED');
-        const args = object.parse(
+        nativeArgs = object.parse(
           Native.methods['session/follow']
             .input({ strict: true })
             .create()
             .parse(raw.args),
         );
-        await this.native(scope, 'session/follow', args);
       }
-      active.throwIfAborted();
-      const peer = scope.currentPeer();
       const endpoint = events
         ? REMOTE_EVENT_STREAM_ENDPOINT
         : z.string().parse(raw.endpoint);
       const payload = events ? REMOTE_EVENT_STREAM_PAYLOAD : { args: raw.args };
-      const values = await this.ctx.typertGateway.wireStream.open(
-        endpoint,
-        payload,
-        empty,
-        peer,
-        active,
-      );
+      const open = () => {
+        active.throwIfAborted();
+        return this.ctx.typertGateway.wireStream.open(
+          endpoint,
+          payload,
+          empty,
+          scope.currentPeer(),
+          active,
+        );
+      };
+      const values = nativeArgs
+        ? await this.native(scope, 'session/follow', nativeArgs, open)
+        : await scope.current(open);
       iterator = values[Symbol.asyncIterator]();
     });
     const child = {

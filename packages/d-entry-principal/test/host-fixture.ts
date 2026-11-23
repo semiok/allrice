@@ -145,7 +145,7 @@ class Credentials extends CredentialProvider {
  * RemoteAccess snapshots/follow, event ready, codecs and carriers are real rc.2. */
 class Catalog extends TypertRemoteService {
   items = [summary('root'), summary('child', 'root'), summary('other')];
-  beforeList?: () => Promise<void>;
+  beforeList?: (signal: AbortSignal) => Promise<void>;
   beforeFollow?: () => Promise<void>;
   afterFollowSnapshot?: () => Promise<void>;
   afterFollow?: () => Promise<void>;
@@ -156,7 +156,7 @@ class Catalog extends TypertRemoteService {
   }
   @Remote('list')
   async list(_request: object, signal: AbortSignal) {
-    await this.beforeList?.();
+    await this.beforeList?.(signal);
     signal.throwIfAborted();
     return { items: this.items };
   }
