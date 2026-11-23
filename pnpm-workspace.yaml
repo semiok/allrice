@@ -15,6 +15,20 @@ onlyBuiltDependencies:
 # but omit it from runtime dependencies. Only the installed DSH generation may
 # appear here: `pnpm dsh:verify` rejects any other @deepseek-ai/dsh version.
 packageExtensions:
+  # The public Web kernel omits its platform imports from published runtime metadata.
+  '@deepseek-ai/dsh-client-web@0.2.1-rc.2':
+    dependencies:
+      '@deepseek-ai/cordis-plugin-loader': 1.0.6
+      '@deepseek-ai/dsh-client-modules': 0.2.1-rc.2
+      '@deepseek-ai/dsh-client-store': 0.2.1-rc.2
+      '@deepseek-ai/dsh-client-ui-slots': 0.2.1-rc.2
+      '@deepseek-ai/dsh-client-ui-primitives': 0.2.1-rc.2
+      '@deepseek-ai/dsh-client-ui-dockkit': 0.2.1-rc.2
+      '@deepseek-ai/dsh-host-webserver': 0.2.1-rc.2
+      '@tanstack/react-virtual': 3.14.9
+      react: 19.2.0
+      react-dom: 19.2.0
+      zod: 4.4.3
   # This shared helper executes the platform require itself, outside the entry
   # package's resolver context. Close it without a global override.
   'node-addon-native-custom-loader@0.1.9':

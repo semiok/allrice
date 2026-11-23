@@ -3,6 +3,7 @@
   "compilerOptions": {
     "allowJs": true,
     "checkJs": true,
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "noEmit": true,
     "types": ["node", "react"],
     "jsx": "react-jsx",
@@ -16,6 +17,7 @@
     "src/**/*.cjs",
     "src/**/*.mjs",
     "src/**/*.tsx",
+    "src/**/*.ts",
     "src/**/*.d.ts"
   ]
 }

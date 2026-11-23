@@ -8,7 +8,7 @@ overrides:
   '@deepseek-ai/dsh-office-to-pdf@0.2.1-rc.2>@deepseek-ai/libreoffice-kit': 0.1.5
   zustand@4.4.7>use-sync-external-store: 1.6.0
 
-packageExtensionsChecksum: sha256-sGxpTRk/9zr7m5OYJoWvGz2tpEdYS5JVWnl4/loco0Y=
+packageExtensionsChecksum: sha256-id3Z+owJZaBng7ZvPE8hSPmPFjiD2lfA0B4XXQ5RZj8=
 
 patchedDependencies:
   next@16.2.1:
@@ -800,6 +800,9 @@ importers:
       '@deepseek-ai/dsh-client-ui-workspace':
         specifier: 0.2.1-rc.2
         version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@deepseek-ai/dsh-client-web':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)(@types/react@19.2.18)(node-addon-require-builtin@0.1.9)
       '@deepseek-ai/dsh-subagent':
         specifier: 0.2.1-rc.2
         version: 0.2.1-rc.2(35798409003075a790d2e345ef752118)
@@ -1760,6 +1763,11 @@ packages:
 
   '@deepseek-ai/dsh-client-ui-workspace@0.2.1-rc.2':
     resolution: {integrity: sha512-v3ov7wH9/0npaqpACSCAnVIgc5ho8NofeU2k06xGFNmZwxM3//KPeKzHd17/rzl32agw6G2NV2+FbxMx6l3xJw==}
+    peerDependencies:
+      '@deepseek-ai/cordis': ~4.0.5
+
+  '@deepseek-ai/dsh-client-web@0.2.1-rc.2':
+    resolution: {integrity: sha512-eGAqJL2eN8imZIh+iyQy92h6K1zwbaA7hQ5DIwebZQ1B/Ljhc8ZBqJap4LZzUSC2bKGoLcYKGWQPiG3H0UCksg==}
     peerDependencies:
       '@deepseek-ai/cordis': ~4.0.5
 
@@ -8618,6 +8626,25 @@ snapshots:
   '@deepseek-ai/dsh-client-ui-workspace@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)':
     dependencies:
       '@deepseek-ai/cordis': 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
+
+  '@deepseek-ai/dsh-client-web@0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)(@types/react@19.2.18)(node-addon-require-builtin@0.1.9)':
+    dependencies:
+      '@deepseek-ai/cordis': 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
+      '@deepseek-ai/cordis-plugin-loader': 1.0.6(@deepseek-ai/cordis@4.0.5)(node-addon-require-builtin@0.1.9)
+      '@deepseek-ai/dsh-client-modules': 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@deepseek-ai/dsh-client-store': 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)(@types/react@19.2.18)(react@19.2.0)
+      '@deepseek-ai/dsh-client-ui-dockkit': 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)(@types/react@19.2.18)
+      '@deepseek-ai/dsh-client-ui-primitives': 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)(@types/react@19.2.18)
+      '@deepseek-ai/dsh-client-ui-slots': 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@deepseek-ai/dsh-host-webserver': 0.2.1-rc.2(@deepseek-ai/cordis@4.0.5)
+      '@tanstack/react-virtual': 3.14.9(react-dom@19.2.0(react@19.2.0))(react@19.2.0)
+      react: 19.2.0
+      react-dom: 19.2.0(react@19.2.0)
+      zod: 4.4.3
+    transitivePeerDependencies:
+      - '@types/react'
+      - node-addon-require-builtin
+      - supports-color
 
   '@deepseek-ai/dsh-cmdline@0.2.1-rc.2(@deepseek-ai/cordis-plugin-loader@1.0.6)(@deepseek-ai/cordis@4.0.5)':
     dependencies:

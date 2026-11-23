@@ -2,7 +2,8 @@
 
 This DSH `0.2.1-rc.2` package supplies the M1-13 employee presentation and an
 independent `allrice-web` profile. It does not switch the active 3.x entry.
-M1-12 owns installation into the authenticated host, routing, and rollout.
+The original runtime owners retain Host authority and rollout. MET282's product
+page/bootstrap scope is described below; it does not supply those authorities.
 
 M1-14 additionally exports `bindEmployeeSidebar(ctx, port)` from the native
 client module and `EmployeeClientNavigation` from `./employee-client`. The
@@ -325,3 +326,31 @@ default-off rollout, or establish Cookie/storage acceptance. Native independent
 intake is still unbound: ordinary `uploadDeliverable` returns an objectId, never
 a native Attachment or file-upload receipt. No new upload UI or producer is
 introduced here; the approved panels, native slots and toolbar stay unchanged.
+
+## Product bootstrap: first slice
+
+The real `/chatflow/4.0` page owns one same-origin native document. Its document
+handler reuses the original Request/Cookie authentication and strict selection
+schema. This baseline lacks the formal history identity and the F1/F2 runtime
+carrier. It therefore returns canonical 401/400/503 JSON with private/no-store
+and never emits executable HTML. Neither query input nor headers can install a
+fixture owner. The existing `/chatflow` and default-off policy are unchanged;
+ordinary management does not request execute, native-owner or VM prewarm.
+
+`pnpm --filter @allrice/dsh-web-composition build:web-entry /absolute/fresh-directory`
+builds the contribution from this checkout, inventories the official public
+frontend dist, compiles the public AppWebEntry kernel, and collects the real
+profile's graph/bundles in a disposable credential-free loopback Host using the
+released profile launcher. The output directory must be fresh so a failed build
+cannot mix new bytes with an old manifest. Build Host access/preferences are
+excluded from the release data. Artifact success is code inventory, not a
+production principal, graph/events authority, cold scope or application-ready
+receipt. All these runtime sources remain explicitly null.
+
+The kernel's UI lifetime owns one run promise and records its public onFailure
+result. Close cancels/settles its readiness, joins injection/startup and actual
+caller cleanup, then awaits public dispose. Failed cleanup remains unknown;
+there is no timeout-as-closed or automatic retry. The real document does not load
+this kernel until the original runtime producers exist. Cross-frame navigation,
+real product-owner installation and positive browser acceptance remain later
+integration work. No private browser Context is read or passed across frames.

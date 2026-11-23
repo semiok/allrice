@@ -112,6 +112,10 @@ ${js}
 await mkdir(new URL('./dist/', import.meta.url), { recursive: true });
 await writeFile(new URL('./dist/client.js', import.meta.url), artifact);
 await writeFile(
+  new URL('./dist/build-inputs.json', import.meta.url),
+  JSON.stringify(result.metafile, null, 2),
+);
+await writeFile(
   new URL('./dist/build-stats.json', import.meta.url),
   JSON.stringify(
     {
