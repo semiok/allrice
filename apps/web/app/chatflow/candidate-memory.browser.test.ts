@@ -32,6 +32,7 @@ import {
 } from '../../../../packages/database/src/workspace/service.ts';
 import { GET as adminMemories } from '../api/v1/admin/organizations/[organizationId]/employee-memories/route';
 import { GET as adminMemoryDetail } from '../api/v1/admin/organizations/[organizationId]/employee-memories/[id]/route';
+import { GET as adminMemorySource } from '../api/v1/admin/organizations/[organizationId]/employee-memories/[id]/source/route';
 import { GET as manage } from '../api/v1/memories/manage/route';
 import { GET as list, POST as create } from '../api/v1/memories/route';
 import { GET as instanceContent } from '../api/v1/employee-instances/[id]/content/route';
@@ -254,7 +255,9 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
             if (parts[3] === 'admin' && parts[6] === 'employee-memories')
               return request.method === 'GET'
                 ? parts[7]
-                  ? adminMemoryDetail(request, {
+                  ? (parts[8] === 'source'
+                      ? adminMemorySource
+                      : adminMemoryDetail)(request, {
                       params: Promise.resolve({
                         organizationId: parts[5]!,
                         id: parts[7],
@@ -1700,6 +1703,39 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
         },
       ]);
       expect(JSON.stringify(audits)).not.toContain(raw);
+      const sourcePath = `/api/v1/admin/organizations/${identity.org}/employee-memories/${memory.id}/source`;
+      const sourceResponse = ui.page.waitForResponse(
+        (response) => new URL(response.url()).pathname === sourcePath,
+      );
+      await ui.page.getByRole('button', { name: '来源', exact: true }).click();
+      const receipt = await sourceResponse;
+      expect(receipt.status()).toBe(200);
+      expect(Object.keys(await receipt.json()).sort()).toEqual([
+        'capturedAt',
+        'sourceLabel',
+        'sourceType',
+      ]);
+      const source = ui.page.getByRole('region', {
+        name: '记忆来源',
+        exact: true,
+      });
+      await source.getByText('手动添加', { exact: true }).first().waitFor();
+      const sourceAudits = await f.db.unsafe(
+        "select actor_id,metadata from allrice_audit_events where action='employee_memory.admin_read' and organization_id=$1 and resource_id=$2",
+        [identity.org, memory.id],
+      );
+      expect(sourceAudits).toHaveLength(2); // Detail plus explicit source read.
+      expect(
+        sourceAudits.every((audit) => audit.actor_id === identity.user),
+      ).toBe(true);
+      expect(
+        sourceAudits.every(
+          (audit) =>
+            audit.metadata.ownerId === identity.user &&
+            audit.metadata.instanceId === identity.assignment,
+        ),
+      ).toBe(true);
+      expect(JSON.stringify(sourceAudits)).not.toContain(raw);
       await noOverflow(ui.page);
       await capture(ui.page, 'v10-admin-read-only');
     } finally {
@@ -1711,6 +1747,87 @@ suite('candidate memory: real auth/API/PG + both product hosts', () => {
       vi.unstubAllEnvs();
     }
   });
+
+  it.each([401, 403, 404, 503])(
+    'clears all administrator private memory after source %s, retaining detail only for a read-only 5xx retry',
+    async (status) => {
+      const raw = '来源读取失权时必须一起清掉的完整说明';
+      const memory = await createPair(
+        identity.assignment,
+        '后台来源读取边界 ' + status,
+        raw,
+      );
+      const [user] = await f.db.unsafe(
+        'select email from allrice_users where id=$1',
+        [identity.user],
+      );
+      vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', user!.email);
+      const ui = await open('admin');
+      const sourcePath = `/api/v1/admin/organizations/${identity.org}/employee-memories/${memory.id}/source`;
+      const matcher = (url: URL) => url.pathname === sourcePath;
+      try {
+        const article = ui.page
+          .locator('article')
+          .filter({ hasText: memory.summary });
+        await article
+          .getByRole('button', { name: '查看', exact: true })
+          .click();
+        await ui.page
+          .getByRole('dialog')
+          .getByText(raw, { exact: true })
+          .waitFor();
+        if (status === 401) await ui.page.context().clearCookies();
+        else if (status === 403)
+          vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
+        else if (status === 404)
+          expect(
+            (await api('/' + memory.id, write(exact(memory), 'DELETE'))).status,
+          ).toBe(204);
+        else
+          await ui.page.route(matcher, (route) =>
+            route.fulfill({ status: 503, body: '{}' }),
+          );
+        const before = mutations.length;
+        const response = ui.page.waitForResponse((value) =>
+          matcher(new URL(value.url())),
+        );
+        await ui.page
+          .getByRole('button', { name: '来源', exact: true })
+          .click();
+        expect((await response).status()).toBe(status);
+        await ui.page.getByRole('alert').waitFor();
+        if (status === 503) {
+          expect(await article.count()).toBe(1);
+          expect(
+            await ui.page
+              .getByRole('dialog')
+              .getByText(raw, { exact: true })
+              .count(),
+          ).toBe(1);
+          await ui.page.unroute(matcher);
+          const source = ui.page.getByRole('region', {
+            name: '记忆来源',
+            exact: true,
+          });
+          await source
+            .getByRole('button', { name: '重试', exact: true })
+            .click();
+          await source.locator('dl').waitFor();
+        } else {
+          expect(await ui.page.locator('article').count()).toBe(0);
+          expect(await ui.page.getByRole('dialog').count()).toBe(0);
+          expect(
+            await ui.page.getByText(memory.summary, { exact: true }).count(),
+          ).toBe(0);
+          expect(await ui.page.getByText(raw, { exact: true }).count()).toBe(0);
+        }
+        expect(mutations.length).toBe(before);
+      } finally {
+        await ui.close();
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it.each([401, 403, 404, 503])(
     'clears cached administrator scope after detail %s and retains lawful context for 5xx',

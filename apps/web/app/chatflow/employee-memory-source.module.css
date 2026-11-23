@@ -1,0 +1,38 @@
+/* MET-284 v1 approved source area; existing area tokens and native disclosure. */
+.source {
+  margin-top: var(--ar-space-4);
+  padding-top: var(--ar-space-3);
+  border-top: 1px solid var(--ar-border);
+  color: var(--ar-text-secondary);
+}
+.fields {
+  display: grid;
+  gap: var(--ar-space-2);
+  margin: var(--ar-space-3) 0 0;
+  font: var(--ar-font-caption);
+}
+.fields > div {
+  display: grid;
+  grid-template-columns: 5em minmax(0, 1fr);
+  gap: var(--ar-space-3);
+}
+.fields dt {
+  color: var(--ar-text-tertiary);
+}
+.fields dd {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ar-text-secondary);
+}
+.status,
+.error {
+  margin: var(--ar-space-3) 0 0;
+  font: var(--ar-font-caption);
+}
+.error {
+  color: var(--ar-danger);
+}
+.error button {
+  padding: 0 4px !important;
+}

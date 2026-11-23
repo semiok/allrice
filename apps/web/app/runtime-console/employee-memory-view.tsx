@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   EmployeeMemoryDetailResponseSchema,
   EmployeeMemoryListSchema,
@@ -7,9 +7,12 @@ import {
 import { Modal } from '@deepseek-ai/dsh-client-ui-primitives';
 import { AdminButton } from '../../components/admin/admin-ui';
 import {
+  adminEmployeeMemorySourceReader,
   MemoryAccessLost,
   memoryReadFailed,
+  type MemorySourceRead,
 } from '../../lib/memory/employee-memory-client';
+import { EmployeeMemorySource } from '../chatflow/employee-memory-source';
 import css from '../chatflow/employee-memory-manager.module.css';
 
 type AdminMemoryScope = {
@@ -106,6 +109,15 @@ function ReadableMemories(
     id: string;
     summary: string;
   } | null>(null);
+  const sourceReader = useMemo(
+    () =>
+      adminEmployeeMemorySourceReader({
+        organizationId: props.organizationId,
+        ownerId: props.ownerId,
+        instanceId: props.instanceId,
+      }),
+    [props.organizationId, props.ownerId, props.instanceId],
+  );
   // The administrator uses its own audited scope, never the owner endpoint.
   const base = `/api/v1/admin/organizations/${encodeURIComponent(props.organizationId)}/employee-memories`;
   const params = new URLSearchParams({
@@ -163,6 +175,7 @@ function ReadableMemories(
           key={selected.id}
           path={`${base}/${encodeURIComponent(selected.id)}?${params}`}
           selected={selected}
+          sourceReader={sourceReader}
           onClose={() => setSelected(null)}
           onAccessLost={props.onAccessLost}
         />
@@ -174,6 +187,7 @@ function ReadableMemories(
 function AdminMemoryDetail(props: {
   path: string;
   selected: { id: string; summary: string };
+  sourceReader: MemorySourceRead;
   onClose: () => void;
   onAccessLost: () => void;
 }) {
@@ -185,6 +199,18 @@ function AdminMemoryDetail(props: {
   const validData = data?.memory.id === props.selected.id ? data : undefined;
   const readError =
     error || (data && !validData ? memoryReadFailed : undefined);
+  const readSource = useCallback<MemorySourceRead>(
+    async (row, signal) => {
+      try {
+        return await props.sourceReader(row, signal);
+      } catch (cause) {
+        if (!signal.aborted && cause instanceof MemoryAccessLost)
+          props.onAccessLost();
+        throw cause;
+      }
+    },
+    [props.sourceReader, props.onAccessLost],
+  );
   return (
     <Modal
       open
@@ -204,6 +230,10 @@ function AdminMemoryDetail(props: {
           <p className={css.content}>
             {validData.memory.details ?? '没有详细说明'}
           </p>
+          <EmployeeMemorySource
+            memoryId={validData.memory.id}
+            onRead={readSource}
+          />
         </>
       )}
     </Modal>

@@ -162,6 +162,7 @@ suite('MET251 v10 memory sidebar presentation', () => {
         expect(await dialog.getByText(/^生效于 \d{2}-\d{2}$/).count()).toBe(1);
         expect(await dialog.getByRole('button').allTextContents()).toEqual([
           '×',
+          '来源',
           '删除',
           '修改',
         ]);
@@ -707,6 +708,137 @@ suite('MET251 v10 memory sidebar presentation', () => {
       ).toBe(true);
     } finally {
       await failed.close();
+    }
+  });
+  it('reads the minimal source only after native disclosure and retries only that read', async () => {
+    const f = await fixture('reject=source', 390);
+    try {
+      await f.page.locator('[data-memory-id="a1"] button').click();
+      const source = f.page.getByRole('region', {
+        name: '记忆来源',
+        exact: true,
+      });
+      const toggle = source.getByRole('button', { name: '来源', exact: true });
+      await toggle.waitFor();
+      expect(
+        (await f.operations()).filter((entry) => entry.action === 'source'),
+      ).toHaveLength(0);
+      await toggle.focus();
+      await f.page.keyboard.press('Enter');
+      await source.getByRole('alert').waitFor();
+      await source.getByRole('button', { name: '重试', exact: true }).click();
+      await source.getByText('对话中自动记下', { exact: true }).waitFor();
+      expect(await source.locator('dt').allTextContents()).toEqual([
+        '来源类型',
+        '来源说明',
+        '记录于',
+      ]);
+      expect(await source.locator('dd').first().textContent()).toBe('来自对话');
+      expect(
+        await source.locator('time').getAttribute('datetime'),
+      ).toBeTruthy();
+      expect(await source.locator('a').count()).toBe(0);
+      expect((await f.operations()).map((entry) => entry.action)).toEqual([
+        'read',
+        'source',
+        'source',
+      ]);
+    } finally {
+      await f.close();
+    }
+  });
+  it.each(['collapse', 'close', 'target'] as const)(
+    'cancels an unfinished source on %s and discards its late result',
+    async (action) => {
+      const f = await fixture('hold=source');
+      try {
+        await f.page.locator('[data-memory-id="a1"] button').click();
+        const source = f.page.getByRole('region', {
+          name: '记忆来源',
+          exact: true,
+        });
+        const toggle = source.getByRole('button', {
+          name: '来源',
+          exact: true,
+        });
+        await toggle.click();
+        await source.getByRole('status').waitFor();
+        if (action === 'collapse') await toggle.click();
+        else if (action === 'close') await f.page.keyboard.press('Escape');
+        else
+          await f.page
+            .locator('#switch-target')
+            .evaluate((node) => (node as HTMLButtonElement).click());
+        await expect
+          .poll(
+            async () =>
+              (await f.operations()).filter(
+                (entry) => entry.action === 'source-aborted',
+              ).length,
+          )
+          .toBe(1);
+        await f.page
+          .locator('#release')
+          .evaluate((node) => (node as HTMLButtonElement).click());
+        expect(
+          await f.page.getByText('对话中自动记下', { exact: true }).count(),
+        ).toBe(0);
+        expect(
+          (await f.operations()).some((entry) =>
+            ['save', 'confirm', 'delete'].includes(entry.action),
+          ),
+        ).toBe(false);
+      } finally {
+        await f.close();
+      }
+    },
+  );
+  it('keeps an unbound source read failed without hiding the lawful detail or offering a source link', async () => {
+    const f = await fixture('unbound-source=1');
+    try {
+      await f.page.locator('[data-memory-id="a1"] button').click();
+      await f.page.getByRole('button', { name: '来源', exact: true }).click();
+      await f.page
+        .getByRole('region', { name: '记忆来源', exact: true })
+        .getByRole('alert')
+        .waitFor();
+      expect(
+        await f.page
+          .getByRole('dialog')
+          .getByText('金额超过 5 万先发给我看，再发客户。', { exact: true })
+          .count(),
+      ).toBe(1);
+      expect(await f.page.getByRole('dialog').locator('a').count()).toBe(0);
+      expect((await f.operations()).map((entry) => entry.action)).toEqual([
+        'read',
+      ]);
+    } finally {
+      await f.close();
+    }
+  });
+  it('clears the manager list, detail and source after its host reader loses memory access', async () => {
+    const f = await fixture('manager-source-denied=1');
+    try {
+      await f.rows.first().locator('button').click();
+      await f.page.getByRole('button', { name: '来源', exact: true }).click();
+      await f.page
+        .getByRole('region', { name: '个人记忆', exact: true })
+        .getByRole('alert')
+        .waitFor();
+      expect(await f.rows.count()).toBe(0);
+      expect(await f.page.getByRole('dialog').count()).toBe(0);
+      expect(
+        await f.page
+          .getByRole('region', { name: '记忆来源', exact: true })
+          .count(),
+      ).toBe(0);
+      expect(
+        await f.page
+          .getByText('金额超过 5 万先发给我看，再发客户。', { exact: true })
+          .count(),
+      ).toBe(0);
+    } finally {
+      await f.close();
     }
   });
 });

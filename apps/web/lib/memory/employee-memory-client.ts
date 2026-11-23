@@ -4,8 +4,13 @@ import {
   EmployeeMemoryListSchema,
   EmployeeMemoryMutationInputSchema,
   EmployeeMemoryWriteResponseSchema,
+  MemoryAdminDetailQueryProjectionSchema,
+  MemoryDetailQueryProjectionSchema,
+  MemorySourceViewProjectionSchema,
   PersonalMemoryPairSchema,
   type EmployeeMemoryRecord,
+  type MemoryDetailQueryProjection,
+  type MemorySourceViewProjection,
 } from '@allrice/contracts';
 import type { z } from 'zod';
 
@@ -18,6 +23,16 @@ export type MemoryTarget = {
   instanceId: string;
   headers: Record<string, string>;
 };
+/** The host binds authentication and current module qualification. Selectors
+ * alone never grant source access; there is no legacy HTTP fallback. */
+export type EmployeeMemorySourceReader = (
+  input: MemoryDetailQueryProjection,
+  signal: AbortSignal,
+) => Promise<MemorySourceViewProjection>;
+export type MemorySourceRead = (
+  row: Pick<MemoryRow, 'id'>,
+  signal: AbortSignal,
+) => Promise<MemorySourceViewProjection>;
 type Action = 'create' | 'edit' | 'promote' | 'delete';
 type Identity = {
   fingerprint: string;
@@ -32,6 +47,7 @@ export type MemoryWriteStore = Map<string, Identity>;
 export const memoryUnknown = '暂时无法确认操作结果。';
 export const memorySaveUnknown = '暂时无法确认保存结果。';
 export const memoryReadFailed = '记忆读取失败，请重试。';
+export const memorySourceReadFailed = '来源读取失败，请重试。';
 export const memoryFull =
   '记忆已满（100 / 100）。删掉不再用的记忆后，才能新增或确认新的。';
 
@@ -48,6 +64,41 @@ export class MemoryAccessLost extends MemoryClientError {
   constructor() {
     super(memoryReadFailed, true);
   }
+}
+
+/** A real administrator keeps their own audited audience and never borrows
+ * the owner's endpoint, credentials or module qualification. */
+export function adminEmployeeMemorySourceReader(target: {
+  organizationId: string;
+  ownerId: string;
+  instanceId: string;
+}): MemorySourceRead {
+  const scope = {
+    organizationId: target.organizationId,
+    ownerId: target.ownerId,
+    instanceId: target.instanceId,
+  };
+  return async (row, signal) => {
+    signal.throwIfAborted();
+    const input = MemoryAdminDetailQueryProjectionSchema.parse({
+      ...scope,
+      memoryId: row.id,
+    });
+    const params = new URLSearchParams({
+      ownerId: input.ownerId,
+      instanceId: input.instanceId,
+    });
+    const response = await fetch(
+      `/api/v1/admin/organizations/${encodeURIComponent(input.organizationId)}/employee-memories/${encodeURIComponent(input.memoryId)}/source?${params}`,
+      { cache: 'no-store', signal },
+    );
+    signal.throwIfAborted();
+    if ([401, 403, 404].includes(response.status)) throw new MemoryAccessLost();
+    if (response.status !== 200) throw Error(memorySourceReadFailed);
+    const value = MemorySourceViewProjectionSchema.parse(await response.json());
+    signal.throwIfAborted();
+    return value;
+  };
 }
 
 async function rejectResponse(response: Response): Promise<never> {
@@ -95,8 +146,14 @@ async function digest(value: unknown) {
 export function employeeMemoryClient(
   target: MemoryTarget,
   writes: MemoryWriteStore,
+  options: { readSource?: EmployeeMemorySourceReader } = {},
 ) {
   const headers = { ...target.headers };
+  const sourceTarget = {
+    workspaceId: target.workspaceId,
+    instanceId: target.instanceId,
+  };
+  const sourceReader = options.readSource;
   const query = () =>
     new URLSearchParams({
       workspaceId: target.workspaceId,
@@ -256,6 +313,17 @@ export function employeeMemoryClient(
       return result;
     },
     detail,
+    async source(row: Pick<MemoryRow, 'id'>, signal: AbortSignal) {
+      signal.throwIfAborted();
+      if (!sourceReader) throw Error(memorySourceReadFailed);
+      const input = MemoryDetailQueryProjectionSchema.parse({
+        ...sourceTarget,
+        memoryId: row.id,
+      });
+      const value = await sourceReader(input, signal);
+      signal.throwIfAborted();
+      return MemorySourceViewProjectionSchema.parse(value);
+    },
     save: (pair: MemoryPair, row: MemoryRow | null) =>
       write(row ? 'edit' : 'create', row, PersonalMemoryPairSchema.parse(pair)),
     confirm: (row: MemoryRow) => write('promote', row),

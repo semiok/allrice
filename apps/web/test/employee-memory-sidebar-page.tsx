@@ -1,12 +1,17 @@
 // Synthetic component fixture only. No production route or memory HTTP adapter.
 import { createRoot } from 'react-dom/client';
-import { useRef, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import {
   EmployeeMemorySidebar,
   type MemorySidebarDetail,
   type MemorySidebarInput,
   type MemorySidebarRow,
 } from '../app/chatflow/employee-memory-sidebar';
+import { EmployeeMemoryManager } from '../app/chatflow/employee-memory-manager';
+import {
+  MemoryAccessLost,
+  type MemorySourceRead,
+} from '../lib/memory/employee-memory-client';
 import { setAppearance } from '../lib/theme/appearance';
 import '../app/dsh-upstream/design-platform.css';
 import '../app/dsh-upstream/base.css';
@@ -61,6 +66,33 @@ function Fixture() {
   );
   const [operations, setOperations] = useState<unknown[]>([]);
   const release = useRef<(() => void) | null>(null);
+  const sourceAttempts = useRef(0);
+  const readSource = useCallback<MemorySourceRead>(async (row, signal) => {
+    sourceAttempts.current += 1;
+    const attempt = sourceAttempts.current;
+    setOperations((value) => [...value, { action: 'source', payload: row.id }]);
+    const aborted = () =>
+      setOperations((value) => [
+        ...value,
+        { action: 'source-aborted', payload: row.id },
+      ]);
+    signal.addEventListener('abort', aborted, { once: true });
+    try {
+      if (query.get('hold') === 'source')
+        await new Promise<void>((resolve) => {
+          release.current = resolve;
+        });
+      if (query.get('reject') === 'source' && attempt === 1)
+        throw Error('Synthetic source read rejection');
+      return {
+        sourceType: 'message',
+        sourceLabel: '模型提取候选',
+        capturedAt: before,
+      };
+    } finally {
+      signal.removeEventListener('abort', aborted);
+    }
+  }, []);
   async function record(action: string, payload: unknown) {
     setOperations((value) => [...value, { action, payload }]);
     if (query.get('hold') === action)
@@ -171,6 +203,7 @@ function Fixture() {
             setOperations((value) => [...value, { action: 'reload' }])
           }
           onReadDetail={read}
+          onReadSource={query.has('unbound-source') ? undefined : readSource}
           onConfirm={confirm}
           onDelete={remove}
           onSave={save}
@@ -182,4 +215,39 @@ function Fixture() {
     </>
   );
 }
-createRoot(document.getElementById('root')!).render(<Fixture />);
+
+/** Synthetic host reader tests only. This does not supply production module
+ * qualification or establish a personal source HTTP route. */
+function ManagerSourceFixture() {
+  return (
+    <EmployeeMemoryManager
+      scopeId="synthetic-owner"
+      workspaceId="00000000-0000-4000-8000-000000000001"
+      instanceId="00000000-0000-4000-8000-000000000002"
+      headers={{}}
+      employeeName="Rice"
+      readSource={async () => {
+        throw new MemoryAccessLost();
+      }}
+    />
+  );
+}
+if (query.has('manager-source-denied')) {
+  const memory = { ...initial[1]!, id: '00000000-0000-4000-8000-000000000003' };
+  window.fetch = async (input) =>
+    Response.json(
+      String(input).includes('/manage?')
+        ? {
+            schemaVersion: 2,
+            workspaceId: '00000000-0000-4000-8000-000000000001',
+            instanceId: '00000000-0000-4000-8000-000000000002',
+            active: [{ ...memory, details: undefined }],
+            pending: [],
+            counts: { active: 1, pending: 0, maxActive: 100 },
+          }
+        : { schemaVersion: 2, memory },
+    );
+}
+createRoot(document.getElementById('root')!).render(
+  query.has('manager-source-denied') ? <ManagerSourceFixture /> : <Fixture />,
+);

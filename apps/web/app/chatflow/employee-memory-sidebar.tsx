@@ -11,8 +11,10 @@ import {
   memoryUnknown,
   type MemoryPair,
   type MemoryRow,
+  type MemorySourceRead,
 } from '../../lib/memory/employee-memory-client';
 import { EmployeeMemoryDeleteConfirmation } from './employee-memory-delete-confirmation';
+import { EmployeeMemorySource } from './employee-memory-source';
 import css from './employee-memory-sidebar.module.css';
 
 export type MemorySidebarRow = MemoryRow;
@@ -30,6 +32,7 @@ type Props = {
     row: MemorySidebarRow,
     signal: AbortSignal,
   ) => Promise<MemorySidebarDetail>;
+  onReadSource?: MemorySourceRead;
   onConfirm: (row: MemorySidebarRow) => Promise<void>;
   onDelete: (row: MemorySidebarRow) => Promise<void>;
   onSave: (
@@ -45,6 +48,9 @@ export function EmployeeMemorySidebar(props: Props) {
 const fullMessage =
   '记忆已满（100 / 100）。删掉不再用的记忆后，才能新增或确认新的。';
 const size = (value: string) => Array.from(value).length;
+const unboundSource: MemorySourceRead = async () => {
+  throw Error('Memory source reader is not bound');
+};
 function dateParts(value: string) {
   const date = new Date(value);
   if (!Number.isFinite(date.getTime())) return null;
@@ -474,6 +480,13 @@ function Sidebar(props: Props) {
                     ? `生效于 ${timestamp.day}`
                     : `添加于 ${timestamp.today ? '今天' : timestamp.day} ${timestamp.time}`}
                 </p>
+              )}
+              {detail && !reading && (
+                <EmployeeMemorySource
+                  memoryId={detail.id}
+                  active={props.active}
+                  onRead={props.onReadSource ?? unboundSource}
+                />
               )}
             </div>
             <footer className={css.footer}>

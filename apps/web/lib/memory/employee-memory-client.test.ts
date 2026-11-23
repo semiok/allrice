@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { EmployeeMemoryRecord } from '@allrice/contracts';
 import {
+  adminEmployeeMemorySourceReader,
   employeeMemoryClient,
+  MemoryAccessLost,
   memoryFull,
   memorySaveUnknown,
   memoryUnknown,
+  memorySourceReadFailed,
   type MemoryWriteStore,
 } from './employee-memory-client';
 
@@ -260,5 +263,105 @@ describe('employee memory v2 consumer operation identity', () => {
     expect(stored).not.toContain(pair.summary);
     expect(stored).not.toContain(pair.details);
     expect(stored).not.toContain('another-viewer');
+  });
+});
+
+describe('employee memory source projection consumer', () => {
+  const source = {
+    sourceType: 'message' as const,
+    sourceLabel: '模型提取候选',
+    capturedAt: at,
+  };
+  it('fails closed without a qualified host reader and makes no legacy HTTP request', async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    await expect(
+      employeeMemoryClient(target, new Map()).source(
+        record,
+        new AbortController().signal,
+      ),
+    ).rejects.toThrow(memorySourceReadFailed);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it('passes only the current personal selector and cancellation to the named host reader', async () => {
+    const readSource = vi.fn().mockResolvedValue(source);
+    const signal = new AbortController().signal;
+    const client = employeeMemoryClient(target, new Map(), { readSource });
+    expect(await client.source(record, signal)).toEqual(source);
+    expect(readSource).toHaveBeenCalledExactlyOnceWith(
+      {
+        workspaceId: target.workspaceId,
+        instanceId: target.instanceId,
+        memoryId: record.id,
+      },
+      signal,
+    );
+    const lost = new MemoryAccessLost();
+    readSource.mockRejectedValueOnce(lost);
+    await expect(client.source(record, signal)).rejects.toBe(lost);
+    readSource.mockResolvedValueOnce({
+      ...source,
+      rawMessage: 'not permitted',
+    });
+    await expect(client.source(record, signal)).rejects.toThrow();
+  });
+  it('suppresses a late host result after cancellation without inventing a source revision', async () => {
+    let release!: (value: typeof source) => void;
+    const readSource = vi.fn(
+      () =>
+        new Promise<typeof source>((resolve) => {
+          release = resolve;
+        }),
+    );
+    const controller = new AbortController();
+    const client = employeeMemoryClient(target, new Map(), { readSource });
+    const pending = client.source(record, controller.signal);
+    controller.abort();
+    release(source);
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    readSource.mockClear();
+    await expect(
+      client.source(record, controller.signal),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    expect(readSource).not.toHaveBeenCalled();
+  });
+  it.each([401, 403, 404])(
+    'preserves admin source %s as whole-memory access loss',
+    async (status) => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(denied(status)));
+      const read = adminEmployeeMemorySourceReader({
+        organizationId: id(7),
+        ownerId: id(8),
+        instanceId: id(2),
+      });
+      await expect(
+        read(record, new AbortController().signal),
+      ).rejects.toBeInstanceOf(MemoryAccessLost);
+    },
+  );
+  it('uses only the administrator endpoint and strict minimal response, with read-only retry', async () => {
+    const fetch = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 503 }))
+      .mockResolvedValueOnce(Response.json(source))
+      .mockResolvedValueOnce(Response.json({ ...source, sourceId: id(99) }));
+    vi.stubGlobal('fetch', fetch);
+    const read = adminEmployeeMemorySourceReader({
+      organizationId: id(7),
+      ownerId: id(8),
+      instanceId: id(2),
+    });
+    const signal = new AbortController().signal;
+    await expect(read(record, signal)).rejects.toThrow(memorySourceReadFailed);
+    expect(await read(record, signal)).toEqual(source);
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      `/api/v1/admin/organizations/${id(7)}/employee-memories/${record.id}/source?ownerId=${id(8)}&instanceId=${id(2)}`,
+      { cache: 'no-store', signal },
+    );
+    await expect(read(record, signal)).rejects.toThrow();
+    expect(
+      fetch.mock.calls.every(([, init]) => !init.method && !init.body),
+    ).toBe(true);
   });
 });

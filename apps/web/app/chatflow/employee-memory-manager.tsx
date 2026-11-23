@@ -8,6 +8,8 @@ import {
   memoryReadFailed,
   type MemoryList,
   type MemoryWriteStore,
+  type EmployeeMemorySourceReader,
+  type MemorySourceRead,
 } from '../../lib/memory/employee-memory-client';
 import { EmployeeMemorySidebar } from './employee-memory-sidebar';
 
@@ -20,6 +22,7 @@ type Props = {
   refreshKey?: string;
   active?: boolean;
   writes?: MemoryWriteStore;
+  readSource?: EmployeeMemorySourceReader;
 };
 
 /** The production owner host consumes only the complete schemaVersion2 API. */
@@ -48,13 +51,17 @@ function Manager(props: Props & { writes: MemoryWriteStore }) {
     generation = useRef(0);
   const source = useRef({});
   const client = useMemo(
-    () => employeeMemoryClient(props, props.writes),
+    () =>
+      employeeMemoryClient(props, props.writes, {
+        readSource: props.readSource,
+      }),
     [
       props.scopeId,
       props.workspaceId,
       props.instanceId,
       props.headers,
       props.writes,
+      props.readSource,
     ],
   );
   useEffect(() => {
@@ -71,6 +78,22 @@ function Manager(props: Props & { writes: MemoryWriteStore }) {
     setError(memoryReadFailed);
     setAccessRevision((value) => value + 1);
   }, []);
+  const readSource = useCallback<MemorySourceRead>(
+    async (row, signal) => {
+      try {
+        return await client.source(row, signal);
+      } catch (cause) {
+        if (
+          alive.current &&
+          !signal.aborted &&
+          cause instanceof MemoryAccessLost
+        )
+          clearPrivate();
+        throw cause;
+      }
+    },
+    [client, clearPrivate],
+  );
   const load = useCallback(
     async (signal?: AbortSignal) => {
       const started = ++generation.current;
@@ -150,6 +173,7 @@ function Manager(props: Props & { writes: MemoryWriteStore }) {
         loading={loading}
         error={error}
         onReload={() => void load()}
+        onReadSource={readSource}
         onReadDetail={async (row, signal) => {
           try {
             return await client.detail(row, signal);
