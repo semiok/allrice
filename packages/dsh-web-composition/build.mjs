@@ -97,6 +97,10 @@ ${js}
     exports.bindEmployeeSettings = settings.bindEmployeeSettings;
     exports.bindEmployeePanels = panels.bindEmployeePanels;
     exports.bindEmployeePanelsData = panels.bindEmployeePanelsData;
+    exports.bindEmployeePanelsHttp = panels.bindEmployeePanelsHttp;
+    exports.createEmployeePanelsHttpResolver = panels.createEmployeePanelsHttpResolver;
+    exports.readEmployeePanelsWriteReceipt = panels.readEmployeePanelsWriteReceipt;
+    exports.EmployeePanelsWriteUnknownError = panels.EmployeePanelsWriteUnknownError;
     exports.createEmployeePanelsDataPort = panels.createEmployeePanelsDataPort;
     exports.createEmployeePanelDataClient = panels.createEmployeePanelDataClient;
     exports.uploadPersonalDeliverable = panels.uploadPersonalDeliverable;

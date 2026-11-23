@@ -37,6 +37,10 @@ import {
   createEmployeePanelsDataPort,
   type EmployeePanelsDataResolver,
 } from './employee-panels-data';
+import {
+  createEmployeePanelsHttpResolver,
+  type EmployeePanelsHttpOptions,
+} from '../../../apps/web/lib/chatflow/employee-panel-data-http';
 
 function useOwner(binding: EmployeePanelsBinding, sessionId: SessionIdOf) {
   const subscribe = useCallback(
@@ -316,9 +320,39 @@ export function bindEmployeePanels(
 /** Explicit data entry remains an alias of the guarded public default. */
 export const bindEmployeePanelsData = bindEmployeePanels;
 
+export type EmployeePanelsHttpOwnerResolver = Parameters<
+  typeof createEmployeePanelsHttpResolver<EmployeePanelsSnapshot>
+>[0];
+
+/** The authenticated owner supplies its current catalog selection. A native
+ * Session id is only an address; an absent owner never selects a legacy route. */
+export function bindEmployeePanelsHttp(
+  ctx: Context,
+  port: EmployeePanelsPort,
+  resolve: EmployeePanelsHttpOwnerResolver = () => null,
+  options: Pick<EmployeePanelsHttpOptions, 'fetch'> = {},
+) {
+  return ctx.plugin({
+    async apply(owner: Context) {
+      const lifetime = new AbortController();
+      owner.effect(() => () => lifetime.abort());
+      await bindEmployeePanels(
+        owner,
+        port,
+        createEmployeePanelsHttpResolver(resolve, lifetime.signal, options),
+      );
+    },
+  });
+}
+
 export { createEmployeePanelsDataPort } from './employee-panels-data';
 export { createEmployeePanelDataClient } from '../../../apps/web/lib/chatflow/employee-panel-data';
 export { uploadPersonalDeliverable } from '../../../apps/web/lib/chatflow/employee-panel-upload';
+export {
+  createEmployeePanelsHttpResolver,
+  readEmployeePanelsWriteReceipt,
+  EmployeePanelsWriteUnknownError,
+} from '../../../apps/web/lib/chatflow/employee-panel-data-http';
 
 export type {
   EmployeePanelsActions,

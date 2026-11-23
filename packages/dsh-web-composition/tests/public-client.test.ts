@@ -136,6 +136,10 @@ it('exports the settings binder from the built module-table artifact and shares 
     'bindEmployeeSidebar',
     'bindEmployeeSettings',
     'bindEmployeePanels',
+    'bindEmployeePanelsHttp',
+    'createEmployeePanelsHttpResolver',
+    'readEmployeePanelsWriteReceipt',
+    'EmployeePanelsWriteUnknownError',
   ])
     expect(typeof exports[name], name).toBe('function');
   expect(requested).toContain('@deepseek-ai/dsh-client-ui-primitives');

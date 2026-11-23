@@ -298,3 +298,30 @@ which also hides the native + command/attachment control and other accessories.
 This package keeps the meter and those interactions. An independent upstream
 ContextMeter slot/config is required to finish hiding employee chat usage.
 No private CSS, fake projection/activity state, or composer takeover is used.
+
+## Formal panel HTTP owner binding (MET-282)
+
+The installed client now exports `bindEmployeePanelsHttp(ctx, panelsPort,
+resolve, { fetch? })`. It installs the existing guarded binder with the formal
+`createEmployeePanelsHttpResolver`; its HTTP lifetime follows the Cordis owner.
+`resolve(nativeSessionId, snapshot)` must come from the real authenticated owner
+and current catalog and return `{ selection, viewerId }` or `null`. Selection is
+`{ workspaceId, employeeInstanceId, threadId? }`; a native Session address and
+old panel headers never supply this mapping. Missing selection remains unbound,
+with no HTTP request or legacy fallback. The original default binder still
+requires an explicit resolver and is fail closed.
+
+The same client exports the formal `readEmployeePanelsWriteReceipt` and
+`EmployeePanelsWriteUnknownError` unchanged. Keep the original operation,
+requestId, input and action sourceId after an uncertain write. A qualified owner
+may read that exact receipt with its current selection and lifetime signal;
+this is GET only and never replays a write or replaces its key. Unknown is not
+proof of no commit, and recorded/ready=false is not completed bytes. The helper
+is an owner seam, not a new automatic UI retry policy.
+
+The imported BFF source is `4ab89126b1306936787df031aab9e1e7087538ed`. These
+exports do not install a production authenticated owner/catalog, enable the
+default-off rollout, or establish Cookie/storage acceptance. Native independent
+intake is still unbound: ordinary `uploadDeliverable` returns an objectId, never
+a native Attachment or file-upload receipt. No new upload UI or producer is
+introduced here; the approved panels, native slots and toolbar stay unchanged.
