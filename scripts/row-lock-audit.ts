@@ -250,6 +250,65 @@ export function createRowLockAudit(
     `${emptyPrefix}${parameter.getSourceFile().fileName}:${parameter.pos}`;
   const facts = (env: Env) =>
     new Map([...env].filter(([key]) => key.startsWith(emptyPrefix)));
+  const boundNames = (name: ts.BindingName): string[] =>
+    ts.isIdentifier(name)
+      ? [name.text]
+      : name.elements.flatMap((element) =>
+          ts.isBindingElement(element) ? boundNames(element.name) : [],
+        );
+  const wrapped = (
+    node: ts.Node,
+  ): node is
+    | ts.ParenthesizedExpression
+    | ts.AsExpression
+    | ts.SatisfiesExpression
+    | ts.NonNullExpression
+    | ts.TypeAssertion =>
+    ts.isParenthesizedExpression(node) ||
+    ts.isAsExpression(node) ||
+    ts.isSatisfiesExpression(node) ||
+    ts.isNonNullExpression(node) ||
+    ts.isTypeAssertionExpression(node);
+  function readOnlyMember(reference: ts.Identifier) {
+    let base: ts.Node = reference;
+    while (wrapped(base.parent)) base = base.parent;
+    let value: ts.Node = base.parent;
+    if (
+      !(
+        ts.isPropertyAccessExpression(value) ||
+        ts.isElementAccessExpression(value)
+      ) ||
+      value.expression !== base
+    )
+      return false; // No alias/argument/object escape.
+    while (
+      ((ts.isPropertyAccessExpression(value.parent) ||
+        ts.isElementAccessExpression(value.parent) ||
+        wrapped(value.parent) ||
+        ts.isSpreadAssignment(value.parent) ||
+        ts.isSpreadElement(value.parent)) &&
+        value.parent.expression === value) ||
+      (ts.isPropertyAssignment(value.parent) &&
+        value.parent.initializer === value) ||
+      ts.isObjectLiteralExpression(value.parent) ||
+      ts.isArrayLiteralExpression(value.parent)
+    )
+      value = value.parent;
+    const use = value.parent;
+    return !(
+      (ts.isBinaryExpression(use) &&
+        use.left === value &&
+        use.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+        use.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+      ((ts.isForOfStatement(use) || ts.isForInStatement(use)) &&
+        use.initializer === value) ||
+      ts.isDeleteExpression(use) ||
+      ts.isPostfixUnaryExpression(use) ||
+      (ts.isPrefixUnaryExpression(use) &&
+        (use.operator === ts.SyntaxKind.PlusPlusToken ||
+          use.operator === ts.SyntaxKind.MinusMinusToken))
+    );
+  }
   const defaultProofs = new Map<ts.ParameterDeclaration, boolean>();
   function unmodifiedEmptyDefault(parameter: ts.ParameterDeclaration) {
     const cached = defaultProofs.get(parameter);
@@ -264,42 +323,10 @@ export function createRowLockAudit(
       if (
         ts.isIdentifier(node) &&
         node !== parameter.name &&
-        symbolOf(node) === symbol
-      ) {
-        let value: ts.Node = node.parent;
-        // The object itself may not escape through an alias, argument or return.
-        if (
-          !ts.isPropertyAccessExpression(value) ||
-          value.expression !== node
-        ) {
-          safe = false;
-          return;
-        }
-        while (
-          (ts.isPropertyAccessExpression(value.parent) ||
-            ts.isElementAccessExpression(value.parent) ||
-            ts.isParenthesizedExpression(value.parent) ||
-            ts.isAsExpression(value.parent) ||
-            ts.isSatisfiesExpression(value.parent) ||
-            ts.isNonNullExpression(value.parent) ||
-            ts.isTypeAssertionExpression(value.parent)) &&
-          value.parent.expression === value
-        )
-          value = value.parent;
-        const use = value.parent;
-        if (
-          (ts.isBinaryExpression(use) &&
-            use.left === value &&
-            use.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-            use.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
-          ts.isDeleteExpression(use) ||
-          ts.isPostfixUnaryExpression(use) ||
-          (ts.isPrefixUnaryExpression(use) &&
-            (use.operator === ts.SyntaxKind.PlusPlusToken ||
-              use.operator === ts.SyntaxKind.MinusMinusToken))
-        )
-          safe = false;
-      }
+        symbolOf(node) === symbol &&
+        !readOnlyMember(node)
+      )
+        safe = false;
       ts.forEachChild(node, visit);
     };
     visit(parameter.parent);
@@ -308,7 +335,7 @@ export function createRowLockAudit(
   }
 
   /** The executable node for a declaration, or null when it has no body here. */
-  function target(declaration: ts.Declaration, depth = 0): ts.Node | null {
+  function target(declaration: ts.Node, depth = 0): ts.Node | null {
     if (!own(declaration.getSourceFile()) || depth > 8) return null;
     if (functionLike(declaration)) return declaration.body ? declaration : null;
     if (ts.isShorthandPropertyAssignment(declaration)) {
@@ -356,6 +383,111 @@ export function createRowLockAudit(
         }
     }
     return null;
+  }
+
+  const unwrap = (expression: ts.Expression): ts.Expression => {
+    while (wrapped(expression) || ts.isAwaitExpression(expression))
+      expression = expression.expression;
+    return expression;
+  };
+  // Only a single source assignment and read-only member uses establish a receiver.
+  function receiverValue(expression: ts.Expression) {
+    const value = unwrap(expression);
+    if (!ts.isIdentifier(value)) return value;
+    const declaration = symbolOf(value)?.valueDeclaration;
+    if (!declaration || !ts.isVariableDeclaration(declaration)) return value;
+    const symbol = symbolOf(value);
+    const assigned: ts.Expression[] = declaration.initializer
+      ? [declaration.initializer]
+      : [];
+    let safe = true;
+    let scope: ts.Node = declaration.parent;
+    while (!functionLike(scope) && !ts.isSourceFile(scope))
+      scope = scope.parent;
+    const visit = (node: ts.Node) => {
+      if (!safe || ts.isTypeNode(node)) return;
+      if (
+        ts.isIdentifier(node) &&
+        node !== declaration.name &&
+        symbolOf(node) === symbol
+      ) {
+        const parent = node.parent;
+        if (
+          ts.isBinaryExpression(parent) &&
+          parent.left === node &&
+          parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        )
+          assigned.push(parent.right);
+        else if (!readOnlyMember(node)) safe = false;
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(scope);
+    return safe && assigned.length === 1 ? unwrap(assigned[0]!) : value;
+  }
+  type ObjectProof = {
+    objects: Set<ts.ObjectLiteralExpression>;
+    known: boolean;
+  };
+  const returnProofs = new Map<ts.Node, ObjectProof>();
+  function returnedObjects(
+    factory: ts.Node,
+    seen = new Set<ts.Node>(),
+  ): ObjectProof {
+    const unknown = (): ObjectProof => ({ objects: new Set(), known: false });
+    if (
+      !functionLike(factory) ||
+      !factory.body ||
+      seen.has(factory) ||
+      seen.size >= 8
+    )
+      return unknown();
+    const cached = returnProofs.get(factory);
+    if (cached) return cached;
+    const trail = new Set([...seen, factory]);
+    const result: ObjectProof = { objects: new Set(), known: true };
+    const resultOf = (expression: ts.Expression): ObjectProof => {
+      const value = unwrap(expression);
+      if (ts.isObjectLiteralExpression(value))
+        return { objects: new Set([value]), known: true };
+      if (ts.isCallExpression(value)) {
+        const bodies = [
+          ...new Set(
+            (
+              symbolOf(
+                ts.isPropertyAccessExpression(value.expression)
+                  ? value.expression.name
+                  : value.expression,
+              )?.declarations ?? []
+            )
+              .map((declaration) => target(declaration))
+              .filter((node): node is ts.Node => !!node),
+          ),
+        ];
+        if (bodies.length === 1) return returnedObjects(bodies[0]!, trail);
+      }
+      return unknown();
+    };
+    let returns = 0;
+    const collect = (node: ts.Node) => {
+      if (functionLike(node) || ts.isClassLike(node)) return;
+      if (ts.isReturnStatement(node)) {
+        returns++;
+        const proof = node.expression ? resultOf(node.expression) : unknown();
+        result.known &&= proof.known;
+        proof.objects.forEach((object) => result.objects.add(object));
+      } else ts.forEachChild(node, collect);
+    };
+    if (ts.isBlock(factory.body)) collect(factory.body);
+    else {
+      returns++;
+      const proof = resultOf(factory.body);
+      result.known = proof.known;
+      proof.objects.forEach((object) => result.objects.add(object));
+    }
+    result.known &&= returns > 0;
+    returnProofs.set(factory, result);
+    return result;
   }
 
   function evaluate(node: ts.Expression, env: Env): Known | null {
@@ -523,7 +655,8 @@ export function createRowLockAudit(
           if (!property) value = { value: undefined };
           else if (ts.isPropertyAssignment(property))
             value = evaluate(property.initializer, env);
-          else value = evaluate(property.name, env);
+          else if (ts.isShorthandPropertyAssignment(property))
+            value = evaluate(property.name, env);
         } else if (missing) value = { value: undefined };
         if (value && value.value === undefined && element.initializer)
           value = evaluate(element.initializer, EMPTY);
@@ -580,6 +713,7 @@ export function createRowLockAudit(
     if (!body) return out;
     const assigned = new Map<string, ts.Node[]>();
     const declared = new Map<string, number>();
+    const localNames = new Set<string>();
     const order: ts.VariableDeclaration[] = [];
     const note = (name: string, write: ts.Node) =>
       assigned.set(name, [...(assigned.get(name) ?? []), write]);
@@ -610,18 +744,32 @@ export function createRowLockAudit(
         ts.isIdentifier(current.operand)
       )
         note(current.operand.text, current);
+      if (local && ts.isVariableDeclaration(current))
+        boundNames(current.name).forEach((name) => localNames.add(name));
       if (ts.isVariableDeclaration(current) && ts.isIdentifier(current.name)) {
         declared.set(
           current.name.text,
           (declared.get(current.name.text) ?? 0) + 1,
         );
-        if (local) order.push(current);
+        if (local) {
+          order.push(current);
+        }
       }
+      if (
+        local &&
+        (ts.isFunctionDeclaration(current) || ts.isClassDeclaration(current)) &&
+        current.name
+      )
+        localNames.add(current.name.text);
       const nested =
         current !== body && (functionLike(current) || ts.isClassLike(current));
       ts.forEachChild(current, (child) => collect(child, local && !nested));
     };
     collect(body, true);
+    // Local bindings shadow captured literals, even when their initializer is unknown.
+    for (const name of localNames)
+      for (const key of [...out.keys()])
+        if (key === name || key.startsWith(`${name}.`)) out.delete(key);
     // A parameter (or its property) assigned anywhere in the body is no longer
     // the literal the call site passed.
     for (const name of assigned.keys())
@@ -733,7 +881,10 @@ export function createRowLockAudit(
     return { node, env, key: `${id}|${key}` };
   }
 
-  function siteKey(node: ts.TaggedTemplateExpression, text: string) {
+  function siteKey(
+    node: ts.TaggedTemplateExpression | ts.CallExpression,
+    text: string,
+  ) {
     const file = node.getSourceFile();
     const { line } = file.getLineAndCharacterOfPosition(node.getStart(file));
     const clause = clauseOf(text);
@@ -767,18 +918,9 @@ export function createRowLockAudit(
       receiverExpression: ts.Expression | undefined,
       self?: ts.Node,
     ) => {
-      let receiver = receiverExpression;
-      if (receiver && ts.isIdentifier(receiver)) {
-        const local = symbolOf(receiver)?.valueDeclaration;
-        receiver =
-          local &&
-          ts.isVariableDeclaration(local) &&
-          ts.getCombinedNodeFlags(local) & ts.NodeFlags.Const
-            ? local.initializer
-            : undefined;
-      }
-      while (receiver && ts.isAwaitExpression(receiver))
-        receiver = receiver.expression;
+      const receiver = receiverExpression
+        ? receiverValue(receiverExpression)
+        : undefined;
       const factoryCall =
         receiver && ts.isCallExpression(receiver) ? receiver : undefined;
       const factory = factoryCall
@@ -819,8 +961,26 @@ export function createRowLockAudit(
         const literals = [...env].filter(
           ([key]) => !key.startsWith(emptyPrefix),
         );
+        const shadowed = new Set(
+          functionLike(next)
+            ? next.parameters.flatMap((parameter) => boundNames(parameter.name))
+            : [],
+        );
         summary.callees.push(
-          stateOf(next, enclosed ? new Map([...literals, ...pinned]) : pinned),
+          stateOf(
+            next,
+            enclosed
+              ? new Map([
+                  ...literals.filter(
+                    ([key]) =>
+                      ![...shadowed].some(
+                        (name) => key === name || key.startsWith(`${name}.`),
+                      ),
+                  ),
+                  ...pinned,
+                ])
+              : pinned,
+          ),
         );
       };
       const declarations: ts.Declaration[] = [];
@@ -851,7 +1011,17 @@ export function createRowLockAudit(
           // `factory(…).m()` or `const x = factory(…); x.m()`: only the
           // members that factory itself returns.
           const all = implementations(declaration);
-          const narrowed = factory ? all.filter(inside) : [];
+          const proof: ObjectProof =
+            receiver && ts.isObjectLiteralExpression(receiver)
+              ? { objects: new Set([receiver]), known: true }
+              : factory
+                ? returnedObjects(factory)
+                : { objects: new Set(), known: false };
+          const narrowed = all.filter(
+            (member) =>
+              ts.isObjectLiteralExpression(member.parent) &&
+              proof.objects.has(member.parent),
+          );
           const found = (narrowed.length ? narrowed : all)
             .map((member) =>
               ts.isShorthandPropertyAssignment(member)
@@ -859,7 +1029,7 @@ export function createRowLockAudit(
                     ?.valueDeclaration ?? null)
                 : member,
             )
-            .map((member) => (member ? target(member as ts.Declaration) : null))
+            .map((member) => (member ? target(member) : null))
             .filter((member): member is ts.Node => member !== null);
           // A property typed as an outside client (the postgres `sql` helper)
           // calls library code; only our own function types can hide SQL.
@@ -872,7 +1042,15 @@ export function createRowLockAudit(
                 const source = signature.getDeclaration()?.getSourceFile();
                 return source ? own(source) : false;
               });
-          if (!found.length && ownSignature) {
+          const associated =
+            proof.known &&
+            proof.objects.size > 0 &&
+            [...proof.objects].every((object) =>
+              narrowed.some(
+                (member) => member.parent === object && target(member),
+              ),
+            );
+          if ((!found.length || !associated) && ownSignature) {
             const where = label(declaration);
             summary.unresolved.push(
               `${where.file} ${declaration.name.getText()}`,
@@ -888,22 +1066,19 @@ export function createRowLockAudit(
     };
 
     const follow = (identifier: ts.Identifier) => {
-      const named = identifier.parent as ts.Node & { name?: ts.Node };
+      const named = identifier.parent;
       // A SQL tag (`tx\`…\``) is the client, not a function of ours.
-      if (
-        ts.isTaggedTemplateExpression(named) &&
-        (named as ts.TaggedTemplateExpression).tag === identifier
-      )
+      if (ts.isTaggedTemplateExpression(named) && named.tag === identifier)
         return;
       // A declaration's own name is not a reference.
       if (
-        named.name === identifier &&
         (ts.isBindingElement(named) ||
           ts.isVariableDeclaration(named) ||
           ts.isParameter(named) ||
           ts.isFunctionDeclaration(named) ||
           ts.isClassDeclaration(named) ||
-          ts.isImportSpecifier(named))
+          ts.isImportSpecifier(named)) &&
+        named.name === identifier
       )
         return;
       let symbol = symbolOf(identifier);

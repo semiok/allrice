@@ -229,6 +229,47 @@ class ClassStore implements ClassOnly {
 export function classOnly(): ClassOnly { return new ClassStore(); }
 interface Opaque { opaqueClose(): Promise<void>; }
 export declare function opaque(): Promise<Opaque>;
+// A harmless async implementation of the SAME interface is not evidence for
+// a class, opaque factory, mixed return, or escaped receiver.
+interface SharedStore { sharedRead(): Promise<void>; }
+export async function harmless(): Promise<SharedStore> {
+  return { async sharedRead() {} };
+}
+class LockedSharedStore implements SharedStore {
+  async sharedRead() { await sql\`select * from shared_class_rows for share\`; }
+}
+export function sharedClass(): SharedStore { return new LockedSharedStore(); }
+export declare function sharedOpaque(): Promise<SharedStore>;
+export function sharedMixed(flag: boolean): SharedStore {
+  if (flag) return { async sharedRead() {} };
+  return new LockedSharedStore();
+}
+function liveFlag() { return true; }
+export async function capture(ports: { enabled?: boolean } = {}) {
+  const enabled = ports.enabled;
+  async function read(enabled: boolean) {
+    if (!enabled) return;
+    await sql\`select * from shadowed_parameter for share\`;
+  }
+  await read(liveFlag());
+}
+export async function capturePattern(ports: { enabled?: boolean } = {}) {
+  const enabled = ports.enabled;
+  async function read({ enabled }: { enabled: boolean }) {
+    if (!enabled) return;
+    await sql\`select * from shadowed_pattern for share\`;
+  }
+  await read({ enabled: liveFlag() });
+}
+export async function captureLocal(ports: { enabled?: boolean } = {}) {
+  const enabled = ports.enabled;
+  async function read() {
+    const enabled = liveFlag();
+    if (!enabled) return;
+    await sql\`select * from shadowed_local for share\`;
+  }
+  await read();
+}
 declare function escape(ports: Ports): void;
 `;
   for (const [name, change] of Object.entries({
@@ -246,6 +287,20 @@ export function ${name}(ports: Ports = {}) {
     await sql\`select * from ${name}_rows for share\`;
   }
   return { history: () => serve() };
+}`;
+  for (const [name, change] of Object.entries({
+    arrayWrite: '[ports.enabled] = [true];',
+    objectWrite: '({ enabled: ports.enabled } = { enabled: true });',
+    forOfWrite: 'for (ports.enabled of [true]) {}',
+  }))
+    files['lib/factories.ts'] += `
+export function ${name}(ports: { enabled?: boolean } = {}) {
+  ${change}
+  async function read() {
+    if (!ports.enabled) return;
+    await sql\`select * from ${name}_own_rows for share\`;
+  }
+  return { history: () => read() };
 }`;
   const route = (name: string, body: string) => {
     files[`apps/web/app/api/${name}/route.ts`] =
@@ -413,6 +468,26 @@ export const POST = () => handle(true);`,
     'export async function GET() { const h = await factories.opaque(); await h.opaqueClose(); }',
   );
 
+  for (const name of ['arrayWrite', 'objectWrite', 'forOfWrite'])
+    route(
+      `factory-${name}`,
+      `export const GET = () => factories.${name}().history();`,
+    );
+  for (const name of ['capture', 'capturePattern', 'captureLocal'])
+    route(`factory-${name}`, `export const GET = () => factories.${name}();`);
+  route(
+    'factory-shared-class',
+    'export const GET = () => factories.sharedClass().sharedRead();',
+  );
+  route(
+    'factory-shared-opaque',
+    'export async function GET() { const h = await factories.sharedOpaque(); await h.sharedRead(); }',
+  );
+  route(
+    'factory-shared-mixed',
+    'export async function GET() { await factories.sharedMixed(JSON.parse("true")).sharedRead(); }',
+  );
+
   beforeAll(async () => {
     project = await realpath(await mkdtemp(join(tmpdir(), 'row-lock-audit-')));
     for (const [path, text] of Object.entries(files)) {
@@ -472,6 +547,12 @@ export const POST = () => handle(true);`,
           'reentry',
           'async-literal',
           'wrapped',
+          'arrayWrite',
+          'objectWrite',
+          'forOfWrite',
+          'capture',
+          'capturePattern',
+          'captureLocal',
         ].map((name) => `factory-${name}`),
       ].sort(),
     );
@@ -522,6 +603,57 @@ export const POST = () => handle(true);`,
         'lib/factories.ts opaqueClose',
       ]),
     );
+  });
+
+  it('keeps each destructuring or loop write and shadowed unknown argument SQL reachable', () => {
+    for (const name of ['arrayWrite', 'objectWrite', 'forOfWrite']) {
+      // A different injected implementation cannot satisfy this regression.
+      const ownLine =
+        files['lib/factories.ts']!.split('\n').findIndex((line) =>
+          line.includes(`${name}_own_rows`),
+        ) + 1;
+      expect(
+        report.reached.some(
+          (site) =>
+            site.file === 'lib/factories.ts' &&
+            site.line === ownLine &&
+            site.routes.includes(
+              `apps/web/app/api/factory-${name}/route.ts GET`,
+            ),
+        ),
+      ).toBe(true);
+    }
+    for (const [name, table] of [
+      ['capture', 'shadowed_parameter'],
+      ['capturePattern', 'shadowed_pattern'],
+      ['captureLocal', 'shadowed_local'],
+    ]) {
+      const ownLine =
+        files['lib/factories.ts']!.split('\n').findIndex((line) =>
+          line.includes(`from ${table} for share`),
+        ) + 1;
+      expect(
+        report.reached.some(
+          (site) =>
+            site.file === 'lib/factories.ts' &&
+            site.line === ownLine &&
+            site.routes.includes(
+              `apps/web/app/api/factory-${name}/route.ts GET`,
+            ),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it('does not use an unrelated async literal to resolve a shared class or opaque interface', () => {
+    // Audit each route independently so one unresolved route cannot hide a
+    // false-safe result on another route with the same interface signature.
+    const audit = createRowLockAudit(project);
+    for (const name of ['class', 'opaque', 'mixed']) {
+      const own = audit.routeLocks(['GET'], `factory-shared-${name}/`);
+      expect(own.entries).toBe(1);
+      expect(own.unresolved).toContain('lib/factories.ts sharedRead');
+    }
   });
 
   it('keeps inline callback locks visible after exact review of an unresolved interface call', () => {
