@@ -32,6 +32,9 @@ const digest = (bytes: Uint8Array) =>
   createHash('sha256').update(bytes).digest('hex');
 describe('real official generator and same-release artifact closure', () => {
   it('derives all three methods, original native result codecs and duplex uplinks from the current source', async () => {
+    const originalContractManifest = await readFile(
+      resolve(root, '../contracts/package.json'),
+    );
     let scratch = '';
     const emitted = await withPrincipalGeneratorInput(
       async (options: WorkspaceAnalyzerOptions) => {
@@ -84,9 +87,27 @@ describe('real official generator and same-release artifact closure', () => {
           join(scratch, 'packages/protocol'),
         ]);
         const contracts = resolve(root, '../contracts');
+        const contractManifest = JSON.parse(
+          originalContractManifest.toString(),
+        );
         expect(
-          await readFile(join(scratch, 'packages/contracts/package.json')),
-        ).toEqual(await readFile(join(contracts, 'package.json')));
+          JSON.parse(
+            await readFile(
+              join(scratch, 'packages/contracts/package.json'),
+              'utf8',
+            ),
+          ),
+        ).toEqual({
+          ...contractManifest,
+          exports: {
+            ...contractManifest.exports,
+            '.': { ...contractManifest.exports['.'], types: './src/index.ts' },
+            './native-runtime': {
+              ...contractManifest.exports['./native-runtime'],
+              types: './src/native-runtime.ts',
+            },
+          },
+        });
         const contractSources = (
           await readdir(join(contracts, 'src'), { recursive: true })
         )
@@ -111,6 +132,9 @@ describe('real official generator and same-release artifact closure', () => {
       },
     );
     await expect(stat(scratch)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(resolve(root, '../contracts/package.json'))).toEqual(
+      originalContractManifest,
+    );
     expect(await readFile(resolve(root, 'lib/typert.host.js'), 'utf8')).toBe(
       emitted.js,
     );

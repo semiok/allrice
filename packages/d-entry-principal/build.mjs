@@ -91,6 +91,22 @@ export async function withPrincipalGeneratorInput(
         join(originalRoot, 'package.json'),
         join(stagedRoot, 'package.json'),
       );
+      if (stagedRoot === contractsRoot) {
+        const path = join(stagedRoot, 'package.json');
+        const contracts = JSON.parse(await readFile(path, 'utf8'));
+        // The public analyzer maps lib/types to src, but not this owned
+        // package's dist directory. Point only its temporary type entries at
+        // the same real source exports already selected by authoring paths.
+        for (const [subpath, entry] of [
+          ['.', 'index'],
+          ['./native-runtime', 'native-runtime'],
+        ]) {
+          if (contracts.exports[subpath].types !== `./dist/${entry}.d.ts`)
+            throw Error('PRINCIPAL_CONTRACTS_EXPORTS_CHANGED');
+          contracts.exports[subpath].types = `./src/${entry}.ts`;
+        }
+        await writeFile(path, JSON.stringify(contracts));
+      }
       await symlink(
         join(originalRoot, 'node_modules'),
         join(stagedRoot, 'node_modules'),
