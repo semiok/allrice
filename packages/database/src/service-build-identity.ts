@@ -389,7 +389,7 @@ export async function prepareServiceBuildManifest(input: {
     ) {
       await walk(root, pkg.path + '/dist', 'graph', files, input.observe);
     }
-    if (pkg.data.name === '@allrice/vm-memory')
+    if (name === '@allrice/vm-memory')
       await walk(root, pkg.path + '/guest', 'graph', files, input.observe);
   }
   for (const path of ['package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml'])
