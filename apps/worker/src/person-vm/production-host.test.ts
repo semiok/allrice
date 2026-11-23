@@ -12,7 +12,10 @@ import {
   PersonVmError,
   PersonVmService,
   PostgresPersonVmStore,
+  type PersonVmAuthority,
 } from '@allrice/person-vm';
+import type * as ProductionAuthority from './production-authority.js';
+import type * as ProductionEgress from './production-egress.js';
 import {
   DEntryNativeUnavailable,
   dEntryNativeOwnerPort,
@@ -30,6 +33,17 @@ const io = vi.hoisted(() => ({
   read: vi.fn(),
   database: vi.fn(),
   dedicated: vi.fn(),
+  authority: vi.fn<() => PersonVmAuthority | undefined>(),
+  installation:
+    vi.fn<
+      (
+        owner: ReturnType<
+          typeof ProductionEgress.createProductionEgressInstallation
+        >,
+      ) =>
+        | ReturnType<typeof ProductionEgress.createProductionEgressInstallation>
+        | undefined
+    >(),
   gateway:
     vi.fn<
       (
@@ -41,6 +55,32 @@ const io = vi.hoisted(() => ({
 vi.mock('./production-config.js', () => ({
   readProductionHostConfiguration: io.read,
 }));
+vi.mock('./production-authority.js', async (original) => {
+  const actual = await original<typeof ProductionAuthority>();
+  return {
+    ...actual,
+    createProductionPersonVmAuthority: (
+      ...args: Parameters<typeof actual.createProductionPersonVmAuthority>
+    ) => {
+      const owner = actual.createProductionPersonVmAuthority(...args),
+        authority = io.authority();
+      // Explicit construction-time test source; never mutate the frozen owner.
+      return authority ? Object.freeze({ ...owner, authority }) : owner;
+    },
+  };
+});
+vi.mock('./production-egress.js', async (original) => {
+  const actual = await original<typeof ProductionEgress>();
+  return {
+    ...actual,
+    createProductionEgressInstallation: (
+      ...args: Parameters<typeof actual.createProductionEgressInstallation>
+    ) => {
+      const owner = actual.createProductionEgressInstallation(...args);
+      return io.installation(owner) ?? owner;
+    },
+  };
+});
 vi.mock('@allrice/database', async (original) => ({
   ...(await original<typeof Database>()),
   getDatabase: io.database,
@@ -154,6 +194,7 @@ async function receiptFixture() {
     physical = harness(memory),
     entry = nativeEntryFixture(),
     value = fixture();
+  io.authority.mockReturnValue(physical.options.authority);
   value.bound.egress.revokeModel = vi.fn(async () => {});
   const opened = await open(value),
     input = opened.input(),
@@ -161,9 +202,6 @@ async function receiptFixture() {
   if (!gateway) throw Error('actual gateway was not constructed');
   vi.spyOn(PostgresPersonVmStore.prototype, 'withLease').mockImplementation(
     memory.withLease.bind(memory),
-  );
-  vi.spyOn(input.current.authority, 'authorize').mockImplementation(
-    physical.options.authority.authorize,
   );
   // Replace the external shared PG observation only, not the service callback.
   vi.spyOn(input.admission, 'trackOwner').mockImplementation(
@@ -236,6 +274,8 @@ async function receiptFixture() {
 }
 beforeEach(async () => {
   vi.clearAllMocks();
+  io.authority.mockReset();
+  io.installation.mockReset();
   f = await productionInputsFixture();
   io.read.mockResolvedValue(f.loaded);
   io.database.mockReturnValue(trustedDatabase);
@@ -565,19 +605,22 @@ it('failed source construction joins actual provider rollback before returning t
     entered = gate(),
     released = gate(),
     reason = Error('synthetic source construction failed');
-  vi.mocked(value.sources.bind).mockImplementation(async (input) => {
-    const original = input.providers.egressInstallation.close.bind(
-      input.providers.egressInstallation,
-    );
-    vi.spyOn(input.providers.egressInstallation, 'close').mockImplementation(
-      async () => {
+  let rolledBack = false;
+  const providerClose = vi.fn();
+  io.installation.mockImplementation((owner) => {
+    expect(Object.isFrozen(owner)).toBe(true);
+    return Object.freeze({
+      ...owner,
+      close: async () => {
+        providerClose();
         entered.release();
         await released.promise;
-        await original();
+        await owner.close();
+        rolledBack = true;
       },
-    );
-    throw reason;
+    });
   });
+  vi.mocked(value.sources.bind).mockRejectedValue(reason);
   let settled = false;
   const outcome = createProductionPersonVmHost({
     sources: value.sources,
@@ -590,9 +633,12 @@ it('failed source construction joins actual provider rollback before returning t
     await entered.promise;
     await turn();
     expect(settled).toBe(false);
+    expect(rolledBack).toBe(false);
     expect(io.gateway).not.toHaveBeenCalled();
     released.release();
     expect(await outcome).toBe(reason);
+    expect(providerClose).toHaveBeenCalledTimes(1);
+    expect(rolledBack).toBe(true);
     expect(value.bound.egress.close).not.toHaveBeenCalled();
   } finally {
     released.release();
