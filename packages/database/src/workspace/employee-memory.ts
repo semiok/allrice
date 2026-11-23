@@ -13,6 +13,7 @@ import { resolveEmployeeSessionInstance } from '../employees/employee-instances.
 import type { ResourcePrincipal } from '../resource-principal.ts';
 import {
   memoryPairDigest,
+  memoryScopePredicate,
   ordinaryMemoryPredicate,
 } from './employee-memory-primitives.ts';
 export {
@@ -93,7 +94,7 @@ export async function employeeMemoryScope(
   context: EmployeeMemoryIdentity,
   workspaceId: string,
   instanceId: string,
-  tx: TransactionSql,
+  tx: Sql,
   write = false,
 ): Promise<EmployeeMemoryScope> {
   if (context.actor.type !== 'user')
@@ -212,13 +213,18 @@ export async function lockMemorySource(
 export async function memoryOperation<
   T extends { id: string; revision: number },
 >(
-  tx: TransactionSql,
+  tx: Sql,
   scope: EmployeeMemoryScope,
   operation: 'create' | 'correct' | 'promote' | 'archive',
   key: string,
   request: unknown,
   mutate: () => Promise<T>,
   responseSchema: z.ZodType<T>,
+  qualifyOrigin?: (origin: {
+    source_type: string;
+    source_id: string | null;
+    metadata: unknown;
+  }) => Promise<boolean>,
 ) {
   const digest = memoryContentDigest(JSON.stringify({ operation, request }));
   const lockKey = `employee-memory:${scope.organizationId}:${scope.workspaceId}:${scope.ownerId}:${scope.instanceId}:${key}`;
@@ -230,10 +236,13 @@ export async function memoryOperation<
       revision: number;
       archived_at: Date | null;
       ordinary_current: boolean;
+      source_type: string;
+      source_id: string | null;
+      metadata: unknown;
     }[]
   >`
-    select op.request_digest,op.response,m.revision,m.archived_at,
-      (${ordinaryMemoryPredicate(tx, scope)}) ordinary_current
+    select op.request_digest,op.response,m.revision,m.archived_at,m.source_type,m.source_id,m.metadata,
+      (${qualifyOrigin ? tx`${memoryScopePredicate(tx, scope)} and (m.expires_at is null or m.expires_at>clock_timestamp())` : ordinaryMemoryPredicate(tx, scope)}) ordinary_current
     from allrice_employee_memory_operations op join allrice_memories m
       on m.id=op.memory_id and m.organization_id=op.organization_id and m.workspace_id=op.workspace_id
       and m.owner_id=op.owner_id and m.instance_id=op.instance_id
@@ -252,7 +261,8 @@ export async function memoryOperation<
     if (
       prior.revision !== response.revision ||
       Boolean(prior.archived_at) !== (operation === 'archive') ||
-      !prior.ordinary_current
+      !prior.ordinary_current ||
+      (qualifyOrigin && !(await qualifyOrigin(prior)))
     )
       throw new EmployeeMemoryConflict({
         domain: 'employee_memory',

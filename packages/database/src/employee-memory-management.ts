@@ -1,4 +1,4 @@
-import type { TransactionSql } from 'postgres';
+import type { Sql, TransactionSql } from 'postgres';
 import {
   EmployeeMemoryCountsSchema,
   EmployeeMemoryDetailResponseSchema,
@@ -57,7 +57,7 @@ export function mapEmployeeMemoryRecord(row: PersonalMemoryRow) {
 }
 
 export async function lockEmployeeMemoryOrder(
-  tx: TransactionSql,
+  tx: Sql | TransactionSql,
   scope: EmployeeMemoryScope,
 ) {
   await tx`select pg_advisory_xact_lock(hashtextextended(${`memory-order:${scope.organizationId}:${scope.ownerId}:${scope.instanceId}`},0))`;

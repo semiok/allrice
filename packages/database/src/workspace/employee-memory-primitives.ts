@@ -6,6 +6,14 @@ import type { EmployeeMemoryScope } from './employee-memory.ts';
 
 type Sql = ReturnType<typeof getDatabase> | TransactionSql;
 
+/** Scope/private projection only; the native caller separately obtains the
+ * ordinary-origin fact from Workflow's bound G5 source reader. */
+export function memoryScopePredicate(tx: Sql, scope: EmployeeMemoryScope) {
+  return tx`m.organization_id=${scope.organizationId} and m.workspace_id=${scope.workspaceId}
+    and m.owner_id=${scope.ownerId} and m.instance_id=${scope.instanceId}
+    and m.employee_id=${scope.employeeId} and m.visibility='private'`;
+}
+
 /** Ordinary private records only. Business-method data retains
  * its own APIs; this predicate grants neither source nor resource access. */
 export function ordinaryMemoryPredicate(tx: Sql, scope: EmployeeMemoryScope) {

@@ -1224,7 +1224,7 @@ export async function resolveEmployeeSessionInstance(
   context: Identity,
   assignmentId: string,
   instanceId: string | undefined,
-  tx: Tx,
+  tx: Sql,
   lock = true,
 ) {
   await authority(context, tx, lock);
