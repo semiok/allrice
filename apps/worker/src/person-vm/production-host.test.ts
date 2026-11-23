@@ -184,6 +184,9 @@ async function receiptFixture() {
   vi.spyOn(input.providers.disk, 'detach').mockImplementation(
     physical.disk.detach,
   );
+  vi.spyOn(input.providers.native, 'prepare').mockImplementation(
+    physical.native.prepare,
+  );
   vi.spyOn(input.providers.native, 'status').mockImplementation(
     physical.native.status,
   );
@@ -191,9 +194,9 @@ async function receiptFixture() {
     physical.native.stop,
   );
   const startFailure = new PersonVmError('RUNTIME_NOT_READY');
-  vi.spyOn(input.providers.native, 'prepareWebEndpoints').mockRejectedValue(
-    startFailure,
-  );
+  const prepareWeb = vi
+    .spyOn(input.providers.native, 'prepareWebEndpoints')
+    .mockRejectedValue(startFailure);
   const facts = {
     personId: entry.context.actor.id,
     organizationId: entry.context.organizationId,
@@ -220,7 +223,16 @@ async function receiptFixture() {
   const prepare = vi.spyOn(gateway, 'prepare'),
     revoke = vi.spyOn(gateway, 'revoke');
   await input.vm.create(entry.context, signal());
-  return { ...opened, memory, entry, gateway, prepare, revoke, startFailure };
+  return {
+    ...opened,
+    memory,
+    entry,
+    gateway,
+    prepare,
+    revoke,
+    prepareWeb,
+    startFailure,
+  };
 }
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -362,6 +374,7 @@ it('actual service cleanup revokes a copied receipt once and Host.close does not
   await expect(
     value.input().vm.start(value.entry.context, signal()),
   ).rejects.toBe(value.startFailure);
+  expect(value.prepareWeb).toHaveBeenCalledTimes(1);
   expect(value.prepare).toHaveBeenCalledTimes(1);
   expect(value.revoke).toHaveBeenCalledTimes(1);
   const original = await value.prepare.mock.results[0]!.value,
@@ -385,6 +398,7 @@ it('a failed actual service revoke retains the receipt for the real Host.close r
   await expect(
     value.input().vm.start(value.entry.context, signal()),
   ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
+  expect(value.prepareWeb).toHaveBeenCalledTimes(1);
   expect(value.revoke).toHaveBeenCalledTimes(1);
   const persisted = await value.memory.read(value.entry.context.actor.id);
   expect(persisted?.egressReceipt).toEqual(value.revoke.mock.calls[0]![0]);
@@ -402,6 +416,7 @@ it('a stale persisted service receipt cannot remove a retained newer epoch from 
     vm = value.input().vm,
     context = value.entry.context;
   await expect(vm.start(context, signal())).rejects.toBe(value.startFailure);
+  expect(value.prepareWeb).toHaveBeenCalledTimes(1);
   const old = await value.memory.read(context.actor.id);
   if (!old) throw Error('actual service did not persist its first epoch');
   const oldReceipt = await value.prepare.mock.results[0]!.value;
@@ -415,6 +430,7 @@ it('a stale persisted service receipt cannot remove a retained newer epoch from 
   await expect(vm.start(context, signal())).rejects.toMatchObject({
     code: 'CLEANUP_INCOMPLETE',
   });
+  expect(value.prepareWeb).toHaveBeenCalledTimes(2);
   const current = await value.memory.read(context.actor.id);
   if (!current?.egressReceipt)
     throw Error('new epoch receipt was not retained');
