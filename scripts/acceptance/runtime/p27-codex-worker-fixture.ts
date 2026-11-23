@@ -1,6 +1,7 @@
 import { withFixturePlatformAdministrator } from './fixture-platform-authority.ts';
 /** One isolated ordinary Codex Worker task. Preparation never executes a model or reads credentials. */
 import { createHash, randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import type {
   PromptImageAttachment,
   RequestContext,
@@ -517,13 +518,13 @@ export async function createP27CodexWorkerFixture(
                   provider: 'codex',
                   skillVersionIds: binding.skillVersionIds,
                 })},
-                ${tx.json(payload.input)},${context.requestId},${at},${at},${at})`;
+                ${tx.json(z.json().parse(payload.input))},${context.requestId},${at},${at},${at})`;
             const [job] = await tx<JobRow[]>`insert into allrice_jobs(
               id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,
               priority,attempt,max_attempts,available_at,timeout_at,payload,
               worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at,created_at,updated_at)
               values(${jobId},${organizationId},${workspaceId},${ownerId},${runId},'running',${randomUUID()},
-                0,1,1,${at},${timeoutAt},${tx.json(payload)},
+                0,1,1,${at},${timeoutAt},${tx.json(z.json().parse(payload))},
                 ${workerId},${leaseToken},${at},${at},${new Date(at.getTime() + leaseMs)},${at},${at})
               returning *`;
             requireFixture(job, 'P27_HISTORICAL_JOB_MISSING');
