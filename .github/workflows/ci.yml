@@ -54,6 +54,10 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Build same-release public principal faces before runtime imports
+        run: |
+          pnpm --filter @allrice/contracts build
+          pnpm --filter @allrice/d-entry-principal build
       - name: Read locked browser and runner cache identities
         id: browser-cache-identity
         run: |

@@ -2,6 +2,7 @@ node_modules
 .next
 .local
 dist
+packages/d-entry-principal/lib/
 coverage
 pnpm-lock.yaml
 apps/web/next-env.d.ts

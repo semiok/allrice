@@ -8,6 +8,7 @@ export default tseslint.config(
       '**/.next/**',
       '**/.local/**',
       '**/dist/**',
+      'packages/d-entry-principal/lib/**',
       '**/coverage/**',
       '**/next-env.d.ts',
     ],
