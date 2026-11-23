@@ -16,6 +16,7 @@ import {
 } from 'vitest';
 import { readPlatformPersonVmConfiguration } from '@allrice/contracts';
 import type { ServiceBuildIdentity } from '@allrice/database';
+import { productionInputsFixture } from './production-inputs.fixture.js';
 
 const source = vi.hoisted<{
   build: ReturnType<typeof vi.fn>;
@@ -215,6 +216,17 @@ afterEach(async () => {
 });
 
 describe('private production Host configuration', () => {
+  it('accepts the H2 component fixture through the real private configuration reader', async () => {
+    const f = await productionInputsFixture();
+    try {
+      await seal(f.loaded.configuration);
+      const result = await readProductionHostConfiguration(signal());
+      expect(result.configuration).toEqual(f.loaded.configuration);
+      expect(result.platform).toBe(f.loaded.platform);
+    } finally {
+      await fs.rm(f.root, { recursive: true, force: true });
+    }
+  });
   it('reads only exact measured bytes after the original build verifier succeeds', async () => {
     const result = await readProductionHostConfiguration(signal());
     expect(result.configuration).toEqual(value());
