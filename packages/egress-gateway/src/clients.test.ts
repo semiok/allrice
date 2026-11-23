@@ -54,7 +54,7 @@ it('npm and pip install dependency graphs through authenticated mirror HTTP with
     },
     provisioner: {
       endpoint: async () => ({ host: '127.0.0.1', port, guestOrigin: origin }),
-      install: async (_b, access) => {
+      install: async (_b, _mount, access) => {
         capability = access;
       },
       remove: async () => {},
@@ -165,7 +165,11 @@ for name in ['egress_child','egress_parent']:
         },
       });
     }
-    receipt = await gateway.prepare(binding, new AbortController().signal);
+    receipt = await gateway.prepare(
+      binding,
+      { gatewayPorts: [], mount: root },
+      new AbortController().signal,
+    );
     await writeFile(
       join(root, '.npmrc'),
       `registry=${origin}/npm/\n//127.0.0.1:${port}/:_authToken=${capability!.capability}\n`,

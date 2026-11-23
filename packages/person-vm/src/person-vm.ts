@@ -30,6 +30,11 @@ import type { PersonVmDiskPort } from './encrypted-disk.ts';
 import type { PersonVmNativePort } from './microsandbox.ts';
 import { bootstrapPersonVm } from './guest-bootstrap.ts';
 import {
+  checkedWebRoster,
+  type PersonVmWebRosterPort,
+  type PersonVmWebStartup,
+} from './web-endpoints.ts';
+import {
   bindingOf,
   PostgresPersonVmStore,
   type PersonVmStore,
@@ -85,6 +90,7 @@ export class PersonVmService
       native: PersonVmNativePort;
       egress?: PersonVmEgressPort;
       runtime?: PersonVmRuntimePort;
+      nativeWeb?: PersonVmWebRosterPort;
       leaseTtlMs: number;
       activityMaxAgeMs: number;
       cleanupTimeoutMs: number;
@@ -105,6 +111,7 @@ export class PersonVmService
    * providers and physical store; the callbacks below never reacquire a lock. */
   createAdmissionHost(input: {
     openSql: PersonVmSqlFactory;
+    idleMs?: number;
     nativeActivity?: PersonVmNativeActivityPort;
     monotonic?: () => number;
   }) {
@@ -390,6 +397,7 @@ export class PersonVmService
       signal,
     );
     await this.options.native.prepare(bindingOf(row), mount, signal);
+    return mount;
   }
   private async ready(row: VmRecord, signal: AbortSignal) {
     if (!this.options.runtime || !this.options.egress || !row.egressReceipt)
@@ -413,6 +421,30 @@ export class PersonVmService
       this.startOwned(context, lease, current),
     );
   }
+  private async webRoster(context: RequestContext, signal: AbortSignal) {
+    if (!this.options.nativeWeb) return undefined;
+    try {
+      signal.throwIfAborted();
+      const roster = checkedWebRoster(
+        await this.options.nativeWeb.prepare(context, signal),
+      );
+      signal.throwIfAborted();
+      return roster;
+    } catch (error) {
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        [
+          'authentication_required',
+          'authorization_denied',
+          'tenant_context_invalid',
+        ].includes(String(error.code))
+      )
+        throw new PersonVmError('AUTHORIZATION_DENIED', { cause: error });
+      throw safeError(error);
+    }
+  }
   private async startOwned(
     context: RequestContext,
     lease: VmLease,
@@ -426,9 +458,37 @@ export class PersonVmService
       typeof this.options.native.bootstrap !== 'function'
     )
       throw new PersonVmError('RUNTIME_NOT_READY');
+    if (
+      this.options.nativeWeb &&
+      (!this.options.native.prepareWebEndpoints ||
+        !this.options.native.assertWebEndpoints ||
+        !this.options.runtime.retireAfterNativeStop)
+    )
+      throw new PersonVmError('RUNTIME_NOT_READY');
+    const roster = await this.webRoster(context, signal);
+    if (
+      roster &&
+      (roster.personId !== row.personId ||
+        roster.organizationId !== row.organizationId)
+    )
+      throw new PersonVmError('AUTHORIZATION_DENIED');
     if (row.phase === 'running') {
       await this.mounted(row, signal, lease);
+      if (roster) {
+        await lease.guard();
+        await this.options.native.prepareWebEndpoints!(
+          bindingOf(row),
+          roster,
+          signal,
+        );
+        await lease.guard();
+      }
       await this.ready(row, signal);
+      if (
+        roster &&
+        (await this.webRoster(context, signal))?.digest !== roster.digest
+      )
+        throw new PersonVmError('WEB_ENDPOINTS_PREPARING');
       return view(row, true);
     }
     if (row.holds.length > 0) throw new PersonVmError('VM_ACTIVE');
@@ -459,9 +519,24 @@ export class PersonVmService
       signal.throwIfAborted();
       await lease.guard();
       const binding = bindingOf(row);
+      if (row.diskTier === 'cold') {
+        await this.options.disk.move(
+          { vmId: row.vmId, tier: 'cold' },
+          'warm',
+          signal,
+        );
+        row.diskTier = 'warm';
+        await lease.save(row);
+      }
+      const mount = await this.mounted(row, signal, lease);
+      await lease.guard();
       const receipt = this.receipt(
         binding,
-        await this.options.egress.prepare(binding, signal),
+        await this.options.egress.prepare(
+          binding,
+          { gatewayPorts: Object.freeze([...row.gatewayPorts]), mount },
+          signal,
+        ),
       );
       row.egressReceipt = receipt;
       await lease.save(row);
@@ -473,26 +548,58 @@ export class PersonVmService
         throw new PersonVmError('EGRESS_BINDING_INVALID');
       if (!row.nativeCreated) row.gatewayPorts = [...receipt.gatewayPorts];
       await lease.save(row);
-      if (row.diskTier === 'cold') {
-        await this.options.disk.move(
-          { vmId: row.vmId, tier: 'cold' },
-          'warm',
-          signal,
-        );
-        row.diskTier = 'warm';
-        await lease.save(row);
-      }
-      await this.mounted(row, signal, lease);
       await lease.guard();
       await this.options.egress.assertActive(receipt, signal);
+      let web: PersonVmWebStartup | undefined;
+      if (roster) {
+        const endpoints = await this.options.native.prepareWebEndpoints!(
+          binding,
+          roster,
+          signal,
+        );
+        if (
+          !sameVmBinding(endpoints.binding, binding) ||
+          endpoints.rosterDigest !== roster.digest
+        )
+          throw new PersonVmError('LEASE_LOST');
+        checkedWebRoster({
+          ...roster,
+          entries: endpoints.endpoints,
+          digest: endpoints.rosterDigest,
+        });
+        for (const key of ['hostPort', 'guestPort'] as const) {
+          if (
+            new Set(endpoints.endpoints.map((entry) => entry[key])).size !==
+              endpoints.endpoints.length ||
+            endpoints.endpoints.some(
+              (entry) =>
+                !Number.isInteger(entry[key]) ||
+                entry[key] < 1 ||
+                entry[key] > 65535,
+            )
+          )
+            throw new PersonVmError('PROVIDER_FAILED');
+        }
+        web = Object.freeze({ context, receipt: endpoints });
+        await lease.guard();
+      }
       const state = await this.options.native.status(binding, signal);
       if (state === 'absent' && !row.nativeCreated) {
-        await this.options.native.create(binding, receipt, signal);
+        if (web)
+          await this.options.native.create(
+            binding,
+            receipt,
+            signal,
+            web.receipt,
+          );
+        else await this.options.native.create(binding, receipt, signal);
         row.nativeCreated = true;
         await lease.save(row);
       } else if (state === 'stopped' && row.nativeCreated)
         await this.options.native.start(binding, signal);
       else throw new PersonVmError('PROVIDER_FAILED');
+      if (web)
+        await this.options.native.assertWebEndpoints!(web.receipt, signal);
       await lease.guard();
       const frame = this.currentLease.getStore();
       const assertStarting = async () => {
@@ -509,6 +616,15 @@ export class PersonVmService
           throw new PersonVmError('LEASE_LOST');
         await lease.assertAdmissionOpen(true);
         await this.options.egress!.assertActive(receipt, signal);
+        if (roster) {
+          const current = (await this.webRoster(context, signal))!;
+          if (
+            current.personId !== binding.personId ||
+            current.organizationId !== binding.organizationId ||
+            current.digest !== roster.digest
+          )
+            throw new PersonVmError('AUTHORIZATION_DENIED');
+        }
         await lease.guard();
       };
       await bootstrapPersonVm({
@@ -517,6 +633,7 @@ export class PersonVmService
         native: this.options.native,
         runtime: this.options.runtime,
         assertCurrent: assertStarting,
+        web,
       });
       await assertStarting();
       await this.ready(row, signal);
@@ -655,6 +772,18 @@ export class PersonVmService
     if (stopped) {
       row.stoppedAt ??= this.now().toISOString();
       try {
+        if (row.instanceId) {
+          if (
+            this.options.nativeWeb &&
+            !this.options.runtime?.retireAfterNativeStop
+          )
+            throw new PersonVmError('RUNTIME_NOT_READY');
+          await this.options.runtime?.retireAfterNativeStop?.(
+            bindingOf(row),
+            AbortSignal.timeout(this.options.cleanupTimeoutMs),
+          );
+        }
+        // A confirmed VM stop does not prove its host runtime I/O has joined.
         await this.options.disk.detach(
           { vmId: row.vmId, tier: row.diskTier },
           AbortSignal.timeout(this.options.cleanupTimeoutMs),

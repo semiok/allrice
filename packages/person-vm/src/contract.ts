@@ -1,12 +1,18 @@
-import type { RequestContext } from '@allrice/contracts';
+import {
+  readPlatformPersonVmConfiguration,
+  type RequestContext,
+} from '@allrice/contracts';
 import type {
   PersonVmBootstrapScope,
   PersonVmMemoryGuestPlan,
 } from './guest-bootstrap.ts';
+import type { PersonVmWebStartup } from './web-endpoints.ts';
 
 export const PERSON_VM_CONTRACT_VERSION = 1 as const;
-export const PERSON_VM_MEMORY_MIB = 2048 as const;
-export const PERSON_VM_IDLE_MS = 20 * 60 * 1000;
+// Compatibility aliases; defaults are defined only by platform configuration.
+export const PERSON_VM_MEMORY_MIB =
+  readPlatformPersonVmConfiguration().memoryMiB;
+export const PERSON_VM_IDLE_MS = readPlatformPersonVmConfiguration().idleMs;
 export const PERSON_VM_COLD_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Host-only. Never accept this object, or RequestContext, from guest JSON. */
@@ -29,6 +35,7 @@ export type PersonVmEgressReceipt = Readonly<{
 export interface PersonVmEgressPort {
   prepare(
     binding: PersonVmBinding,
+    preparation: Readonly<{ gatewayPorts: readonly number[]; mount: string }>,
     signal: AbortSignal,
   ): Promise<PersonVmEgressReceipt>;
   /** Local exact-receipt liveness only. Must not call back into VM binding
@@ -78,6 +85,7 @@ export interface PersonVmRuntimePort {
   memoryGuestPlan(
     binding: PersonVmBinding,
     signal: AbortSignal,
+    web?: PersonVmWebStartup,
   ): Promise<PersonVmMemoryGuestPlan>;
   /** DSH startup/configuration stays with the native runtime owner. Fulfil only
    * after startup/control operations join and live native jobs have that owner.
@@ -86,6 +94,14 @@ export interface PersonVmRuntimePort {
     binding: PersonVmBinding,
     signal: AbortSignal,
     scope: PersonVmBootstrapScope,
+    web?: PersonVmWebStartup,
+  ): Promise<void>;
+  /** Host-only: called under the physical owner AFTER native stop/status proves
+   * stopped/absent. Join exact binding's host resources; never infer guest idle.
+   * Required before starting nativeWeb; optional for existing non-Web runtimes. */
+  retireAfterNativeStop?(
+    binding: PersonVmBinding,
+    signal: AbortSignal,
   ): Promise<void>;
   activity(
     binding: PersonVmBinding,
@@ -125,6 +141,7 @@ export type PersonVmErrorCode =
   | 'RUNTIME_NOT_READY'
   | 'ACTIVITY_UNKNOWN'
   | 'VM_ACTIVE'
+  | 'WEB_ENDPOINTS_PREPARING'
   | 'PROVIDER_FAILED'
   | 'CLEANUP_INCOMPLETE'
   | 'DISK_DELETE_NOT_AUTHORIZED'

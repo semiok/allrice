@@ -2,6 +2,7 @@
 import { execFileSync } from 'node:child_process';
 import { mkdir, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
+import { stagePersonVmConfiguration } from './stage-person-vm-config.mjs';
 import { resolveServiceBuildRoot } from './prepare-identity-root.mjs';
 import { prepareServiceBuildManifest } from '../../packages/database/dist/service-build-identity.js';
 import {
@@ -15,7 +16,9 @@ const option = (key) => {
   if (values.length !== 1) throw Error('DEV_BUILD_PREPARATION_ARGUMENT');
   return values[0].slice(key.length + 1);
 };
-if (args.length !== 2) throw Error('DEV_BUILD_PREPARATION_ARGUMENT');
+const configArgs = args.filter((s) => s.startsWith('--person-vm-config='));
+if (args.length !== 2 + configArgs.length || configArgs.length > 1)
+  throw Error('DEV_BUILD_PREPARATION_ARGUMENT');
 const root = await resolveServiceBuildRoot(option('--root')),
   sourceSha = option('--release-sha');
 const git = (...values) =>
@@ -25,6 +28,11 @@ if (
   git('status', '--porcelain=v1', '--untracked-files=normal')
 )
   throw Error('DEV_BUILD_SOURCE_NOT_CLEAN');
+if (configArgs.length)
+  await stagePersonVmConfiguration(
+    root,
+    configArgs[0].slice('--person-vm-config='.length),
+  );
 const manifest = await prepareServiceBuildManifest({
   root,
   sourceSha,

@@ -1,4 +1,7 @@
-import { DataAccessError, mutateEmployeeContent } from '@allrice/database';
+import {
+  DataAccessError,
+  createBusinessRuntimeCaller,
+} from '@allrice/database';
 import { getRequestContext } from '../../../../lib/identity/session';
 import { sameOriginBrowserWrite } from '../../../../lib/identity/request-origin';
 import { employeeHubErrorResponse } from '../../../../lib/employeehub/responses';
@@ -10,7 +13,11 @@ export async function POST(request: Request) {
     const context = await getRequestContext(request);
     if (!context) throw new DataAccessError('authentication_required');
     return Response.json({
-      receipt: await mutateEmployeeContent(context, await request.json()),
+      receipt: await createBusinessRuntimeCaller().mutateEmployeeContent(
+        context,
+        await request.json(),
+        request.signal,
+      ),
     });
   } catch (error) {
     return employeeHubErrorResponse(error);

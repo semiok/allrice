@@ -39,6 +39,10 @@ import {
   type BrandMediaTopic,
 } from '@allrice/contracts';
 import * as client from '../../../packages/database/src/core/client.ts';
+import * as buildIdentity from '../../../packages/database/src/service-build-identity.ts';
+import { readApplicationBuiltinModules } from '../../../packages/database/src/builtin-modules.ts';
+import { requireDEntryNativeIdentity } from '../../../packages/database/src/d-entry.ts';
+import { readDEntryReleasePolicy } from '../../../packages/database/src/d-entry-release-policy.ts';
 import {
   createStorageMetadata,
   markStorageReady,
@@ -461,6 +465,109 @@ suite(
       browser.token = '';
       await f?.close();
     }, 30000);
+
+    it('reads application builtins with real Cookie/current scope, without adding bindings or admitting a default-off execution', async () => {
+      const a = await actor();
+      const before = await f.db`select
+        (select count(*)::int from allrice_employee_module_bindings where instance_id=${a.scope.instanceId}) bindings,
+        (select count(*)::int from allrice_employee_runs) runs,
+        (select count(*)::int from allrice_chat_sessions) threads`;
+      const policy = await readApplicationBuiltinModules('web');
+      const response = await catalog.GET(
+        request(
+          a,
+          'modules',
+          undefined,
+          '?enabled=false&sourceSha=browser-claim',
+        ),
+        params(a.scope.instanceId),
+      );
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      expect(result.modules[0]).toMatchObject({
+        binding: null,
+        available: true,
+        enabled: false,
+      });
+      expect(result.applicationModules).toEqual(policy);
+      expect(result.applicationModules.builtinModules).toEqual({
+        deliverables: true,
+        'enterprise-materials': true,
+        'employee-memory': true,
+        capabilities: true,
+      });
+      expect(result.applicationModules.applicationBuild?.sourceSha).not.toBe(
+        'browser-claim',
+      );
+      expect((await readDEntryReleasePolicy()).defaultGeneration).toBe('3.x');
+      await expect(
+        requireDEntryNativeIdentity(a.context, {
+          workspaceId: a.scope.workspaceId,
+          employeeInstanceId: a.scope.instanceId,
+        }),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      expect(
+        await f.db`select
+        (select count(*)::int from allrice_employee_module_bindings where instance_id=${a.scope.instanceId}) bindings,
+        (select count(*)::int from allrice_employee_runs) runs,
+        (select count(*)::int from allrice_chat_sessions) threads`,
+      ).toEqual(before);
+    });
+
+    it('does not expose application policy for another tenant employee or after current membership removal', async () => {
+      const a = await actor(),
+        other = await actor();
+      const foreign = await catalog.GET(
+        request(a, 'modules', undefined, '', other.scope.instanceId),
+        params(other.scope.instanceId),
+      );
+      expect([403, 404]).toContain(foreign.status);
+      expect(await foreign.json()).not.toHaveProperty('applicationModules');
+      await f.db`update allrice_memberships set active=false
+        where organization_id=${a.context.organizationId} and user_id=${a.context.actor.id}`;
+      const removed = await catalog.GET(
+        request(a, 'modules'),
+        params(a.scope.instanceId),
+      );
+      expect([401, 403, 404]).toContain(removed.status);
+      expect(await removed.json()).not.toHaveProperty('applicationModules');
+    });
+
+    it('rechecks real membership after a pending build read and joins that read before refusing the late response', async () => {
+      const a = await actor();
+      let entered!: () => void, finish!: (value: null) => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const read = vi
+        .spyOn(buildIdentity, 'readServiceBuildIdentity')
+        .mockImplementationOnce(() => {
+          entered();
+          return new Promise<null>((resolve) => {
+            finish = resolve;
+          });
+        });
+      let settled = false;
+      const response = catalog
+        .GET(request(a, 'modules'), params(a.scope.instanceId))
+        .finally(() => {
+          settled = true;
+        });
+      try {
+        await started;
+        await f.db`update allrice_memberships set active=false
+          where organization_id=${a.context.organizationId} and user_id=${a.context.actor.id}`;
+        expect(settled).toBe(false);
+        finish(null);
+        const denied = await response;
+        expect([401, 403, 404]).toContain(denied.status);
+        expect(await denied.json()).not.toHaveProperty('applicationModules');
+      } finally {
+        finish(null);
+        await response;
+        read.mockRestore();
+      }
+    });
 
     it('“添加品牌自媒体，选入这个选题，开始写并排周二晚上，发布后改回排期” persists the human chain', async () => {
       const a = await actor();
@@ -1270,15 +1377,27 @@ suite(
           (await catalog.GET(request(a, 'modules'), params(a.scope.instanceId)))
             .status,
         ).toBe(200);
+        // The catalog checks the existing management scope before and after
+        // its awaited application build read; neither check locks rows.
+        expect(reader.transactions).toEqual([
+          { index: 0, xid: null },
+          { index: 1, xid: null },
+        ]);
         const queries: Record<string, string>[] = [
           { view: 'topics' },
           { view: 'articles' },
           { view: 'article', articleId: article.id },
           { view: 'calendar', month: '2026-11', timezone: 'Asia/Shanghai' },
         ];
-        for (const query of queries) await read(a, query);
+        for (const query of queries) {
+          const before = reader.transactions.length;
+          await read(a, query);
+          expect(reader.transactions.slice(before)).toEqual([
+            { index: before, xid: null },
+          ]);
+        }
         reader.expectNoRowLocks();
-        expect(reader.transactions).toHaveLength(5);
+        expect(reader.transactions).toHaveLength(6);
       } finally {
         database.mockReturnValue(f.db);
       }

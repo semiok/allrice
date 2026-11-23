@@ -104,12 +104,15 @@ export class PersonVmAdmissionHost
     { revision: string; at: string; mono: number }
   >();
   private readonly idle = new Map<string, IdleCandidate>();
+  private readonly idleMs: number;
   constructor(
     private readonly options: {
       shared: PostgresPersonVmAdmissionStore;
       store: PersonVmStore;
       authority: PersonVmAuthority;
       leaseTtlMs: number;
+      /** Host-only platform configuration snapshot; does not grant reclamation. */
+      idleMs?: number;
       now: () => Date;
       monotonic?: () => number;
       nativeActivity?: PersonVmNativeActivityPort;
@@ -125,7 +128,12 @@ export class PersonVmAdmissionHost
       ): Promise<PersonVmView>;
       assertStopSafe(lease: VmLease, signal: AbortSignal): Promise<void>;
     },
-  ) {}
+  ) {
+    this.idleMs =
+      options.idleMs === undefined ? PERSON_VM_IDLE_MS : options.idleMs;
+    if (!Number.isSafeInteger(this.idleMs) || this.idleMs <= 0)
+      throw new PersonVmError('PROVIDER_FAILED');
+  }
   private mono() {
     return (this.options.monotonic ?? (() => performance.now()))();
   }
@@ -1159,7 +1167,7 @@ export class PersonVmAdmissionHost
       return;
     }
     this.idle.set(binding.personId, candidate);
-    if (mono - candidate.mono < PERSON_VM_IDLE_MS) return;
+    if (mono - candidate.mono < this.idleMs) return;
     // This composition has no native autonomous-admission barrier. Do not
     // freeze users merely because an injected projection looks complete: it
     // cannot commit a running stop. Keep the VM/open gates and the candidate.

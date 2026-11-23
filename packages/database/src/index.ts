@@ -12,6 +12,12 @@ export * from './core/client.ts';
 export { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 export * from './codex-token-policy.ts';
 export * from './identity.ts';
+export * from './d-entry.ts';
+export * from './d-entry-release-policy.ts';
+export * from './d-entry-admission.ts';
+export * from './d-entry-native-root.ts';
+export * from './d-entry-authority.ts';
+export { requireCurrentPlatformAdmin } from './platform-authority.ts';
 export * from './user-preferences.ts';
 export * from './tenant-administration.ts';
 export * from './organization-administration.ts';
@@ -196,6 +202,13 @@ export {
   ServiceBuildManifestSchema,
   type ServiceBuildIdentity,
 } from './service-build-identity.ts';
+export {
+  builtinModules,
+  readApplicationBuiltinModules,
+  createApplicationBuiltinModuleAuthority,
+  type BuiltinModuleId,
+  type BuiltinModuleAuthority,
+} from './builtin-modules.ts';
 
 export { readDevMaintenance, DevMaintenanceError } from './dev-maintenance.ts';
 export {
@@ -400,3 +413,14 @@ export { ReferenceArchiveInputError } from './reference-archive-read.ts';
 export { checkReferenceImageSignal } from './reference-image-read.ts';
 export * from './brand-media/server-wiring.ts';
 export * from './employees/employee-module-bindings.ts';
+
+// Host-only named baseline callers; internal SQL/source bindings stay private.
+export { createBusinessRuntimeCaller } from './business-runtime/caller-transaction.ts';
+// MET-272 M1 module allowlist: migration adapters only, not completed 4.0 ports.
+export type { LegacyMcpExecution } from './mcp-legacy-execution.ts';
+export { createLegacyEnterpriseMaterialsMcpPort } from './enterprise-materials-mcp-port.ts';
+export { createLegacyEmployeeMemoryMcpPort } from './employee-memory-mcp-port.ts';
+export {
+  createLegacyDeliverablesMcpPort,
+  type PreparedMcpDeliverable,
+} from './deliverables-mcp-port.ts';

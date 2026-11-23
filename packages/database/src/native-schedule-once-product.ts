@@ -1,4 +1,5 @@
 import { terminalModelFailureCategorySql } from './execution/model-failures.ts';
+import { assertChatExecutionGeneration } from './conversation/execution-generation.ts';
 import { lockNativeQuestionMode } from './native-questions.ts';
 import {
   scheduleIdentity as identity,
@@ -184,7 +185,7 @@ export async function lockNativeOnceAdmissions(
       join allrice_employees e on e.id=a.employee_id and e.organization_id=a.organization_id and e.workspace_id=a.workspace_id and e.status='active' and e.employee_key not like 'platform-%'
       join allrice_employee_instances i on i.id=coalesce(s.employee_instance_id,s.employee_assignment_id) and i.assignment_id=a.id and i.owner_id=s.owner_id and i.archived_at is null
       where s.id=${c.dispatch.businessSessionId} and s.organization_id=${c.organizationId} and s.workspace_id=${c.workspaceId}
-        and s.owner_id=${c.ownerId} and s.archived_at is null for share of a,e,i,s`;
+        and s.owner_id=${c.ownerId} and s.archived_at is null and s.execution_generation='3.x' for share of a,e,i,s`;
     const permitted =
       !!principal?.writable &&
       settings.available &&
@@ -322,6 +323,11 @@ async function enroll(
   input: CreateOnceTaskInput,
   logicalDigest?: string,
 ) {
+  await assertChatExecutionGeneration(
+    tx,
+    { ...scope, sessionId: target.id },
+    '3.x',
+  );
   const requestDigest =
     logicalDigest ?? runtimePolicyDigest({ ...input, sessionId: target.id });
   const [old] = await tx<
@@ -543,6 +549,8 @@ export async function cancelOnceTask(
         target.employee_instance_id
     )
       throw new DataAccessError('not_found');
+    for (const sessionId of new Set([target.id, p.session_id]))
+      await assertChatExecutionGeneration(tx, { ...scope, sessionId }, '3.x');
     const task = await readOnceTaskProjection(tx, p);
     if (task.runId || !task.canCancel) return task;
     const [control] = await tx<

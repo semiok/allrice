@@ -1,4 +1,6 @@
+import type { PersonVmBootstrapScope } from './guest-bootstrap.ts';
 import {
+  chmod,
   lstat,
   mkdtemp,
   readFile,
@@ -6,20 +8,40 @@ import {
   readdir,
   realpath,
   rm,
+  open,
+  type FileHandle,
   writeFile,
+  symlink,
 } from 'node:fs/promises';
-import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { dirname, join } from 'node:path';
+import { mkdir } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { createConnection, createServer } from 'node:net';
+import { once } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MicrosandboxPersonVm } from './microsandbox.ts';
+import { PERSON_VM_MEMORY_MIB } from './contract.ts';
 import { runCommand } from './process.ts';
-import { context, harness, signal } from './test-support.ts';
+import { context, currentReceipt, harness, signal } from './test-support.ts';
 import { PersonVmService } from './person-vm.ts';
+import type { ReadonlyDshDirectory } from './readonly-artifact.ts';
 import type { PersonVmMemoryGuestPlan } from './guest-bootstrap.ts';
+import type { PersonVmWebRoster, PersonVmWebStartup } from './web-endpoints.ts';
+import { PERSON_VM_GUEST_CONTROL_READER } from './native-resource.ts';
+import { PERSON_VM_COMMAND_MEMORY_PROGRAM } from './native-command-observer.ts';
 
 const temporary: string[] = [];
+const readonlyRoots: string[] = [];
+async function unsealFixture(path: string) {
+  const s = await lstat(path);
+  if (!s.isDirectory()) return;
+  await chmod(path, 0o700);
+  for (const name of await readdir(path)) await unsealFixture(join(path, name));
+}
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
+  for (const path of readonlyRoots.splice(0)) await unsealFixture(path);
   for (const path of temporary.splice(0))
     await rm(path, { recursive: true, force: true });
 });
@@ -36,7 +58,11 @@ async function socketDirectory() {
   return path;
 }
 
-async function bootstrapFixture(mode = 'ok') {
+async function bootstrapFixture(
+  mode = 'ok',
+  readonlyDshDirectory?: ReadonlyDshDirectory,
+  jobCleanupTimeoutMs?: number,
+) {
   const root = await directory(),
     mount = join(root, 'mount');
   const binary = join(root, 'msb-bootstrap-fixture');
@@ -51,26 +77,56 @@ function save(){fs.writeFileSync(f,JSON.stringify(v));}
 if(a[0]==='--version')console.log('microsandbox 0.7.16');
 else if(a[0]==='list')console.log(JSON.stringify(v.name?[{name:v.name,status:v.status}]:[]));
 else if(a[0]==='pull'){}
-else if(a[0]==='create'){v.name=a[a.indexOf('--name')+1];v.status='Running';}
+else if(a[0]==='create'){
+ v.name=a[a.indexOf('--name')+1];v.status='Running';
+ v.mounts=a.flatMap((arg,i)=>arg==='--mount-dir'?[a[i+1].split(':')]:[]).map(([host,guest,ro])=>({type:'Bind',host,guest,options:{readonly:ro==='ro',noexec:false,nosuid:false,nodev:false},stat_virtualization:'strict',host_permissions:'private',follow_root_symlinks:false,quota_mib:null}));
+ v.ports=a.flatMap((arg,i)=>arg==='-p'?[a[i+1].split(':')]:[]).map(([host_bind,h,g])=>({host_bind,host_port:Number(h),guest_port:Number(g),protocol:'tcp'}));
+}
+else if(a[0]==='inspect'){
+ if(a.includes('--job')){
+  const id=a[a.indexOf('--job')+1],job=v.jobs[id];
+  console.log(JSON.stringify({version:1,id,pid:4242,runtime_boot_id:'fixture-native-boot',state:job.state??'running',exit_code:job.code,timed_out:false}));return;
+ }
+ const ports=v.ports??[],active=mode.startsWith('web-inspect')?[]:ports;
+ const mounts=v.mounts??[],activeMounts=mode==='artifact-inspect-drift'?mounts.map(m=>({...m,options:{...m.options,readonly:false}})):mounts;
+ console.log(JSON.stringify({name:v.name,status:v.status,config:{network:{ports},mounts},active_config:{network:{ports:active},mounts:activeMounts},pending_changes:[]}));
+}
 else if(a[0]==='start')v.status='Running';
-else if(a[0]==='stop'){if(mode!=='lost-id-unknown-stop')v.status='Stopped';}
+else if(a[0]==='stop'){if(!['lost-id-unknown-stop','auth-unknown-stop','web-inspect-unknown-stop'].includes(mode))v.status='Stopped';}
 else if(a[0]==='ping'){if(v.status!=='Running')process.exit(41);}
 else if(a[0]==='cp'){
  const meta=fs.statSync(a[1]);(v.copies??=[]).push({target:a[2],mode:meta.mode&511,contents:fs.readFileSync(a[1],'utf8')});
 }
 else if(a[0]==='exec'){
+ if(!a.includes('--detach')){
+  // v0.7.16 exec uses parse_duration_secs, not the separate ms parser.
+  if(!/^[0-9]+[smh]?$/.test(a[a.indexOf('--timeout')+1]??''))process.exit(44);
+  if(mode==='auth-budget'){
+   fs.writeFileSync(p.join(home,'auth-reading'),String(process.pid));setInterval(()=>{},1000);return;
+  }
+  const cmd=a.slice(a.indexOf('--')+1);
+  process.exit(require('node:child_process').spawnSync(process.execPath,cmd.slice(1),{stdio:'inherit'}).status??1);
+ }
  if(!a.includes('--detach')||!a.includes('--no-stdin')||!a.includes('--no-tty'))process.exit(42);
  const id=require('node:crypto').randomUUID(),cmd=a.slice(a.indexOf('--')+1),init=cmd.includes('/work/memory/init.cjs');
  (v.jobs??={})[id]={cmd,code:init&&mode==='init-error'?23:0};save();
  if(!(init&&mode.startsWith('lost-id')))console.log(id);
 }
 else if(a[0]==='kill')v.jobs[a[a.indexOf('--job')+1]].code=137;
+else if(a[0]==='logs'){
+ const id=a[a.indexOf('--job')+1],cmd=v.jobs[id].cmd,config=JSON.parse(cmd[3]);
+ const childPath=config.commandsGroup+'/command-'+config.pid;
+ const output=config.targets?{version:1,scope:'guest-cgroup',groups:config.targets.map(t=>({...t,device:'1',inode:'2',values:['32','64','128']}))}:
+ {version:1,childJoined:true,childReleased:true,receipt:{version:1,executionRef:config.executionRef,pid:config.pid,stage:'admitted',child:{path:childPath,device:'1',inode:'2'},beforeMembership:config.dshGroup.slice(config.cgroupRoot.length),admittedMembership:childPath.slice(config.cgroupRoot.length),bootId:'00000000-0000-0000-0000-000000000001',startTicks:'1',baseline:{oom:'0',oomKill:'0'}},after:{oom:'0',oomKill:'0'}};
+ console.log(JSON.stringify({id,s:'stdout',e:null,d:JSON.stringify(output)}));
+}
 else if(a[0]==='wait'){
  const job=v.jobs[a[a.indexOf('--job')+1]];
  if(mode==='unknown-wait'){console.log('{}');save();process.exit(0);}
- if(mode==='cancel-init'&&job.cmd.includes('/work/memory/init.cjs')&&job.code===0){
+ if(((mode==='cancel-init'&&job.cmd.includes('/work/memory/init.cjs'))||(mode==='cancel-memory-probe'&&job.cmd[1]==='-e')||(mode==='cancel-retained-command'&&job.cmd.includes('native-dsh')))&&job.code===0){
   save();fs.writeFileSync(p.join(home,'waiting'),String(process.pid));setInterval(()=>{},1000);return;
  }
+ job.state='exited';
  console.log(JSON.stringify({code:job.code,success:job.code===0,timed_out:false}));save();process.exit(job.code);
 } else process.exit(43);
 save();
@@ -81,7 +137,11 @@ save();
     binary,
     libkrunfw: join(root, 'fw'),
     agentd: join(root, 'agentd'),
-    image: 'registry/node@sha256:' + 'a'.repeat(64),
+    image: readonlyDshDirectory
+      ? readonlyImage
+      : 'registry/node@sha256:' + 'a'.repeat(64),
+    readonlyDshDirectory,
+    jobCleanupTimeoutMs,
     rootDiskGiB: 20,
     socketRoot: await socketDirectory(),
   });
@@ -114,6 +174,7 @@ save();
     env: { BASH_ENV: '/work/memory/bash-env' },
   };
   h.runtime.memoryGuestPlan = async () => plan;
+  h.runtime.retireAfterNativeStop = async () => {};
   h.runtime.start = async (_binding, _signal, scope) => {
     const job = await scope.launch({
       executable: 'node',
@@ -125,6 +186,7 @@ save();
   const service = new PersonVmService({ ...h.options, native });
   return {
     h,
+    native,
     rc,
     service,
     mount,
@@ -136,7 +198,887 @@ save();
   };
 }
 
+const readonlyImage =
+  'docker.io/library/node@sha256:af0bb4bf5b7318e3269417a7684a9e116c3c22eaf05382578b0d0d33de597ad2';
+async function readonlyFixture() {
+  const root = await directory(),
+    artifactSha256 = createHash('sha256')
+      .update('synthetic archive')
+      .digest('hex');
+  const release = join(root, artifactSha256),
+    hostDirectory = join(release, 'public');
+  await mkdir(join(hostDirectory, 'node_modules/.bin'), {
+    recursive: true,
+    mode: 0o700,
+  });
+  readonlyRoots.push(release);
+  const bins =
+    'anthropic-ai-sdk cordis crc32 dsh dsoffice is-docker is-inside-container js-yaml node-which pi-ai playwright playwright-core semver which-command xlsx yaml'.split(
+      ' ',
+    );
+  const text = 'synthetic code\n';
+  await writeFile(join(hostDirectory, 'node_modules/code.js'), text, {
+    mode: 0o444,
+  });
+  for (const name of bins)
+    await symlink('../code.js', join(hostDirectory, 'node_modules/.bin', name));
+  const files = [
+    { path: 'node_modules', kind: 'directory', mode: 0o755 },
+    { path: 'node_modules/.bin', kind: 'directory', mode: 0o755 },
+    {
+      path: 'node_modules/code.js',
+      kind: 'file',
+      mode: 0o644,
+      bytes: Buffer.byteLength(text),
+      sha256: createHash('sha256').update(text).digest('hex'),
+    },
+    ...bins.map((name) => ({
+      path: `node_modules/.bin/${name}`,
+      kind: 'symlink',
+      mode: 0o755,
+      target: '../code.js',
+    })),
+  ];
+  for (const dir of ['node_modules/.bin', 'node_modules', '.'])
+    await chmod(join(hostDirectory, dir), 0o555);
+  const manifest = JSON.stringify({
+    platform: 'linux-arm64-gnu',
+    containsAuthFiles: false,
+    archive: { bytes: 512, sha256: artifactSha256 },
+    files,
+  });
+  await writeFile(join(release, 'manifest.json'), manifest, { mode: 0o444 });
+  const c = {
+    hostDirectory,
+    guestDirectory: `/opt/allrice/dsh/${artifactSha256}`,
+    artifactSha256,
+    manifestSha256: createHash('sha256').update(manifest).digest('hex'),
+    descriptorPath: join(release, 'descriptor.json'),
+    treeSha256: createHash('sha256')
+      .update('synthetic verified tree')
+      .digest('hex'),
+  };
+  const descriptor = JSON.stringify({
+    kind: 'allrice-dsh-readonly-directory-v2',
+    ...c,
+    manifestBytes: Buffer.byteLength(manifest),
+    archiveBytes: 512,
+    baseImage: readonlyImage,
+    dshVersion: '0.2.1-rc.2',
+    nodeVersion: '22.23.2',
+    publisherSha256: 'a'.repeat(64),
+    gateSha256: 'b'.repeat(64),
+  });
+  await writeFile(c.descriptorPath, descriptor, { mode: 0o444 });
+  await chmod(release, 0o555);
+  return {
+    ...c,
+    sealedManifestSha256: createHash('sha256').update(descriptor).digest('hex'),
+  };
+}
+
 describe('Microsandbox public CLI protocol through real child processes (no actual VM)', () => {
+  const readerConfiguration = {
+    nodeExecutable: '/fixed-node/bin/node',
+    cgroupRoot: '/sys/fs/cgroup',
+    targets: [
+      {
+        target: 'commands' as const,
+        path: '/sys/fs/cgroup/allrice-commands',
+        high: 32,
+        max: 64,
+        swapMax: 128,
+      },
+    ],
+  };
+  const observerConfiguration = {
+    nodeExecutable: readerConfiguration.nodeExecutable,
+    cgroupRoot: readerConfiguration.cgroupRoot,
+    commandsGroup: readerConfiguration.targets[0]!.path,
+    dshGroup: '/sys/fs/cgroup/allrice-dsh',
+    procRoot: '/proc',
+    receiptDirectory: '/work/memory/receipts',
+  };
+  it('provider memory ports必须显式清理预算，缺失时不派发CLI', async () => {
+    const f = await bootstrapFixture();
+    f.h.runtime.start = async (_binding, _signal, scope) => {
+      expect(() =>
+        f.native.memoryGuestReader(scope, readerConfiguration),
+      ).toThrow('PROVIDER_FAILED');
+      expect(() =>
+        f.native.memoryCommandObserver(scope, observerConfiguration),
+      ).toThrow('PROVIDER_FAILED');
+    };
+    await f.service.prewarm(f.rc, { trigger: 'page' }, signal());
+    expect((await f.calls()).filter((a) => a[0] === 'exec')).toHaveLength(2); // mkdir/init only
+  });
+  it('实际provider memory reader/observer映射固定node/roots/binding与exact job；retained wait不继承已关闭scope', async () => {
+    const f = await bootstrapFixture('ok', undefined, 5000);
+    let scope!: PersonVmBootstrapScope;
+    let job!: Awaited<ReturnType<PersonVmBootstrapScope['launch']>>;
+    f.h.runtime.start = async (_binding, _signal, current) => {
+      scope = current;
+      const result = await f.native
+        .memoryGuestReader(scope, readerConfiguration)
+        .read(scope.binding, signal());
+      expect(result).toMatchObject({
+        binding: scope.binding,
+        state: 'verified',
+        scope: 'guest-cgroup',
+        boundary: 'guest-root-cooperative',
+        groups: [
+          {
+            path: readerConfiguration.targets[0]!.path,
+            observed: { high: 32, max: 64, swapMax: 128 },
+          },
+        ],
+      });
+      job = await scope.launch({ executable: 'node', args: ['native-dsh'] });
+      const observed = await f.native
+        .memoryCommandObserver(scope, observerConfiguration)
+        .observeCompletion(
+          scope.binding,
+          { job, executionRef: 'provider-command' },
+          signal(),
+        );
+      expect(observed).toMatchObject({
+        binding: scope.binding,
+        jobId: job.jobId,
+        outcome: 'unknown',
+        reason: 'managed-terminating-signal-unavailable',
+        completion: { joined: true, signal: 'unknown' },
+        child: { joined: true, released: true },
+      });
+    };
+    await f.service.prewarm(f.rc, { trigger: 'page' }, signal());
+    await expect(job.wait(signal())).resolves.toEqual({
+      exitCode: 0,
+      timedOut: false,
+    });
+    const calls = await f.calls(),
+      name = `allrice-${scope.binding.vmId}`;
+    const probes = calls.filter((a) => a[0] === 'exec' && a.includes('-e'));
+    expect(probes).toHaveLength(2);
+    for (const [i, program] of [
+      PERSON_VM_GUEST_CONTROL_READER,
+      PERSON_VM_COMMAND_MEMORY_PROGRAM,
+    ].entries()) {
+      expect(probes[i]!.slice(0, 8)).toEqual([
+        'exec',
+        name,
+        '--detach',
+        '--no-stdin',
+        '--no-tty',
+        '--',
+        readerConfiguration.nodeExecutable,
+        '-e',
+      ]);
+      expect(probes[i]![8]).toBe(program);
+    }
+    expect(JSON.parse(probes[0]![9]!)).toEqual({
+      cgroupRoot: readerConfiguration.cgroupRoot,
+      targets: readerConfiguration.targets.map(({ target, path }) => ({
+        target,
+        path,
+      })),
+    });
+    expect(JSON.parse(probes[1]![9]!)).toEqual({
+      cgroupRoot: observerConfiguration.cgroupRoot,
+      commandsGroup: observerConfiguration.commandsGroup,
+      dshGroup: observerConfiguration.dshGroup,
+      procRoot: '/proc',
+      receiptDirectory: '/work/memory/receipts',
+      executionRef: 'provider-command',
+      pid: 4242,
+    });
+    expect(probes[1]![10]).toBe('complete-and-release');
+    expect(
+      calls.filter((a) => a[0] === 'inspect' && a.includes('--job')),
+    ).toEqual(
+      Array(2).fill(['inspect', name, '--job', job.jobId, '--format', 'json']),
+    );
+    await expect(
+      f.native
+        .memoryGuestReader(scope, readerConfiguration)
+        .read(scope.binding, signal()),
+    ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
+    await expect(
+      f.native
+        .memoryCommandObserver(scope, observerConfiguration)
+        .observeCompletion(
+          scope.binding,
+          { job, executionRef: 'closed-operation' },
+          signal(),
+        ),
+    ).rejects.toBe(scope.signal.reason);
+    expect(await f.calls()).toEqual(calls); // Closed scope dispatches no ordinary exec/wait/logs/inspect.
+  });
+  it.each(['probe', 'retained-command'] as const)(
+    'provider %s仅scope取消后CLI真实join；probe独立kill/wait，retained命令不被观察取消杀死',
+    async (kind) => {
+      const f = await bootstrapFixture(
+          kind === 'probe' ? 'cancel-memory-probe' : 'cancel-retained-command',
+          undefined,
+          5000,
+        ),
+        controller = new AbortController(),
+        caller = new AbortController(),
+        reason = new Error('scope-only observation cancellation');
+      let observation: Promise<unknown> | undefined;
+      f.h.runtime.start = async (_binding, _signal, scope) => {
+        if (kind === 'retained-command') {
+          const job = await scope.launch({
+            executable: 'node',
+            args: ['native-dsh'],
+          });
+          observation = f.native
+            .memoryCommandObserver(scope, observerConfiguration)
+            .observeCompletion(
+              scope.binding,
+              { job, executionRef: 'c1-retained-command' },
+              caller.signal,
+            );
+          await observation;
+        } else
+          await f.native
+            .memoryGuestReader(scope, readerConfiguration)
+            .read(scope.binding, caller.signal);
+      };
+      const starting = f.service.prewarm(
+        f.rc,
+        { trigger: 'page' },
+        controller.signal,
+      );
+      const failure = expect(starting).rejects.toMatchObject({
+        code: 'PROVIDER_FAILED',
+      });
+      try {
+        let pid = 0;
+        await vi.waitFor(
+          async () => {
+            pid = Number(
+              await readFile(join(f.mount, 'host-home/waiting'), 'utf8'),
+            );
+            expect(pid).toBeGreaterThan(0);
+          },
+          { timeout: 5000 },
+        );
+        controller.abort(reason);
+        if (kind === 'retained-command')
+          await expect(observation).rejects.toBe(reason);
+        await failure;
+        expect(caller.signal.aborted).toBe(false);
+        expect(() => process.kill(pid, 0)).toThrow();
+        const calls = await f.calls(),
+          kill = calls.findIndex((a) => a[0] === 'kill');
+        if (kind === 'probe') {
+          expect(kill).toBeGreaterThan(0);
+          expect(calls[kill + 1]).toEqual([
+            'wait',
+            calls[kill]![1],
+            '--job',
+            calls[kill]![3],
+            '--format',
+            'json',
+          ]);
+          expect(calls.findIndex((a) => a[0] === 'stop')).toBeGreaterThan(
+            kill + 1,
+          );
+        } else {
+          expect(kill).toBe(-1);
+          const waiting = calls.findLastIndex((a) => a[0] === 'wait');
+          expect(calls[waiting - 1]?.[0]).toBe('inspect');
+          expect(calls[waiting - 1]?.[3]).toBe(calls[waiting]?.[3]);
+          expect(calls.findIndex((a) => a[0] === 'stop')).toBeGreaterThan(
+            waiting,
+          );
+        }
+        expect(f.h.mounts.size).toBe(0);
+      } finally {
+        controller.abort();
+        caller.abort();
+        await starting.catch(() => {});
+      }
+    },
+  );
+  it('readonly code首次create走真实provider/child入口；准确mount及active inspect，stop后原绑定start对账同版密封manifest', async () => {
+    const c = await readonlyFixture(),
+      f = await bootstrapFixture('ok', c);
+    await f.service.prewarm(f.rc, { trigger: 'page' }, signal());
+    const binding = await f.service.resolve(f.rc, signal()),
+      calls = await f.calls();
+    const creation = calls.find((args) => args[0] === 'create')!;
+    expect(
+      creation.flatMap((arg, index) =>
+        arg === '--mount-dir' ? [creation[index + 1]] : [],
+      ),
+    ).toEqual([`${c.hostDirectory}:${c.guestDirectory}:ro`]);
+    expect(creation[creation.indexOf('--pull') + 1]).toBe('never');
+    expect(creation[creation.indexOf('--net-default') + 1]).toBe('deny');
+    expect(creation[creation.indexOf('--max-memory') + 1]).toBe('2048M');
+    expect(
+      (await lstat(join(f.mount, 'microsandbox/allrice-readonly-dsh.json')))
+        .mode & 0o777,
+    ).toBe(0o600);
+    await f.native.stop(binding, signal());
+    await f.native.start(binding, signal());
+    expect(await f.native.status(binding, signal())).toBe('running');
+    expect(
+      (await f.calls()).filter((args) => args[0] === 'start'),
+    ).toHaveLength(1);
+    await chmod(dirname(c.hostDirectory), 0o755);
+    await rm(c.descriptorPath);
+    await expect(f.native.ping(binding, signal())).rejects.toMatchObject({
+      code: 'PROVIDER_FAILED',
+    });
+    // Source loss must not gate stop/status or physical cleanup.
+    await f.native.stop(binding, signal());
+    expect(await f.native.status(binding, signal())).toBe('stopped');
+  });
+  it('source qualification失败不pull/create/start；真实prepare/status和失败detach仍可收敛', async () => {
+    const c = await readonlyFixture();
+    await chmod(dirname(c.hostDirectory), 0o755);
+    await rm(c.descriptorPath);
+    const f = await bootstrapFixture('ok', c);
+    await expect(
+      f.service.prewarm(f.rc, { trigger: 'page' }, signal()),
+    ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
+    expect(
+      (await f.calls()).some((args) =>
+        ['pull', 'create', 'start'].includes(args[0]!),
+      ),
+    ).toBe(false);
+    expect(f.h.log).toContain('disk:detach');
+  });
+  it('create真正成功而active只读inspect不符必须失败并真实stop，不能report ready', async () => {
+    const c = await readonlyFixture(),
+      f = await bootstrapFixture('artifact-inspect-drift', c);
+    await expect(
+      f.service.prewarm(f.rc, { trigger: 'page' }, signal()),
+    ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
+    const calls = await f.calls();
+    expect(calls.some((args) => args[0] === 'create')).toBe(true);
+    expect(calls.some((args) => args[0] === 'stop')).toBe(true);
+    expect(f.h.log).toContain('disk:detach');
+  });
+  it('runtime启动后source损坏且callback失败，confirmed native stop清理不被artifact检查拦截', async () => {
+    const c = await readonlyFixture(),
+      f = await bootstrapFixture('ok', c);
+    let runtimeEntered = false;
+    f.h.runtime.start = async () => {
+      runtimeEntered = true;
+      await chmod(dirname(c.hostDirectory), 0o755);
+      await rm(c.descriptorPath);
+      throw new Error('synthetic startup failure');
+    };
+    await expect(
+      f.service.prewarm(f.rc, { trigger: 'page' }, signal()),
+    ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
+    expect(runtimeEntered).toBe(true);
+    expect((await f.calls()).some((args) => args[0] === 'stop')).toBe(true);
+    expect(f.h.log).toContain('disk:detach');
+  });
+  function roster(
+    f: Awaited<ReturnType<typeof bootstrapFixture>>,
+    count = 2,
+  ): PersonVmWebRoster {
+    const facts = {
+      personId: f.rc.actor.id,
+      organizationId: f.rc.organizationId,
+      entries: Array.from({ length: count }, () => ({
+        workspaceId: randomUUID(),
+        employeeInstanceId: randomUUID(),
+        employeeRevision: 1,
+        employeeVersionId: randomUUID(),
+      })).sort((a, b) =>
+        a.employeeInstanceId.localeCompare(b.employeeInstanceId),
+      ),
+    };
+    return {
+      ...facts,
+      digest: `sha256:${createHash('sha256').update(JSON.stringify(facts)).digest('hex')}`,
+    };
+  }
+  it('首次真实CLI create仅发布实际员工清单并核active inspect；0600 host manifest与scope receipt对应', async () => {
+    const f = await bootstrapFixture(),
+      assigned = roster(f);
+    let startup: PersonVmWebStartup | undefined;
+    f.h.runtime.start = async (_binding, _signal, _scope, web) => {
+      startup = web;
+    };
+    const service = new PersonVmService({
+      ...f.h.options,
+      native: f.native,
+      nativeWeb: { prepare: async () => assigned },
+    });
+    const view = await service.prewarm(f.rc, { trigger: 'page' }, signal());
+    expect(view.ready).toBe(true); // Fixture runtime readiness, not native editor evidence.
+    expect(startup?.context).toBe(f.rc);
+    expect(startup?.receipt.rosterDigest).toBe(assigned.digest);
+    expect(startup?.receipt.binding).toEqual(
+      await service.resolve(f.rc, signal()),
+    );
+    const calls = await f.calls(),
+      creation = calls.find((args) => args[0] === 'create')!;
+    const mappings = creation.flatMap((arg, index) =>
+      arg === '-p' ? [creation[index + 1]] : [],
+    );
+    expect(mappings).toEqual(
+      startup!.receipt.endpoints.map(
+        (entry) => `127.0.0.1:${entry.hostPort}:${entry.guestPort}`,
+      ),
+    );
+    expect(mappings).toHaveLength(assigned.entries.length);
+    expect(
+      creation.flatMap((arg, index) =>
+        arg === '--net-rule' ? [creation[index + 1]] : [],
+      ),
+    ).toEqual([
+      'allow:egress@host:tcp:38990',
+      ...startup!.receipt.endpoints.map(
+        (entry) => `allow:ingress@127.0.0.1/32:tcp:${entry.guestPort}`,
+      ),
+    ]);
+    expect(creation[creation.indexOf('--net-default') + 1]).toBe('deny');
+    expect(
+      new Set(startup!.receipt.endpoints.map((entry) => entry.hostPort)).size,
+    ).toBe(assigned.entries.length);
+    expect(calls.some((args) => args[0] === 'inspect')).toBe(true);
+    const path = join(
+      f.mount,
+      'microsandbox/allrice-native-web-endpoints.json',
+    );
+    expect((await lstat(path)).mode & 0o777).toBe(0o600);
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    expect(manifest).toMatchObject({
+      vmId: view.vmId,
+      personId: f.rc.actor.id,
+      digest: assigned.digest,
+      endpoints: startup!.receipt.endpoints,
+    });
+    expect(Object.keys(manifest).sort()).toEqual([
+      'digest',
+      'endpoints',
+      'organizationId',
+      'personId',
+      'version',
+      'vmId',
+    ]);
+    expect(JSON.stringify(startup)).not.toMatch(
+      /ownerToken|mount|authenticatedUrl|\?token=/,
+    );
+    const original = await readFile(path);
+    expect(
+      (await service.prewarm(f.rc, { trigger: 'page' }, signal())).ready,
+    ).toBe(true);
+    expect(await readFile(path)).toEqual(original);
+    expect(
+      (await f.calls()).filter((args) => args[0] === 'create'),
+    ).toHaveLength(1);
+  });
+  it('原生create规则只按已保存的guest G而非host H；保留/32精确TCP与原出口（非policy运行验收）', async () => {
+    const f = await bootstrapFixture(),
+      assigned = roster(f, 1);
+    const binding = {
+      vmId: randomUUID(),
+      instanceId: randomUUID(),
+      leaseEpoch: 1,
+      personId: f.rc.actor.id,
+      organizationId: f.rc.organizationId,
+    };
+    await f.native.prepare(binding, f.mount, signal());
+    const prior = await f.native.prepareWebEndpoints(
+      binding,
+      assigned,
+      signal(),
+    );
+    const path = join(
+      f.mount,
+      'microsandbox/allrice-native-web-endpoints.json',
+    );
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    const h = prior.endpoints[0]!.hostPort,
+      g = h === 18101 ? 18102 : 18101;
+    manifest.endpoints[0].guestPort = g;
+    await writeFile(path, JSON.stringify(manifest));
+    const web = await f.native.prepareWebEndpoints(binding, assigned, signal());
+    await f.native.create(binding, currentReceipt(binding), signal(), web);
+    const create = (await f.calls()).find((args) => args[0] === 'create')!;
+    expect(
+      create.flatMap((arg, i) => (arg === '--net-rule' ? [create[i + 1]] : [])),
+    ).toEqual([
+      'allow:egress@host:tcp:38990',
+      `allow:ingress@127.0.0.1/32:tcp:${g}`,
+    ]);
+    expect(create).toContain(`127.0.0.1:${h}:${g}`);
+    expect(create).not.toContain(`allow:ingress@127.0.0.1/32:tcp:${h}`);
+    expect(create[create.indexOf('--net-default') + 1]).toBe('deny');
+  });
+  it.each(['success', 'cancel', 'write-failure'] as const)(
+    'reservation真实接入立即关闭，manifest %s后service/lease与原H全部真实join',
+    async (mode) => {
+      const f = await bootstrapFixture(),
+        assigned = roster(f, 1),
+        cancelled = new AbortController();
+      const service = new PersonVmService({
+        ...f.h.options,
+        native: f.native,
+        nativeWeb: { prepare: async () => assigned },
+      });
+      const created = await service.create(f.rc, signal());
+      const binding = {
+        vmId: created.vmId,
+        instanceId: randomUUID(),
+        leaseEpoch: 1,
+        personId: f.rc.actor.id,
+        organizationId: f.rc.organizationId,
+      };
+      await f.native.prepare(binding, f.mount, signal());
+      const prior = await f.native.prepareWebEndpoints(
+        binding,
+        assigned,
+        signal(),
+      );
+      const probe = await open(join(f.mount, 'sync-probe'), 'wx');
+      const prototype = Object.getPrototypeOf(probe) as FileHandle;
+      const sync = prototype.sync;
+      await probe.close();
+      let entered!: () => void, release!: () => void;
+      const inside = new Promise<void>((done) => {
+        entered = done;
+      });
+      const gate = new Promise<void>((done) => {
+        release = done;
+      });
+      const diskError = new Error('synthetic manifest sync failure'),
+        cancelError = new Error('synthetic cancellation');
+      vi.spyOn(prototype, 'sync').mockImplementation(async function (
+        this: FileHandle,
+      ) {
+        entered();
+        await gate;
+        if (mode === 'write-failure') throw diskError;
+        await sync.call(this);
+      });
+      const starting = service.start(f.rc, cancelled.signal).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      await inside;
+      const peer = createConnection(prior.endpoints[0]!.hostPort, '127.0.0.1');
+      peer.on('error', () => {});
+      const closed = new Promise<void>((done) => peer.once('close', done));
+      try {
+        await once(peer, 'connect');
+        await closed; // Must happen while fsync is blocked, not just in finally.
+        expect(peer.destroyed).toBe(true);
+        if (mode === 'cancel') cancelled.abort(cancelError);
+      } finally {
+        peer.destroy();
+        release();
+        await closed;
+        await starting;
+      }
+      const outcome = await starting;
+      if (mode === 'success') expect(outcome).toBe(null);
+      else
+        expect(outcome).toMatchObject({
+          code: 'PROVIDER_FAILED',
+          cause: mode === 'cancel' ? cancelError : diskError,
+        });
+      expect((await f.h.store.read(f.rc.actor.id))!.leaseOwner).toBe(null);
+      expect(f.h.mounts.size).toBe(mode === 'success' ? 1 : 0);
+      const rebound = createServer();
+      try {
+        rebound.listen(prior.endpoints[0]!.hostPort, '127.0.0.1');
+        await once(rebound, 'listening');
+      } finally {
+        await new Promise<void>((done, reject) =>
+          rebound.close((error) => (error ? reject(error) : done())),
+        );
+      }
+      expect((await f.calls()).some((args) => args[0] === 'create')).toBe(
+        mode === 'success',
+      );
+    },
+  );
+  it('运行中新增员工立即preparing；不hold等待、不改manifest、不modify/stop/restart已有任务', async () => {
+    const f = await bootstrapFixture();
+    let assigned = roster(f);
+    const service = new PersonVmService({
+      ...f.h.options,
+      native: f.native,
+      nativeWeb: { prepare: async () => assigned },
+    });
+    await service.prewarm(f.rc, { trigger: 'page' }, signal());
+    const manifest = join(
+      f.mount,
+      'microsandbox/allrice-native-web-endpoints.json',
+    );
+    const original = await readFile(manifest),
+      before = (await f.calls()).length;
+    const facts = {
+      personId: assigned.personId,
+      organizationId: assigned.organizationId,
+      entries: [...assigned.entries, ...roster(f, 1).entries].sort((a, b) =>
+        a.employeeInstanceId.localeCompare(b.employeeInstanceId),
+      ),
+    };
+    assigned = {
+      ...facts,
+      digest: `sha256:${createHash('sha256').update(JSON.stringify(facts)).digest('hex')}`,
+    };
+    await expect(
+      service.prewarm(f.rc, { trigger: 'input' }, signal()),
+    ).rejects.toMatchObject({ code: 'WEB_ENDPOINTS_PREPARING' });
+    expect(await readFile(manifest)).toEqual(original);
+    expect((await service.read(f.rc, signal()))?.phase).toBe('running');
+    expect(
+      (await f.calls())
+        .slice(before)
+        .some((args) =>
+          ['create', 'start', 'stop', 'modify', 'pull', 'exec', 'cp'].includes(
+            args[0]!,
+          ),
+        ),
+    ).toBe(false);
+  });
+  it.each(['web-inspect-mismatch', 'web-inspect-unknown-stop'])(
+    'active端口缺失即使pending_changes=[]也拒绝，%s清理必须真实off才detach',
+    async (mode) => {
+      const f = await bootstrapFixture(mode),
+        assigned = roster(f, 1);
+      const service = new PersonVmService({
+        ...f.h.options,
+        native: f.native,
+        nativeWeb: { prepare: async () => assigned },
+      });
+      await expect(
+        service.prewarm(f.rc, { trigger: 'page' }, signal()),
+      ).rejects.toMatchObject({
+        code: mode.endsWith('unknown-stop')
+          ? 'CLEANUP_INCOMPLETE'
+          : 'PROVIDER_FAILED',
+      });
+      expect((await f.calls()).some((args) => args[0] === 'stop')).toBe(true);
+      expect(f.h.log.includes('disk:detach')).toBe(
+        !mode.endsWith('unknown-stop'),
+      );
+    },
+  );
+  it('现有native实例的manifest缺失/非0600/含额外字段一律保留拒绝，不创建替代映射', async () => {
+    const f = await bootstrapFixture(),
+      assigned = roster(f, 1);
+    const service = new PersonVmService({
+      ...f.h.options,
+      native: f.native,
+      nativeWeb: { prepare: async () => assigned },
+    });
+    await service.prewarm(f.rc, { trigger: 'page' }, signal());
+    const path = join(
+      f.mount,
+      'microsandbox/allrice-native-web-endpoints.json',
+    );
+    const original = await readFile(path, 'utf8'),
+      before = (await f.calls()).length;
+    const value = JSON.parse(original);
+    value.endpoints[0].unexpected = 'not-an-authority-field';
+    await writeFile(path, JSON.stringify(value));
+    await expect(service.start(f.rc, signal())).rejects.toMatchObject({
+      code: 'PROVIDER_FAILED',
+    });
+    expect(await readFile(path, 'utf8')).toBe(JSON.stringify(value));
+    await writeFile(path, original);
+    await chmod(path, 0o644);
+    await expect(service.start(f.rc, signal())).rejects.toMatchObject({
+      code: 'PROVIDER_FAILED',
+    });
+    expect((await lstat(path)).mode & 0o777).toBe(0o644);
+    await rm(path);
+    await expect(service.start(f.rc, signal())).rejects.toMatchObject({
+      code: 'WEB_ENDPOINTS_PREPARING',
+    });
+    expect(
+      (await f.calls())
+        .slice(before)
+        .some((args) =>
+          ['pull', 'create', 'start', 'stop', 'modify'].includes(args[0]!),
+        ),
+    ).toBe(false);
+  });
+  it('首次create前失败重试仅认原manifest端口；真实OS占用则失败保留，不随机换号', async () => {
+    const f = await bootstrapFixture(),
+      assigned = roster(f, 1);
+    const binding = {
+      vmId: randomUUID(),
+      instanceId: randomUUID(),
+      leaseEpoch: 1,
+      personId: f.rc.actor.id,
+      organizationId: f.rc.organizationId,
+    };
+    await f.native.prepare(binding, f.mount, signal());
+    const receipt = await f.native.prepareWebEndpoints(
+      binding,
+      assigned,
+      signal(),
+    );
+    const path = join(
+        f.mount,
+        'microsandbox/allrice-native-web-endpoints.json',
+      ),
+      original = await readFile(path);
+    const occupied = createServer();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        occupied.once('error', reject);
+        occupied.listen(receipt.endpoints[0]!.hostPort, '127.0.0.1', resolve);
+      });
+      await expect(
+        f.native.prepareWebEndpoints(binding, assigned, signal()),
+      ).rejects.toMatchObject({ code: 'EADDRINUSE' });
+      expect(await readFile(path)).toEqual(original);
+      expect(
+        (await f.calls()).some((args) =>
+          ['create', 'modify', 'start'].includes(args[0]!),
+        ),
+      ).toBe(false);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        occupied.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+  it.each([3000, 3001])(
+    '真实service scope把固定nonce reader送入原生exec（%sms）；argv无资格，过期scope拒绝读取',
+    async (timeoutMs) => {
+      const f = await bootstrapFixture(),
+        dshHome = await directory(),
+        nonce = randomUUID();
+      await mkdir(join(dshHome, 'native-web'));
+      const localAuthSample = 'QWxsUmljZU5hdGl2ZVdlYkF1dGhGaXh0dXJlT25seTA';
+      const authenticatedUrl = `http://127.0.0.1:32179/?token=${localAuthSample}`;
+      await writeFile(
+        join(dshHome, 'native-web', `auth-${nonce}.json`),
+        JSON.stringify({ v: 1, nonce, authenticatedUrl }),
+      );
+      const request = {
+        dshHome,
+        nonce,
+        origin: 'http://127.0.0.1:32179/',
+        timeoutMs,
+      };
+      let read!: NonNullable<PersonVmBootstrapScope['readNativeWebAuth']>;
+      f.h.runtime.start = async (_binding, _signal, scope) => {
+        read = scope.readNativeWebAuth!;
+        expect(await read(request)).toEqual({ authenticatedUrl });
+      };
+      await f.service.prewarm(f.rc, { trigger: 'page' }, signal());
+      const calls = await f.calls();
+      expect(
+        calls.some(
+          (args) =>
+            args[0] === 'exec' &&
+            !args.includes('--detach') &&
+            args.includes('--timeout'),
+        ),
+      ).toBe(true);
+      const reader = calls.find(
+        (args) => args[0] === 'exec' && !args.includes('--detach'),
+      )!;
+      expect(reader[reader.indexOf('--timeout') + 1]).toBe(
+        `${Math.ceil(timeoutMs / 1000)}s`,
+      );
+      expect(JSON.stringify(calls)).not.toContain(localAuthSample);
+      await expect(read(request)).rejects.toMatchObject({ code: 'LEASE_LOST' });
+      expect(await f.calls()).toEqual(calls);
+    },
+  );
+  it.each([false, true])(
+    '真实reader失败仍stop/status；未知stop=%s不得detach或ready',
+    async (unknownStop) => {
+      const f = await bootstrapFixture(
+          unknownStop ? 'auth-unknown-stop' : 'ok',
+        ),
+        dshHome = await directory(),
+        nonce = randomUUID();
+      // A directory is an invalid artifact: the real fixed reader must fail.
+      await mkdir(join(dshHome, 'native-web', `auth-${nonce}.json`), {
+        recursive: true,
+      });
+      f.h.runtime.start = async (_binding, _signal, scope) => {
+        await scope.readNativeWebAuth!({
+          dshHome,
+          nonce,
+          origin: 'http://127.0.0.1:32179/',
+          timeoutMs: 3001,
+        });
+      };
+      await expect(
+        f.service.prewarm(f.rc, { trigger: 'page' }, signal()),
+      ).rejects.toMatchObject({
+        code: unknownStop ? 'CLEANUP_INCOMPLETE' : 'PROVIDER_FAILED',
+      });
+      const calls = await f.calls(),
+        stopped = calls.findIndex((args) => args[0] === 'stop');
+      expect(stopped).toBeGreaterThan(0);
+      expect(calls.slice(stopped + 1).some((args) => args[0] === 'list')).toBe(
+        true,
+      );
+      expect(f.h.mounts.size).toBe(unknownStop ? 1 : 0);
+    },
+  );
+  it('原生秒预算向上取整不延长host毫秒预算，取消后join实际CLI再stop/status', async () => {
+    const f = await bootstrapFixture('auth-budget'),
+      dshHome = await directory(),
+      budget = new AbortController(),
+      timeout = AbortSignal.timeout.bind(AbortSignal);
+    // Control the actual host deadline at admission, rather than rely on wall-clock sleeps.
+    const deadline = vi
+      .spyOn(AbortSignal, 'timeout')
+      .mockImplementation((ms) => (ms === 1001 ? budget.signal : timeout(ms)));
+    f.h.runtime.start = async (_binding, _signal, scope) => {
+      await scope.readNativeWebAuth!({
+        dshHome,
+        nonce: randomUUID(),
+        origin: 'http://127.0.0.1:32179/',
+        timeoutMs: 1001,
+      });
+    };
+    const start = f.service.prewarm(f.rc, { trigger: 'page' }, signal());
+    const failure = expect(start).rejects.toMatchObject({
+      code: 'PROVIDER_FAILED',
+    });
+    let pid = 0;
+    try {
+      await vi.waitFor(
+        async () => {
+          pid = Number(
+            await readFile(join(f.mount, 'host-home/auth-reading'), 'utf8'),
+          );
+          expect(pid).toBeGreaterThan(0);
+        },
+        { timeout: 5000 },
+      );
+      expect(deadline).toHaveBeenCalledWith(1001);
+      budget.abort();
+      await failure;
+      expect(() => process.kill(pid, 0)).toThrow();
+      const calls = await f.calls();
+      const reader = calls.find(
+        (args) => args[0] === 'exec' && !args.includes('--detach'),
+      )!;
+      expect(reader[reader.indexOf('--timeout') + 1]).toBe('2s');
+      const stopped = calls.findIndex((args) => args[0] === 'stop');
+      expect(stopped).toBeGreaterThan(0);
+      expect(calls.slice(stopped + 1).some((args) => args[0] === 'list')).toBe(
+        true,
+      );
+      expect(f.h.mounts.size).toBe(0);
+    } finally {
+      budget.abort();
+      await start.catch(() => {});
+    }
+  });
   it('service真实启动入口按cp/mode→managed init wait→固定launcher/env，running不重init', async () => {
     const f = await bootstrapFixture();
     await f.service.prewarm(f.rc, { trigger: 'page' }, signal());
@@ -338,9 +1280,71 @@ fs.writeFileSync(f,JSON.stringify(v));
     );
     expect(config.allowed_backends).toEqual(['local']);
     expect(config.paths.sandboxes).toBe(
-      join(socketRoot, binding.vmId, 'sandboxes'),
+      join(root, 'mount/microsandbox/sandboxes'),
     );
   });
+  it.each([undefined, 3072])(
+    'writes the configured %s MiB cap to actual provider configuration and snapshots it',
+    async (memoryMiB) => {
+      const root = await directory();
+      const calls: string[][] = [];
+      const options = {
+        binary: '/b',
+        libkrunfw: '/fw',
+        agentd: '/a',
+        image: 'registry/node@sha256:' + 'a'.repeat(64),
+        rootDiskGiB: 20,
+        socketRoot: await socketDirectory(),
+        memoryMiB,
+        runner: async (command: Parameters<typeof runCommand>[0]) => {
+          calls.push([...command.args]);
+          return command.args[0] === 'list' ? '[]' : 'microsandbox 0.7.16';
+        },
+      };
+      const expected =
+        memoryMiB === undefined ? PERSON_VM_MEMORY_MIB : memoryMiB;
+      const native = new MicrosandboxPersonVm(options);
+      options.memoryMiB = 1;
+      const binding = {
+        vmId: randomUUID(),
+        personId: randomUUID(),
+        organizationId: randomUUID(),
+        instanceId: randomUUID(),
+        leaseEpoch: 1,
+      };
+      await native.prepare(binding, join(root, 'mount'), signal());
+      const configuration = JSON.parse(
+        await readFile(join(root, 'mount/msb-config.json'), 'utf8'),
+      );
+      expect(configuration.sandbox_defaults.memory_mib).toBe(expected);
+      await native.create(binding, currentReceipt(binding), signal());
+      const creation = calls.find((args) => args[0] === 'create')!;
+      const expectedCli = memoryMiB === undefined ? '2048M' : '3072M';
+      expect(creation[creation.indexOf('--memory') + 1]).toBe(expectedCli);
+      expect(creation[creation.indexOf('--max-memory') + 1]).toBe(expectedCli);
+    },
+  );
+  it.each([null, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER, '2048'])(
+    'rejects invalid provider MiB cap %s before native work',
+    async (memoryMiB) => {
+      const runner = vi.fn();
+      expect(() =>
+        Reflect.construct(MicrosandboxPersonVm, [
+          {
+            binary: '/b',
+            libkrunfw: '/fw',
+            agentd: '/a',
+            image: 'registry/node@sha256:' + 'a'.repeat(64),
+            rootDiskGiB: 20,
+            socketRoot: '/s',
+            memoryMiB,
+            runner,
+          },
+        ]),
+      ).toThrowError('PROVIDER_FAILED');
+      expect(runner).not.toHaveBeenCalled();
+    },
+  );
   it('不接可变镜像tag或不固定的运行版本', async () => {
     expect(
       () =>
@@ -467,6 +1471,31 @@ fs.writeFileSync(f,JSON.stringify(v));
     ).rejects.toMatchObject({ code: 'PROVIDER_FAILED' });
     expect(await readlink(alias)).toBe(join(mount, 'microsandbox'));
     expect(runner).toHaveBeenCalledTimes(1);
+
+    const nextSocketRoot = await socketDirectory();
+    await make(nextSocketRoot).prepare(binding, mount, signal());
+    const nextConfig = JSON.parse(
+      await readFile(join(mount, 'msb-config.json'), 'utf8'),
+    );
+    expect(config.paths.sandboxes).toBe(join(mount, 'microsandbox/sandboxes'));
+    expect(nextConfig.paths.sandboxes).toBe(config.paths.sandboxes);
+    expect(nextConfig.home).toBe(join(nextSocketRoot, binding.vmId));
+    expect(nextConfig.home).not.toBe(config.home);
+    expect(await readlink(nextConfig.home)).toBe(join(mount, 'microsandbox'));
+    const differentMount = join(root, 'different-mounted-disk');
+    await make(await socketDirectory()).prepare(
+      binding,
+      differentMount,
+      signal(),
+    );
+    const differentConfig = JSON.parse(
+      await readFile(join(differentMount, 'msb-config.json'), 'utf8'),
+    );
+    expect(differentConfig.paths.sandboxes).toBe(
+      join(differentMount, 'microsandbox/sandboxes'),
+    );
+    expect(differentConfig.paths.sandboxes).not.toBe(config.paths.sandboxes);
+    expect(runner).toHaveBeenCalledTimes(3);
   });
   it('取消真实子进程等待退出，不把仍跑的promise丢给回收器', async () => {
     const root = await directory(),

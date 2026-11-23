@@ -1,4 +1,8 @@
-import { UuidSchema, runtimeStaticPreviewPolicy } from '@allrice/contracts';
+import {
+  CompanyAssetMutationSchema,
+  UuidSchema,
+  runtimeStaticPreviewPolicy,
+} from '@allrice/contracts';
 import { z } from 'zod';
 import {
   DataAccessError,
@@ -8,8 +12,7 @@ import {
   getCompanyAsset,
   listCompanyAssetRevisions,
   getCompanyAssetFile,
-  mutateCompanyAsset,
-  listCompanyRuleSources,
+  createBusinessRuntimeCaller,
   readArtifactBytes,
 } from '@allrice/database';
 import { requirePlatformAdminContext } from '../identity/platform-admin';
@@ -56,22 +59,31 @@ export async function companyAssetsHttp(
           { error: { message: '请求来源不匹配，请刷新页面。' } },
           { status: 403, headers },
         );
+      const command = CompanyAssetMutationSchema.parse(
+        await readAdminJson(request, 100_000),
+      );
       return Response.json(
-        await mutateCompanyAsset(
+        await createBusinessRuntimeCaller().mutateCompanyAsset(
           context,
           org,
-          await readAdminJson(request, 100_000),
+          command,
           getStorageAdapter(),
           administration,
+          request.signal,
         ),
         { headers },
       );
     }
     if (p.get('sources') === '1') {
       if (!administration) throw new DataAccessError('authorization_denied');
-      return Response.json(await listCompanyRuleSources(context, org), {
-        headers,
-      });
+      return Response.json(
+        await createBusinessRuntimeCaller().listCompanyRuleSources(
+          context,
+          org,
+          request.signal,
+        ),
+        { headers },
+      );
     }
     const id = p.has('assetId') ? UuidSchema.parse(p.get('assetId')) : null;
     if (!id && p.get('recommendations') === '1') {

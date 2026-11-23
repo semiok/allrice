@@ -3,6 +3,11 @@ import {
   type PersonVmBinding,
   type PersonVmRuntimePort,
 } from './contract.ts';
+import type {
+  PersonVmNativeWebAuthRequest,
+  PersonVmNativeWebAuth,
+} from './native-web-auth.ts';
+import type { PersonVmWebStartup } from './web-endpoints.ts';
 
 /** Host-only structural projection of MET267's public VmMemoryGuestPlan. */
 export type PersonVmMemoryGuestPlan = Readonly<{
@@ -35,12 +40,16 @@ export interface PersonVmBootstrapScope extends PersonVmStartingScope {
   /** Only after person memory init; always prepends the installed native launcher.
    * The runtime owner retains the returned job, not this expiring startup scope. */
   launch(command: PersonVmGuestCommand): Promise<PersonVmManagedJob>;
+  /** Fixed nonce artifact only, captured privately. Missing provider support fails closed. */
+  readNativeWebAuth?(
+    request: PersonVmNativeWebAuthRequest,
+  ): Promise<PersonVmNativeWebAuth>;
 }
 export interface PersonVmGuestBootstrapPort {
   bootstrap(
     scope: PersonVmStartingScope,
     plan: PersonVmMemoryGuestPlan,
-  ): Promise<Pick<PersonVmBootstrapScope, 'launch'>>;
+  ): Promise<Pick<PersonVmBootstrapScope, 'launch' | 'readNativeWebAuth'>>;
 }
 
 /** Internal service kernel: the actual lease stays owned through callback and
@@ -51,6 +60,7 @@ export async function bootstrapPersonVm(input: {
   assertCurrent(): Promise<void>;
   native: PersonVmGuestBootstrapPort;
   runtime: PersonVmRuntimePort;
+  web?: PersonVmWebStartup;
 }) {
   const closed = new AbortController();
   let active = true,
@@ -86,18 +96,30 @@ export async function bootstrapPersonVm(input: {
   }
   try {
     const plan = await track(() =>
-      input.runtime.memoryGuestPlan(scope.binding, scope.signal),
+      input.web
+        ? input.runtime.memoryGuestPlan(scope.binding, scope.signal, input.web)
+        : input.runtime.memoryGuestPlan(scope.binding, scope.signal),
     );
     const launcher = await track(() => input.native.bootstrap(scope, plan));
-    await input.runtime.start(
-      scope.binding,
-      scope.signal,
-      Object.freeze({
-        ...scope,
-        launch: (command: PersonVmGuestCommand) =>
-          track(() => launcher.launch(command)),
-      }),
-    );
+    const bootstrapScope = Object.freeze({
+      ...scope,
+      launch: (command: PersonVmGuestCommand) =>
+        track(() => launcher.launch(command)),
+      ...(launcher.readNativeWebAuth
+        ? {
+            readNativeWebAuth: (request: PersonVmNativeWebAuthRequest) =>
+              track(() => launcher.readNativeWebAuth!(request)),
+          }
+        : {}),
+    });
+    if (input.web)
+      await input.runtime.start(
+        scope.binding,
+        scope.signal,
+        bootstrapScope,
+        input.web,
+      );
+    else await input.runtime.start(scope.binding, scope.signal, bootstrapScope);
   } finally {
     // Final service owner checks run only after this public capability closes.
     active = false;

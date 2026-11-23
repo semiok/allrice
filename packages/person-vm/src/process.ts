@@ -18,7 +18,9 @@ export const runCommand: CommandRunner = async (command) => {
   command.signal.throwIfAborted();
   return new Promise<string>((resolve, reject) => {
     const child = spawn(command.executable, [...command.args], {
-      env: command.env,
+      // Next augments ProcessEnv with a required NODE_ENV; a child allowlist
+      // need not contain it. Preserve this exact dictionary without inheritance.
+      env: command.env as NodeJS.ProcessEnv,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     const chunks: Buffer[] = [];

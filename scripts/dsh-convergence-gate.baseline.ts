@@ -9,6 +9,15 @@ import type { BaselineEntry } from './dsh-convergence-gate.ts';
 
 export const baseline: readonly BaselineEntry[] = [
   {
+    kind: 'patch',
+    id: 'allrice-native-web-local-auth-v1',
+    category: '门卫',
+    basis:
+      'MET-273：复用rc.2公开Host插件、authenticatedUrl与Node Connection；仅将VM内原生本地认证资格经固定nonce工件有界交给可信宿主，绑定本人VM/epoch，不把guest资格当SaaS身份，不另造认证协议或Agent状态。',
+    approvedBy:
+      '2026-11-21 用户批准4.0原生D Web与MET-273开工；规划线裁定dfbc1979-56e3-4c9b-8c4e-2d1490c9100c，root首endpoint派活及本轮NW修复核定，见NATIVE-WEB-CONTRACT-PLAN.md。',
+  },
+  {
     kind: 'table',
     id: 'person_vm_admission_permits',
     category: '租约',
@@ -424,6 +433,42 @@ export const baseline: readonly BaselineEntry[] = [
     basis:
       '0105：自写 started/parked/completed 派发状态，与 DSH 执行生命周期的边界待核。',
     approvedBy: 'baseline 2026-10-27',
+  },
+  {
+    kind: 'patch',
+    id: 'allrice-host-native-history-v1',
+    category: '存储后端',
+    basis:
+      'MET-274：DSH rc.2 公开 inspect/append-origin 提供原生历史语义，但不提供 VM 停机时的 SaaS 宿主持久读权或精确附件字节服务。宿主不可变投影属存储后端；既有本人/root/子会话与对象现权属门卫，单向文本/工具展示属账本；不新增 Agent 状态机、恢复器或自动重放。',
+    approvedBy:
+      '2026-11-21 用户 MET274 派活；冻结边界合同 v1 §5/7/9；MET274 评论 ef9ce0b2。FIX1 下载完整性、撤权与取消修复沿用同一授权范围。',
+  },
+  {
+    kind: 'patch',
+    id: 'allrice-person-vm-entry-admission-v1',
+    category: '租约',
+    basis:
+      'MET-271 F4：入口只消费同一模型宿主公开 boundary/participant，当前身份及原生根门卫不变；真实 owner 关闭全部子操作后才返回业务 outcome，未知 close 直接拒绝，旧执行不换标签重放。DSH 不持有 AllRice 多租户/双宿主准入权威；本片不建 SQL、VM 或 Agent 状态机，最终 producer/实际 owner 仍未绑定。',
+    approvedBy:
+      '2026-11-21 用户批准 MET-271 F4 consumer 及最新 join 语义准备；本片不接生产、不运行真实 VM/模型/SQL，沿既有门卫/租约范围。',
+  },
+  {
+    kind: 'patch',
+    id: 'allrice-d-entry-native-root-v1',
+    category: '存储后端',
+    basis:
+      'MET-271：DSH 原生 session/create 持有根身份，AllRice 只在现有业务 Session 保存完整 scope/员工发布的不可变 at-most-once claim 与真实创建回执；claim 成功 ACK 前不 dispatch、未知结果不换键重放；0251 不造 Run/Job/Agent 状态，不改 legacy origin/binder，临时 lease/job 换代不重建 root。',
+    approvedBy:
+      '2026-11-21 用户已批准线程唯一 executionGeneration/可信本人员工入口；主线明确续做271自有4.0 root producer，0251由主线评论3e74a856协调。',
+  },
+  {
+    kind: 'patch',
+    id: 'allrice-native-web-entry-guard-v1',
+    category: '门卫',
+    basis:
+      'MET-271：原会话 Bearer 在现有 Worker listener 重新鉴权，复用平台 settings 默认关闭发布名单、不可变宿主 root pin、rc.2 生成 codec/Mux frame parser。逐方法/资源现权限制网页子会话只读，原生父指挥不变；0251事务内通知只提示现权SQL复核，先订阅后重核，真实session期限/断线取消并join，非Map/轮询权威。原生尾帧无效果丢弃；缺真实transport/envelope时拒绝，不新增监听器、VM权威或Agent生命周期。',
+    approvedBy:
+      '2026-11-21 用户正式授权 MET-271 剩余 release-policy、原会话 Web/Worker HTTP/WS adapters、可信 root 组合与服务端 Mux 子会话只读；冻结 NATIVE-WEB-OWNER-SEAM-v1。',
   },
   {
     kind: 'patch',

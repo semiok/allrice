@@ -32,6 +32,10 @@ import {
   prepareEmployeeContentContext,
 } from './employee-runtime-content.ts';
 import { getEmployeeDetails } from './employee-content.ts';
+import {
+  preparePersonNativeWebRoster,
+  readPersonNativeWebRoster,
+} from './native-web-roster.ts';
 import { randomUUID } from 'node:crypto';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -39,6 +43,8 @@ import { EmployeeInstanceProfileSchema } from '@allrice/contracts';
 import * as client from '../core/client.ts';
 import * as queue from '../execution/queue.ts';
 import * as accessCancellation from './employee-access-cancellation.ts';
+import * as instances from './employee-instances.ts';
+import * as tenantAccess from '../tenant-employee-access.ts';
 import { updateEmployeeRelease } from './employee-quality.ts';
 import * as folderTriggers from '../folder-triggers.ts';
 import { lockSchedulePrincipal } from '../native-schedule-authority.ts';
@@ -71,6 +77,7 @@ import {
   savePlatformEmployeeDraft,
   disablePlatformEmployee,
   assignPublishedPlatformEmployeeToWorkspace,
+  materializePlatformEmployeeRevision,
 } from './platform-employees.ts';
 import {
   assertEmployeeInstanceAdmission,
@@ -236,6 +243,394 @@ suite('MET179 employee instances (isolated PostgreSQL; no model)', () => {
       session,
     };
   }
+  async function rosterCounts() {
+    const [counts] = await fixture.db`select
+      (select count(*)::int from allrice_employee_instances) instances,
+      (select count(*)::int from allrice_employee_instance_revisions) revisions,
+      (select count(*)::int from allrice_audit_events) audit,
+      (select count(*)::int from allrice_employee_assignments) assignments,
+      (select count(*)::int from allrice_runs) runs,
+      (select count(*)::int from allrice_jobs) jobs`;
+    return counts;
+  }
+  it('只读roster复用真实当前新Session，完整返回既有准备且不新增instance/revision/audit/Run', async () => {
+    const f = await setup();
+    await f.custom('Readonly native employee');
+    const prepared = await preparePersonNativeWebRoster(f.a.context);
+    const login = await createSession(f.a.user.id);
+    const current = await authenticateSession(login.token, {
+      organizationId: f.a.organizationId,
+      workspaceId: f.a.workspaceId,
+    });
+    if (!current) throw Error('readonly_roster_fixture_login');
+    expect(current.sessionId).not.toBe(f.a.context.sessionId);
+    const before = await rosterCounts();
+    expect(await readPersonNativeWebRoster(current)).toEqual(prepared);
+    expect(await readPersonNativeWebRoster(f.a.context)).toEqual(prepared);
+    expect(await rosterCounts()).toEqual(before);
+    await revokeSession(login.token);
+    await expect(readPersonNativeWebRoster(current)).rejects.toMatchObject({
+      code: 'authorization_denied',
+    });
+    expect(await rosterCounts()).toEqual(before);
+  });
+  it.each(['general', 'revision'] as const)(
+    '只读roster缺%s时明确preparing，不物化或静默省略当前active assignment',
+    async (missing) => {
+      const f = await setup();
+      await preparePersonNativeWebRoster(f.a.context);
+      const [company] =
+        await fixture.db`select slug from allrice_organizations where id=${f.a.organizationId}`;
+      // A real new member inherits the published assignment before any Hub or
+      // roster preparation. Never erase immutable revision history to fake it.
+      const member = await principal(company!.slug);
+      const assignments = await fixture.db<{ id: string }[]>`
+        select a.id from allrice_employee_assignments a
+        join allrice_platform_employee_tenant_assignments d
+          on d.organization_id=a.organization_id and d.workspace_id=a.workspace_id
+            and d.tenant_employee_id=a.employee_id and d.active
+        where a.organization_id=${member.organizationId} and a.workspace_id=${member.workspaceId}
+          and a.user_id=${member.user.id} and a.active and d.employee_id=${f.source.employeeId}`;
+      expect(assignments).toHaveLength(1);
+      const assignmentId = assignments[0]!.id;
+      if (missing === 'revision')
+        await fixture.db`insert into allrice_employee_instances
+          (id,organization_id,workspace_id,owner_id,assignment_id,kind,creation_version_id)
+          select id,organization_id,workspace_id,user_id,id,'general',employee_version_id
+          from allrice_employee_assignments where id=${assignmentId}`;
+      const [state] = await fixture.db`select
+        exists(select 1 from allrice_employee_instances where id=${assignmentId}) general,
+        exists(select 1 from allrice_employee_instance_revisions where instance_id=${assignmentId}) revision`;
+      expect(state).toEqual({
+        general: missing === 'revision',
+        revision: false,
+      });
+      const before = await rosterCounts();
+      await expect(
+        readPersonNativeWebRoster(member.context),
+      ).rejects.toMatchObject({
+        code: 'WEB_ENDPOINTS_PREPARING',
+      });
+      expect(await rosterCounts()).toEqual(before);
+    },
+  );
+  it('后加workspace的实际active assignment不能在只读清单静默遗漏；正式prepare后才可读新digest', async () => {
+    const f = await setup();
+    const original = await preparePersonNativeWebRoster(f.a.context);
+    const [company] =
+      await fixture.db`select slug,name from allrice_organizations where id=${f.a.organizationId}`;
+    const second = await ensureBootstrapPortalPrincipal(
+      {
+        organizationSlug: company!.slug,
+        organizationName: company!.name,
+        workspaceSlug: 'readonly-later',
+        workspaceName: 'Readonly later',
+        email: f.a.user.email,
+        displayName: 'Synthetic member',
+        role: 'member',
+      },
+      fixture.db,
+    );
+    await changeAdminTenantEmployee(f.admin.context, f.a.organizationId, {
+      workspaceId: second.workspaceId,
+      employeeId: f.source.employeeId,
+      action: 'assign',
+      revisionId: f.source.revisionId,
+      expectedVersion: null,
+    });
+    const assignments =
+      await fixture.db`select a.id,exists(select 1 from allrice_employee_instances i
+        where i.id=a.id and i.kind='general') materialized from allrice_employee_assignments a
+      where a.workspace_id=${second.workspaceId} and a.user_id=${f.a.user.id} and a.active`;
+    expect(assignments.length).toBeGreaterThan(0);
+    expect(assignments.every((assignment) => !assignment.materialized)).toBe(
+      true,
+    );
+    const before = await rosterCounts();
+    await expect(readPersonNativeWebRoster(f.a.context)).rejects.toMatchObject({
+      code: 'WEB_ENDPOINTS_PREPARING',
+    });
+    expect(await rosterCounts()).toEqual(before);
+    const prepared = await preparePersonNativeWebRoster(f.a.context);
+    const afterPrepare = await rosterCounts();
+    expect(prepared.digest).not.toBe(original.digest);
+    expect(
+      prepared.entries.some(
+        (entry) => entry.workspaceId === second.workspaceId,
+      ),
+    ).toBe(true);
+    expect(await readPersonNativeWebRoster(f.a.context)).toEqual(prepared);
+    expect(await rosterCounts()).toEqual(afterPrepare);
+  });
+  it('只读清单合法排除已归档general，不将其复活为准备缺失', async () => {
+    const f = await setup();
+    await preparePersonNativeWebRoster(f.a.context);
+    await fixture.db`update allrice_employee_instances set archived_at=clock_timestamp() where id=${f.assignment.id}`;
+    const before = await rosterCounts();
+    const roster = await readPersonNativeWebRoster(f.a.context);
+    expect(
+      roster.entries.some(
+        (entry) => entry.employeeInstanceId === f.assignment.id,
+      ),
+    ).toBe(false);
+    expect(await rosterCounts()).toEqual(before);
+    const [row] =
+      await fixture.db`select archived_at from allrice_employee_instances where id=${f.assignment.id}`;
+    expect(row!.archived_at).not.toBeNull();
+  });
+  it.each(['readonly', 'prepare'] as const)(
+    '%s roster与真实发布e→a交错：不反向锁employee，保留assignment序列化并join两事务',
+    async (mode) => {
+      const f = await setup();
+      const before = await preparePersonNativeWebRoster(f.a.context);
+      const employeeWritten = gate(),
+        resumePublication = gate(),
+        rosterIdentity = gate(),
+        resumeRoster = gate();
+      let publisherPid = 0,
+        rosterPid = 0,
+        assignmentLocked = false;
+      const synchronize = tenantAccess.synchronizeTenantEmployeeAccess;
+      const identity = instances.lockEmployeeInstanceAdmissionIdentity;
+      const list = instances.listEmployeeInstances;
+      const publishingSpy = vi
+        .spyOn(tenantAccess, 'synchronizeTenantEmployeeAccess')
+        .mockImplementation(async (...args) => {
+          if (
+            args[1].organizationId === f.a.organizationId &&
+            args[1].workspaceId === f.a.workspaceId
+          ) {
+            publisherPid = (await args[0]`select pg_backend_pid() pid`)[0]!.pid;
+            employeeWritten.resolve(); // Real materializer already upserted e.
+            await resumePublication.promise;
+          }
+          return synchronize(...args);
+        });
+      const identitySpy = vi
+        .spyOn(instances, 'lockEmployeeInstanceAdmissionIdentity')
+        .mockImplementationOnce(async (...args) => {
+          rosterPid = (await args[0]`select pg_backend_pid() pid`)[0]!.pid;
+          rosterIdentity.resolve();
+          return identity(...args);
+        });
+      const rosterSpy = vi
+        .spyOn(instances, 'listEmployeeInstances')
+        .mockImplementationOnce(async (...args) => {
+          assignmentLocked = true; // Roster's actual a SHARE query has returned.
+          await resumeRoster.promise;
+          return list(...args);
+        });
+      const publishing = fixture.db.begin(async (tx) => {
+        const [revision] = await tx<
+          Parameters<
+            typeof materializePlatformEmployeeRevision
+          >[1]['revision'][]
+        >`
+          select * from allrice_platform_employee_revisions where id=${f.source.revisionId}`;
+        await materializePlatformEmployeeRevision(tx, {
+          employeeId: f.source.employeeId,
+          revision: revision!,
+          definition: f.source.definition,
+          workspaceIds: [f.a.workspaceId],
+          actorLabel: f.admin.context.actor.id,
+        });
+      });
+      void publishing.catch(() => {});
+      let reading: ReturnType<typeof readPersonNativeWebRoster> | undefined;
+      try {
+        await Promise.race([
+          employeeWritten.promise,
+          publishing.then(() => {
+            throw Error('publication missed synchronization barrier');
+          }),
+        ]);
+        const [employee] =
+          await fixture.db`select employee_id from allrice_employee_assignments where id=${f.assignment.id}`;
+        await expect(
+          fixture.db.begin(async (probe) => {
+            await probe`select id from allrice_employees where id=${employee!.employee_id} for share nowait`;
+          }),
+        ).rejects.toMatchObject({ code: '55P03' });
+        reading = (
+          mode === 'readonly'
+            ? readPersonNativeWebRoster
+            : preparePersonNativeWebRoster
+        )(f.a.context);
+        void reading.catch(() => {});
+        await Promise.race([
+          rosterIdentity.promise,
+          reading.then(() => {
+            throw Error('roster missed identity barrier');
+          }),
+        ]);
+        let waitsOnEmployee = false;
+        // Observe either the successful a barrier or the exact forbidden e wait.
+        // No sleep chooses the interleaving and a timeout can never count as success.
+        await expect
+          .poll(
+            async () => {
+              const [row] = await fixture.db<{ blocked: boolean }[]>`
+            select ${publisherPid}::integer=any(pg_blocking_pids(${rosterPid}::integer)) blocked`;
+              waitsOnEmployee = row!.blocked;
+              return assignmentLocked || waitsOnEmployee;
+            },
+            { timeout: 5000, interval: 10 },
+          )
+          .toBe(true);
+        expect(waitsOnEmployee).toBe(false);
+        expect(assignmentLocked).toBe(true);
+        expect(rosterPid).not.toBe(publisherPid);
+        resumePublication.resolve();
+        await expect
+          .poll(
+            async () => {
+              const [row] = await fixture.db<
+                { blocked: boolean; assignment_update: boolean }[]
+              >`
+            select ${rosterPid}::integer=any(pg_blocking_pids(pid)) blocked,
+              position('insert into allrice_employee_assignments' in query)>0 assignment_update
+            from pg_stat_activity where pid=${publisherPid}`;
+              return row?.blocked === true && row.assignment_update;
+            },
+            { timeout: 5000, interval: 10 },
+          )
+          .toBe(true);
+        resumeRoster.resolve();
+        expect(await reading).toEqual(before);
+        await publishing;
+        const after = await readPersonNativeWebRoster(f.a.context);
+        expect(after.digest).not.toBe(before.digest);
+        expect(
+          after.entries.find(
+            (entry) => entry.employeeInstanceId === f.assignment.id,
+          )?.employeeVersionId,
+        ).not.toBe(f.assignment.currentVersion.id);
+      } finally {
+        resumePublication.resolve();
+        resumeRoster.resolve();
+        await Promise.allSettled([publishing, ...(reading ? [reading] : [])]);
+        publishingSpy.mockRestore();
+        identitySpy.mockRestore();
+        rosterSpy.mockRestore();
+      }
+    },
+  );
+  it('本人首次4.0准备读取全部可访问workspace的真实实例；稳定物化且不创建分配/Run', async () => {
+    const f = await setup(),
+      custom = await f.custom('Native Web employee');
+    const [company] =
+      await fixture.db`select slug,name from allrice_organizations where id=${f.a.organizationId}`;
+    const second = await ensureBootstrapPortalPrincipal(
+      {
+        organizationSlug: company!.slug,
+        organizationName: company!.name,
+        workspaceSlug: 'native-second',
+        workspaceName: 'Native second',
+        email: f.a.user.email,
+        displayName: 'Synthetic member',
+        role: 'member',
+      },
+      fixture.db,
+    );
+    await changeAdminTenantEmployee(f.admin.context, f.a.organizationId, {
+      workspaceId: second.workspaceId,
+      employeeId: f.source.employeeId,
+      action: 'assign',
+      revisionId: f.source.revisionId,
+      expectedVersion: null,
+    });
+    const [before] = await fixture.db`select
+      (select count(*)::int from allrice_employee_assignments) assignments,
+      (select count(*)::int from allrice_runs) runs,
+      (select count(*)::int from allrice_jobs) jobs`;
+    // Keep the original page's context/membership snapshot: it is not the roster.
+    const roster = await preparePersonNativeWebRoster(f.a.context);
+    expect(roster).toMatchObject({
+      personId: f.a.user.id,
+      organizationId: f.a.organizationId,
+    });
+    expect(roster.entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          workspaceId: f.a.workspaceId,
+          employeeInstanceId: f.assignment.id,
+          employeeVersionId: f.assignment.currentVersion.id,
+        }),
+        expect.objectContaining({
+          workspaceId: f.a.workspaceId,
+          employeeInstanceId: custom.id,
+          employeeRevision: custom.revision,
+        }),
+        expect.objectContaining({ workspaceId: second.workspaceId }),
+      ]),
+    );
+    expect(
+      roster.entries.some(
+        (entry) => entry.employeeInstanceId === f.bAssignment.id,
+      ),
+    ).toBe(false);
+    expect(
+      roster.entries.some(
+        (entry) => entry.employeeInstanceId === f.source.employeeId,
+      ),
+    ).toBe(false);
+    expect(await preparePersonNativeWebRoster(f.a.context)).toEqual(roster);
+    const [after] = await fixture.db`select
+      (select count(*)::int from allrice_employee_assignments) assignments,
+      (select count(*)::int from allrice_runs) runs,
+      (select count(*)::int from allrice_jobs) jobs`;
+    expect(after).toEqual(before);
+  });
+  it('roster遵守当前发布撤回、实例归档与workspace现权；不从历史或伪造memberships补清单', async () => {
+    const f = await setup(),
+      custom = await f.custom('Archived native employee');
+    await fixture.db`update allrice_employee_instances set archived_at=clock_timestamp() where id=${custom.id}`;
+    const before = await preparePersonNativeWebRoster(f.a.context);
+    expect(
+      before.entries.some((entry) => entry.employeeInstanceId === custom.id),
+    ).toBe(false);
+    expect(
+      before.entries.some(
+        (entry) => entry.employeeInstanceId === f.assignment.id,
+      ),
+    ).toBe(true);
+    await f.change('withdraw');
+    const withdrawn = await preparePersonNativeWebRoster(f.a.context);
+    expect(
+      withdrawn.entries.some(
+        (entry) => entry.employeeInstanceId === f.assignment.id,
+      ),
+    ).toBe(false);
+    expect(withdrawn.digest).not.toBe(before.digest);
+    const foreign = await principal();
+    await expect(
+      preparePersonNativeWebRoster({
+        ...f.a.context,
+        organizationId: foreign.organizationId,
+        memberships: foreign.context.memberships,
+      }),
+    ).rejects.toMatchObject({ code: 'authorization_denied' });
+  });
+  it.each(['session', 'membership', 'user', 'organization'] as const)(
+    'roster在实际%s撤销后拒绝首次准备，旧context不能物化新权限',
+    async (target) => {
+      const f = await setup();
+      if (target === 'session')
+        await fixture.db`update allrice_sessions set revoked_at=clock_timestamp() where id=${f.a.context.sessionId}`;
+      if (target === 'membership')
+        await fixture.db`update allrice_memberships set active=false where user_id=${f.a.user.id} and organization_id=${f.a.organizationId}`;
+      if (target === 'user')
+        await fixture.db`update allrice_users set status='disabled' where id=${f.a.user.id}`;
+      if (target === 'organization')
+        await fixture.db`update allrice_organizations set archived_at=clock_timestamp() where id=${f.a.organizationId}`;
+      await expect(
+        preparePersonNativeWebRoster(f.a.context),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+      await expect(
+        readPersonNativeWebRoster(f.a.context),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+    },
+  );
   async function profileRun(
     f: Awaited<ReturnType<typeof setup>>,
     instanceId: string,

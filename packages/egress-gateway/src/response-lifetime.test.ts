@@ -108,13 +108,17 @@ it.each(['drain', 'cancel'] as const)(
           port,
           guestOrigin: `http://127.0.0.1:${port}`,
         }),
-        install: async (_b, value) => {
+        install: async (_b, _mount, value) => {
           access = value;
         },
         remove: async () => {},
       },
     });
-    const receipt = await gateway.prepare(binding, signal);
+    const receipt = await gateway.prepare(
+      binding,
+      { gatewayPorts: [], mount: '/synthetic/response-lifetime' },
+      signal,
+    );
     try {
       const request = fetch(access.origin + '/read', {
         headers: { authorization: 'Bearer ' + access.capability },

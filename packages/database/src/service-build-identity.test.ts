@@ -322,3 +322,134 @@ it('MET195 diagnostic failure cannot affect successful verification or conceal c
     'DEV_BUILD_IDENTITY_INVALID',
   );
 });
+
+it('seals the exact optional private Host file with the original service manifest', async () => {
+  const f = await fixture(),
+    path = '.local/person-vm-host.json';
+  await writeFile(join(f.root, path), '{"synthetic":"host configuration"}', {
+    mode: 0o600,
+  });
+  const sealed = await prepareServiceBuildManifest({
+    root: f.root,
+    sourceSha: 'a'.repeat(40),
+    sourceTree: 'b'.repeat(40),
+  });
+  expect(sealed.files.filter((file) => file.path === path)).toMatchObject([
+    {
+      scope: 'worker',
+      bytes: Buffer.byteLength('{"synthetic":"host configuration"}'),
+    },
+  ]);
+  await writeFile(
+    join(f.root, '.local/dev-build-identity.json'),
+    JSON.stringify(sealed),
+  );
+  expect((await f.verify('worker'))?.manifestDigest).toBe(
+    sealed.manifestDigest,
+  );
+  await writeFile(join(f.root, path), '{"synthetic":"changed configuration"}');
+  await expect(f.verify('worker')).rejects.toThrow(
+    'DEV_BUILD_IDENTITY_INVALID',
+  );
+});
+it('invalidates an old seal when a private Host configuration is added later', async () => {
+  const f = await fixture();
+  await writeFile(join(f.root, '.local/person-vm-host.json'), '{}', {
+    mode: 0o600,
+  });
+  await expect(f.verify('worker')).rejects.toThrow(
+    'DEV_BUILD_IDENTITY_INVALID',
+  );
+});
+it('refuses a directory tree at the fixed private Host configuration path', async () => {
+  const f = await fixture(),
+    path = join(f.root, '.local/person-vm-host.json');
+  await mkdir(path);
+  await writeFile(join(path, 'configuration.json'), '{}');
+  await expect(
+    prepareServiceBuildManifest({
+      root: f.root,
+      sourceSha: 'a'.repeat(40),
+      sourceTree: 'b'.repeat(40),
+    }),
+  ).rejects.toThrow('DEV_BUILD_IDENTITY_INVALID');
+});
+it('refuses a symlink at the fixed private Host configuration path', async () => {
+  const f = await fixture(),
+    path = join(f.root, '.local/person-vm-host.json');
+  const source = join(f.root, 'other-config.json');
+  await writeFile(source, '{}');
+  await symlink(source, path);
+  await expect(
+    prepareServiceBuildManifest({
+      root: f.root,
+      sourceSha: 'a'.repeat(40),
+      sourceTree: 'b'.repeat(40),
+    }),
+  ).rejects.toThrow('DEV_BUILD_IDENTITY_INVALID');
+});
+
+it('seals the actual vm-memory guest resources alongside its compiled public plan', async () => {
+  const f = await fixture();
+  const resources = [
+    'initialize.cjs',
+    'bash-env.sh',
+    'launch-dsh.sh',
+    'sample.cjs',
+  ];
+  const files: Record<string, string> = {
+    'packages/vm-memory/package.json': JSON.stringify({
+      name: '@allrice/vm-memory',
+      exports: {
+        '.': './dist/index.js',
+        './guest-plan': './dist/guest-config.js',
+      },
+    }),
+    'packages/vm-memory/dist/index.js': 'export const memory = true;',
+    'packages/vm-memory/dist/guest-config.js': 'export const plan = true;',
+    'apps/worker/package.json': JSON.stringify({
+      name: '@allrice/worker',
+      dependencies: {
+        '@allrice/database': 'workspace:*',
+        '@allrice/vm-memory': 'workspace:*',
+      },
+    }),
+  };
+  for (const name of resources)
+    files['packages/vm-memory/guest/' + name] =
+      'synthetic guest resource ' + name;
+  for (const [path, value] of Object.entries(files)) {
+    await mkdir(dirname(join(f.root, path)), { recursive: true });
+    await writeFile(join(f.root, path), value);
+  }
+  await symlink(
+    join(f.root, 'packages/vm-memory'),
+    join(f.root, 'apps/worker/node_modules/@allrice/vm-memory'),
+  );
+  const manifest = await prepareServiceBuildManifest({
+    root: f.root,
+    sourceSha: 'a'.repeat(40),
+    sourceTree: 'b'.repeat(40),
+  });
+  await writeFile(
+    join(f.root, '.local/dev-build-identity.json'),
+    JSON.stringify(manifest),
+  );
+  for (const name of resources)
+    expect(manifest.files).toContainEqual(
+      expect.objectContaining({
+        path: 'packages/vm-memory/guest/' + name,
+        scope: 'graph',
+      }),
+    );
+  expect((await f.verify('worker'))?.manifestDigest).toBe(
+    manifest.manifestDigest,
+  );
+  await writeFile(
+    join(f.root, 'packages/vm-memory/guest/launch-dsh.sh'),
+    'changed after seal',
+  );
+  await expect(f.verify('worker')).rejects.toThrow(
+    'DEV_BUILD_IDENTITY_INVALID',
+  );
+});
