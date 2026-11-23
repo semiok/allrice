@@ -606,3 +606,28 @@ export async function revokeSession(token: string) {
     where token_hash = ${hashOpaqueToken(token)} and revoked_at is null
   `;
 }
+
+/** Browser execution authority is current identity state, never the membership
+ * snapshot in a previously authenticated RequestContext. History remains a read. */
+export async function requireCurrentWorkspaceWriteAuthority(
+  context: RequestContext,
+  workspaceIdInput: string,
+) {
+  const workspaceId = UuidSchema.parse(workspaceIdInput);
+  if (
+    context.actor.type !== 'user' ||
+    (context.workspaceId !== null && context.workspaceId !== workspaceId)
+  )
+    throw new IdentityError('authorization_denied');
+  const [current] = await getDatabase()`
+    select s.id from allrice_sessions s
+    join allrice_users u on u.id=s.user_id and u.status='active'
+    join allrice_organizations o on o.id=${context.organizationId} and o.archived_at is null
+    join allrice_workspaces w on w.id=${workspaceId} and w.organization_id=o.id and w.archived_at is null
+    where s.id=${UuidSchema.parse(context.sessionId)} and s.user_id=${context.actor.id}
+      and s.revoked_at is null and s.expires_at>clock_timestamp()
+      and exists(select 1 from allrice_memberships m where m.user_id=u.id
+        and m.organization_id=o.id and m.active and m.role in ('admin','member')
+        and (m.workspace_id is null or m.workspace_id=w.id))`;
+  if (!current) throw new IdentityError('authorization_denied');
+}

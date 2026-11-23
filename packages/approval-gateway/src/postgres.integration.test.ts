@@ -36,7 +36,10 @@ suite('durable outbound approval business ledger (isolated PostgreSQL)', () => {
     db = postgres(url, { max: 3, onnotice: () => {} });
     await db.unsafe(
       await readFile(
-        new URL('../migrations/0001_outbound_approvals.sql', import.meta.url),
+        new URL(
+          '../../database/migrations/0252_approval_gateway_outbound_approvals.sql',
+          import.meta.url,
+        ),
         'utf8',
       ),
     );

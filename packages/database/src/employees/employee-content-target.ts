@@ -1,12 +1,12 @@
 import type { RequestContext } from '@allrice/contracts';
 import { employeeChatUuid } from './employee-chat-authority.ts';
-import type { ContentTx } from './employee-content-model.ts';
+import type { ContentSql } from './employee-content-model.ts';
 
 /** Resolve the private content set after the caller has checked instance access. */
 export async function resolvePersonalEmployeeContentTarget(
   context: Pick<RequestContext, 'actor' | 'organizationId' | 'workspaceId'>,
   instanceId: string,
-  tx: ContentTx,
+  tx: ContentSql,
 ) {
   const [row] = await tx<
     { id: string }[]

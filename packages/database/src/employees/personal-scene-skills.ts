@@ -20,6 +20,7 @@ import {
   type PersonalSceneSkill,
 } from '@allrice/contracts';
 import { getDatabase } from '../core/client.ts';
+import { withDedicatedCallerTransaction } from '../business-runtime/caller-transaction.ts';
 import { DataAccessError } from '../data.ts';
 import { runtimePolicyDigest } from '../runtime-policy.ts';
 import { assertPersonalSceneNamespace } from './personal-scene-names.ts';
@@ -39,7 +40,6 @@ import { parseWorkflowSkillSections } from './workflow-skill.ts';
 import {
   EmployeeContentError,
   type ContentSql,
-  type ContentTx,
 } from './employee-content-model.ts';
 
 type Context = Parameters<typeof readPersonalEmployeeSceneLayer>[0];
@@ -410,7 +410,7 @@ export async function savePersonalSceneSkill(
   db = getDatabase(),
 ) {
   const input = SavePersonalSceneSkillSchema.parse(raw);
-  return db.begin(async (tx) =>
+  return withDedicatedCallerTransaction(db, (tx) =>
     savePersonalSceneSkillInTransaction(contextInput, instanceId, input, tx),
   );
 }
@@ -422,7 +422,7 @@ export async function savePersonalSceneSkillInTransaction(
   contextInput: RequestContext,
   instanceId: string,
   raw: unknown,
-  tx: ContentTx,
+  tx: ContentSql,
 ) {
   const input = SavePersonalSceneSkillSchema.or(
     RestorePersonalSceneFileSchema,

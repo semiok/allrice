@@ -4,6 +4,7 @@ import {
   DataAccessError,
   addEmployeeInstanceModule,
   listEmployeeInstanceModules,
+  readApplicationBuiltinModules,
 } from '@allrice/database';
 import { requireRequestContext } from '../../../../../../lib/identity/session';
 import { brandMediaErrorResponse } from '../../../../../../lib/brand-media/responses';
@@ -17,13 +18,18 @@ export async function GET(request: Request, { params }: Route) {
     const workspaceId =
       new URL(request.url).searchParams.get('workspaceId') ??
       context.workspaceId;
-    return Response.json(
-      await listEmployeeInstanceModules(context, {
-        workspaceId,
-        instanceId: UuidSchema.parse((await params).id).toLowerCase(),
-      }),
-      { headers },
-    );
+    const scope = {
+      workspaceId,
+      instanceId: UuidSchema.parse((await params).id).toLowerCase(),
+    };
+    await listEmployeeInstanceModules(context, scope);
+    request.signal.throwIfAborted();
+    // App builtins are separate from the existing brand module bindings.
+    const applicationModules = await readApplicationBuiltinModules('web');
+    request.signal.throwIfAborted();
+    const current = await listEmployeeInstanceModules(context, scope);
+    request.signal.throwIfAborted();
+    return Response.json({ ...current, applicationModules }, { headers });
   } catch (error) {
     return brandMediaErrorResponse(error);
   }

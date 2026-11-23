@@ -16,6 +16,7 @@
     "@allrice/database": "workspace:*",
     "@allrice/file-archives": "workspace:*",
     "@allrice/office-runtime": "workspace:*",
+    "@allrice/person-vm": "workspace:*",
     "@allrice/skill-import": "workspace:*",
     "@allrice/storage": "workspace:*",
     "@allrice/ui": "workspace:*",

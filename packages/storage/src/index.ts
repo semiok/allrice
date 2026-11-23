@@ -3,3 +3,4 @@ export * from './local.ts';
 export * from './s3.ts';
 export * from './signed-access.ts';
 export * from './png-artifact.ts';
+export * from './host-history.ts';

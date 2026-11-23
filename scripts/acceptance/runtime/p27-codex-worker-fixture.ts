@@ -9,6 +9,8 @@ import type {
   RuntimeFixtureCleanupProof,
   createRuntimeFixtureDatabase,
 } from '../../../packages/database/src/runtime.fixture.ts';
+import type { ClaimedExecution } from '../../../packages/database/src/execution/queue.ts';
+import type { JobRow } from '../../../packages/database/src/queue/row-mappers.ts';
 import { P27_CODEX_ORDINARY_LIMITS as ordinaryRunLimits } from './p27-codex-worker-preflight.ts';
 
 const localFixtureDatabaseUrl = 'postgres://a123@127.0.0.1:5432/allrice_b2';
@@ -416,12 +418,210 @@ export async function createP27CodexWorkerFixture(
                 platformSettings.revision),
           'P27_CODEX_WORKER_FROZEN_MODEL_MISMATCH',
         );
-        // This one migration fixture intentionally seeds a pre-0103 Run. Keep
-        // its historical policy; never rewrite a persisted production snapshot.
+        // Only this owned 0096 checkpoint seeds an already-running historical
+        // task. Today's enqueue/claim/start require later admission migrations;
+        // never install them early or relax the production generation guards.
         if (options.throughMigration) {
           delete binding.executionSnapshot.taskRuntimePolicy;
           binding.executionSnapshot.runtimePolicy.timeoutMs =
             runLimits.timeoutMs;
+          const {
+            ExecutionContextSchema,
+            JobPayloadSchema,
+            PolicySnapshotSchema,
+            authorizeExecution,
+          } = await import('../../../packages/contracts/src/index.ts');
+          const { mapJob } =
+            await import('../../../packages/database/src/queue/row-mappers.ts');
+          const runId = randomUUID(),
+            jobId = randomUUID(),
+            policyId = randomUUID(),
+            leaseToken = randomUUID();
+          const leaseMs = 30000;
+          const at = new Date();
+          const timeoutAt = new Date(at.getTime() + runLimits.timeoutMs);
+          // Keep these fixture-owned JSON fields concrete: the public job
+          // contract validates input but intentionally types it as unknown.
+          const payload = {
+            schemaVersion: 1,
+            type: 'allrice.employee.run',
+            input: {
+              employeeAssignmentId: assignmentId,
+              employeeVersionId,
+              sessionId,
+              userMessageId,
+              assistantMessageId,
+            },
+          };
+          JobPayloadSchema.parse(payload);
+          const policyPayload = {
+            memberships: context.memberships.filter(
+              (membership) =>
+                membership.organizationId === organizationId &&
+                (membership.workspaceId === null ||
+                  membership.workspaceId === workspaceId),
+            ),
+            grants: [
+              { resourceType: 'job', action: 'job:execute', workspaceId },
+              ...['storage_object', 'memory', 'chat_session'].map(
+                (resourceType) => ({
+                  resourceType,
+                  action: 'resource:read',
+                  workspaceId,
+                }),
+              ),
+              {
+                resourceType: 'automation',
+                action: 'resource:write',
+                workspaceId,
+              },
+            ],
+          };
+          const execution = await db.begin(async (tx) => {
+            const [checkpoint] = await tx`select not exists (
+              select 1 from information_schema.columns
+              where table_schema=current_schema() and table_name='allrice_chat_sessions'
+                and column_name='execution_generation'
+            ) as old_schema`;
+            requireFixture(
+              checkpoint?.old_schema === true,
+              'P27_HISTORICAL_SCHEMA_ADVANCED',
+            );
+            // 0002/0005: immutable policy identity, private Run and complete
+            // five-field lease. These are the persisted 0096 enqueue/start
+            // facts, not a fabricated return value from today's queue API.
+            const [policy] = await tx<
+              { issued_at: Date; expires_at: Date }[]
+            >`insert into allrice_policy_snapshots(
+              id,organization_id,subject_id,version,payload,issued_at,expires_at)
+              values(${policyId},${organizationId},${ownerId},1,
+                ${tx.json(policyPayload)},${at},${new Date(timeoutAt.getTime() + 86400000)})
+              returning issued_at,expires_at`;
+            requireFixture(policy, 'P27_HISTORICAL_POLICY_MISSING');
+            const snapshot = {
+              ...binding.executionSnapshot,
+              tenantContext: {
+                organizationId,
+                workspaceId,
+                actorId: ownerId,
+                policySnapshotId: policyId,
+              },
+              createdAt: at.toISOString(),
+            };
+            await tx`insert into allrice_runs(
+              id,organization_id,workspace_id,owner_id,state,visibility,
+              policy_snapshot_id,execution_spec,input,request_id,created_at,updated_at,started_at)
+              values(${runId},${organizationId},${workspaceId},${ownerId},'running','private',
+                ${policyId},${tx.json({
+                  schemaVersion: 1,
+                  handler: payload.type,
+                  employeeVersionId,
+                  skillVersionId: null,
+                  provider: 'codex',
+                  skillVersionIds: binding.skillVersionIds,
+                })},
+                ${tx.json(payload.input)},${context.requestId},${at},${at},${at})`;
+            const [job] = await tx<JobRow[]>`insert into allrice_jobs(
+              id,organization_id,workspace_id,owner_id,run_id,status,idempotency_key,
+              priority,attempt,max_attempts,available_at,timeout_at,payload,
+              worker_id,lease_token,claimed_at,heartbeat_at,lease_expires_at,created_at,updated_at)
+              values(${jobId},${organizationId},${workspaceId},${ownerId},${runId},'running',${randomUUID()},
+                0,1,1,${at},${timeoutAt},${tx.json(payload)},
+                ${workerId},${leaseToken},${at},${at},${new Date(at.getTime() + leaseMs)},${at},${at})
+              returning *`;
+            requireFixture(job, 'P27_HISTORICAL_JOB_MISSING');
+            // 0007/0014/0046: frozen employee/provider/prompt/native-skill
+            // snapshots, with the same policy and start time as the Run.
+            await tx`
+            insert into allrice_employee_runs (
+              run_id, organization_id, workspace_id, owner_id,
+              employee_assignment_id, employee_version_id, session_id,
+              user_message_id, assistant_message_id, status, provider_snapshot,
+              skill_bindings, native_skills, prompt_snapshot, execution_snapshot,
+              created_at, started_at
+            ) values (
+              ${runId}, ${organizationId}, ${workspaceId}, ${ownerId},
+              ${assignmentId}, ${employeeVersionId}, ${sessionId},
+              ${userMessageId}, ${assistantMessageId}, 'running',
+              ${tx.json(JSON.parse(JSON.stringify(binding.providerSnapshot)))},
+              ${tx.json(JSON.parse(JSON.stringify(binding.skillBindings)))},
+              ${tx.json(JSON.parse(JSON.stringify(binding.nativeSkills)))},
+              ${tx.json(JSON.parse(JSON.stringify(binding.promptSnapshot)))},
+              ${tx.json(JSON.parse(JSON.stringify(snapshot)))},
+              ${at}, ${at}
+            )`;
+            const execution: ClaimedExecution = {
+              context: ExecutionContextSchema.parse({
+                executionId: randomUUID(),
+                runId,
+                jobId,
+                worker: { type: 'worker', id: job.worker_id },
+                delegatedBy: { type: 'user', id: job.owner_id },
+                organizationId: job.organization_id,
+                workspaceId: job.workspace_id,
+                policySnapshot: PolicySnapshotSchema.parse({
+                  id: policyId,
+                  organizationId,
+                  subjectId: ownerId,
+                  version: 1,
+                  issuedAt: policy.issued_at.toISOString(),
+                  expiresAt: policy.expires_at.toISOString(),
+                  ...policyPayload,
+                }),
+                startedAt: job.claimed_at!.toISOString(),
+              }),
+              job: mapJob(job),
+              payload: JobPayloadSchema.parse(job.payload),
+            };
+            const authority = authorizeExecution(
+              {
+                type: 'job',
+                id: jobId,
+                organizationId,
+                workspaceId,
+                ownerId,
+                visibility: 'private',
+                archivedAt: null,
+              },
+              'job:execute',
+              execution.context,
+              at,
+            );
+            requireFixture(authority.allowed, 'P27_HISTORICAL_POLICY_DENIED');
+            for (const [sequence, type, event] of [
+              [
+                0,
+                'run.created',
+                { jobId, status: 'queued', availableAt: at.toISOString() },
+              ],
+              [1, 'run.started', { jobId, workerId, attempt: 1 }],
+            ] as const) {
+              await tx`insert into allrice_run_events(
+                organization_id,workspace_id,run_id,sequence,event_type,payload,occurred_at)
+                values(${organizationId},${workspaceId},${runId},${sequence},${type},${tx.json(event)},${at})`;
+            }
+            await tx`insert into allrice_employee_run_steps(
+              organization_id,workspace_id,run_id,sequence,event_type,payload,occurred_at)
+              select organization_id,workspace_id,run_id,sequence,event_type,payload,occurred_at
+              from allrice_run_events where run_id=${runId}`;
+            await tx`insert into allrice_audit_events(
+              organization_id,workspace_id,actor_id,action,resource_type,resource_id,
+              decision,reason,request_id,metadata)
+              values(${organizationId},${workspaceId},${ownerId},'run.enqueue','run',${runId},
+                'allowed','frozen_policy_snapshot',${context.requestId},${tx.json({ jobId, policySnapshotId: policyId })}),
+                (${organizationId},${workspaceId},null,'job.execute','job',${jobId},
+                'allowed',${authority.reason},null,${tx.json({ runId, attempt: 1, workerId })})`;
+            return execution;
+          });
+          return {
+            runId,
+            sessionId,
+            userMessageId,
+            assistantMessageId,
+            binding,
+            execution,
+            workflowLease: { workerId, jobId, leaseToken, leaseMs },
+          };
         }
         const submission = await queue.enqueueRun(
           context,
@@ -439,47 +639,8 @@ export async function createP27CodexWorkerFixture(
               assistantMessageId,
             },
           },
-          // The 0096 checkpoint represents an already-created historical Run,
-          // not admission by today's binary into an incompletely migrated DB.
-          // Keep the real generic queue/lease path and seed only its historical
-          // employee row below; current-schema fixtures use real admission.
-          options.throughMigration ? {} : { employeeBinding: binding },
+          { employeeBinding: binding },
         );
-        if (options.throughMigration) {
-          const [run] = await db<{ policy_snapshot_id: string }[]>`
-            select policy_snapshot_id from allrice_runs
-            where id=${submission.run.id} and organization_id=${organizationId}
-              and workspace_id=${workspaceId} and owner_id=${ownerId}`;
-          requireFixture(run, 'P27_HISTORICAL_RUN_MISSING');
-          const snapshot = {
-            ...binding.executionSnapshot,
-            tenantContext: {
-              organizationId,
-              workspaceId,
-              actorId: ownerId,
-              policySnapshotId: run.policy_snapshot_id,
-            },
-            createdAt: new Date().toISOString(),
-          };
-          await db`
-            insert into allrice_employee_runs (
-              run_id, organization_id, workspace_id, owner_id,
-              employee_assignment_id, employee_version_id, session_id,
-              user_message_id, assistant_message_id, status, provider_snapshot,
-              skill_bindings, native_skills, prompt_snapshot, execution_snapshot,
-              created_at
-            ) values (
-              ${submission.run.id}, ${organizationId}, ${workspaceId}, ${ownerId},
-              ${assignmentId}, ${employeeVersionId}, ${sessionId},
-              ${userMessageId}, ${assistantMessageId}, 'queued',
-              ${db.json(JSON.parse(JSON.stringify(binding.providerSnapshot)))},
-              ${db.json(JSON.parse(JSON.stringify(binding.skillBindings)))},
-              ${db.json(JSON.parse(JSON.stringify(binding.nativeSkills)))},
-              ${db.json(JSON.parse(JSON.stringify(binding.promptSnapshot)))},
-              ${db.json(JSON.parse(JSON.stringify(snapshot)))},
-              ${snapshot.createdAt}
-            )`;
-        }
         const [pending] = await db<
           { count: number }[]
         >`select count(*)::int as count from allrice_jobs where status='queued'`;

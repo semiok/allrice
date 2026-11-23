@@ -176,10 +176,199 @@ export function createStore(): Store {
   };
 }`,
   };
+  files['lib/factories.ts'] = `import { sql } from './db.ts';
+interface Store { read(): Promise<void>; }
+interface Owner { open(): Promise<void>; reauthorize(): Promise<void>; close(): Promise<void>; }
+interface Attachment { acquire(): Promise<Owner>; }
+interface Ports { binding?(): Promise<void>; store?: Store; attachment?: Attachment; }
+export const injected: Ports = {
+  async binding() { await sql\`select * from bindings for share\`; },
+  store: { async read() { await sql\`select * from stores for share\`; } },
+  attachment: { async acquire() {
+    await sql\`select * from attachments for share\`;
+    return {
+      async open() { await sql\`select * from objects for share\`; },
+      async reauthorize() { await sql\`select * from objects for share\`; },
+      async close() {},
+    };
+  } },
+};
+export function cold(ports: Ports = {}) {
+  async function serve() {
+    if (!ports.binding || !ports.store || !ports.attachment) return;
+    await ports.binding(); await ports.store.read();
+    const owner = await ports.attachment.acquire();
+    await owner.open(); await owner.reauthorize(); await owner.close();
+  }
+  return { history: () => serve(), download: () => serve() };
+}
+export function shadow(ports: Ports = {}) {
+  void ports.binding;
+  async function serve(ports: Ports) {
+    if (!ports.binding) return;
+    await sql\`select * from shadowed for share\`;
+  }
+  return { history: () => serve(injected) };
+}
+export function reentry(ports: Ports = {}) {
+  async function serve(again: boolean) {
+    if (again) return reentry(injected).history(false);
+    if (!ports.binding) return;
+    await sql\`select * from reentered for share\`;
+  }
+  return { history: (again = true) => serve(again) };
+}
+interface AsyncLiteral { close(): Promise<void>; }
+export async function asyncLiteral(): Promise<AsyncLiteral> {
+  return { async close() { await sql\`select * from async_rows for share\`; } };
+}
+interface ClassOnly { classRead(): Promise<void>; }
+class ClassStore implements ClassOnly {
+  async classRead() { await sql\`select * from class_rows for share\`; }
+}
+export function classOnly(): ClassOnly { return new ClassStore(); }
+interface Opaque { opaqueClose(): Promise<void>; }
+export declare function opaque(): Promise<Opaque>;
+// A harmless async implementation of the SAME interface is not evidence for
+// a class, opaque factory, mixed return, or escaped receiver.
+interface SharedStore { sharedRead(): Promise<void>; }
+export async function harmless(): Promise<SharedStore> {
+  return { async sharedRead() {} };
+}
+class LockedSharedStore implements SharedStore {
+  async sharedRead() { await sql\`select * from shared_class_rows for share\`; }
+}
+export function sharedClass(): SharedStore { return new LockedSharedStore(); }
+export declare function sharedOpaque(): Promise<SharedStore>;
+export function sharedMixed(flag: boolean): SharedStore {
+  if (flag) return { async sharedRead() {} };
+  return new LockedSharedStore();
+}
+function liveFlag() { return true; }
+export async function capture(ports: { enabled?: boolean } = {}) {
+  const enabled = ports.enabled;
+  async function read(enabled: boolean) {
+    if (!enabled) return;
+    await sql\`select * from shadowed_parameter for share\`;
+  }
+  await read(liveFlag());
+}
+export async function capturePattern(ports: { enabled?: boolean } = {}) {
+  const enabled = ports.enabled;
+  async function read({ enabled }: { enabled: boolean }) {
+    if (!enabled) return;
+    await sql\`select * from shadowed_pattern for share\`;
+  }
+  await read({ enabled: liveFlag() });
+}
+export async function captureLocal(ports: { enabled?: boolean } = {}) {
+  const enabled = ports.enabled;
+  async function read() {
+    const enabled = liveFlag();
+    if (!enabled) return;
+    await sql\`select * from shadowed_local for share\`;
+  }
+  await read();
+}
+export function escapedDefault(ports: { enabled?: boolean } = {}) {
+  Object.assign(ports.valueOf(), { enabled: true });
+  async function read() {
+    if (!ports.enabled) return;
+    await sql\`select * from escaped_default for share\`;
+  }
+  return { history: () => read() };
+}
+export async function captureClass(ports: { enabled?: boolean } = {}) {
+  const enabled = ports.enabled;
+  const reader = class enabled {
+    static async read() {
+      if (enabled === undefined) return;
+      await sql\`select * from class_name_shadow for share\`;
+    }
+  };
+  await reader.read();
+}
+interface AliasStore { aliasRead(): Promise<void>; }
+export function constAlias(): AliasStore {
+  const store: AliasStore = { async aliasRead() {
+    await sql\`select * from const_alias_own for share\`;
+  } };
+  return store;
+}
+export function unrelatedAlias(): AliasStore {
+  return { async aliasRead() {
+    await sql\`select * from wrong_alias_producer for share\`;
+  } };
+}
+export function aliasMutation(): AliasStore {
+  const store: AliasStore = { async aliasRead() {} };
+  store.aliasRead = async () => { await sql\`select * from mutated_alias for share\`; };
+  return store;
+}
+export function aliasEscape(): AliasStore {
+  const store: AliasStore = { async aliasRead() {} };
+  escapeAlias(store);
+  return store;
+}
+declare function escapeAlias(store: AliasStore): void;
+declare function escape(ports: Ports): void;
+`;
+  for (const [name, change] of Object.entries({
+    mutation: 'ports.binding = injected.binding;',
+    escape: 'escape(ports);',
+    alias: 'const alias = ports; alias.binding = injected.binding;',
+    reassignment: 'ports = injected;',
+    wrapped: '(ports.binding as Ports["binding"]) = injected.binding;',
+  }))
+    files['lib/factories.ts'] += `
+export function ${name}(ports: Ports = {}) {
+  ${change}
+  async function serve() {
+    if (!ports.binding) return;
+    await sql\`select * from ${name}_rows for share\`;
+  }
+  return { history: () => serve() };
+}`;
+  for (const [name, change] of Object.entries({
+    arrayWrite: '[ports.enabled] = [true];',
+    objectWrite: '({ enabled: ports.enabled } = { enabled: true });',
+    forOfWrite: 'for (ports.enabled of [true]) {}',
+  }))
+    files['lib/factories.ts'] += `
+export function ${name}(ports: { enabled?: boolean } = {}) {
+  ${change}
+  async function read() {
+    if (!ports.enabled) return;
+    await sql\`select * from ${name}_own_rows for share\`;
+  }
+  return { history: () => read() };
+}`;
+  files['lib/shared.ts'] = `
+export interface Store { read(): Promise<void>; }
+export const shared: Store = { async read() {} };
+export function factory(): Store { return shared; }
+const privateShared: Store = { async read() {} };
+export function privateFactory(): Store { return privateShared; }
+`;
+  files['lib/arm.ts'] = `
+import { shared, privateFactory } from './shared.ts';
+import { sql } from './db.ts';
+export function arm() {
+  shared.read = async () => {
+    await sql\`select * from exported_alias_rows for share\`;
+  };
+}
+export function armPrivate() {
+  privateFactory().read = async () => {
+    await sql\`select * from private_module_alias_rows for share\`;
+  };
+}
+`;
   const route = (name: string, body: string) => {
     files[`apps/web/app/api/${name}/route.ts`] =
       `import { sql } from '../../../../../lib/db.ts';\n` +
       `import * as reads from '../../../../../lib/reads.ts';\n` +
+      `import * as factories from '../../../../../lib/factories.ts';\n` +
       `void sql; void reads;\n${body}`;
   };
   // Must be reported.
@@ -298,6 +487,97 @@ export const POST = () => handle(true);`,
     'object-literal-false',
     'export async function GET() { await reads.readOptions({ lock: false }); }',
   );
+  route(
+    'factory-default',
+    'export const GET = () => factories.cold().history();',
+  );
+  route(
+    'factory-local-default',
+    'export async function GET() { const h = factories.cold(); await h.download(); }',
+  );
+  for (const [name, argument] of Object.entries({
+    injected: 'factories.injected',
+    unknown: 'JSON.parse("{}")',
+    explicit: '{}',
+  }))
+    route(
+      `factory-${name}`,
+      `export const GET = () => factories.cold(${argument}).history();`,
+    );
+  for (const name of [
+    'mutation',
+    'escape',
+    'alias',
+    'reassignment',
+    'shadow',
+    'reentry',
+    'wrapped',
+  ])
+    route(
+      `factory-${name}`,
+      `export const GET = () => factories.${name}().history();`,
+    );
+  route(
+    'factory-async-literal',
+    'export async function GET() { const h = await factories.asyncLiteral(); await h.close(); }',
+  );
+  route(
+    'factory-class-unknown',
+    'export const GET = () => factories.classOnly().classRead();',
+  );
+  route(
+    'factory-async-unknown',
+    'export async function GET() { const h = await factories.opaque(); await h.opaqueClose(); }',
+  );
+
+  for (const name of ['arrayWrite', 'objectWrite', 'forOfWrite'])
+    route(
+      `factory-${name}`,
+      `export const GET = () => factories.${name}().history();`,
+    );
+  for (const name of ['capture', 'capturePattern', 'captureLocal'])
+    route(`factory-${name}`, `export const GET = () => factories.${name}();`);
+  route(
+    'factory-shared-class',
+    'export const GET = () => factories.sharedClass().sharedRead();',
+  );
+  route(
+    'factory-shared-opaque',
+    'export async function GET() { const h = await factories.sharedOpaque(); await h.sharedRead(); }',
+  );
+  route(
+    'factory-shared-mixed',
+    'export async function GET() { await factories.sharedMixed(JSON.parse("true")).sharedRead(); }',
+  );
+
+  route(
+    'factory-escaped-default',
+    'export const GET = () => factories.escapedDefault().history();',
+  );
+  route(
+    'factory-capture-class',
+    'export const GET = () => factories.captureClass();',
+  );
+  for (const name of ['constAlias', 'aliasMutation', 'aliasEscape'])
+    route(
+      `factory-${name}`,
+      `export const GET = () => factories.${name}().aliasRead();`,
+    );
+
+  for (const { name, arm, factory } of [
+    { name: 'exported-alias', arm: 'arm', factory: 'factory' },
+    {
+      name: 'private-module-alias',
+      arm: 'armPrivate',
+      factory: 'privateFactory',
+    },
+  ])
+    route(
+      name,
+      `import { ${factory} } from '../../../../../lib/shared.ts';
+import { ${arm} } from '../../../../../lib/arm.ts';
+export async function GET() { ${arm}(); await ${factory}().read(); }`,
+    );
 
   beforeAll(async () => {
     project = await realpath(await mkdtemp(join(tmpdir(), 'row-lock-audit-')));
@@ -337,15 +617,41 @@ export const POST = () => handle(true);`,
         'direct',
         'dynamic-key',
         'element-access',
+        'exported-alias',
         'interface-factory',
         'interface-phase-block',
         'interface-phase-expression',
+        'private-module-alias',
         'reassigned-parameter',
         'switch-break',
         'unknown-object',
         'unsafe-const',
         'unsafe-element',
         'unsafe-string',
+        ...[
+          'injected',
+          'unknown',
+          'explicit',
+          'mutation',
+          'escape',
+          'alias',
+          'reassignment',
+          'shadow',
+          'reentry',
+          'async-literal',
+          'wrapped',
+          'arrayWrite',
+          'objectWrite',
+          'forOfWrite',
+          'capture',
+          'capturePattern',
+          'captureLocal',
+          'escaped-default',
+          'capture-class',
+          'constAlias',
+          'aliasMutation',
+          'aliasEscape',
+        ].map((name) => `factory-${name}`),
       ].sort(),
     );
   });
@@ -360,6 +666,142 @@ export const POST = () => handle(true);`,
     expect(
       unresolved.filter((entry) => /unsafe-(?:const|element)\//.test(entry)),
     ).toEqual([]);
+  });
+
+  it('prunes only proven unmodified absent factory ports, including a local returned handler', () => {
+    expect(reached).not.toContain('factory-default');
+    expect(reached).not.toContain('factory-local-default');
+    const coldLocks = report.reached.filter(
+      (site) => site.file === 'lib/factories.ts',
+    );
+    for (const name of ['injected', 'unknown', 'explicit'])
+      expect(
+        coldLocks
+          .filter((site) =>
+            site.routes.includes(
+              `apps/web/app/api/factory-${name}/route.ts GET`,
+            ),
+          )
+          .map((site) => site.owner),
+      ).toEqual(
+        expect.arrayContaining([
+          'binding',
+          'read',
+          'acquire',
+          'open',
+          'reauthorize',
+        ]),
+      );
+  });
+
+  it('keeps unsupported class and async implementations unresolved', () => {
+    expect(unresolved).toEqual(
+      expect.arrayContaining([
+        'lib/factories.ts classRead',
+        'lib/factories.ts opaqueClose',
+      ]),
+    );
+  });
+
+  it('keeps each destructuring or loop write and shadowed unknown argument SQL reachable', () => {
+    for (const name of ['arrayWrite', 'objectWrite', 'forOfWrite']) {
+      // A different injected implementation cannot satisfy this regression.
+      const ownLine =
+        files['lib/factories.ts']!.split('\n').findIndex((line) =>
+          line.includes(`${name}_own_rows`),
+        ) + 1;
+      expect(
+        report.reached.some(
+          (site) =>
+            site.file === 'lib/factories.ts' &&
+            site.line === ownLine &&
+            site.routes.includes(
+              `apps/web/app/api/factory-${name}/route.ts GET`,
+            ),
+        ),
+      ).toBe(true);
+    }
+    for (const [name, table] of [
+      ['capture', 'shadowed_parameter'],
+      ['capturePattern', 'shadowed_pattern'],
+      ['captureLocal', 'shadowed_local'],
+    ]) {
+      const ownLine =
+        files['lib/factories.ts']!.split('\n').findIndex((line) =>
+          line.includes(`from ${table} for share`),
+        ) + 1;
+      expect(
+        report.reached.some(
+          (site) =>
+            site.file === 'lib/factories.ts' &&
+            site.line === ownLine &&
+            site.routes.includes(
+              `apps/web/app/api/factory-${name}/route.ts GET`,
+            ),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it('does not use an unrelated async literal to resolve a shared class or opaque interface', () => {
+    // Audit each route independently so one unresolved route cannot hide a
+    // false-safe result on another route with the same interface signature.
+    const audit = createRowLockAudit(project);
+    for (const name of ['class', 'opaque', 'mixed']) {
+      const own = audit.routeLocks(['GET'], `factory-shared-${name}/`);
+      expect(own.entries).toBe(1);
+      expect(own.unresolved).toContain('lib/factories.ts sharedRead');
+    }
+  });
+
+  it('keeps receiver-returning calls and named class-expression bindings conservative', () => {
+    for (const [name, table] of [
+      ['escaped-default', 'escaped_default'],
+      ['capture-class', 'class_name_shadow'],
+    ]) {
+      const ownLine =
+        files['lib/factories.ts']!.split('\n').findIndex((line) =>
+          line.includes(`from ${table} for share`),
+        ) + 1;
+      expect(
+        report.reached.some(
+          (site) =>
+            site.file === 'lib/factories.ts' &&
+            site.line === ownLine &&
+            site.routes.includes(
+              `apps/web/app/api/factory-${name}/route.ts GET`,
+            ),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it('associates only unmodified non-escaping returned literal aliases', () => {
+    const audit = createRowLockAudit(project);
+    const actual = audit.routeLocks(['GET'], 'factory-constAlias/');
+    const ownLine =
+      files['lib/factories.ts']!.split('\n').findIndex((line) =>
+        line.includes('from const_alias_own for share'),
+      ) + 1;
+    expect(actual.entries).toBe(1);
+    expect(actual.unresolved).not.toContain('lib/factories.ts aliasRead');
+    expect(
+      actual.reached.map((site) => ({ file: site.file, line: site.line })),
+    ).toEqual([{ file: 'lib/factories.ts', line: ownLine }]);
+    for (const name of ['aliasMutation', 'aliasEscape']) {
+      const uncertain = audit.routeLocks(['GET'], `factory-${name}/`);
+      expect(uncertain.entries).toBe(1);
+      expect(uncertain.unresolved).toContain('lib/factories.ts aliasRead');
+    }
+  });
+
+  it('keeps cross-file exported and module-captured objects unresolved after a real method replacement', () => {
+    const audit = createRowLockAudit(project);
+    for (const name of ['exported-alias', 'private-module-alias']) {
+      const actual = audit.routeLocks(['GET'], `${name}/`);
+      expect(actual.entries).toBe(1);
+      expect(actual.unresolved).toContain('lib/shared.ts read');
+    }
   });
 
   it('keeps inline callback locks visible after exact review of an unresolved interface call', () => {

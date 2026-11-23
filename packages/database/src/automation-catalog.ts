@@ -1,4 +1,5 @@
 import { terminalModelFailureCategorySql } from './execution/model-failures.ts';
+import { assertChatExecutionGeneration } from './conversation/execution-generation.ts';
 import { z } from 'zod';
 import type { TransactionSql } from 'postgres';
 import {
@@ -493,8 +494,9 @@ async function occurrenceRunAuthority(
       manual_request_id: string | null;
       native_once_occurrence_id: string | null;
       native_recurring_occurrence_id: string | null;
+      target_session_id: string | null;
     }[]
-  >`select r.state,j.status job_status,j.cancel_requested_at,ar.manual_request_id,ar.native_once_occurrence_id,ar.native_recurring_occurrence_id
+  >`select r.state,j.status job_status,j.cancel_requested_at,ar.manual_request_id,ar.native_once_occurrence_id,ar.native_recurring_occurrence_id,ar.session_id target_session_id
     from allrice_automation_runs ar
     join allrice_runs r on r.id=ar.run_id and r.organization_id=ar.organization_id and r.workspace_id=ar.workspace_id and r.owner_id=${access.ownerId}
     join allrice_jobs j on j.run_id=r.id and j.organization_id=r.organization_id and j.workspace_id=r.workspace_id and j.owner_id=r.owner_id
@@ -513,6 +515,22 @@ async function occurrenceRunAuthority(
                 or (ar.native_recurring_occurrence_id is null and ar.id=${input.occurrenceId}))`
       }`;
   if (!bound) throw new DataAccessError('not_found');
+  if (forWrite)
+    for (const sessionId of new Set(
+      [plan.session_id, bound.target_session_id].filter(
+        (id): id is string => typeof id === 'string',
+      ),
+    ))
+      await assertChatExecutionGeneration(
+        tx,
+        {
+          organizationId: access.context.organizationId,
+          workspaceId,
+          ownerId: access.ownerId,
+          sessionId,
+        },
+        '3.x',
+      );
   return { ...access, bound };
 }
 /** Exact readback only; it never resubmits an uncertain stop request. */
@@ -677,6 +695,17 @@ export async function changeAutomationCatalogTask(
       if (!p) throw new DataAccessError('not_found');
       if (Number(p.revision) !== input.expectedRevision)
         throw new DataAccessError('grant_invalid');
+      if (p.session_id)
+        await assertChatExecutionGeneration(
+          tx,
+          {
+            organizationId: scoped.organizationId,
+            workspaceId,
+            ownerId,
+            sessionId: p.session_id,
+          },
+          '3.x',
+        );
       await tx`update allrice_automations set status='paused',next_run_at=null,revision=revision+1,
         deleted_at=${input.action === 'delete' ? new Date() : null},updated_at=clock_timestamp() where id=${p.id}`;
       await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason) values(${scoped.organizationId},${workspaceId},${ownerId},${'automation.' + input.action},'automation',${p.id},'allowed','automation_catalog_legacy_control')`;

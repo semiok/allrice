@@ -11,6 +11,7 @@ import {
 import { refreshTaskClock } from '../task-clock.ts';
 import { notifyJobReady } from '../execution/queue-ready.ts';
 import { getDatabase } from '../core/client.ts';
+import { assertChatExecutionGeneration } from './execution-generation.ts';
 
 /** Caller holds the conversation runtime lock. Never create a second scheduler. */
 export async function releaseNextConversationFollowup(
@@ -47,6 +48,16 @@ export async function updateQueuedMessage(
       { ...context, workspaceId },
       sessionId,
       true,
+    );
+    await assertChatExecutionGeneration(
+      tx,
+      {
+        organizationId: context.organizationId,
+        workspaceId,
+        sessionId,
+        ownerId: context.actor.id,
+      },
+      '3.x',
     );
     // Same runtime → followup → job ordering as turn release; the job lock also
     // fences a concurrent worker claim. A started task cannot be edited away.

@@ -87,6 +87,7 @@ suite(
       const native = await responsesFixture();
       close.push(() => native.close());
       let access!: GuestEgressAccess;
+      let installedMount!: string;
       const modelRef: { current?: ModelGatewayPort } = {};
       const portProbe = createServer();
       await new Promise<void>((resolve) =>
@@ -196,7 +197,8 @@ suite(
             port,
             guestOrigin: `http://127.0.0.1:${port}`,
           }),
-          install: async (_b, value) => {
+          install: async (_b, mount, value) => {
+            installedMount = mount;
             access = value;
           },
           remove: async () => {},
@@ -204,7 +206,11 @@ suite(
       });
       await vm.prewarm(rc, { trigger: 'page' }, cancel.signal);
       const binding = await vm.resolve(rc, cancel.signal);
-      const receipt = await egress.prepare(binding, cancel.signal);
+      const receipt = await egress.prepare(
+        binding,
+        { gatewayPorts: [port], mount: installedMount },
+        cancel.signal,
+      );
       const actualStore = createPostgresModelGatewayStore(open());
       const claimIds: string[] = [];
       const store = {
@@ -306,7 +312,11 @@ suite(
           await host.participant('gateway').thaw(lease, cancel.signal);
           await host.participant('entry').thaw(lease, cancel.signal);
           const next = await host.wake(rc, binding, cancel.signal);
-          const nextReceipt = await egress.prepare(next, cancel.signal);
+          const nextReceipt = await egress.prepare(
+            next,
+            { gatewayPorts: [port], mount: installedMount },
+            cancel.signal,
+          );
           close.push(() =>
             egress.revoke(nextReceipt, 'stop', new AbortController().signal),
           );

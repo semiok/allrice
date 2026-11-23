@@ -324,6 +324,28 @@ Allrice 的公开事件不含原生推理正文，因此不伪造 ReasoningRow �
 
 以下条目的复核日期/版本统一继承“本轮复核”。测试路径以仓库根目录为起点。退役必须在同一 PR 删除相应旧实现、更新机器清单并留下验证结果；一项适配中的少量机制可退役，不代表它承担的整项治理责任可以删除。
 
+### `allrice-d-entry-native-root-v1`
+
+- MET-271，用户 2026-11-21 已批准可信本人/员工、线程单代入口，主线续派 271 自有 root producer；四类为存储后端。DSH rc.2 `session/create` 返回真实普通根，可能与请求 id 不同；直接消费生成 input/result codec，不从 catalog 列表或 guest JSON 任选根。
+- 0251 在既有 chat Session 增不可变 JSONB claim 与真实结果 pin 两个事实，保完整 org/workspace/person/employee instance/revision/version/release 和原 host receipt；唯一性按持久 VM/员工 profile/native id scope。临时 instance/epoch/bindingRef 只作创建出处，正常重启不重建根。旧 native origin、3.x binder 和 Run/Job 不改，不造 Agent 状态。
+- 完整 scope/可信 operationId 的 claim 在短事务内由同一 chat 行锁串行领取，成功 ACK 后才允许原始宿主 callback 唯一 create；同 claim 真实返回与最终现权复核后落 pin。提交/结果未知时保留 claim、不算创建成功，后续同键或换键均不重放，无 TTL 或自动恢复；pin 已提交而回复丢失只读原 pin。并发请求读取已提交 claim 后拒绝 UNCONFIRMED、零 native dispatch，不持第二套 advisory 连接锁。最终仍核当前本人/员工政策；整份名单的无关修改不作本人撤权，出生 revision 保留出处。真实原生认证/数据面和完整 envelope owner 仍由正式273宿主提供，替身不证明原生创建/VM验收。退役须由原生正式提供同等 SaaS immutable business pin 时删除本适配及登记。
+
+### `allrice-native-web-entry-guard-v1`
+
+- MET-271，用户 2026-11-21 授权，四类为门卫。复用 rc.2 `TYPERT_REMOTE` strict codec、公开 Mux frame parser 和实际 session catalog；精确 endpoint/effect 对照源码，非 HTTP method/关键词推断。DSH Gateway 的 owner principal 绕过 remoteAccess，因此不透明转发 owner Cookie 无法提供 SaaS 子会话门卫。
+- Web/Worker 原监听器上具名 HTTP/WS 重新认证原 session Bearer、当前员工/发布名单、永久代际及宿主 root；网页 child 只读，native parent 控制不变。配置复用 allrice_settings/system 的平台管理源，默认3.x、仅精确人/员工条目开启4.0，无新表/env/UI。
+- 271 自有跨进程现权 producer 复用原 identity/employee/settings 权威表，0251事务内 PG 通知仅提示当前 SQL 重核，先订阅后重核，真实 session expiry/通知断线 abort，close 等已排队复核。新增精确锁定 pg driver 的公开 notification/error/end 接缝；原 postgres.js listen 只公开重连回调，无法在断线时保守取消。无轮询/进程Map权威。
+- 数据面必须注入真实每请求 owner handle、完整原 envelope 和真实撤权 signal；未知 acquire/close 仍 finally finish，不能把 iterator.return/AbortSignal 当物理 fence。原生已结束/未知流的无效果 cancel/end 尾帧丢弃，不拆其他流；所有写 open 与非法 uplink 仍严格门卫。现树无273 transport/full resolver正式组合，未装配时503；controlReady 不是 editorReady/canSend。
+- 验证为原 cookie/共享 DB、同 listener HTTP/WS、严格 codec、跨 root、子会话写入、空闲取消及真实 close Promise 的受影响完整文件。替身只证明 consumer 调用，生产 PG/物理 fence、原生页面可发送与联合验收仍待真实组合，不声称通过。
+
+### `allrice-person-vm-entry-admission-v1`
+
+- MET-271 F4 consumer 准备，用户 2026-11-21 已批准门卫/租约及 join 语义；当前 DSH `0.2.1-rc.2`，原生 source `687f282e8625c6b8d11ff58211a90524be2e4317`。原生 turn/子会话/等待/重试与 call 身份直接复用，不修改 DSH 或另建 Agent 状态机。
+- AllRice 只消费 model owner 的公开 admission v1/boundary（合同切片来源 #905 `c041d94c6984463c9ff9a068cba0db58ebc91e16`）；原完整业务 owner 校验和实际连接/typing/prewarm 的 close Promise 由正式宿主注入。DSH 不持有 SaaS 当前权限、双宿主准入与跨 host lease；entry 不构造共享 SQL/权威。
+- consumer 实现在 `packages/database/src/d-entry-admission.ts` 供 Web/Worker 同用，旧 Web 文件保留薄导出；只依赖 person-vm 公开合同，c041 finally finish/错误链及 queued/deferred 行为不变。
+- callback 内现权/abort 复核先于 acquire；已 join 的业务错误 fulfil 本地 outcome，外层 finally finish 后再抛。拿不到 handle 或实际 close 未知则 callback reject，并保业务/取消和 close/finish 的错误链。模型线已回交 c041 sticky unsafe 的独审/PG 结果；固定 n3 已带入完整 person-vm producer，entry 的真实 Host 装配、全域 close producer、完整 envelope resolver、物理 fence 和正式 transport 尚未绑定，不能以 invocation double 声称 PG/生产验收通过。
+- 退役：正式宿主提供等价、完整公开的 entry operation 生命周期并保留现权/原 call 身份和未知收尾责任时，替换该薄接缝并同步删 ledger/baseline。回滚只退准备 hook，不清旧 claim/permit/历史，不重放旧执行。关键 consumer 完整文件为 `admission-participant.test.ts`、`identity/d-entry.test.ts`；真实 producer/PG 联验由主线在最终组合头安排，当前未跑。
+
 ### allrice-durable-native-question-wait-v1
 
 - MET-231 首轮复核 F1–F4：可信程序来源与原 Run/pause 编入 Host 生成的顶层 questionId，复用 strict v1 checkpoint 字段，不新增 PG 列/表或日志字段；legacy 在采纳答案前校验原 pause；模型 item/call ID 不能指定此顶层 ID。旧无标记题按普通题读取、不能 decide 当前 pause，进度门须重新提问。当前 Run 的程序题随公开 `turn.started` 更新网页投递 turn，Host 只接受当前 turn；PG 消费精确 Run/题/投递 turn 的 `question_resolved` 回执，已采纳后跨同 Run turn 仅凭既有 turn 记录收据结算，不扩大旧题提交权。回归包含真消息 API→PG claim→production Host/adapter→PG consume 与双子级结算换 turn。
@@ -870,3 +892,37 @@ MET-223 A2（2026-11-14 获批实施，门禁与发布状态另记）：本批�
 个人场景 Provider 将精确包的 `name`、`whenToUse`、`metadata`、`invocation` 直接交给 rc.2 公开 Skill Provider；无作者字段的旧包仍用 UUID，历史 Run 和读取账本不改写。SaaS 沿现本人写事务及组织锁拒绝场景/基础/启用个人 Skill 重名，已发布作者名更新不能更名。普通安装/绑定/启用同样检查场景；没有第二套命令解析、阶段凭据或加载状态。`allrice-progressive-scene-provider-v1` 对应 MET-225 E02/L03/L04，精确资源、来源、撤销与使用证据门卫保留。
 
 R4b extends the same `allrice-reference-read-v1` seam with `workspace_reference_archive_list` and `workspace_reference_archive_read` (v1.8). Directory metadata is bounded and never inflates members; the existing ZIP library opens only the selected member and validates its local header, actual size and CRC. Parent publication authority is unchanged. Opaque entry IDs bind the entire pin and central directory identity. Text reuses the existing complete reference/document parser; images use the same public DSH route, attachment store, result renderer and cancellation path as R4a. V2 directory/member receipts remain in `reference_reads`, with no member publication, new table, index or lifecycle. MET-225: extend the existing row with these two approved Broker tools; ordinary computer/Skill ZIP defaults remain unchanged.
+
+## MET-274 宿主关机历史（rc.2）
+
+`allrice-host-native-history-v1` 使用当前 `0.2.1-rc.2` 公开
+`SessionController.inspect` 和 `dsh-session.isAppendSurfaceEvent`，保留人类已见的
+append-origin 文本/工具记录；不使用会遮蔽压缩前消息的模型surface，也不保存系统、
+developer、reasoning、provider stream、原生路径或任意HTML资源。技术敏感字段/原始路径
+污染的文本槽明确隐藏，不声称模式检查能证明所有未知秘密格式安全。
+
+AllRice只补门卫（既有D-entry现权及root/child准入、精确附件对象授权）、单向展示账本
+和宿主不可变投影存储（`HostHistorySnapshotSchema` v1）。源前缀hash、原生游标、
+配置release、instance/profile/root绑定及snapshot digest一起恢复；同内容幂等，分叉、
+倒退和损坏拒绝。附件字节归原对象owner，关机读取每片段复核，下载不以内联HTML返回。
+下载先将实际字节写入私有、已 unlink 的临时文件，大小/hash 完整校验后才生成成功
+正文；只从同一文件句柄输出，每块保持现权检查。请求/root/对象撤权取消 pending
+读取，成功、失败、取消均等待文件 I/O 和 owner 句柄释放，无 TTL/轮询/下载新上限。
+对象 owner 必须通过 host-only `DEntryHistoryAttachmentPort.acquire` 提供真实权限
+变更信号及可取消 open/reauthorize/close。现有 `getStoredFile` 只有单次现权查询，
+不能承担该取消合同；本片未绑定对象通知 owner，缺少 files 装配时仅下载返回 503，
+历史仍可读，不再默认使用 getStoredFile+storage 的不可完整取消 fallback。
+原生 `interrupted`、无终态的未完成、`TOOL_OUTCOME_UNKNOWN` 和
+`TOOL_NOT_STARTED`分别展示；guest工具结果不作为外部批准、计费或送达凭证。
+
+`captureHostHistory`与`createDEntryHistoryHandlers`是已实现的宿主组合接缝；正式
+instance/profile、线程配置和导出时机须由MET-273/原生route owner绑定后注册。
+没有猜测环境变量或默认实例，也没有新增Agent恢复器/状态表、自动重放、VM启动或模型
+授权刷新。样机phase5的rc.5真杀结论不充当本代产品验收；真实关机/继续、附件及UI验收
+仍由合批门禁完成。MET-225应登记该ID的门卫/账本/存储差异，原生恢复语义不改。
+
+## MET273：Native Web 宿主认证与控制
+
+`allrice-native-web-local-auth-v1` 复用 rc.2 的公开 `connection.authenticatedUrl`、`/connect`、Node Connection/Gateway/SessionController 和 Cordis Fiber lifecycle。Host 插件只原子投送0600、宿主 nonce 指定的 native local auth；Microsandbox 固定有界 reader 私下读取。Worker 固定已声明 endpoint 和 VM binding/epoch，独立长期 lifetime，关闭 join 自有 HTTP/WS/iterator 与 exact Job；无私有DSH接口、stdio桥、Agent状态或PG权威。该门卫/租约片不启用4.0流量，不代表 editor-ready、发送许可、完整idle或Linux工件已交付；新增员工端口的三方冻结安全重启另片实现。
+
+rc.2 的 Web runtime config 整块替换，须同时保留 `openBrowser:false`、可信 `publicUrl`、`surfaceContext:true` 和 `printUrl:false`。v0.7.16 exec 使用整秒参数并保留独立 host 毫秒预算；CLI close 不替代 guest stop/status。Node owner 通过公开 Agent/finishRequest 跟踪 WS 握手的真实 request/socket close，完整读操作含前后现权均纳入关闭 join。

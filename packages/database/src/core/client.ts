@@ -27,6 +27,31 @@ export function getDatabase() {
   return client;
 }
 
+/** A caller-owned client from the trusted client's entire public configuration.
+ * No connection/pool handle is borrowed. The runtime accepts ParsedOptions'
+ * host/port arrays; its constructor declaration narrows those input fields. */
+export function createDedicatedDatabase(
+  db: Pick<ReturnType<typeof postgres>, 'options'>,
+) {
+  const shared: unknown = Reflect.get(db.options, 'shared');
+  if (
+    !shared ||
+    typeof shared !== 'object' ||
+    !('typeArrayMap' in shared) ||
+    !shared.typeArrayMap ||
+    typeof shared.typeArrayMap !== 'object'
+  )
+    throw new Error('unsupported_postgres_options');
+  return postgres({
+    ...db.options,
+    max: 1,
+    shared: { retries: 0, typeArrayMap: { ...shared.typeArrayMap } },
+    parameters: {},
+    parsers: { ...db.options.parsers },
+    serializers: { ...db.options.serializers },
+  } as unknown as NonNullable<Parameters<typeof postgres>[1]>);
+}
+
 export async function pingDatabase() {
   await getDatabase()`select 1 as ready`;
 }

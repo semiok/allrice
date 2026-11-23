@@ -7,6 +7,7 @@ import * as personalSkills from './employees/personal-skills.ts';
 import * as userPreferences from './user-preferences.ts';
 import * as sandboxExecutionPolicy from './sandbox-execution-policy.ts';
 import * as nativeContextRetirement from './conversation/native-context-retirement.ts';
+import * as queue from './execution/queue.ts';
 /** Incremental 0096 -> 0097/0098 on an owned PG schema containing old data.
  * Exercises actual SQL and production readers/writers after pool restart.
  * No provider, credentials, running environment, downgrade or model replay.
@@ -159,6 +160,15 @@ integration('subscription incremental migration and cold SQL readers', () => {
     await fixture.db.unsafe(
       await migration('0121_codex_subscription_slots.sql'),
     );
+    const expectNoExecutionGeneration = async () => {
+      const [checkpoint] = await fixture.db`select not exists(
+        select 1 from information_schema.columns
+        where table_schema=current_schema() and table_name='allrice_chat_sessions'
+          and column_name='execution_generation'
+      ) as absent`;
+      expect(checkpoint).toEqual({ absent: true });
+    };
+    await expectNoExecutionGeneration();
     // This seed represents a Run created by the 0096 binary, before company
     // profiles existed. Only omit that future optional snapshot field while
     // constructing legacy data; all subscription readers/writers remain real.
@@ -244,8 +254,119 @@ integration('subscription incremental migration and cold SQL readers', () => {
           imagesEnabled: false,
         },
       });
+    // Observe the real functions without replacing their implementation. Old
+    // SQL data preparation must not enter today's post-0249 admission path.
+    const currentEnqueue = vi.spyOn(queue, 'enqueueRun');
+    const currentClaim = vi.spyOn(queue, 'claimNextJob');
+    const currentStart = vi.spyOn(queue, 'startClaimedJob');
     try {
       task = await fixture.prepareOrdinaryTask('Migration fixture. No model.');
+      await expectNoExecutionGeneration();
+      expect(currentEnqueue).not.toHaveBeenCalled();
+      expect(currentClaim).not.toHaveBeenCalled();
+      expect(currentStart).not.toHaveBeenCalled();
+      // The 0096 SQL contract is real persisted state, not a fake claim result:
+      // tenant/owner/Run links, private frozen policy, one attempt, complete
+      // lease and matching running timestamps all precede the expand phase.
+      const [seed] =
+        await fixture.db`select r.state,r.visibility,e.status as employee_status,
+        j.status as job_status,j.attempt,j.max_attempts,j.worker_id,j.lease_token,
+        j.run_id=${task.runId} and e.run_id=r.id and r.id=j.run_id
+          and r.organization_id=j.organization_id and r.organization_id=e.organization_id
+          and r.workspace_id=j.workspace_id and r.workspace_id=e.workspace_id
+          and r.owner_id=j.owner_id and r.owner_id=e.owner_id as same_scope,
+        r.organization_id=${fixture.organizationId} and r.workspace_id=${fixture.workspaceId}
+          and r.owner_id=${fixture.ownerId} as expected_scope,
+        r.policy_snapshot_id=p.id and p.organization_id=r.organization_id
+          and p.subject_id=r.owner_id and p.version=1
+          and e.execution_snapshot->'tenantContext'->>'policySnapshotId'=p.id::text as frozen_policy,
+        j.claimed_at is not null and j.heartbeat_at=j.claimed_at
+          and j.lease_expires_at=j.claimed_at+interval '30 seconds'
+          and r.started_at=j.claimed_at and e.started_at=r.started_at
+          and j.created_at=j.claimed_at and j.available_at=j.created_at
+          and j.timeout_at>j.created_at and p.issued_at=j.created_at
+          and p.expires_at=j.timeout_at+interval '24 hours' as times_match,
+        e.session_id=${task.sessionId} and e.user_message_id=${task.userMessageId}
+          and e.assistant_message_id=${task.assistantMessageId}
+          and e.employee_assignment_id=${fixture.assignmentId}
+          and e.employee_version_id=${fixture.employeeVersionId} as employee_links,
+        j.payload as payload,r.input as run_input,r.execution_spec as execution_spec,
+        p.payload as policy_payload
+        from allrice_runs r join allrice_jobs j on j.run_id=r.id
+          join allrice_employee_runs e on e.run_id=r.id
+          join allrice_policy_snapshots p on p.id=r.policy_snapshot_id
+        where r.id=${task.runId}`;
+      expect(seed).toMatchObject({
+        state: 'running',
+        visibility: 'private',
+        employee_status: 'running',
+        job_status: 'running',
+        attempt: 1,
+        max_attempts: 1,
+        worker_id: task.workflowLease.workerId,
+        lease_token: task.workflowLease.leaseToken,
+        same_scope: true,
+        expected_scope: true,
+        frozen_policy: true,
+        times_match: true,
+        employee_links: true,
+        execution_spec: {
+          schemaVersion: 1,
+          handler: 'allrice.employee.run',
+          employeeVersionId: fixture.employeeVersionId,
+          provider: 'codex',
+        },
+      });
+      expect(seed!.payload).toEqual(task.execution.payload);
+      expect(seed!.run_input).toEqual(task.execution.payload.input);
+      expect(seed!.policy_payload).toEqual({
+        memberships: task.execution.context.policySnapshot.memberships,
+        grants: task.execution.context.policySnapshot.grants,
+      });
+      expect(task.execution.context).toMatchObject({
+        runId: task.runId,
+        jobId: task.workflowLease.jobId,
+        organizationId: fixture.organizationId,
+        workspaceId: fixture.workspaceId,
+        worker: { type: 'worker', id: task.workflowLease.workerId },
+        delegatedBy: { type: 'user', id: fixture.ownerId },
+      });
+      expect(task.execution.job).toMatchObject({
+        id: task.workflowLease.jobId,
+        status: 'running',
+        attempt: 1,
+        lease: {
+          workerId: task.workflowLease.workerId,
+          token: task.workflowLease.leaseToken,
+        },
+      });
+      const events =
+        await fixture.db`select sequence,event_type,payload from allrice_run_events
+        where run_id=${task.runId} order by sequence`;
+      expect(events).toEqual([
+        {
+          sequence: 0,
+          event_type: 'run.created',
+          payload: {
+            jobId: task.workflowLease.jobId,
+            status: 'queued',
+            availableAt: task.execution.job.availableAt,
+          },
+        },
+        {
+          sequence: 1,
+          event_type: 'run.started',
+          payload: {
+            jobId: task.workflowLease.jobId,
+            workerId: task.workflowLease.workerId,
+            attempt: 1,
+          },
+        },
+      ]);
+      expect(
+        await fixture.db`select sequence,event_type,payload from allrice_employee_run_steps
+        where run_id=${task.runId} order by sequence`,
+      ).toEqual(events);
       // Seed old data without installing future native admission tables/columns.
       // The incremental subscription journey must still begin at real 0096.
       const [historical] = await fixture.db`
@@ -262,6 +383,15 @@ integration('subscription incremental migration and cold SQL readers', () => {
       expect(historical!.no_preferences).toBe(true);
       expect(historical!.no_execution_binding).toBe(true);
       expect(historical!.employee_run.status).toBe('running');
+      for (const [column, frozen] of [
+        ['provider_snapshot', task.binding.providerSnapshot],
+        ['skill_bindings', task.binding.skillBindings],
+        ['native_skills', task.binding.nativeSkills],
+        ['prompt_snapshot', task.binding.promptSnapshot],
+      ] as const)
+        expect(historical!.employee_run[column]).toEqual(
+          JSON.parse(JSON.stringify(frozen)),
+        );
       expect(historical!.employee_run.prompt_snapshot).not.toHaveProperty(
         'personalIdentity',
       );
@@ -307,6 +437,9 @@ integration('subscription incremental migration and cold SQL readers', () => {
       legacyPublication.mockRestore();
       legacyModels.mockRestore();
       legacyCapabilities.mockRestore();
+      currentEnqueue.mockRestore();
+      currentClaim.mockRestore();
+      currentStart.mockRestore();
     }
     const frozen = task.binding.executionSnapshot.modelSnapshot!;
     decision = RouteDecisionSchema.parse({
@@ -471,8 +604,15 @@ integration('subscription incremental migration and cold SQL readers', () => {
         to_regclass(${`${fixture.schema}.allrice_route_subscription_snapshots`}) is null as proof_absent,
         not exists(select 1 from information_schema.columns
           where table_schema=${fixture.schema} and table_name='allrice_provider_status'
-          and column_name='subscription_quota') as quota_absent`;
-      expect(row).toEqual({ proof_absent: true, quota_absent: true });
+          and column_name='subscription_quota') as quota_absent,
+        not exists(select 1 from information_schema.columns
+          where table_schema=${fixture.schema} and table_name='allrice_chat_sessions'
+          and column_name='execution_generation') as generation_absent`;
+      expect(row).toEqual({
+        proof_absent: true,
+        quota_absent: true,
+        generation_absent: true,
+      });
     };
     await assertOldSchema();
     const proofSql = await migration('0097_route_subscription_snapshots.sql');
@@ -490,6 +630,12 @@ integration('subscription incremental migration and cold SQL readers', () => {
       await tx.unsafe(proofSql);
       await tx.unsafe(quotaSql);
     });
+    const [beforeRemaining] = await db`select not exists(
+      select 1 from information_schema.columns
+      where table_schema=current_schema() and table_name='allrice_chat_sessions'
+        and column_name='execution_generation'
+    ) as generation_absent`;
+    expect(beforeRemaining).toEqual({ generation_absent: true });
     expect(await ledgerHistory()).toEqual(history);
     // Keep the exact 0097/0098 interruption checkpoints above. Current binary
     // readers also require later additive tables (including method-test route
@@ -509,6 +655,11 @@ integration('subscription incremental migration and cold SQL readers', () => {
       for (const name of remainingMigrations)
         await tx.unsafe(await migration(name));
     });
+    const [migratedChat] =
+      await db`select execution_generation from allrice_chat_sessions
+      where id=${task.sessionId} and organization_id=${fixture.organizationId}
+        and workspace_id=${fixture.workspaceId} and owner_id=${fixture.ownerId}`;
+    expect(migratedChat).toEqual({ execution_generation: '3.x' });
     // The seed-only omission is gone: the current reader now uses the actual
     // newly migrated table, while the original chat and ledger remain intact.
     expect(

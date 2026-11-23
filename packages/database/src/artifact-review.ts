@@ -1226,13 +1226,31 @@ async function assertArtifactExecution(
   if (!target) fail('target_unavailable');
   return e;
 }
+type ExpectedPublishingExecution = {
+  workerId: string;
+  jobId: string;
+  leaseToken: string;
+  attempt: number;
+};
+
 export async function assertPublishingRun(
   tx: TransactionSql,
   context: ExecutionContext,
   sessionId: string,
   requiredTool = 'workspace.export.create',
   lock = true,
+  expectedExecution?: ExpectedPublishingExecution,
 ) {
+  if (
+    expectedExecution !== undefined &&
+    (!expectedExecution ||
+      expectedExecution.workerId !== context.worker.id ||
+      expectedExecution.jobId !== context.jobId ||
+      !UuidSchema.safeParse(expectedExecution.leaseToken).success ||
+      !Number.isSafeInteger(expectedExecution.attempt) ||
+      expectedExecution.attempt < 0)
+  )
+    fail('run_unavailable');
   const [row] = await tx<
     { execution_snapshot: unknown }[]
   >`select e.execution_snapshot from allrice_employee_runs e
@@ -1241,6 +1259,7 @@ export async function assertPublishingRun(
     where r.id=${context.runId} and r.organization_id=${context.organizationId} and r.workspace_id=${context.workspaceId!} and r.owner_id=${context.policySnapshot.subjectId}
       and r.policy_snapshot_id=${context.policySnapshot.id} and e.session_id=${sessionId} and r.state='running'
       and j.status='running' and j.worker_id=${context.worker.id} and j.lease_expires_at>clock_timestamp() and j.timeout_at>clock_timestamp() and j.cancel_requested_at is null
+      ${expectedExecution ? tx`and j.id=${expectedExecution.jobId} and j.worker_id=${expectedExecution.workerId} and j.lease_token=${expectedExecution.leaseToken} and j.attempt=${expectedExecution.attempt}` : tx``}
       ${lock ? tx`for share of e,r,j` : tx``}`;
   const parsed = EmployeeExecutionSnapshotSchema.safeParse(
     row?.execution_snapshot,
@@ -1403,6 +1422,9 @@ export async function publishWorkbenchArtifact(
     context: ExecutionContext;
     sessionId: string;
     callId: string;
+    /** Host-only originating execution. Cached receipts remain recoverable;
+     * every new effect must retain this exact worker/job/lease/attempt. */
+    expectedExecution?: ExpectedPublishingExecution;
     kind: 'document' | 'plan' | 'changeset';
     fileName: string;
     format: DeliveryFormat;
@@ -1454,6 +1476,9 @@ export async function publishWorkbenchArtifact(
     replayed?: (tx: TransactionSql, artifactId: string) => Promise<void>;
   },
 ) {
+  const expectedExecution = input.expectedExecution
+    ? { ...input.expectedExecution }
+    : input.expectedExecution;
   if (!workbenchEnabled()) fail('feature_disabled');
   if (
     Object.hasOwn(input, 'trustedOfficeExport') &&
@@ -1689,7 +1714,14 @@ export async function publishWorkbenchArtifact(
         : derivedSource
           ? 'workspace.reconciliation.export'
           : 'workspace.export.create';
-      await assertPublishingRun(tx, context, input.sessionId, requiredTool);
+      await assertPublishingRun(
+        tx,
+        context,
+        input.sessionId,
+        requiredTool,
+        true,
+        expectedExecution,
+      );
       if (input.trustedImageOperation) {
         if (
           input.format !== 'png' ||
@@ -1817,7 +1849,14 @@ export async function publishWorkbenchArtifact(
       );
       await tx`insert into allrice_workbench_artifacts(version_id,organization_id,workspace_id,owner_id,run_id,kind,provenance,execution,request_id,request_digest)
       values(${version.id},${context.organizationId},${context.workspaceId!},${owner},${publishingRunId},${publicationKind},${tx.json(provenance)},${execution ? tx.json(execution) : null},${input.callId},${requestDigest})`;
-      await assertPublishingRun(tx, context, input.sessionId, requiredTool);
+      await assertPublishingRun(
+        tx,
+        context,
+        input.sessionId,
+        requiredTool,
+        true,
+        expectedExecution,
+      );
       await tx`insert into allrice_audit_events(organization_id,workspace_id,actor_id,action,resource_type,resource_id,decision,reason,metadata)
       values(${context.organizationId},${context.workspaceId!},${owner},'artifact.published','deliverable_version',${version.id},'recorded','immutable_version',${tx.json({ runId: context.runId, sessionId: input.sessionId, checksum, kind: publicationKind, ...(input.trustedOfficeExport ? { officeExport: OfficeExportProducerSchema.parse({ version: 1, tool: 'workspace.export.create', callId: input.callId, objectId: created.id }) } : {}), ...(input.trustedCloudDerivation ? { derivation: input.trustedCloudDerivation, sourceChecksum: derivedSource!.object.checksum } : {}) })})`;
       const artifact = await readArtifact(
@@ -1836,7 +1875,14 @@ export async function publishWorkbenchArtifact(
           context,
           derivedSource.provenance.operationId!,
         );
-      await assertPublishingRun(tx, context, input.sessionId, requiredTool);
+      await assertPublishingRun(
+        tx,
+        context,
+        input.sessionId,
+        requiredTool,
+        true,
+        expectedExecution,
+      );
       await development?.admit(tx);
       if (projectParent && input.parentObjectId)
         await assertProjectOutputParent(

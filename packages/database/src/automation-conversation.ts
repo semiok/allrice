@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { assertChatExecutionGeneration } from './conversation/execution-generation.ts';
 import type { TransactionSql } from 'postgres';
 import {
   AutomationConversationModeSchema,
@@ -103,6 +104,13 @@ export async function prepareAutomationConversation(
     principal.actor.id !== scope.ownerId
   )
     throw new DataAccessError('authorization_denied');
+  // The source owns this legacy automation even when a fresh target is born.
+  // Check it before createAssignedChatSession can allocate a 3.x target.
+  await assertChatExecutionGeneration(
+    tx,
+    { ...scope, sessionId: source.id },
+    '3.x',
+  );
   let target = source;
   if (mode === 'new_each_run') {
     const id = automationConversationTargetId(scope, plan.id, trigger);
@@ -215,7 +223,8 @@ export async function lockAutomationConversationJobAdmission(
       where s.id=${sessionId} and s.organization_id=${scope.organizationId} and s.workspace_id=${scope.workspaceId} and s.owner_id=${scope.ownerId}
         and x.organization_id=s.organization_id and x.workspace_id=s.workspace_id
         and x.id=${frozen.employeeAssignmentId} and i.id=${frozen.employeeInstanceId} and i.archived_at is null
-        and s.archived_at is null and s.visibility='private' and e.status='active' and e.employee_key not like 'platform-%'
+        and s.archived_at is null and s.visibility='private' and s.execution_generation='3.x'
+        and e.status='active' and e.employee_key not like 'platform-%'
         and not exists(select 1 from allrice_platform_employee_tenant_assignments p where p.organization_id=x.organization_id
           and p.workspace_id=x.workspace_id and p.tenant_employee_id=x.employee_id and not p.active)
       for share of s,x,e,i`;

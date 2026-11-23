@@ -163,7 +163,7 @@ suite(
         await admin.end({ timeout: 2 });
       }
     });
-    async function setup(sharedFactory?: PersonVmSqlFactory) {
+    async function setup(sharedFactory?: PersonVmSqlFactory, idleMs?: number) {
       const physical = factory('physicalA'),
         remote = factory('physicalB');
       const open = sharedFactory ?? physical.open;
@@ -173,6 +173,7 @@ suite(
       let mono = 0;
       const host = h.service.createAdmissionHost({
         openSql: open,
+        idleMs,
         monotonic: () => mono,
       });
       const peerStore = new PostgresPersonVmStore(remote.open);
@@ -182,6 +183,7 @@ suite(
       });
       const peer = peerService.createAdmissionHost({
         openSql: remote.open,
+        idleMs,
         monotonic: () => mono,
       });
       return {
@@ -447,6 +449,47 @@ suite(
         expect(await counts(h.rc.actor.id)).toEqual([]);
       },
     );
+    it.each([
+      null,
+      0,
+      -1,
+      1.5,
+      NaN,
+      Infinity,
+      Number.MAX_SAFE_INTEGER + 1,
+      '1200000',
+    ])(
+      'rejects invalid continuous idle milliseconds %s without publishing an admission host',
+      (idleMs) => {
+        const physical = factory('invalid-idle');
+        const h = harness(new PostgresPersonVmStore(physical.open));
+        expect(() =>
+          Reflect.apply(h.service.createAdmissionHost, h.service, [
+            { openSql: physical.open, idleMs },
+          ]),
+        ).toThrowError('PROVIDER_FAILED');
+        expect(() =>
+          h.service.createAdmissionHost({ openSql: physical.open }),
+        ).not.toThrow();
+      },
+    );
+    it('accepts an explicit platform idle threshold without bypassing the unknown native barrier', async () => {
+      const h = await setup(undefined, 45_000);
+      await h.host.reconcileIdle(h.rc, h.binding, signal());
+      h.advanceMono(45_000);
+      await h.host.reconcileIdle(h.rc, h.binding, signal());
+      const lease = await frozen(h);
+      try {
+        await expect(
+          h.host.stopFrozen(h.rc, lease, signal()),
+        ).rejects.toMatchObject({ code: 'ACTIVITY_UNKNOWN' });
+        expect(h.states.get(h.binding.vmId)).toBe('running');
+        expect(h.log).not.toContain('native:stop');
+      } finally {
+        await h.host.participant('gateway').thaw(lease, signal());
+        await h.peer.participant('entry').thaw(lease, signal());
+      }
+    });
     it('qualifier requires the original shared host and cannot replace its factory', async () => {
       const h = await setup();
       const other = factory('wrong').open;
