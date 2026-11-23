@@ -1,5 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis';
-import { Remote, TypertRemoteService, isTypertRemoteMethod, type PeerScope, type RemoteStream, type TypertDisposer, type TypertRemoteMethod } from '@deepseek-ai/dsh-typert-protocol';
+import { Remote, TypertRemoteService, isTypertRemoteMethod, remoteErrorOf, type PeerScope, type RemoteStream, type TypertDisposer, type TypertRemoteMethod } from '@deepseek-ai/dsh-typert-protocol';
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry';
 import type {} from '@deepseek-ai/dsh-client-connection';
 import type {} from '@deepseek-ai/dsh-api-gateway';
@@ -230,8 +230,8 @@ class PrincipalService extends TypertRemoteService {
     let closing: Promise<void> | undefined;
     let eventReady = false;
     const events = raw.kind === 'events';
+    const active = AbortSignal.any([scope.abort.signal, gate.abort.signal]);
     const setup = scope.own(async () => {
-      const active = AbortSignal.any([scope.abort.signal, gate.abort.signal]);
       active.throwIfAborted();
       if (events) z.object({ args: z.object({}).strict() }).strict().parse(raw.payload);
       else if (raw.endpoint === 'remoteAccess/follow') Access.methods['remoteAccess/follow'].input({ strict: true }).create().parse(raw.args);
@@ -251,18 +251,33 @@ class PrincipalService extends TypertRemoteService {
       if (closing) return closing;
       closing = Promise.resolve().then(async () => {
         await Promise.allSettled([setup, pending]);
-        await iterator?.return?.();
+        const returns = await Promise.allSettled([
+          Promise.resolve().then(async () => { await iterator?.return?.(); }),
+          Promise.resolve().then(async () => { await input.return?.(); }),
+        ]);
+        const pumped = await Promise.allSettled([pump]);
+        const failures = [...returns, ...pumped].flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+        if (failures.length) throw new AggregateError(failures, 'PRINCIPAL_JOIN_UNKNOWN');
         scope.children.delete(child);
       });
       gate.stop(); return closing;
     } };
     scope.children.add(child);
+    let failed = false;
     try {
       await setup;
       while (!gate.abort.signal.aborted) {
         if (!iterator) throw closed();
         pending = Promise.resolve(iterator.next());
-        const next = await pending;
+        let next: IteratorResult<unknown>;
+        try { next = await pending; }
+        catch (error) {
+          const failure = remoteErrorOf(error);
+          // Only the native Gateway cancellation caused by our own close is
+          // mechanical. Its in-process cause is the exact signal reason.
+          if (gate.abort.signal.aborted && !signal.aborted && failure?.code === 'gateway/cancelled' && failure.cause === active.reason) break;
+          throw error;
+        }
         if (next.done) break;
         if (gate.abort.signal.aborted || scope.abort.signal.aborted) break;
         let value: Extract<DEntryScopedStreamFrame, { type: 'item' }>['value'];
@@ -276,7 +291,12 @@ class PrincipalService extends TypertRemoteService {
         yield { type: 'item', scopeId: scope.issue.scopeId, value };
       }
       await child.close(); yield { type: 'closed', scopeId: scope.issue.scopeId };
-    } finally { await child.close(); await input.return?.(); await pump; gate.detach(); }
+    } catch (error) { failed = true; throw error; }
+    finally {
+      try { await child.close(); }
+      catch (error) { if (!failed) throw error; }
+      finally { gate.detach(); }
+    }
   }
 }
 // Keeps the brand predicate's output type without asserting a caller string.

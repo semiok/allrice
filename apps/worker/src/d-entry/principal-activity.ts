@@ -39,7 +39,9 @@ export function createDEntryPrincipalChildren(lifetime: AbortSignal) {
             await input.assertCurrent(current); current.throwIfAborted();
             return scope;
           });
-          void running.catch(() => {});
+          // This continuation runs outside `running`: close can join it
+          // without a cycle, including a post-open guard's own rejection.
+          void running.catch(() => { void activity.close().catch(() => {}); });
           return running;
         },
         close() {
@@ -48,7 +50,9 @@ export function createDEntryPrincipalChildren(lifetime: AbortSignal) {
             const results = await Promise.allSettled([child?.close()]);
             // The child close settles first/late-open; current guards then really join.
             await Promise.allSettled([running]);
-            if (acquisitionFailed || results.some((r) => r.status === 'rejected')) throw Error('PRINCIPAL_CHILD_JOIN_UNKNOWN');
+            const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+            if (acquisitionFailed) failures.push(acquisitionError);
+            if (failures.length) throw Error('PRINCIPAL_CHILD_JOIN_UNKNOWN', { cause: new AggregateError(failures, 'PRINCIPAL_CHILD_JOIN_FAILED') });
             signal.removeEventListener('abort', cancelled);
             children.delete(activity);
           });

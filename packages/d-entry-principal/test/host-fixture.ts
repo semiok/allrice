@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
+import { vi } from 'vitest';
 import { Context } from '@deepseek-ai/cordis';
 import { CredentialProvider, type CredentialKey, type CredentialRecord } from '@deepseek-ai/dsh-credentials';
 import * as HostConnection from '@deepseek-ai/dsh-client-connection';
@@ -12,7 +13,7 @@ import Gateway, { type TypertRemoteEventDispatch } from '@deepseek-ai/dsh-api-ga
 import * as GatewayClient from '@deepseek-ai/dsh-api-gateway/client';
 import { Remote, TypertRemoteService, type PeerScope } from '@deepseek-ai/dsh-typert-protocol';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import type { SessionPage, SessionPageRequest, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/types';
+import type { SessionFollowFrame, SessionFollowRequest, SessionPage, SessionPageRequest, SessionSummary } from '@deepseek-ai/dsh-api-session-controller/types';
 import { TYPERT as NativeMetadata } from '@deepseek-ai/dsh-api-session-controller/typert';
 import * as PrincipalHost from '@allrice/d-entry-principal/host';
 import { TYPERT_REMOTE } from '@allrice/d-entry-principal/remote';
@@ -53,12 +54,33 @@ class Credentials extends CredentialProvider {
 class Catalog extends TypertRemoteService {
   items = [summary('root'), summary('child', 'root'), summary('other')];
   beforeList?: () => Promise<void>;
+  beforeFollow?: () => Promise<void>;
+  afterFollowSnapshot?: () => Promise<void>;
+  afterFollow?: () => Promise<void>;
   readonly pages: PeerScope[] = [];
+  readonly follows: PeerScope[] = [];
   constructor(ctx: Context) { super(ctx, 'sessionController', { namespace: 'session' }); }
   @Remote('list')
   async list(_request: object, signal: AbortSignal) { await this.beforeList?.(); signal.throwIfAborted(); return { items: this.items }; }
   @Remote({ name: 'page', resources: { session: (request: SessionPageRequest) => request.address.kind === 'session' ? request.address.sessionId : request.address.childSessionId } })
   page(request: SessionPageRequest): SessionPage { void request; this.pages.push(this.ctx.invocation.peer); return { records: [], hasMore: false }; }
+  @Remote({ mode: 'stream', resources: { session: (request: SessionFollowRequest) => request.address.kind === 'session' ? request.address.sessionId : request.address.childSessionId } })
+  async *follow(request: SessionFollowRequest, signal: AbortSignal): AsyncIterable<SessionFollowFrame> {
+    this.follows.push(this.ctx.invocation.peer);
+    const sessionId = request.address.kind === 'session' ? request.address.sessionId : request.address.childSessionId;
+    try {
+      await this.beforeFollow?.(); signal.throwIfAborted();
+      // Session content is fixture data; the descriptor, resource guard,
+      // cancellableStream and codec are the actual public native path.
+      yield { type: 'snapshot', header: { version: 1, id: sessionId, createdAt: 1, isSeeded: false }, cursor: 0, records: [], hasMore: false, projections: { asOfSeq: 0, values: {} } };
+      await this.afterFollowSnapshot?.();
+      await new Promise<void>((resolve) => {
+        const stop = () => { signal.removeEventListener('abort', stop); resolve(); };
+        signal.addEventListener('abort', stop, { once: true });
+        if (signal.aborted) stop();
+      });
+    } finally { await this.afterFollow?.(); }
+  }
 }
 export async function hostFixture(selected = issue(), install = true) {
   const host = new Context();
@@ -111,4 +133,36 @@ export async function hostFixture(selected = issue(), install = true) {
     emit(row: TypertRemoteEventDispatch) { dispatched.push(row); wake(); },
     async close() { await node.fiber.dispose(); await host.fiber.dispose(); },
   };
+}
+
+/** Observe real native next/return; never manufacture a baseline or terminal. */
+export function observeNativeFollow(host: Context, endpoint: 'remoteAccess/follow' | 'session/follow') {
+  const errors: unknown[] = [];
+  const observed = { pending: deferred(), returned: deferred(), pendingSettled: false, returnJoined: false, errors };
+  const open = host.typertGateway.wireStream.open.bind(host.typertGateway.wireStream);
+  vi.spyOn(host.typertGateway.wireStream, 'open').mockImplementation(async (...args) => {
+    const source = await open(...args);
+    if (args[0] !== endpoint) return source;
+    return {
+      [Symbol.asyncIterator]() {
+        const iterator = source[Symbol.asyncIterator]();
+        let reads = 0;
+        return {
+          async next() {
+            const read = ++reads, next = iterator.next();
+            if (read === 2) observed.pending.resolve();
+            try { return await next; }
+            catch (error) { errors.push(error); throw error; }
+            finally { if (read === 2) observed.pendingSettled = true; }
+          },
+          async return(): Promise<IteratorResult<unknown>> {
+            const result = await iterator.return?.();
+            observed.returnJoined = true; observed.returned.resolve();
+            return result ?? { done: true, value: undefined };
+          },
+        };
+      },
+    };
+  });
+  return observed;
 }

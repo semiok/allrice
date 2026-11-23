@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SessionId } from '@deepseek-ai/dsh-session';
-import { hostFixture, deferred } from '../../../../packages/d-entry-principal/test/host-fixture.js';
+import { RemoteError } from '@deepseek-ai/dsh-typert-protocol';
+import { hostFixture, deferred, observeNativeFollow } from '../../../../packages/d-entry-principal/test/host-fixture.js';
 import { createDEntryPrincipalControl } from './principal-control.js';
 
 type Fixture = Awaited<ReturnType<typeof hostFixture>>;
@@ -78,6 +79,71 @@ describe('Node control uses the real generated issuer over the same native Peer 
     expect(secondScope.revoked.aborted).toBe(false);
     expect(await secondScope.invoke({ scopeId: nextIssue.scopeId, endpoint: 'session/page', args: { request: { address: { kind: 'session', sessionId: SessionId('root') }, throughSeq: 0 } } }, new AbortController().signal)).toMatchObject({ endpoint: 'session/page' });
     await second.close(); await fixture.control.close();
+  });
+
+  it.each(['child', 'page', 'business'] as const)('%s close joins an actual pending RemoteAccess next without poisoning another activity', async (mode) => {
+    const fixture = await setup(), business = new AbortController(), childSignal = new AbortController();
+    const activity = fixture.control.acquire(fixture.selected, business.signal);
+    const scope = await activity.run(new AbortController().signal);
+    const otherIssue = { ...fixture.selected, scopeId: randomUUID() };
+    const other = fixture.control.acquire(otherIssue, new AbortController().signal);
+    const otherScope = await other.run(new AbortController().signal);
+    const observed = observeNativeFollow(fixture.host, 'remoteAccess/follow');
+    const stream = scope.stream({ endpoint: 'remoteAccess/follow', scopeId: fixture.selected.scopeId, args: {} }, childSignal.signal)[Symbol.asyncIterator]();
+    expect(await stream.next()).toMatchObject({ value: { type: 'item', value: { type: 'baseline', owner: false } } });
+    const pending = stream.next(); void pending.catch(() => {});
+    await observed.pending.promise; expect(observed.pendingSettled).toBe(false);
+    if (mode === 'child') childSignal.abort();
+    else if (mode === 'business') business.abort();
+    else void activity.close().catch(() => {});
+    await expect(pending).rejects.toBeDefined();
+    if (mode === 'child') {
+      expect(scope.revoked.aborted).toBe(false);
+      expect(await scope.invoke({ scopeId: fixture.selected.scopeId, endpoint: 'session/page', args: { request: { address: { kind: 'session', sessionId: SessionId('root') }, throughSeq: 0 } } }, new AbortController().signal)).toMatchObject({ endpoint: 'session/page' });
+    }
+    await activity.close(); await observed.returned.promise;
+    expect(observed.pendingSettled).toBe(true); expect(observed.returnJoined).toBe(true);
+    expect(otherScope.revoked.aborted).toBe(false); expect(fixture.carrier.signal.aborted).toBe(false);
+    expect(await otherScope.invoke({ scopeId: otherIssue.scopeId, endpoint: 'session/page', args: { request: { address: { kind: 'session', sessionId: SessionId('root') }, throughSeq: 0 } } }, new AbortController().signal)).toMatchObject({ endpoint: 'session/page' });
+    await other.close(); await fixture.control.close();
+  });
+
+  it('page close joins the real pending session/follow and its held native finally before resolving', async () => {
+    const fixture = await setup();
+    const activity = fixture.control.acquire(fixture.selected, new AbortController().signal);
+    const scope = await activity.run(new AbortController().signal);
+    const observed = observeNativeFollow(fixture.host, 'session/follow');
+    const entered = deferred(), release = deferred();
+    fixture.catalog.afterFollow = async () => { entered.resolve(); await release.promise; };
+    const stream = scope.stream({ endpoint: 'session/follow', scopeId: fixture.selected.scopeId, args: { request: { address: { kind: 'session', sessionId: SessionId('root') } } } }, new AbortController().signal)[Symbol.asyncIterator]();
+    expect(await stream.next()).toMatchObject({ value: { type: 'item', value: { type: 'snapshot' } } });
+    const pending = stream.next(); void pending.catch(() => {});
+    await observed.pending.promise; expect(observed.pendingSettled).toBe(false);
+    const closing = activity.close(); let finished = false; void closing.then(() => { finished = true; });
+    await entered.promise;
+    expect(finished).toBe(false); expect(observed.pendingSettled).toBe(false);
+    release.resolve(); await closing;
+    await expect(pending).rejects.toBeDefined();
+    expect(observed.returnJoined).toBe(true); await fixture.control.close();
+  });
+
+  it.each(['before', 'after'] as const)('preserves native code/message/details on a %s-first-frame failure while close remains sticky unknown', async (position) => {
+    const fixture = await setup();
+    const activity = fixture.control.acquire(fixture.selected, new AbortController().signal);
+    const scope = await activity.run(new AbortController().signal);
+    const failure = new RemoteError('subagent/catalog-diagnostic', `native follow ${position} snapshot diagnostic`, { parentSessionId: SessionId('root'), childSessionId: SessionId('child'), reason: 'unavailable' });
+    const fail = async () => { throw failure; };
+    if (position === 'before') fixture.catalog.beforeFollow = fail;
+    else fixture.catalog.afterFollowSnapshot = fail;
+    const stream = scope.stream({ endpoint: 'session/follow', scopeId: fixture.selected.scopeId, args: { request: { address: { kind: 'session', sessionId: SessionId('root') } } } }, new AbortController().signal)[Symbol.asyncIterator]();
+    if (position === 'after') expect(await stream.next()).toMatchObject({ value: { type: 'item', value: { type: 'snapshot' } } });
+    await expect(stream.next()).rejects.toMatchObject({ code: failure.code, message: failure.message, details: failure.details });
+    const closing = activity.close(); expect(activity.close()).toBe(closing);
+    await expect(closing).rejects.toThrow('PRINCIPAL_JOIN_UNKNOWN');
+    await expect(closing).rejects.toMatchObject({ cause: { errors: [expect.objectContaining({ message: 'PRINCIPAL_JOIN_UNKNOWN', cause: expect.objectContaining({ code: failure.code, message: failure.message, details: failure.details }) })] } });
+    await fixture.control.drainLocal();
+    await expect(activity.close()).rejects.toThrow('PRINCIPAL_JOIN_UNKNOWN');
+    await expect(fixture.control.close()).rejects.toThrow('PRINCIPAL_JOIN_UNKNOWN');
   });
 
   it('joins an actual in-flight native catalog read and never dispatches its late business call after close', async () => {

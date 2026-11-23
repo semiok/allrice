@@ -9,7 +9,7 @@ function deferred<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   void promise.catch(() => {}); return { promise, resolve, reject };
 }
-const unknown = () => Error('PRINCIPAL_JOIN_UNKNOWN');
+const unknown = (cause?: unknown) => Error('PRINCIPAL_JOIN_UNKNOWN', { cause });
 /** One reader for a native duplex handle. One-item handoff applies backpressure;
  * close discards business delivery but keeps consuming exact closed/end. */
 class Relay<T extends ScopeFrame | DEntryScopedStreamFrame> {
@@ -55,7 +55,11 @@ class Relay<T extends ScopeFrame | DEntryScopedStreamFrame> {
         if (!this.ended) { this.handle.send('close'); this.handle.end(); }
         await Promise.race([this.done, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(unknown()), this.timeoutMs); })]);
         if (!this.closed) throw unknown();
-      } catch { await this.local(); throw unknown(); }
+      } catch (error) {
+        const local = await Promise.allSettled([Promise.resolve().then(() => this.local())]);
+        const failures = local.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+        throw unknown(failures.length ? new AggregateError([error, ...failures], 'PRINCIPAL_LOCAL_JOIN_FAILED') : error);
+      }
       finally { if (timer) clearTimeout(timer); }
     });
     this.closing = true; this.item = undefined; this.consumed.resolve(); this.changed.resolve();
@@ -143,6 +147,7 @@ export function createDEntryPrincipalControl(root: Context, input: { carrier: Ab
                   async *[Symbol.asyncIterator]() {
                     if (taken) throw Error('PRINCIPAL_STREAM_ALREADY_CONSUMED');
                     taken = true;
+                    let failed = false;
                     try {
                       while (true) {
                         current.throwIfAborted();
@@ -151,7 +156,12 @@ export function createDEntryPrincipalControl(root: Context, input: { carrier: Ab
                         if (next.done) return;
                         if (next.value.type === 'item') yield next.value;
                       }
-                    } finally { await child.close(); current.removeEventListener('abort', cancelled); }
+                    } catch (error) { failed = true; throw error; }
+                    finally {
+                      try { await child.close(); }
+                      catch (error) { if (!failed) throw error; }
+                      finally { current.removeEventListener('abort', cancelled); }
+                    }
                   },
                 };
               },
@@ -172,7 +182,8 @@ export function createDEntryPrincipalControl(root: Context, input: { carrier: Ab
             while (operations.size) await Promise.allSettled([...operations]);
             await Promise.allSettled([running]);
             detachRun();
-            if (results.some((r) => r.status === 'rejected')) throw unknown();
+            const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+            if (failures.length) throw unknown(new AggregateError(failures, 'PRINCIPAL_CHILD_JOIN_FAILED'));
             activities.delete(activity);
           });
           revoked.abort(); return joined;
@@ -195,7 +206,8 @@ export function createDEntryPrincipalControl(root: Context, input: { carrier: Ab
       if (closing) return closing;
       closing = Promise.resolve().then(async () => {
         const results = await Promise.allSettled([...activities].map((activity) => activity.close()));
-        if (results.some((r) => r.status === 'rejected')) throw unknown();
+        const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+        if (failures.length) throw unknown(new AggregateError(failures, 'PRINCIPAL_ACTIVITY_JOIN_FAILED'));
       });
       control.fence(); return closing;
     },

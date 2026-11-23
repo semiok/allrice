@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SessionId } from '@deepseek-ai/dsh-session';
+import { remoteErrorOf } from '@deepseek-ai/dsh-typert-protocol';
 import * as PrincipalHost from '@allrice/d-entry-principal/host';
 import { TYPERT_REMOTE } from '@allrice/d-entry-principal/remote';
-import { hostFixture, deferred, issue } from './host-fixture.js';
+import { hostFixture, deferred, issue, observeNativeFollow } from './host-fixture.js';
 
 type Fixture = Awaited<ReturnType<typeof hostFixture>>;
 const fixtures: Fixture[] = [];
@@ -71,6 +72,32 @@ describe('public rc.2 Host issuer, generated faces and real in-process Node carr
     fixture.emit({ event: 'api-session/status', args: [SessionId('root'), true], resources: { session: (sessionId) => sessionId } });
     fixture.emit({ event: 'global-not-approved', args: [] });
     await close(handle, iterator); await close(scope.handle, scope.iterator);
+  });
+
+  it.each(['remoteAccess/follow', 'session/follow'] as const)('typed close joins the real pending second next/return of %s before exact closed/end', async (endpoint) => {
+    const fixture = await setup(), scope = await opened(fixture);
+    const observed = observeNativeFollow(fixture.host, endpoint);
+    const exiting = deferred(), release = deferred();
+    if (endpoint === 'session/follow') fixture.catalog.afterFollow = async () => { exiting.resolve(); await release.promise; };
+    const call = endpoint === 'remoteAccess/follow'
+      ? { scopeId: fixture.selected.scopeId, endpoint, args: {} }
+      : { scopeId: fixture.selected.scopeId, endpoint, args: { request: { address: { kind: 'session' as const, sessionId: SessionId('root') } } } };
+    const handle = TYPERT_REMOTE.methods['allricePrincipal/streamScoped'].invoke(fixture.node.remote, { call }, new AbortController().signal);
+    const iterator = handle[Symbol.asyncIterator]();
+    expect(await iterator.next()).toMatchObject({ value: { type: 'item', value: { type: endpoint === 'remoteAccess/follow' ? 'baseline' : 'snapshot' } } });
+    const pending = iterator.next(); void pending.catch(() => {});
+    await observed.pending.promise; expect(observed.pendingSettled).toBe(false);
+    handle.send('close'); handle.end();
+    if (endpoint === 'session/follow') {
+      await exiting.promise;
+      expect(observed.pendingSettled).toBe(false); expect(observed.returnJoined).toBe(false);
+      release.resolve();
+    }
+    expect(await pending).toEqual({ done: false, value: { type: 'closed', scopeId: fixture.selected.scopeId } });
+    expect(observed.pendingSettled).toBe(true); expect(observed.returnJoined).toBe(true);
+    expect(observed.errors.map((error) => remoteErrorOf(error)?.code)).toEqual(['gateway/cancelled']);
+    expect(await iterator.next()).toMatchObject({ done: true });
+    await close(scope.handle, scope.iterator);
   });
 
   it('rejects a different parent, undeclared global/control/list actions and raw nested extras before normal decode can erase them', async () => {
