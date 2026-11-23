@@ -45,7 +45,11 @@ const unavailable = () => new EgressError('UNAVAILABLE');
 const accessSchema = z.object({
   access: z.object({ origin: z.string(), capability: z.string() }),
 });
-async function finish<T>(file: FileHandle, work: () => Promise<T>) {
+async function finish<T>(
+  file: FileHandle,
+  signal: AbortSignal,
+  work: () => Promise<T>,
+) {
   const result = await work().then(
     (value) => ({ value }),
     (error: unknown) => ({ error }),
@@ -54,11 +58,19 @@ async function finish<T>(file: FileHandle, work: () => Promise<T>) {
     () => undefined,
     (error: unknown) => ({ error }),
   );
-  if ('error' in result)
-    throw cleanup
-      ? new AggregateError([result.error, cleanup.error], 'EGRESS_FILE_FAILED')
-      : result.error;
-  if (cleanup) throw cleanup.error;
+  if ('error' in result || signal.aborted || cleanup) {
+    const errors = [
+      ...('error' in result ? [result.error] : []),
+      ...(signal.aborted &&
+      (!('error' in result) || !Object.is(result.error, signal.reason))
+        ? [signal.reason]
+        : []),
+      ...(cleanup ? [cleanup.error] : []),
+    ];
+    throw errors.length === 1
+      ? errors[0]
+      : new AggregateError(errors, 'EGRESS_FILE_FAILED');
+  }
   return result.value;
 }
 
@@ -190,7 +202,7 @@ export function createProductionEgressInstallation(
               0o600,
             );
             entry.created = true;
-            await finish(file, async () => {
+            await finish(file, signal, async () => {
               entry.identity = await file.stat();
               if (
                 !entry.identity.isFile() ||
@@ -245,7 +257,7 @@ export function createProductionEgressInstallation(
           entry.path,
           constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
         );
-        const contents = await finish(file, async () => {
+        const contents = await finish(file, signal, async () => {
           const stat = await file.stat();
           if (
             !entry.identity ||

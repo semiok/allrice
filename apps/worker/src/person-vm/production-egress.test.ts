@@ -339,7 +339,7 @@ it.each(['bytes', 'mode', 'replacement'])(
   },
 );
 
-function hold(point: 'writeFile' | 'readFile' | 'close') {
+function hold(point: 'writeFile' | 'readFile' | 'close', closeError?: Error) {
   let enter!: () => void, release!: () => void;
   const entered = new Promise<void>((done) => {
     enter = done;
@@ -358,6 +358,7 @@ function hold(point: 'writeFile' | 'readFile' | 'close') {
       }
       await close();
       closed = true;
+      if (closeError) throw closeError;
     });
     if (point === 'writeFile') {
       const write = file.writeFile.bind(file);
@@ -525,6 +526,89 @@ it('remove cancels and joins the exact in-progress read before unlinking, withou
     installation.memoryGuestPlan(next, signal()),
   ).resolves.toHaveProperty('env.NETRC');
 });
+
+it.each([
+  ['install', 'caller', false],
+  ['plan', 'caller', false],
+  ['install', 'lifetime', false],
+  ['plan', 'lifetime', false],
+  ['install', 'caller', true],
+  ['plan', 'caller', true],
+] as const)(
+  'retains %s %s cancellation and close failure with prior work error=%s only after actual close joins',
+  async (operation, cancellation, failWork) => {
+    if (operation === 'plan')
+      await installation.provisioner.install(binding, mount, access, signal());
+    const reason = Error('cancel while actual close is held'),
+      closeError = Error('failure after actual close'),
+      workError = Error('failure after actual work');
+    const held = hold('close', closeError),
+      opened = io.opened;
+    io.opened = (file, flags) => {
+      opened?.(file, flags);
+      if (!failWork) return;
+      if (operation === 'install') {
+        const write = file.writeFile.bind(file);
+        vi.spyOn(file, 'writeFile').mockImplementation(
+          async (data, options) => {
+            await write(data, options);
+            throw workError;
+          },
+        );
+      } else {
+        const read = file.readFile.bind(file);
+        vi.spyOn(file, 'readFile').mockImplementation(async () => {
+          await read();
+          throw workError;
+        });
+      }
+    };
+    const caller = new AbortController();
+    let settled = false;
+    const work =
+      operation === 'install'
+        ? installation.provisioner.install(
+            binding,
+            mount,
+            access,
+            caller.signal,
+          )
+        : installation.memoryGuestPlan(binding, caller.signal);
+    const outcome = work.then(
+      () => {
+        settled = true;
+        return undefined;
+      },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
+    try {
+      await held.entered;
+      (cancellation === 'caller' ? caller : lifetime).abort(reason);
+      await turn();
+      expect(settled).toBe(false);
+      expect(held.closed()).toBe(false);
+    } finally {
+      held.release();
+      await outcome;
+    }
+    expect(held.closed()).toBe(true);
+    const failure = await outcome;
+    expect(failure).toBeInstanceOf(AggregateError);
+    if (!(failure instanceof AggregateError)) throw failure;
+    const errors = [...(failWork ? [workError] : []), reason, closeError];
+    expect(failure.errors).toHaveLength(errors.length);
+    for (const [index, error] of errors.entries())
+      expect(failure.errors[index]).toBe(error);
+    if (operation === 'install') expect(await storedFiles()).toEqual([]);
+    else if (cancellation === 'caller')
+      await expect(
+        installation.memoryGuestPlan(binding, signal()),
+      ).resolves.toHaveProperty('launcher');
+  },
+);
 
 it('retains a write failure and actual close failure together while cleaning only its own file', async () => {
   const primary = Error('synthetic write completion failure'),
