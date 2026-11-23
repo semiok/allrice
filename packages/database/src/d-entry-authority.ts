@@ -328,7 +328,14 @@ export function watchDEntryIdentityAuthority(
   signal: AbortSignal,
   feed?: Feed,
 ): Promise<DEntryPrincipalAuthoritySubscription> {
-  return watchDEntryAuthority(context, input, expected, signal, 'identity', feed);
+  return watchDEntryAuthority(
+    context,
+    input,
+    expected,
+    signal,
+    'identity',
+    feed,
+  );
 }
 
 /** Same original readers and notification queue; no added authorization source.
@@ -342,7 +349,11 @@ export function watchDEntryPrincipalAuthority(
   feed?: Feed,
 ): Promise<DEntryPrincipalAuthoritySubscription> {
   return watchDEntryAuthority(
-    context, input, expected, signal,
-    access === 'execute' ? 'native' : 'history', feed,
+    context,
+    input,
+    expected,
+    signal,
+    access === 'execute' ? 'native' : 'history',
+    feed,
   );
 }

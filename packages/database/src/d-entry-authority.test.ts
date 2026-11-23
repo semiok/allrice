@@ -239,81 +239,212 @@ describe('named principal current guards (driver double; not PG commit proof)', 
     const expected = { ...identity, threadId: null };
     state.history.mockResolvedValue(expected);
     const source = feed();
-    const watch = await watchDEntryIdentityAuthority(context, { workspaceId: identity.workspaceId, employeeInstanceId: identity.employeeInstanceId }, expected, new AbortController().signal, source);
+    const watch = await watchDEntryIdentityAuthority(
+      context,
+      {
+        workspaceId: identity.workspaceId,
+        employeeInstanceId: identity.employeeInstanceId,
+      },
+      expected,
+      new AbortController().signal,
+      source,
+    );
     expect(state.identity).not.toHaveBeenCalled();
-    expect(state.history).toHaveBeenCalledWith(context, { workspaceId: identity.workspaceId, employeeInstanceId: identity.employeeInstanceId }, 'history');
+    expect(state.history).toHaveBeenCalledWith(
+      context,
+      {
+        workspaceId: identity.workspaceId,
+        employeeInstanceId: identity.employeeInstanceId,
+      },
+      'history',
+    );
     await watch.assertCurrent(new AbortController().signal);
     expect(state.history).toHaveBeenCalledTimes(2);
     await watch.close();
-    await expect(watch.assertCurrent(new AbortController().signal)).rejects.toBeDefined();
+    await expect(
+      watch.assertCurrent(new AbortController().signal),
+    ).rejects.toBeDefined();
   });
 
-  it.each(['history', 'execute'] as const)('uses only the existing authoritative reader for %s and rechecks on each call', async (access) => {
-    const source = feed();
-    const watch = await watchDEntryPrincipalAuthority(context, selection, identity, access, new AbortController().signal, source);
-    const reader = access === 'execute' ? state.identity : state.history;
-    const unrelated = access === 'execute' ? state.history : state.identity;
-    expect(reader).toHaveBeenCalledOnce(); expect(unrelated).not.toHaveBeenCalled();
-    await watch.assertCurrent(new AbortController().signal);
-    expect(reader).toHaveBeenCalledTimes(2); expect(unrelated).not.toHaveBeenCalled();
-    reader.mockRejectedValueOnce(Error('original membership revoked'));
-    await expect(watch.assertCurrent(new AbortController().signal)).rejects.toThrow('original membership revoked');
-    expect(watch.revoked.aborted).toBe(true); await watch.close();
-  });
+  it.each(['history', 'execute'] as const)(
+    'uses only the existing authoritative reader for %s and rechecks on each call',
+    async (access) => {
+      const source = feed();
+      const watch = await watchDEntryPrincipalAuthority(
+        context,
+        selection,
+        identity,
+        access,
+        new AbortController().signal,
+        source,
+      );
+      const reader = access === 'execute' ? state.identity : state.history;
+      const unrelated = access === 'execute' ? state.history : state.identity;
+      expect(reader).toHaveBeenCalledOnce();
+      expect(unrelated).not.toHaveBeenCalled();
+      await watch.assertCurrent(new AbortController().signal);
+      expect(reader).toHaveBeenCalledTimes(2);
+      expect(unrelated).not.toHaveBeenCalled();
+      reader.mockRejectedValueOnce(Error('original membership revoked'));
+      await expect(
+        watch.assertCurrent(new AbortController().signal),
+      ).rejects.toThrow('original membership revoked');
+      expect(watch.revoked.aborted).toBe(true);
+      await watch.close();
+    },
+  );
 
   it('joins a guard appended during an already pending notification read, and close joins its actual chain', async () => {
     const source = feed();
-    const watch = await watchDEntryPrincipalAuthority(context, selection, identity, 'execute', new AbortController().signal, source);
-    const firstEntered = deferred(), firstRelease = deferred(), secondEntered = deferred(), secondRelease = deferred();
-    state.identity.mockImplementationOnce(async () => { firstEntered.resolve(); await firstRelease.promise; return identity; });
-    state.identity.mockImplementationOnce(async () => { secondEntered.resolve(); await secondRelease.promise; return identity; });
+    const watch = await watchDEntryPrincipalAuthority(
+      context,
+      selection,
+      identity,
+      'execute',
+      new AbortController().signal,
+      source,
+    );
+    const firstEntered = deferred(),
+      firstRelease = deferred(),
+      secondEntered = deferred(),
+      secondRelease = deferred();
+    state.identity.mockImplementationOnce(async () => {
+      firstEntered.resolve();
+      await firstRelease.promise;
+      return identity;
+    });
+    state.identity.mockImplementationOnce(async () => {
+      secondEntered.resolve();
+      await secondRelease.promise;
+      return identity;
+    });
     const checking = watch.assertCurrent(new AbortController().signal);
-    void checking.catch(() => {}); await firstEntered.promise;
-    state.clients[0]!.emit('notification', { channel: 'allrice_d_entry_authority', payload: JSON.stringify({ schema: 'isolated', table: 'allrice_memberships', id: null, organizationId: identity.organizationId, workspaceId: identity.workspaceId, personId: identity.personId }) });
-    firstRelease.resolve(); await secondEntered.promise;
-    let currentFinished = false, closeFinished = false;
-    void checking.then(() => { currentFinished = true; }, () => { currentFinished = true; });
-    const closing = watch.close().then(() => { closeFinished = true; });
-    await Promise.resolve(); expect(currentFinished).toBe(false); expect(closeFinished).toBe(false);
-    secondRelease.resolve(); await closing;
+    void checking.catch(() => {});
+    await firstEntered.promise;
+    state.clients[0]!.emit('notification', {
+      channel: 'allrice_d_entry_authority',
+      payload: JSON.stringify({
+        schema: 'isolated',
+        table: 'allrice_memberships',
+        id: null,
+        organizationId: identity.organizationId,
+        workspaceId: identity.workspaceId,
+        personId: identity.personId,
+      }),
+    });
+    firstRelease.resolve();
+    await secondEntered.promise;
+    let currentFinished = false,
+      closeFinished = false;
+    void checking.then(
+      () => {
+        currentFinished = true;
+      },
+      () => {
+        currentFinished = true;
+      },
+    );
+    const closing = watch.close().then(() => {
+      closeFinished = true;
+    });
+    await Promise.resolve();
+    expect(currentFinished).toBe(false);
+    expect(closeFinished).toBe(false);
+    secondRelease.resolve();
+    await closing;
     await expect(checking).rejects.toBeDefined();
     expect(state.identity).toHaveBeenCalledTimes(3);
   });
 
   it('rejects a caller cancelled during a real current read after that read settles, without granting from stale output', async () => {
-    const source = feed(), caller = new AbortController();
-    const watch = await watchDEntryPrincipalAuthority(context, selection, identity, 'history', new AbortController().signal, source);
-    const entered = deferred(), release = deferred();
-    state.history.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return identity; });
-    const check = watch.assertCurrent(caller.signal); void check.catch(() => {});
-    await entered.promise; caller.abort(Error('request closed'));
-    let settled = false; void check.then(() => { settled = true; }, () => { settled = true; });
-    await Promise.resolve(); expect(settled).toBe(false);
-    release.resolve(); await expect(check).rejects.toThrow('request closed');
-    expect(watch.revoked.aborted).toBe(false); await watch.close();
+    const source = feed(),
+      caller = new AbortController();
+    const watch = await watchDEntryPrincipalAuthority(
+      context,
+      selection,
+      identity,
+      'history',
+      new AbortController().signal,
+      source,
+    );
+    const entered = deferred(),
+      release = deferred();
+    state.history.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      return identity;
+    });
+    const check = watch.assertCurrent(caller.signal);
+    void check.catch(() => {});
+    await entered.promise;
+    caller.abort(Error('request closed'));
+    let settled = false;
+    void check.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    release.resolve();
+    await expect(check).rejects.toThrow('request closed');
+    expect(watch.revoked.aborted).toBe(false);
+    await watch.close();
   });
 
   it('fences idle principal scopes synchronously on feed loss and refuses stale SQL identity output', async () => {
     const source = feed();
-    const watch = await watchDEntryPrincipalAuthority(context, selection, identity, 'execute', new AbortController().signal, source);
-    const entered = deferred(), release = deferred();
-    state.identity.mockImplementationOnce(async () => { entered.resolve(); await release.promise; return identity; });
-    const check = watch.assertCurrent(new AbortController().signal); void check.catch(() => {});
+    const watch = await watchDEntryPrincipalAuthority(
+      context,
+      selection,
+      identity,
+      'execute',
+      new AbortController().signal,
+      source,
+    );
+    const entered = deferred(),
+      release = deferred();
+    state.identity.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      return identity;
+    });
+    const check = watch.assertCurrent(new AbortController().signal);
+    void check.catch(() => {});
     await entered.promise;
     state.clients[0]!.emit('error', Error('authority connection lost'));
     expect(watch.revoked.aborted).toBe(true);
-    release.resolve(); await expect(check).rejects.toThrow('authority connection lost'); await watch.close();
+    release.resolve();
+    await expect(check).rejects.toThrow('authority connection lost');
+    await watch.close();
   });
 
   it('uses the original session expiry rather than a cache TTL', async () => {
     vi.useFakeTimers();
     try {
       const source = feed();
-      state.read.mockResolvedValueOnce([{ schema: 'isolated', expires_at: new Date(Date.now() + 10) }]);
-      const watch = await watchDEntryPrincipalAuthority(context, selection, identity, 'execute', new AbortController().signal, source);
+      state.read.mockResolvedValueOnce([
+        { schema: 'isolated', expires_at: new Date(Date.now() + 10) },
+      ]);
+      const watch = await watchDEntryPrincipalAuthority(
+        context,
+        selection,
+        identity,
+        'execute',
+        new AbortController().signal,
+        source,
+      );
       await vi.advanceTimersByTimeAsync(10);
       expect(watch.revoked.aborted).toBe(true);
-      await expect(watch.assertCurrent(new AbortController().signal)).rejects.toBeDefined(); await watch.close();
-    } finally { vi.useRealTimers(); }
+      await expect(
+        watch.assertCurrent(new AbortController().signal),
+      ).rejects.toBeDefined();
+      await watch.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
