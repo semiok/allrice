@@ -445,6 +445,15 @@ export const baseline: readonly BaselineEntry[] = [
   },
   {
     kind: 'patch',
+    id: 'allrice-native-history-source-v1',
+    category: '存储后端',
+    basis:
+      'MET273/274：同 authenticated Host 的公开 SessionQuery observation 导出原cut；宿主 committed manifest 固定原配置/祖先/快照向量。关机只读不激活Agent或VM，现权/对象ACL仍由原owner核。',
+    approvedBy:
+      '2026-11-23 用户 MET274 d824c498，PLAN cdd90c3170c54dad3de823436bd9a8618dcceb3ccf97dbe2e444b9f2d6060ba1；default-off，无部署。',
+  },
+  {
+    kind: 'patch',
     id: 'allrice-person-vm-entry-admission-v1',
     category: '租约',
     basis:

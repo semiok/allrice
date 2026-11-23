@@ -207,6 +207,14 @@
       "kind": "protocol-extension",
       "path": "apps/worker/dsh/allrice-native-web-owner.mjs",
       "reason": "Host-only local-auth publication through public connection.authenticatedUrl and Cordis lifecycle. A host-minted nonce and exact predeclared loopback endpoint bind bounded private retrieval to the current VM bootstrap lease. Native Node Connection, Gateway and SessionController own protocol/control; the Worker joins its own HTTP/WS and exact native job without a stdio bridge, SaaS identity from guest claims, or editor/idle readiness inference."
+    },
+    {
+      "id": "allrice-native-history-source-v1",
+      "issue": "MET-273",
+      "upstreamVersion": "0.2.1-rc.2",
+      "kind": "protocol-extension",
+      "path": "packages/dsh-native-history-source/src/host.ts",
+      "reason": "Fixed readonly cut exporter on the existing authenticated native Host/Gateway, using one public SessionQuery observation for each exact header/event/catalog prefix and the official Typert generator. A string codec transports original JSON; host native validation never persists generated end-seed markers. Committed host manifests pin original scope/configuration and ancestry across a cold request without waking/resuming, issuing execution rights, adding a listener or Agent state. Installation, original facts writer and attachment ACL remain unbound."
     }
   ]
 }

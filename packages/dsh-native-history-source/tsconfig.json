@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "lib": ["ES2023", "DOM", "ESNext.Disposable"],
+    "paths": {
+      "@allrice/dsh-native-history-source": [
+        "packages/dsh-native-history-source/src/host.ts"
+      ]
+    },
+    "ignoreDeprecations": "6.0"
+  },
+  "include": ["src/**/*.ts"]
+}

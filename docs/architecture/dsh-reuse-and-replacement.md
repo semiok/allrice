@@ -926,3 +926,13 @@ instance/profile、线程配置和导出时机须由MET-273/原生route owner绑
 `allrice-native-web-local-auth-v1` 复用 rc.2 的公开 `connection.authenticatedUrl`、`/connect`、Node Connection/Gateway/SessionController 和 Cordis Fiber lifecycle。Host 插件只原子投送0600、宿主 nonce 指定的 native local auth；Microsandbox 固定有界 reader 私下读取。Worker 固定已声明 endpoint 和 VM binding/epoch，独立长期 lifetime，关闭 join 自有 HTTP/WS/iterator 与 exact Job；无私有DSH接口、stdio桥、Agent状态或PG权威。该门卫/租约片不启用4.0流量，不代表 editor-ready、发送许可、完整idle或Linux工件已交付；新增员工端口的三方冻结安全重启另片实现。
 
 rc.2 的 Web runtime config 整块替换，须同时保留 `openBrowser:false`、可信 `publicUrl`、`surfaceContext:true` 和 `printUrl:false`。v0.7.16 exec 使用整秒参数并保留独立 host 毫秒预算；CLI close 不替代 guest stop/status。Node owner 通过公开 Agent/finishRequest 跟踪 WS 握手的真实 request/socket close，完整读操作含前后现权均纳入关闭 join。
+
+## MET273/274：固定cut与宿主committed source
+
+`allrice-native-history-source-v1` 在既有 authenticated Host 上使用公开 `sessionQuery.observeSession`
+配对每个session的header/events/catalog；官方Typert生成string codec运输原cut JSON，宿主用公开
+`Session.fromRestore`仅验证，丢弃其合成marker，原事件/hash不改写。跨session是cut向量，非全局原子。
+`HostHistorySourceStore`复用原snapshot后最后原子发布manifest；只接受可比较前缀，冲突拒绝。
+每个请求的`createColdHistorySource`使resource/binding/store及显式digest固定同一committed manifest，
+不读raw latest、不wake/prewarm/resume、不授execute。现有root/watch、下载每块和对象ACL门卫不变。
+原profile/config writer、实际Host安装/检查点、共享history factory接线、完整cold native profile/graph和真实附件ACL仍缺，default-off不代表生产已可用。
