@@ -270,6 +270,47 @@ export async function captureLocal(ports: { enabled?: boolean } = {}) {
   }
   await read();
 }
+export function escapedDefault(ports: { enabled?: boolean } = {}) {
+  Object.assign(ports.valueOf(), { enabled: true });
+  async function read() {
+    if (!ports.enabled) return;
+    await sql\`select * from escaped_default for share\`;
+  }
+  return { history: () => read() };
+}
+export async function captureClass(ports: { enabled?: boolean } = {}) {
+  const enabled = ports.enabled;
+  const reader = class enabled {
+    static async read() {
+      if (enabled === undefined) return;
+      await sql\`select * from class_name_shadow for share\`;
+    }
+  };
+  await reader.read();
+}
+interface AliasStore { aliasRead(): Promise<void>; }
+export function constAlias(): AliasStore {
+  const store: AliasStore = { async aliasRead() {
+    await sql\`select * from const_alias_own for share\`;
+  } };
+  return store;
+}
+export function unrelatedAlias(): AliasStore {
+  return { async aliasRead() {
+    await sql\`select * from wrong_alias_producer for share\`;
+  } };
+}
+export function aliasMutation(): AliasStore {
+  const store: AliasStore = { async aliasRead() {} };
+  store.aliasRead = async () => { await sql\`select * from mutated_alias for share\`; };
+  return store;
+}
+export function aliasEscape(): AliasStore {
+  const store: AliasStore = { async aliasRead() {} };
+  escapeAlias(store);
+  return store;
+}
+declare function escapeAlias(store: AliasStore): void;
 declare function escape(ports: Ports): void;
 `;
   for (const [name, change] of Object.entries({
@@ -488,6 +529,20 @@ export const POST = () => handle(true);`,
     'export async function GET() { await factories.sharedMixed(JSON.parse("true")).sharedRead(); }',
   );
 
+  route(
+    'factory-escaped-default',
+    'export const GET = () => factories.escapedDefault().history();',
+  );
+  route(
+    'factory-capture-class',
+    'export const GET = () => factories.captureClass();',
+  );
+  for (const name of ['constAlias', 'aliasMutation', 'aliasEscape'])
+    route(
+      `factory-${name}`,
+      `export const GET = () => factories.${name}().aliasRead();`,
+    );
+
   beforeAll(async () => {
     project = await realpath(await mkdtemp(join(tmpdir(), 'row-lock-audit-')));
     for (const [path, text] of Object.entries(files)) {
@@ -553,6 +608,11 @@ export const POST = () => handle(true);`,
           'capture',
           'capturePattern',
           'captureLocal',
+          'escaped-default',
+          'capture-class',
+          'constAlias',
+          'aliasMutation',
+          'aliasEscape',
         ].map((name) => `factory-${name}`),
       ].sort(),
     );
@@ -653,6 +713,47 @@ export const POST = () => handle(true);`,
       const own = audit.routeLocks(['GET'], `factory-shared-${name}/`);
       expect(own.entries).toBe(1);
       expect(own.unresolved).toContain('lib/factories.ts sharedRead');
+    }
+  });
+
+  it('keeps receiver-returning calls and named class-expression bindings conservative', () => {
+    for (const [name, table] of [
+      ['escaped-default', 'escaped_default'],
+      ['capture-class', 'class_name_shadow'],
+    ]) {
+      const ownLine =
+        files['lib/factories.ts']!.split('\n').findIndex((line) =>
+          line.includes(`from ${table} for share`),
+        ) + 1;
+      expect(
+        report.reached.some(
+          (site) =>
+            site.file === 'lib/factories.ts' &&
+            site.line === ownLine &&
+            site.routes.includes(
+              `apps/web/app/api/factory-${name}/route.ts GET`,
+            ),
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it('associates only unmodified non-escaping returned literal aliases', () => {
+    const audit = createRowLockAudit(project);
+    const actual = audit.routeLocks(['GET'], 'factory-constAlias/');
+    const ownLine =
+      files['lib/factories.ts']!.split('\n').findIndex((line) =>
+        line.includes('from const_alias_own for share'),
+      ) + 1;
+    expect(actual.entries).toBe(1);
+    expect(actual.unresolved).not.toContain('lib/factories.ts aliasRead');
+    expect(
+      actual.reached.map((site) => ({ file: site.file, line: site.line })),
+    ).toEqual([{ file: 'lib/factories.ts', line: ownLine }]);
+    for (const name of ['aliasMutation', 'aliasEscape']) {
+      const uncertain = audit.routeLocks(['GET'], `factory-${name}/`);
+      expect(uncertain.entries).toBe(1);
+      expect(uncertain.unresolved).toContain('lib/factories.ts aliasRead');
     }
   });
 

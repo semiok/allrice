@@ -296,6 +296,16 @@ export function createRowLockAudit(
       value = value.parent;
     const use = value.parent;
     return !(
+      // An unknown member call may return/escape its receiver. A read of an
+      // inherited member can also expose the prototype, rather than absent data.
+      (ts.isPropertyAccessExpression(base.parent) &&
+        base.parent.name.text in Object.prototype) ||
+      (ts.isElementAccessExpression(base.parent) &&
+        (!ts.isStringLiteralLike(base.parent.argumentExpression) ||
+          base.parent.argumentExpression.text in Object.prototype)) ||
+      ((ts.isCallExpression(use) || ts.isNewExpression(use)) &&
+        use.expression === value) ||
+      (ts.isTaggedTemplateExpression(use) && use.tag === value) ||
       (ts.isBinaryExpression(use) &&
         use.left === value &&
         use.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
@@ -308,6 +318,56 @@ export function createRowLockAudit(
         (use.operator === ts.SyntaxKind.PlusPlusToken ||
           use.operator === ts.SyntaxKind.MinusMinusToken))
     );
+  }
+  // Calls are never assumed pure. A member call after an already rejecting
+  // absent-port guard is not executed at all; only that exact path is excluded.
+  function unreachableMemberCall(
+    reference: ts.Identifier,
+    parameter: ts.ParameterDeclaration,
+  ) {
+    let value: ts.Node = reference;
+    while (
+      (ts.isPropertyAccessExpression(value.parent) ||
+        ts.isElementAccessExpression(value.parent) ||
+        wrapped(value.parent)) &&
+      value.parent.expression === value
+    )
+      value = value.parent;
+    const call = value.parent;
+    if (!(
+      ((ts.isCallExpression(call) || ts.isNewExpression(call)) &&
+        call.expression === value) ||
+      (ts.isTaggedTemplateExpression(call) && call.tag === value)
+    ))
+      return false;
+    const env: Env = new Map([[emptyKey(parameter), true]]);
+    const exits = (statement: ts.Statement): boolean =>
+      ts.isReturnStatement(statement) ||
+      ts.isThrowStatement(statement) ||
+      (ts.isBlock(statement) &&
+        statement.statements.length === 1 &&
+        exits(statement.statements[0]!));
+    let root: ts.Node = call;
+    while (root.parent && !functionLike(root.parent)) root = root.parent;
+    if (pruned(call, root, env)) return true;
+    for (let child: ts.Node = call; child !== root; child = child.parent) {
+      const block = child.parent;
+      if (!ts.isBlock(block)) continue;
+      const index = block.statements.findIndex(
+        (statement) => statement === child,
+      );
+      for (const earlier of block.statements.slice(0, index < 0 ? 0 : index)) {
+        if (!ts.isIfStatement(earlier)) continue;
+        const known = evaluate(earlier.expression, env);
+        const branch = known
+          ? truthy(known.value)
+            ? earlier.thenStatement
+            : earlier.elseStatement
+          : undefined;
+        if (branch && exits(branch)) return true;
+      }
+    }
+    return false;
   }
   const defaultProofs = new Map<ts.ParameterDeclaration, boolean>();
   function unmodifiedEmptyDefault(parameter: ts.ParameterDeclaration) {
@@ -324,7 +384,8 @@ export function createRowLockAudit(
         ts.isIdentifier(node) &&
         node !== parameter.name &&
         symbolOf(node) === symbol &&
-        !readOnlyMember(node)
+        !readOnlyMember(node) &&
+        !unreachableMemberCall(node, parameter)
       )
         safe = false;
       ts.forEachChild(node, visit);
@@ -409,6 +470,7 @@ export function createRowLockAudit(
       if (
         ts.isIdentifier(node) &&
         node !== declaration.name &&
+        node !== value &&
         symbolOf(node) === symbol
       ) {
         const parent = node.parent;
@@ -450,6 +512,18 @@ export function createRowLockAudit(
       const value = unwrap(expression);
       if (ts.isObjectLiteralExpression(value))
         return { objects: new Set([value]), known: true };
+      if (ts.isIdentifier(value)) {
+        const declaration = symbolOf(value)?.valueDeclaration;
+        if (
+          declaration &&
+          ts.isVariableDeclaration(declaration) &&
+          ts.getCombinedNodeFlags(declaration) & ts.NodeFlags.Const
+        ) {
+          const literal = receiverValue(value);
+          if (ts.isObjectLiteralExpression(literal))
+            return { objects: new Set([literal]), known: true };
+        }
+      }
       if (ts.isCallExpression(value)) {
         const bodies = [
           ...new Set(
@@ -961,22 +1035,39 @@ export function createRowLockAudit(
         const literals = [...env].filter(
           ([key]) => !key.startsWith(emptyPrefix),
         );
-        const shadowed = new Set(
-          functionLike(next)
-            ? next.parameters.flatMap((parameter) => boundNames(parameter.name))
-            : [],
-        );
+        // A captured name must resolve to the same declaration across ALL
+        // intervening lexical scopes, including named class/function expressions.
+        const origin =
+          call ??
+          (functionLike(state.node)
+            ? (state.node.body ?? state.node)
+            : state.node);
+        const destination = functionLike(next) ? (next.body ?? next) : next;
+        const sameBinding = (key: string) => {
+          const name = key.split('.')[0]!;
+          const source = checker.resolveName(
+            name,
+            origin,
+            ts.SymbolFlags.Value,
+            false,
+          );
+          return (
+            !!source &&
+            source ===
+              checker.resolveName(
+                name,
+                destination,
+                ts.SymbolFlags.Value,
+                false,
+              )
+          );
+        };
         summary.callees.push(
           stateOf(
             next,
             enclosed
               ? new Map([
-                  ...literals.filter(
-                    ([key]) =>
-                      ![...shadowed].some(
-                        (name) => key === name || key.startsWith(`${name}.`),
-                      ),
-                  ),
+                  ...literals.filter(([key]) => sameBinding(key)),
                   ...pinned,
                 ])
               : pinned,
