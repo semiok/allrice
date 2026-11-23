@@ -36,16 +36,15 @@ describe('Node control uses the real generated issuer over the same native Peer 
     expect(read).not.toHaveBeenCalled();
     const scope = await activity.run(new AbortController().signal);
     expect(scope.opened.baseline.owner).toBe(false);
-    const events = scope
-      .stream(
-        {
-          kind: 'events',
-          scopeId: fixture.selected.scopeId,
-          payload: { args: {} },
-        },
-        new AbortController().signal,
-      )
-      [Symbol.asyncIterator]();
+    const eventsSource = scope.stream(
+      {
+        kind: 'events',
+        scopeId: fixture.selected.scopeId,
+        payload: { args: {} },
+      },
+      new AbortController().signal,
+    );
+    const events = eventsSource[Symbol.asyncIterator]();
     expect(await events.next()).toMatchObject({
       value: {
         type: 'item',
@@ -197,16 +196,15 @@ describe('Node control uses the real generated issuer over the same native Peer 
       );
       const otherScope = await other.run(new AbortController().signal);
       const observed = observeNativeFollow(fixture.host, 'remoteAccess/follow');
-      const stream = scope
-        .stream(
-          {
-            endpoint: 'remoteAccess/follow',
-            scopeId: fixture.selected.scopeId,
-            args: {},
-          },
-          childSignal.signal,
-        )
-        [Symbol.asyncIterator]();
+      const streamSource = scope.stream(
+        {
+          endpoint: 'remoteAccess/follow',
+          scopeId: fixture.selected.scopeId,
+          args: {},
+        },
+        childSignal.signal,
+      );
+      const stream = streamSource[Symbol.asyncIterator]();
       expect(await stream.next()).toMatchObject({
         value: { type: 'item', value: { type: 'baseline', owner: false } },
       });
@@ -276,20 +274,19 @@ describe('Node control uses the real generated issuer over the same native Peer 
       entered.resolve();
       await release.promise;
     };
-    const stream = scope
-      .stream(
-        {
-          endpoint: 'session/follow',
-          scopeId: fixture.selected.scopeId,
-          args: {
-            request: {
-              address: { kind: 'session', sessionId: SessionId('root') },
-            },
+    const streamSource = scope.stream(
+      {
+        endpoint: 'session/follow',
+        scopeId: fixture.selected.scopeId,
+        args: {
+          request: {
+            address: { kind: 'session', sessionId: SessionId('root') },
           },
         },
-        new AbortController().signal,
-      )
-      [Symbol.asyncIterator]();
+      },
+      new AbortController().signal,
+    );
+    const stream = streamSource[Symbol.asyncIterator]();
     expect(await stream.next()).toMatchObject({
       value: { type: 'item', value: { type: 'snapshot' } },
     });
@@ -355,20 +352,19 @@ describe('Node control uses the real generated issuer over the same native Peer 
         await release.promise;
         readSettled = true;
       };
-      const stream = scope
-        .stream(
-          {
-            scopeId: fixture.selected.scopeId,
-            endpoint: 'session/follow',
-            args: {
-              request: {
-                address: { kind: 'session', sessionId: SessionId('root') },
-              },
+      const streamSource = scope.stream(
+        {
+          scopeId: fixture.selected.scopeId,
+          endpoint: 'session/follow',
+          args: {
+            request: {
+              address: { kind: 'session', sessionId: SessionId('root') },
             },
           },
-          child.signal,
-        )
-        [Symbol.asyncIterator]();
+        },
+        child.signal,
+      );
+      const stream = streamSource[Symbol.asyncIterator]();
       const pending = stream.next();
       void pending.catch(() => {});
       await entered.promise;
@@ -458,20 +454,19 @@ describe('Node control uses the real generated issuer over the same native Peer 
         await release.promise;
         throw failure;
       };
-      const stream = scope
-        .stream(
-          {
-            scopeId: fixture.selected.scopeId,
-            endpoint: 'session/follow',
-            args: {
-              request: {
-                address: { kind: 'session', sessionId: SessionId('root') },
-              },
+      const streamSource = scope.stream(
+        {
+          scopeId: fixture.selected.scopeId,
+          endpoint: 'session/follow',
+          args: {
+            request: {
+              address: { kind: 'session', sessionId: SessionId('root') },
             },
           },
-          child.signal,
-        )
-        [Symbol.asyncIterator]();
+        },
+        child.signal,
+      );
+      const stream = streamSource[Symbol.asyncIterator]();
       const pending = stream.next();
       void pending.catch(() => {});
       await entered.promise;
@@ -520,20 +515,19 @@ describe('Node control uses the real generated issuer over the same native Peer 
       entered.resolve();
       await release.promise;
     };
-    const stream = scope
-      .stream(
-        {
-          scopeId: fixture.selected.scopeId,
-          endpoint: 'session/follow',
-          args: {
-            request: {
-              address: { kind: 'session', sessionId: SessionId('root') },
-            },
+    const streamSource = scope.stream(
+      {
+        scopeId: fixture.selected.scopeId,
+        endpoint: 'session/follow',
+        args: {
+          request: {
+            address: { kind: 'session', sessionId: SessionId('root') },
           },
         },
-        new AbortController().signal,
-      )
-      [Symbol.asyncIterator]();
+      },
+      new AbortController().signal,
+    );
+    const stream = streamSource[Symbol.asyncIterator]();
     const pending = stream.next();
     void pending.catch(() => {});
     await entered.promise;
@@ -586,20 +580,19 @@ describe('Node control uses the real generated issuer over the same native Peer 
       };
       if (position === 'before') fixture.catalog.beforeFollow = fail;
       else fixture.catalog.afterFollowSnapshot = fail;
-      const stream = scope
-        .stream(
-          {
-            endpoint: 'session/follow',
-            scopeId: fixture.selected.scopeId,
-            args: {
-              request: {
-                address: { kind: 'session', sessionId: SessionId('root') },
-              },
+      const streamSource = scope.stream(
+        {
+          endpoint: 'session/follow',
+          scopeId: fixture.selected.scopeId,
+          args: {
+            request: {
+              address: { kind: 'session', sessionId: SessionId('root') },
             },
           },
-          new AbortController().signal,
-        )
-        [Symbol.asyncIterator]();
+        },
+        new AbortController().signal,
+      );
+      const stream = streamSource[Symbol.asyncIterator]();
       if (position === 'after')
         expect(await stream.next()).toMatchObject({
           value: { type: 'item', value: { type: 'snapshot' } },
