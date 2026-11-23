@@ -154,6 +154,9 @@ export type DEntryAuthoritySubscription = Readonly<{
   close(): Promise<void>;
 }>;
 
+export type DEntryPrincipalAuthoritySubscription = DEntryAuthoritySubscription &
+  Readonly<{ assertCurrent(signal: AbortSignal): Promise<void> }>;
+
 /** LISTEN is ready and the callback registered BEFORE this authoritative read.
  * A commit during setup either aborts the registered subscription or is seen
  * by the recheck. Never uses RequestContext's old membership/createdAt as TTL. */
@@ -162,9 +165,9 @@ async function watchDEntryAuthority(
   input: unknown,
   expected: DEntryIdentity,
   signal: AbortSignal,
-  access: 'native' | 'history',
+  access: 'native' | 'history' | 'identity',
   feed?: Feed,
-): Promise<DEntryAuthoritySubscription> {
+): Promise<DEntryPrincipalAuthoritySubscription> {
   const selection = (
     access === 'history'
       ? DEntrySelectionInputSchema.extend({ threadId: UuidSchema })
@@ -185,9 +188,9 @@ async function watchDEntryAuthority(
     if (stopped) return;
     revoked.throwIfAborted();
     const identity =
-      access === 'history'
-        ? await resolveDEntryIdentity(context, selection, 'history')
-        : await requireDEntryNativeIdentity(context, selection);
+      access === 'native'
+        ? await requireDEntryNativeIdentity(context, selection)
+        : await resolveDEntryIdentity(context, selection, 'history');
     if (
       access === 'history' &&
       (!identity.threadId ||
@@ -269,6 +272,16 @@ async function watchDEntryAuthority(
       get expiresAt() {
         return expiresAt;
       },
+      async assertCurrent(active: AbortSignal) {
+        active.throwIfAborted();
+        revoked.throwIfAborted();
+        if (stopped) throw new DataAccessError('authorization_denied');
+        enqueue();
+        await joinChecks();
+        active.throwIfAborted();
+        revoked.throwIfAborted();
+        if (stopped) throw new DataAccessError('authorization_denied');
+      },
       close,
     };
   } catch (error) {
@@ -304,5 +317,32 @@ export function watchDEntryHistoryAuthority(
     signal,
     'history',
     feed,
+  );
+}
+
+/** Selected business identity only; no thread/4.0, resource or execute grant. */
+export function watchDEntryIdentityAuthority(
+  context: RequestContext,
+  input: unknown,
+  expected: DEntryIdentity,
+  signal: AbortSignal,
+  feed?: Feed,
+): Promise<DEntryPrincipalAuthoritySubscription> {
+  return watchDEntryAuthority(context, input, expected, signal, 'identity', feed);
+}
+
+/** Same original readers and notification queue; no added authorization source.
+ * The trusted server caller fixes access, never a browser-supplied permission. */
+export function watchDEntryPrincipalAuthority(
+  context: RequestContext,
+  input: unknown,
+  expected: DEntryIdentity,
+  access: 'history' | 'execute',
+  signal: AbortSignal,
+  feed?: Feed,
+): Promise<DEntryPrincipalAuthoritySubscription> {
+  return watchDEntryAuthority(
+    context, input, expected, signal,
+    access === 'execute' ? 'native' : 'history', feed,
   );
 }
