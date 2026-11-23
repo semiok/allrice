@@ -30,6 +30,12 @@ export default defineConfig({
       '@allrice/person-vm': fileURLToPath(
         new URL('./packages/person-vm/src/index.ts', import.meta.url),
       ),
+      '@allrice/egress-gateway': fileURLToPath(
+        new URL('./packages/egress-gateway/src/index.ts', import.meta.url),
+      ),
+      '@allrice/vm-memory/guest-plan': fileURLToPath(
+        new URL('./packages/vm-memory/src/guest-config.ts', import.meta.url),
+      ),
       '@allrice/skill-import/personal-skill-import': fileURLToPath(
         new URL(
           './packages/skill-import/src/personal-skill-import.ts',

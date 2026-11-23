@@ -33,12 +33,13 @@ export async function requirePlatformAdmin(context: Principal, sql?: Sql) {
   return context.actor.id;
 }
 
-/** Configuration publication requires a current login, including callers that
- * retained an old RequestContext. In a transaction these share locks order the
- * final publication against session revocation/user disablement. */
+/** Current administration requires a live login, including callers that retained
+ * an old RequestContext. Read callers use snapshot reads; publication retains
+ * both share locks to order against session revocation/user disablement. */
 export async function requireCurrentPlatformAdmin(
   context: RequestContext,
   sql: Sql = getDatabase(),
+  lock = true,
 ) {
   if (context.actor.type !== 'user')
     throw new DataAccessError('authentication_required');
@@ -47,9 +48,9 @@ export async function requireCurrentPlatformAdmin(
     join allrice_users u on u.id=s.user_id and u.status='active'
     where s.id=${UuidSchema.parse(context.sessionId)} and s.user_id=${actor}
       and s.revoked_at is null and s.expires_at>clock_timestamp()
-    for share of s,u`;
-  // Check the email version locked by this statement, not an earlier unlocked
-  // administrator lookup. The publication transaction retains both row locks.
+    ${lock ? sql`for share of s,u` : sql``}`;
+  // Use the email from this current session/user read. Publication additionally
+  // locks that version until its transaction finishes.
   if (!session || !platformAdminEmail(session.email))
     throw new DataAccessError('authorization_denied');
   return actor;

@@ -36,7 +36,7 @@ export async function readDEntryReleasePolicy(
 }
 
 export async function getDEntryReleasePolicy(context: RequestContext) {
-  await requireCurrentPlatformAdmin(context);
+  await requireCurrentPlatformAdmin(context, getDatabase(), false);
   return readDEntryReleasePolicy();
 }
 

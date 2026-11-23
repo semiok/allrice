@@ -109,9 +109,10 @@ export function createDEntryHistoryRouteHandlers(ports: ProjectionPorts = {}) {
             },
           },
         });
-        const response = await handlers[method](
-          new Request(request, { signal }),
-        );
+        const activeRequest = new Request(request, { signal });
+        const response = await (method === 'history'
+          ? handlers.history(activeRequest)
+          : handlers.download(activeRequest));
         // prepareHistoryAttachment owns the independent authority close from
         // here through actual body EOF/cancel/error, including an unpulled body.
         bodyOwnsAuthority =

@@ -60,12 +60,15 @@ import {
 import { POST as createOnceTask } from '../../app/api/v1/sessions/[id]/once-tasks/route';
 import { POST as cancelOnceTask } from '../../app/api/v1/sessions/[id]/once-tasks/[taskId]/cancel/route';
 import { POST as createRecurringTask } from '../../app/api/v1/sessions/[id]/schedule-tasks/route';
+import { GET as getReleasePolicy } from '../../app/api/v1/admin/d-entry-release-policy/route';
 import { resolveDEntryAdmission } from '../d-entry/admission';
 import { resolveDEntryIdentity } from '../d-entry/identity';
 import {
   dEntryReleasePolicyKey,
   readDEntryReleasePolicy,
+  getDEntryReleasePolicy,
   updateDEntryReleasePolicy,
+  requireCurrentPlatformAdmin,
   getDEntryNativeRootPin,
   getDEntryHistoryRootPin,
   ensureDEntryNativeRoot,
@@ -1237,6 +1240,80 @@ suite(
       }
     });
 
+    it('reads the current administrator in a read-only transaction and serves the policy without publishing', async () => {
+      const f = await setup();
+      await authorizeFixturePlatformAdministrator(fixture.db, f.user);
+      try {
+        await fixture.db.begin('read only', async (tx) => {
+          expect(await requireCurrentPlatformAdmin(f.context, tx, false)).toBe(
+            f.user,
+          );
+        });
+        const policy = await readDEntryReleasePolicy();
+        const response = await getReleasePolicy(
+          new Request(
+            'https://allrice.test/api/v1/admin/d-entry-release-policy',
+          ),
+        );
+        expect(response.status).toBe(200);
+        expect(response.headers.get('cache-control')).toBe('private, no-store');
+        expect(await response.json()).toEqual(policy);
+        const [settings] =
+          await fixture.db`select count(*)::int n from allrice_settings where key=${dEntryReleasePolicyKey}`;
+        const [audit] =
+          await fixture.db`select count(*)::int n from allrice_audit_events
+            where actor_id=${f.user} and action='d_entry_release.update'`;
+        expect(settings!.n).toBe(0);
+        expect(audit!.n).toBe(0);
+      } finally {
+        vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
+      }
+    });
+    it.each(['revoked', 'expired', 'disabled', 'email'] as const)(
+      'rejects a retained administrator read context after %s authority changes',
+      async (change) => {
+        const f = await setup();
+        await authorizeFixturePlatformAdministrator(fixture.db, f.user);
+        try {
+          await expect(getDEntryReleasePolicy(f.context)).resolves.toEqual(
+            await readDEntryReleasePolicy(),
+          );
+          if (change === 'revoked') await revokeSession(f.login.token);
+          else if (change === 'expired')
+            await fixture.db`update allrice_sessions set expires_at=clock_timestamp()-interval '1 second' where id=${f.context.sessionId}`;
+          else if (change === 'disabled')
+            await fixture.db`update allrice_users set status='disabled' where id=${f.user}`;
+          else
+            await fixture.db`update allrice_users set email=${`revoked-${randomUUID()}@example.invalid`} where id=${f.user}`;
+          await expect(getDEntryReleasePolicy(f.context)).rejects.toMatchObject(
+            { code: 'authorization_denied' },
+          );
+          const response = await getReleasePolicy(
+            new Request(
+              'https://allrice.test/api/v1/admin/d-entry-release-policy',
+            ),
+          );
+          expect([401, 403]).toContain(response.status);
+        } finally {
+          vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
+        }
+      },
+    );
+    it('rejects an otherwise current administrator paired with another user session', async () => {
+      const f = await setup(),
+        other = await setup();
+      await authorizeFixturePlatformAdministrator(fixture.db, f.user);
+      try {
+        await expect(
+          getDEntryReleasePolicy({
+            ...f.context,
+            sessionId: other.context.sessionId,
+          }),
+        ).rejects.toMatchObject({ code: 'authorization_denied' });
+      } finally {
+        vi.stubEnv('ALLRICE_PLATFORM_ADMIN_EMAILS', '');
+      }
+    });
     it('uses the administrator email acquired under the publication locks, with zero setting/audit after a concurrent email revocation', async () => {
       const f = await setup();
       await authorizeFixturePlatformAdministrator(fixture.db, f.user);

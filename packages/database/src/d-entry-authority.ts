@@ -43,14 +43,14 @@ export function createDEntryAuthorityFeed(databaseUrl: string) {
   let unavailable: unknown;
   let failed = false;
   let closing: Promise<void> | undefined;
-  const close = () => (closing ??= client.end());
+  const closeConnection = () => (closing ??= client.end());
   const lost = (error: unknown) => {
     if (failed) return;
     failed = true;
     unavailable = error;
     for (const listener of listeners) listener.lost(error);
     listeners.clear();
-    void close().catch(() => {}); // The process close hook joins this promise.
+    void closeConnection().catch(() => {}); // The process close hook joins this promise.
   };
   client.on('error', lost);
   client.on('end', () => lost(Error('D_ENTRY_AUTHORITY_DISCONNECTED')));
@@ -90,7 +90,7 @@ export function createDEntryAuthorityFeed(databaseUrl: string) {
     },
     close() {
       lost(Error('D_ENTRY_AUTHORITY_CLOSED'));
-      return close();
+      return closeConnection();
     },
   };
 }
