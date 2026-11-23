@@ -178,7 +178,7 @@ describe('public rc.2 Host issuer, generated faces and real in-process Node carr
     const response = await fixture.host.connection
       .createSharedFetchHandler('/api')
       .fetch(
-        new Request('http://127.0.0.1/api', {
+        new Request('http://127.0.0.1/api/$events/result', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
@@ -765,18 +765,27 @@ describe('public rc.2 Host issuer, generated faces and real in-process Node carr
   it('withdraws both generated metadata and the actual policy when post-install verification fails', async () => {
     const fixture = await setup(issue(), false);
     const local = fixture.host.typert.local;
-    const get = local.get.bind(local);
-    const fault = vi
-      .spyOn(local, 'get')
+    const get = vi
+      .fn(local.get)
       .mockImplementation((endpoint) =>
         endpoint === 'allricePrincipal/streamScoped'
           ? undefined
-          : get(endpoint),
+          : local.get(endpoint),
       );
-    await expect(
-      Promise.resolve(fixture.host.plugin(PrincipalHost, fixture.config)),
-    ).rejects.toBeDefined();
-    fault.mockRestore();
+    // The public accessor creates a new Context-bound view on every read.
+    const fault = vi
+      .spyOn(fixture.host.typert, 'local', 'get')
+      .mockReturnValue({ ...local, get });
+    try {
+      await expect(
+        Promise.resolve(
+          fixture.host.plugin(PrincipalHost, fixture.config),
+        ).then(() => undefined),
+      ).rejects.toThrow('PRINCIPAL_METADATA_INVALID');
+      expect(get).toHaveBeenCalledWith('allricePrincipal/streamScoped');
+    } finally {
+      fault.mockRestore();
+    }
     expect(
       fixture.host.typert.local.get('allricePrincipal/openScope'),
     ).toBeUndefined();

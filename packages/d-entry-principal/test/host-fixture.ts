@@ -292,7 +292,7 @@ export async function hostFixture(selected = issue(), install = true) {
   const wire: ClientConnectionRpc = {
     async call(channel, endpoint, payload, signal) {
       const response = await fetch.fetch(
-        new Request(`http://127.0.0.1${channel}`, {
+        new Request(`http://127.0.0.1${channel}/${endpoint}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({
