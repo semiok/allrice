@@ -196,6 +196,13 @@ export {
   ServiceBuildManifestSchema,
   type ServiceBuildIdentity,
 } from './service-build-identity.ts';
+export {
+  builtinModules,
+  readApplicationBuiltinModules,
+  createApplicationBuiltinModuleAuthority,
+  type BuiltinModuleId,
+  type BuiltinModuleAuthority,
+} from './builtin-modules.ts';
 
 export { readDevMaintenance, DevMaintenanceError } from './dev-maintenance.ts';
 export {
@@ -373,6 +380,16 @@ export {
 
 export * from './workbench-files.ts';
 export {
+  createDeliverablesPort,
+  DeliverableReadError,
+  type DeliverablesPortOptions,
+} from './deliverables-port.ts';
+export { createDeliverablesMcpReadPort } from './deliverables-mcp-read-port.ts';
+export {
+  createEnterpriseMaterialsPort,
+  type EnterpriseMaterialsPortOptions,
+} from './enterprise-materials-port.ts';
+export {
   runManualAutomation,
   getManualAutomationRun,
   ManualAutomationRunError,
@@ -400,3 +417,15 @@ export { ReferenceArchiveInputError } from './reference-archive-read.ts';
 export { checkReferenceImageSignal } from './reference-image-read.ts';
 export * from './brand-media/server-wiring.ts';
 export * from './employees/employee-module-bindings.ts';
+
+// MET-272 M1 module allowlist: migration adapters only, not completed 4.0 ports.
+export type { LegacyMcpExecution } from './mcp-legacy-execution.ts';
+export { createLegacyEnterpriseMaterialsMcpPort } from './enterprise-materials-mcp-port.ts';
+export { createLegacyEmployeeMemoryMcpPort } from './employee-memory-mcp-port.ts';
+export {
+  createLegacyDeliverablesMcpPort,
+  type PreparedMcpDeliverable,
+} from './deliverables-mcp-port.ts';
+
+export { readDEntryReleasePolicy } from './d-entry-release-policy.ts';
+export { requireEmployeePanelsAccess } from './employee-panels-access.ts';

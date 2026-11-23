@@ -1,0 +1,201 @@
+import { z } from 'zod';
+import type { RequestContext } from './authorization.ts';
+import { UuidSchema } from './common.ts';
+import { ChecksumSchema } from './runs.ts';
+import type { AuthorizedDeliverableResource } from './deliverables-port.ts';
+import type {
+  ReferenceInputSelectionResultSchema,
+  ReferenceSaveResultSchema,
+} from './reference-library.ts';
+import {
+  ReferenceActionSchema,
+  ReferenceLibraryOptionsSchema,
+  ReferencePublicationActionSchema,
+  ReferencePublishInputSchema,
+  ReferenceRevisionSchema,
+  ReferenceUploadInputSchema,
+} from './reference-library.ts';
+import type {
+  ReferencePublicationQueryResultSchema,
+  ReferencePublicationQuerySchema,
+} from './reference-search.ts';
+
+export const MaterialsScopeQueryProjectionSchema = z
+  .object({ workspaceId: UuidSchema })
+  .strict();
+export const MaterialsCurrentListProjectionSchema = z
+  .object({
+    references: z.array(ReferenceRevisionSchema),
+    options: ReferenceLibraryOptionsSchema,
+  })
+  .strict();
+export const MaterialsSelectionQueryProjectionSchema = z
+  .object({
+    workspaceId: UuidSchema,
+    revisionId: UuidSchema,
+  })
+  .strict();
+/** A new file only. Source revision replacement is not a 4.0 public method.
+ * Reuse the existing scope/department refinement and defaults. */
+export const MaterialsSaveInputProjectionSchema = z
+  .object({
+    workspaceId: ReferenceUploadInputSchema.shape.workspaceId,
+    requestId: ReferenceUploadInputSchema.shape.requestId,
+    scope: ReferenceUploadInputSchema.shape.scope,
+    departmentId: ReferenceUploadInputSchema.shape.departmentId,
+    fileName: ReferenceUploadInputSchema.shape.fileName,
+    purpose: ReferenceUploadInputSchema.shape.purpose,
+    mediaType: ReferenceUploadInputSchema.shape.mediaType,
+    contentBase64: ReferenceUploadInputSchema.shape.contentBase64,
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const original = ReferenceUploadInputSchema.safeParse(value);
+    if (!original.success)
+      for (const issue of original.error.issues)
+        context.addIssue({
+          code: 'custom',
+          message: issue.message,
+          path: issue.path,
+        });
+  });
+export const MaterialsUploadPublicationInputProjectionSchema =
+  ReferencePublishInputSchema.options[1]!;
+export const MaterialsFilePublicationInputProjectionSchema =
+  ReferencePublishInputSchema.options[0]!;
+export const MaterialsPreparedReferenceQuerySchema =
+  MaterialsSelectionQueryProjectionSchema.extend({ sourceId: UuidSchema });
+export const PanelWriteReceiptQuerySchema = z
+  .object({
+    workspaceId: UuidSchema,
+    requestId: UuidSchema,
+    operation: z.enum([
+      'publish-file',
+      'publish-upload',
+      'capture',
+      'upload',
+      'change-publication',
+      'change-source',
+    ]),
+    sourceId: UuidSchema.optional(),
+  })
+  .strict();
+/** A recorded reservation is not a successful copy or permission to replay.
+ * An absent record remains unknown. No storage key or original bytes escape. */
+export const PanelWriteReceiptSchema = z
+  .object({
+    requestId: UuidSchema,
+    operation: PanelWriteReceiptQuerySchema.shape.operation,
+    status: z.enum(['unknown', 'recorded']),
+    inputDigest: ChecksumSchema.nullable(),
+    result: z
+      .union([
+        z.object({ sourceId: UuidSchema, revisionId: UuidSchema }).strict(),
+        z.object({ sourceId: UuidSchema }).strict(),
+        z.object({ objectId: UuidSchema }).strict(),
+      ])
+      .nullable(),
+    ready: z.boolean().nullable(),
+  })
+  .strict();
+export interface AuthorizedMaterialResource {
+  pin: {
+    sourceId: string;
+    revisionId: string;
+    revision: number;
+    digest: string;
+    checksum: string;
+  };
+  objectId: string;
+  fileName: string;
+  mediaType: string;
+  sizeBytes: number;
+  open(signal: AbortSignal): Promise<ReadableStream<Uint8Array>>;
+}
+export const MaterialsPublicationCommandProjectionSchema = z
+  .object({
+    target: z.object({ sourceId: UuidSchema }).strict(),
+    body: ReferencePublicationActionSchema,
+  })
+  .strict();
+export const MaterialsActionCommandProjectionSchema = z
+  .object({
+    target: z.object({ sourceId: UuidSchema }).strict(),
+    body: ReferenceActionSchema,
+  })
+  .strict();
+export const MaterialsActionResultProjectionSchema = z
+  .object({ sourceId: UuidSchema })
+  .strict();
+
+/** Implemented owner service subset. No file history/replacement/sync method.
+ * MCP receipt, stream/export and file-origin copy dependencies are registered
+ * separately when their physical owners supply their public interfaces. */
+export interface EnterpriseMaterialsPort {
+  authorizedRevisionResource(
+    context: RequestContext,
+    input: z.input<typeof MaterialsSelectionQueryProjectionSchema>,
+    signal: AbortSignal,
+  ): Promise<AuthorizedMaterialResource>;
+  readPreparedReference(
+    context: RequestContext,
+    input: z.input<typeof MaterialsPreparedReferenceQuerySchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof ReferenceRevisionSchema>>;
+  publishFile(
+    context: RequestContext,
+    input: z.input<typeof MaterialsFilePublicationInputProjectionSchema>,
+    source: AuthorizedDeliverableResource,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof ReferenceSaveResultSchema>>;
+  readWriteReceipt(
+    context: RequestContext,
+    input: z.input<typeof PanelWriteReceiptQuerySchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof PanelWriteReceiptSchema>>;
+  listCurrent(
+    context: RequestContext,
+    input: z.input<typeof MaterialsScopeQueryProjectionSchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof MaterialsCurrentListProjectionSchema>>;
+  options(
+    context: RequestContext,
+    input: z.input<typeof MaterialsScopeQueryProjectionSchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof ReferenceLibraryOptionsSchema>>;
+  publicationOptions(
+    context: RequestContext,
+    input: z.input<typeof MaterialsScopeQueryProjectionSchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof ReferenceLibraryOptionsSchema>>;
+  query(
+    context: RequestContext,
+    input: z.input<typeof ReferencePublicationQuerySchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof ReferencePublicationQueryResultSchema>>;
+  captureSelection(
+    context: RequestContext,
+    input: z.input<typeof MaterialsSelectionQueryProjectionSchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof ReferenceInputSelectionResultSchema>>;
+  save(
+    context: RequestContext,
+    input: z.input<typeof MaterialsSaveInputProjectionSchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof ReferenceSaveResultSchema>>;
+  publishUpload(
+    context: RequestContext,
+    input: z.input<typeof MaterialsUploadPublicationInputProjectionSchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof ReferenceSaveResultSchema>>;
+  changePublication(
+    context: RequestContext,
+    input: z.input<typeof MaterialsPublicationCommandProjectionSchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof MaterialsActionResultProjectionSchema>>;
+  changeSource(
+    context: RequestContext,
+    input: z.input<typeof MaterialsActionCommandProjectionSchema>,
+    signal: AbortSignal,
+  ): Promise<z.infer<typeof MaterialsActionResultProjectionSchema>>;
+}

@@ -18,6 +18,9 @@ import {
   DeliverableVersionSchema,
   ReferencePublishInputSchema,
   ReferencePublicationActionSchema,
+  PanelWriteReceiptQuerySchema,
+  PanelWriteReceiptSchema,
+  type AuthorizedDeliverableResource,
   type ContentOwnership,
   type ReferenceRevision,
   type ReferenceUploadInput,
@@ -34,6 +37,8 @@ import {
 } from './artifact-review.ts';
 import { businessDeliverablePredicate } from './organization-dashboard.ts';
 import { personalWorkbenchOrigins } from './workbench-file-personal.ts';
+import { availableWorkbenchFileName } from './workbench-file-name.ts';
+import { createAuthorizedFileResource } from './authorized-file-resource.ts';
 import { getDatabase } from './core/client.ts';
 import { isIndexableReferenceSource } from './reference-fulltext.ts';
 import { isPlatformAdmin } from './providers/model-pool.ts';
@@ -462,10 +467,122 @@ export async function getReferenceFile(
   };
 }
 
+/** Exact published revision facts for browser resources, including immutable
+ * retention and the current source/object ACL. Never chooses a newer revision. */
+export async function getAuthorizedReferenceFile(
+  context: RequestContext,
+  workspaceId: string,
+  revisionId: string,
+) {
+  const file = await getReferenceFile(context, workspaceId, revisionId);
+  const reference = (
+    await listReferenceRevisions(context, workspaceId, file.sourceId)
+  ).find((entry) => entry.revisionId === revisionId);
+  if (
+    !reference ||
+    !file.object.immutable ||
+    (file.object.retentionUntil !== null &&
+      Date.parse(file.object.retentionUntil) <= Date.now()) ||
+    reference.checksum !== file.object.checksum ||
+    reference.sizeBytes !== file.object.sizeBytes
+  )
+    throw new DataAccessError('not_found');
+  return { ...file, reference };
+}
+
+/** Original-key reconciliation only. A pending reservation is not success;
+ * absence is unknown and never licenses another POST. */
+export async function readReferenceWriteReceipt(
+  contextInput: RequestContext,
+  input: unknown,
+) {
+  const value = PanelWriteReceiptQuerySchema.parse(input);
+  const context = scoped(contextInput, value.workspaceId);
+  if (!(await readContentPrincipal(context)))
+    throw new DataAccessError('authorization_denied');
+  const db = getDatabase();
+  let row:
+    | {
+        input: unknown;
+        source_id: string;
+        revision_id?: string;
+        ready?: boolean;
+      }
+    | undefined;
+  if (
+    value.operation === 'change-publication' ||
+    value.operation === 'change-source'
+  ) {
+    if (!value.sourceId) throw new DataAccessError('not_found');
+    [row] =
+      await db`select a.input,s.id source_id from allrice_knowledge_reference_actions a
+      join allrice_knowledge_sources s on s.id=a.source_id
+      where s.organization_id=${context.organizationId} and s.workspace_id=${value.workspaceId}
+        and a.actor_id=${context.actor.id} and a.request_id=${value.requestId} and s.id=${value.sourceId}
+        and (${value.operation !== 'change-publication'} or s.created_by=${context.actor.id})`;
+    if (
+      row &&
+      !(
+        value.operation === 'change-publication'
+          ? ReferencePublicationActionSchema
+          : ReferenceActionSchema
+      ).safeParse(row.input).success
+    )
+      row = undefined;
+    if (row && value.operation === 'change-source') {
+      // Reuse retry's current maintenance boundary and lock order, without
+      // replaying the action or changing its actor/request ledger.
+      const sourceId = row.source_id;
+      await db.begin(async (tx) => {
+        await referenceSourceAccess(context, sourceId, tx, true, false, true);
+      });
+    }
+  } else if (
+    ['publish-file', 'publish-upload', 'capture'].includes(value.operation)
+  ) {
+    [row] =
+      await db`select q.input,s.id source_id,r.id revision_id,(o.state='ready') ready
+      from allrice_knowledge_save_requests q join allrice_knowledge_revisions r on r.id=q.revision_id
+      join allrice_knowledge_sources s on s.id=r.knowledge_source_id
+      join allrice_storage_objects o on o.id=r.file_object_id
+      where q.organization_id=${context.organizationId} and q.actor_id=${context.actor.id}
+        and q.request_id=${value.requestId} and s.workspace_id=${value.workspaceId}
+        and r.created_by=${context.actor.id} and o.owner_id=${context.actor.id}
+        and q.operation=${value.operation === 'publish-file' ? 'artifact' : 'upload'}
+        and ${value.operation === 'capture' ? db`q.input ? 'originObjectId' and s.publication_kind is null` : db`s.publication_kind=${value.operation === 'publish-file' ? 'file' : 'upload'}`}`;
+    if (row && value.sourceId && row.source_id !== value.sourceId)
+      throw new DataAccessError('not_found');
+    if (row) {
+      // Owner receipt may survive revoke, but cannot restore resource access.
+      const [owner] =
+        await db`select id from allrice_knowledge_sources where id=${row.source_id}
+        and organization_id=${context.organizationId} and created_by=${context.actor.id}`;
+      if (!owner) throw new DataAccessError('not_found');
+    }
+  } else throw new DataAccessError('authorization_denied');
+  return PanelWriteReceiptSchema.parse({
+    requestId: value.requestId,
+    operation: value.operation,
+    status: row ? 'recorded' : 'unknown',
+    inputDigest: row
+      ? 'sha256:' +
+        createHash('sha256').update(JSON.stringify(row.input)).digest('hex')
+      : null,
+    result: row
+      ? {
+          sourceId: row.source_id,
+          ...(row.revision_id ? { revisionId: row.revision_id } : {}),
+        }
+      : null,
+    ready: row?.ready ?? null,
+  });
+}
+
 export async function prepareReferenceUpload(
   contextInput: RequestContext,
   input: unknown,
   binding?: { originObjectId: string },
+  options?: { namePolicy: 'independent-material' },
 ) {
   const v = ReferenceUploadInputSchema.parse(input),
     context = scoped(contextInput, v.workspaceId);
@@ -473,6 +590,7 @@ export async function prepareReferenceUpload(
     throw new DataAccessError('authentication_required');
   if (v.scope !== 'platform' && (v.scope !== 'personal' || v.sourceId))
     throw new DataAccessError('authorization_denied');
+  if (options && v.sourceId) throw new ReferenceLibraryError('invalid_content');
   const { contentBase64, ...metadata } = v;
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(contentBase64) || contentBase64.length % 4)
     throw new ReferenceLibraryError('invalid_content');
@@ -533,10 +651,13 @@ export async function prepareReferenceUpload(
       requestInput,
     );
     if (prior) return readReferenceReservation(tx, context, prior, binding);
+    const fileName = options
+      ? await independentReferenceFileName(tx, context, v.fileName)
+      : v.fileName;
     const saved = await reserveReferenceFile(
       tx,
       context,
-      v,
+      { ...v, fileName },
       sourceOwnership,
       checksum,
       bytes.length,
@@ -556,6 +677,28 @@ export async function prepareReferenceUpload(
     return saved;
   });
   return { ...result, bytes };
+}
+
+/** The existing quota mutex serializes pending reservations as well as ready
+ * files. Only the current publisher's names participate; no foreign title leak.
+ * Call after original-request lookup, so replay never reallocates a suffix. */
+async function independentReferenceFileName(
+  sql: Sql,
+  context: RequestContext,
+  requested: string,
+) {
+  const rows = await sql<{ file_name: string }[]>`
+    select r.file_name from allrice_knowledge_sources s
+    join allrice_knowledge_revisions r on r.knowledge_source_id=s.id and r.status='published'
+    join allrice_storage_objects o on o.id=r.file_object_id
+      and o.state in ('pending','ready') and o.deleted_at is null
+      and (o.retention_until is null or o.retention_until>clock_timestamp())
+    where s.organization_id=${context.organizationId} and s.workspace_id=${context.workspaceId!}
+      and s.created_by=${context.actor.id} and s.status='active'`;
+  return availableWorkbenchFileName(
+    requested,
+    new Set(rows.map((row) => row.file_name)),
+  );
 }
 
 function referenceOwnership(
@@ -1073,11 +1216,23 @@ export async function publishReference(
   contextInput: RequestContext,
   input: unknown,
   storage: StoragePort,
+  options?: {
+    namePolicy: 'independent-material';
+    source?: AuthorizedDeliverableResource;
+    signal?: AbortSignal;
+    requireCurrentAccess?: () => Promise<void>;
+  },
 ) {
   const v = ReferencePublishInputSchema.parse(input);
   const parameters = { purpose: v.purpose, audience: v.audience };
   const description = parameters.purpose || '企业资料';
   const context = scoped(contextInput, v.workspaceId);
+  const current = async () => {
+    options?.signal?.throwIfAborted();
+    await options?.requireCurrentAccess?.();
+    options?.signal?.throwIfAborted();
+  };
+  await current();
   let bytes: Buffer | undefined;
   if (v.origin === 'upload') {
     if (
@@ -1214,7 +1369,9 @@ export async function publishReference(
       if (!bytes) throw new ReferenceLibraryError('invalid_content');
       const fileName =
         v.origin === 'upload'
-          ? v.fileName
+          ? options
+            ? await independentReferenceFileName(tx, context, v.fileName)
+            : v.fileName
           : DeliverableVersionSchema.shape.fileName.parse(file!.row.file_name);
       const mediaType =
         v.origin === 'upload' ? v.mediaType : file!.object.mediaType;
@@ -1264,6 +1421,7 @@ export async function publishReference(
     });
   }
   let prepared = await reserve();
+  await current();
   if (!prepared.reservation?.alreadyReady) {
     if (v.origin === 'file') {
       // An ambiguous put acknowledgement may have left a complete immutable
@@ -1274,11 +1432,24 @@ export async function publishReference(
         prepared.reservation?.object &&
         (await storage.exists(prepared.reservation.object))
       ) {
-        await readArtifactBytes(
-          storage,
-          prepared.reservation.object,
-          50 * 1024 * 1024,
-        );
+        if (options?.signal) {
+          const object = prepared.reservation.object;
+          const open = createAuthorizedFileResource({
+            signal: options.signal,
+            checksum: object.checksum,
+            sizeBytes: object.sizeBytes,
+            recheck: current,
+            openSource: () => storage.get(object),
+            changed: () => new ReferenceLibraryError('source_unavailable'),
+          });
+          await new Response(await open(options.signal)).arrayBuffer();
+          await current();
+        } else
+          await readArtifactBytes(
+            storage,
+            prepared.reservation.object,
+            50 * 1024 * 1024,
+          );
         await completeReferenceUpload(
           context,
           v.workspaceId,
@@ -1297,14 +1468,30 @@ export async function publishReference(
             throw new DataAccessError('authorization_denied');
           return requirePublicationFile(context, v.objectId, tx);
         }));
-      bytes = await readArtifactBytes(
-        storage,
-        original.object,
-        50 * 1024 * 1024,
-      );
+      if (options?.source && options.signal) {
+        if (
+          options.source.source.objectId !== original.object.id ||
+          options.source.source.checksum !== original.object.checksum ||
+          options.source.sizeBytes !== original.object.sizeBytes ||
+          original.object.sizeBytes > 50 * 1024 * 1024
+        )
+          throw new ReferenceLibraryError('source_unavailable');
+        bytes = Buffer.from(
+          await new Response(
+            await options.source.open(options.signal),
+          ).arrayBuffer(),
+        );
+      } else
+        bytes = await readArtifactBytes(
+          storage,
+          original.object,
+          50 * 1024 * 1024,
+        );
+      await current();
       imageFacts = inspectReferenceImage(bytes);
       archiveFacts = await inspectReferenceArchive(bytes);
       prepared = await reserve(original);
+      await current();
     }
     if (!prepared.reservation)
       throw new Error('Publication reservation missing');
@@ -1313,6 +1500,7 @@ export async function publishReference(
         prepared.reservation.object,
         new Blob([new Uint8Array(bytes!)]).stream(),
       );
+      await current();
       await completeReferenceUpload(
         context,
         v.workspaceId,

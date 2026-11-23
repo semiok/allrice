@@ -1,9 +1,25 @@
 import { randomUUID } from 'node:crypto';
+import { setImmediate as nextTurn } from 'node:timers/promises';
+import {
+  readPathSignal,
+  scheduleReadPathQuery,
+} from './read-path-races.fixture.ts';
 import { legacyReferenceFixture } from './legacy-reference.fixture.ts';
 import { allocateWorkbenchFileName } from './workbench-file-name.ts';
+import { createDeliverablesPort } from './deliverables-port.ts';
+import { createDeliverablesMcpReadPort } from './deliverables-mcp-read-port.ts';
+import { createEnterpriseMaterialsPort } from './enterprise-materials-port.ts';
+import {
+  claimReferenceProcessing,
+  finishReferenceProcessing,
+} from './reference-processing.ts';
 import { lockWorkspaceStorageQuota } from './core/storage-quota.ts';
 import { beforeAll, afterAll, describe, expect, it, vi } from 'vitest';
-import type { RequestContext, WorkbenchFileSharing } from '@allrice/contracts';
+import type {
+  RequestContext,
+  StoragePort,
+  WorkbenchFileSharing,
+} from '@allrice/contracts';
 import * as client from './core/client.ts';
 import {
   createRuntimeFixtureDatabase,
@@ -39,6 +55,7 @@ import {
 import { readReferenceSelection } from './reference-runtime.ts';
 import { listWorkspaceFiles } from './workspace/service.ts';
 import {
+  DataAccessError,
   getStoredFile,
   createStorageMetadata,
   markStorageReady,
@@ -157,6 +174,14 @@ suite(
       };
     }
     const storage = () => runtimeFixtureStorage(fixture.db);
+    function boundStorage(actual: StoragePort): StoragePort {
+      return {
+        put: actual.put.bind(actual),
+        get: actual.get.bind(actual),
+        delete: actual.delete.bind(actual),
+        exists: actual.exists.bind(actual),
+      };
+    }
     async function seedLegacySharing(
       objectId: string,
       sharing: WorkbenchFileSharing,
@@ -440,7 +465,10 @@ suite(
       );
       if (!stored || !duplicateStored)
         throw Error('Both uploaded originals must remain readable.');
-      expect(stored.row.file_name).toBe(duplicateStored.row.file_name);
+      expect([stored.row.file_name, duplicateStored.row.file_name]).toEqual([
+        '收入口径.txt',
+        '收入口径（2）.txt',
+      ]);
       const names = await fixture.db.begin(async (tx) => {
         await lockWorkspaceStorageQuota(
           tx,
@@ -462,7 +490,7 @@ suite(
           ),
         );
       });
-      expect(names).toEqual(['收入口径（2）.txt', '收入口径.txt']);
+      expect(names).toEqual(['收入口径（3）.txt', '收入口径.txt']);
       await setWorkbenchFileFavorite(t.a, file.objectId, { favorite: true });
       await setWorkbenchFileFavorite(t.a, duplicate.objectId, {
         favorite: true,
@@ -697,6 +725,1095 @@ suite(
         ),
       ).rejects.toMatchObject({ code: 'request_conflict' });
     });
+    it('saves each new same-name upload independently, reserves pending names and replays the original request', async () => {
+      const t = await setup();
+      const firstInput = uploadInput(t.owner);
+      const secondInput = {
+        ...firstInput,
+        requestId: randomUUID(),
+        contentBase64: Buffer.from('第二份独立文件。').toString('base64'),
+      };
+      const actualStorage = storage();
+      let releaseFirst!: () => void;
+      let firstPutStarted!: () => void;
+      const held = new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      const started = new Promise<void>((resolve) => {
+        firstPutStarted = resolve;
+      });
+      const first = uploadWorkbenchFile(t.owner, firstInput, {
+        ...boundStorage(actualStorage),
+        async put(object, content) {
+          firstPutStarted();
+          await held;
+          await actualStorage.put(object, content);
+        },
+      });
+      try {
+        await started;
+        const second = await uploadWorkbenchFile(
+          t.owner,
+          secondInput,
+          actualStorage,
+        );
+        const secondFile = await readWorkbenchFile(t.owner, second.objectId);
+        expect(secondFile.row.file_name).toBe('收入口径（2）.txt');
+        releaseFirst();
+        const original = await first;
+        expect(original.objectId).not.toBe(second.objectId);
+        expect(
+          (await readWorkbenchFile(t.owner, original.objectId)).row.file_name,
+        ).toBe('收入口径.txt');
+        expect(
+          await uploadWorkbenchFile(t.owner, firstInput, actualStorage),
+        ).toEqual(original);
+        const third = await uploadWorkbenchFile(
+          t.owner,
+          { ...firstInput, requestId: randomUUID() },
+          actualStorage,
+        );
+        expect(
+          (await readWorkbenchFile(t.owner, third.objectId)).row.file_name,
+        ).toBe('收入口径（3）.txt');
+        const catalog = await readWorkbenchDeliverables(t.owner, {
+          workspaceId: t.owner.workspaceId,
+          query: '收入口径',
+        });
+        expect(catalog.files.map((file) => file.objectId).sort()).toEqual(
+          [original.objectId, second.objectId, third.objectId].sort(),
+        );
+        for (const [saved, value] of [
+          [original, firstInput],
+          [second, secondInput],
+        ] as const) {
+          const file = await readWorkbenchFile(t.owner, saved.objectId);
+          const stream = await actualStorage.get(file.object);
+          expect(await new Response(stream).text()).toBe(
+            Buffer.from(value.contentBase64, 'base64').toString('utf8'),
+          );
+          await expect(
+            readWorkbenchFile(t.maintainer, saved.objectId),
+          ).rejects.toMatchObject({ code: 'not_found' });
+        }
+      } finally {
+        releaseFirst();
+        await first;
+      }
+    }, 30000);
+    it('uses the personal business Port for my files, favorites across employees and exact verified text', async () => {
+      const t = await setup();
+      // Explicit 273 qualification substitute; real membership/resource ACLs
+      // still run in the owner. This does not bind a production employee.
+      const testQualification = vi.fn(async () => {});
+      const port = createDeliverablesPort({
+        storage: storage(),
+        requireCurrentAccess: testQualification,
+      });
+      const signal = new AbortController().signal;
+      const input = uploadInput(t.owner);
+      const original = await port.upload(t.owner, input, signal);
+      expect(await port.upload(t.owner, input, signal)).toEqual(original);
+      const next = await port.upload(
+        t.owner,
+        { ...input, requestId: randomUUID() },
+        signal,
+      );
+      expect(next.objectId).not.toBe(original.objectId);
+      await port.favorite(
+        t.owner,
+        { target: original, body: { favorite: true } },
+        signal,
+      );
+      await port.favorite(
+        t.owner,
+        { target: original, body: { favorite: true } },
+        signal,
+      );
+      const favorites = await port.list(
+        t.owner,
+        {
+          workspaceId: t.owner.workspaceId!,
+          category: 'favorite',
+          employeeInstanceId: randomUUID(),
+        },
+        signal,
+      );
+      expect(favorites.files.map((file) => file.objectId)).toEqual([
+        original.objectId,
+      ]);
+      expect(favorites.files[0]!.fileName).toBe('收入口径.txt');
+      const file = await readWorkbenchFile(t.owner, original.objectId);
+      const exact = {
+        objectId: original.objectId,
+        checksum: file.object.checksum,
+      };
+      const text = await port.readExact(
+        t.owner,
+        { ...exact, offset: 2, limit: 5 },
+        signal,
+      );
+      expect(text).toMatchObject({
+        id: original.objectId,
+        checksum: file.object.checksum,
+        content: '按已经确认的回款统计收入。'.slice(2, 7),
+        offset: 2,
+        nextOffset: 7,
+        truncated: true,
+      });
+      const resource = await port.authorizedResource(t.owner, exact, signal);
+      expect(Object.keys(resource).sort()).toEqual([
+        'fileName',
+        'mediaType',
+        'open',
+        'sizeBytes',
+        'source',
+      ]);
+      expect(await new Response(await resource.open(signal)).text()).toBe(
+        '按已经确认的回款统计收入。',
+      );
+      await expect(
+        port.readExact(
+          t.owner,
+          { ...exact, checksum: `sha256:${'0'.repeat(64)}` },
+          signal,
+        ),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await expect(
+        port.authorizedResource(t.maintainer, exact, signal),
+      ).rejects.toMatchObject({ code: 'not_found' });
+      await port.favorite(
+        t.owner,
+        { target: original, body: { favorite: false } },
+        signal,
+      );
+      expect(
+        (
+          await port.list(
+            t.owner,
+            { workspaceId: t.owner.workspaceId!, category: 'favorite' },
+            signal,
+          )
+        ).files,
+      ).toEqual([]);
+      expect(testQualification).toHaveBeenCalled();
+      const unbound = createDeliverablesPort({ storage: storage() });
+      await expect(
+        unbound.list(t.owner, { workspaceId: t.owner.workspaceId! }, signal),
+      ).rejects.toMatchObject({ code: 'authorization_denied' });
+    }, 30000);
+    it('does not return corrupt bytes or a new stream segment after qualification is revoked, and joins cancellation', async () => {
+      const t = await setup();
+      const actualStorage = storage();
+      const uploaded = await uploadWorkbenchFile(
+        t.owner,
+        uploadInput(t.owner),
+        actualStorage,
+      );
+      const stored = await readWorkbenchFile(t.owner, uploaded.objectId);
+      const input = {
+        objectId: uploaded.objectId,
+        checksum: stored.object.checksum,
+      };
+      const signal = new AbortController().signal;
+      let enabled = true;
+      const testQualification = async () => {
+        if (!enabled) throw new DataAccessError('authorization_denied');
+      };
+      const corrupt = createDeliverablesPort({
+        requireCurrentAccess: testQualification,
+        storage: {
+          ...boundStorage(actualStorage),
+          async get() {
+            return new Blob(['corrupt']).stream();
+          },
+        },
+      });
+      await expect(
+        corrupt.readExact(t.owner, input, signal),
+      ).rejects.toMatchObject({ code: 'TOOL_FILE_CHECKSUM_MISMATCH' });
+      const upstreamCanceled = vi.fn(async () => {});
+      const port = createDeliverablesPort({
+        requireCurrentAccess: testQualification,
+        storage: {
+          ...boundStorage(actualStorage),
+          async get() {
+            return new ReadableStream<Uint8Array>({
+              pull(controller) {
+                controller.enqueue(new TextEncoder().encode('按'));
+              },
+              cancel: upstreamCanceled,
+            });
+          },
+        },
+      });
+      const resource = await port.authorizedResource(t.owner, input, signal);
+      const stream = await resource.open(signal);
+      enabled = false;
+      await expect(new Response(stream).arrayBuffer()).rejects.toMatchObject({
+        code: 'authorization_denied',
+      });
+      expect(upstreamCanceled).toHaveBeenCalledTimes(1);
+      enabled = true;
+      const cancellation = new AbortController();
+      const nextResource = await port.authorizedResource(
+        t.owner,
+        input,
+        cancellation.signal,
+      );
+      const nextStream = await nextResource.open(cancellation.signal);
+      let releaseCancel!: () => void;
+      let cancelStarted!: () => void;
+      const cancelFinished = new Promise<void>((resolve) => {
+        releaseCancel = resolve;
+      });
+      const cancelEntered = new Promise<void>((resolve) => {
+        cancelStarted = resolve;
+      });
+      upstreamCanceled.mockImplementationOnce(async () => {
+        cancelStarted();
+        await cancelFinished;
+      });
+      cancellation.abort(new Error('native request canceled'));
+      let settled = false;
+      const read = new Response(nextStream).arrayBuffer();
+      void read.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      try {
+        await cancelEntered;
+        await Promise.resolve();
+        expect(settled).toBe(false);
+      } finally {
+        releaseCancel();
+        await expect(read).rejects.toThrow('native request canceled');
+      }
+      expect(upstreamCanceled).toHaveBeenCalledTimes(2);
+    }, 30000);
+    it.each([false, true])(
+      'ends reader.closed after abort without a rescue read (paused=%s)',
+      async (paused) => {
+        const t = await setup();
+        const actualStorage = storage();
+        const uploaded = await uploadWorkbenchFile(
+          t.owner,
+          uploadInput(t.owner),
+          actualStorage,
+        );
+        const source = {
+          ...uploaded,
+          checksum: (await readWorkbenchFile(t.owner, uploaded.objectId)).object
+            .checksum,
+        };
+        const cancelEntered = readPathSignal();
+        const cancelGate = readPathSignal();
+        const upstreamPull = vi.fn(
+          (value: ReadableStreamDefaultController<Uint8Array>) => {
+            value.enqueue(new TextEncoder().encode('按'));
+          },
+        );
+        const upstreamCancel = vi.fn(async () => {
+          cancelEntered.resolve();
+          await cancelGate.promise;
+        });
+        const upstream = new ReadableStream<Uint8Array>(
+          { pull: upstreamPull, cancel: upstreamCancel },
+          { highWaterMark: 0 },
+        );
+        const port = createDeliverablesPort({
+          // Explicit qualification substitute; real owner/membership SQL runs.
+          requireCurrentAccess: async () => {},
+          storage: {
+            ...boundStorage(actualStorage),
+            get: async () => upstream,
+          },
+        });
+        const cancellation = new AbortController();
+        const resource = await port.authorizedResource(
+          t.owner,
+          source,
+          cancellation.signal,
+        );
+        const reader = (await resource.open(cancellation.signal)).getReader();
+        let settled = false;
+        const closed = reader.closed.then(
+          () => {
+            settled = true;
+          },
+          (error: unknown) => {
+            settled = true;
+            return error;
+          },
+        );
+        const reason = new Error('native request canceled while paused');
+        try {
+          if (paused)
+            expect(await reader.read()).toEqual({
+              done: false,
+              value: new TextEncoder().encode('按'),
+            });
+          cancellation.abort(reason);
+          await cancelEntered.promise;
+          await nextTurn();
+          expect(settled).toBe(false);
+          expect(upstream.locked).toBe(true);
+          cancelGate.resolve();
+          expect(await closed).toBe(reason);
+          expect(upstream.locked).toBe(false);
+          expect(upstreamCancel).toHaveBeenCalledTimes(1);
+          expect(upstreamCancel).toHaveBeenCalledWith(reason);
+          expect(upstreamPull).toHaveBeenCalledTimes(paused ? 1 : 0);
+        } finally {
+          cancelGate.resolve();
+          await closed;
+          reader.releaseLock();
+        }
+      },
+      30000,
+    );
+    it.each(['qualification', 'owner'] as const)(
+      'consumer cancel joins the in-flight %s boundary and starts no later read',
+      async (boundary) => {
+        const t = await setup();
+        const actualStorage = storage();
+        const uploaded = await uploadWorkbenchFile(
+          t.owner,
+          uploadInput(t.owner),
+          actualStorage,
+        );
+        const source = {
+          ...uploaded,
+          checksum: (await readWorkbenchFile(t.owner, uploaded.objectId)).object
+            .checksum,
+        };
+        const entered = readPathSignal();
+        const gate = readPathSignal();
+        const cancelEntered = readPathSignal();
+        const cancelGate = readPathSignal();
+        let armed = false;
+        let qualifications = 0;
+        let queries = 0;
+        let principalReads = 0;
+        let boundaryFinished = false;
+        const upstreamPull = vi.fn();
+        const upstreamCancel = vi.fn(async () => {
+          cancelEntered.resolve();
+          await cancelGate.promise;
+        });
+        const upstream = new ReadableStream<Uint8Array>(
+          { pull: upstreamPull, cancel: upstreamCancel },
+          { highWaterMark: 0 },
+        );
+        const port = createDeliverablesPort({
+          requireCurrentAccess: async () => {
+            // Explicit 273 substitute, not a production qualification binding.
+            if (!armed) return;
+            qualifications++;
+            if (boundary === 'qualification') {
+              entered.resolve();
+              await gate.promise;
+              boundaryFinished = true;
+            }
+          },
+          storage: {
+            ...boundStorage(actualStorage),
+            get: async () => upstream,
+          },
+        });
+        const signal = new AbortController().signal;
+        const resource = await port.authorizedResource(t.owner, source, signal);
+        const reader = (await resource.open(signal)).getReader();
+        const observed = new Proxy(fixture.db, {
+          apply(target, self, args: unknown[]) {
+            const query = Reflect.apply(target, self, args);
+            const [strings] = args;
+            if (!Array.isArray(strings) || !('raw' in strings)) return query;
+            return scheduleReadPathQuery(
+              query,
+              strings.join(' ? '),
+              async (statement, execute) => {
+                queries++;
+                const result = await execute(); // Actual PostgreSQL, no fake row.
+                // For a ready personal upload, the fourth principal query is
+                // the last owner read. Hold its real result delivery, not SQL
+                // cancellation or a second source of resource authority.
+                if (
+                  boundary === 'owner' &&
+                  statement.startsWith(
+                    'select d.id as department_id,coalesce(',
+                  ) &&
+                  ++principalReads === 4
+                ) {
+                  entered.resolve();
+                  await gate.promise;
+                  boundaryFinished = true;
+                }
+                return result;
+              },
+            );
+          },
+          get: (target, key) => Reflect.get(target, key, target),
+        });
+        vi.mocked(client.getDatabase).mockReturnValue(observed);
+        armed = true;
+        const reading = reader.read();
+        let canceled: Promise<void> | undefined;
+        try {
+          await entered.promise;
+          const queriesAtCancel = queries;
+          const reason = new Error('consumer canceled an in-flight owner read');
+          let settled = false;
+          canceled = reader.cancel(reason).then(() => {
+            settled = true;
+          });
+          await cancelEntered.promise;
+          cancelGate.resolve();
+          await nextTurn();
+          expect(settled).toBe(false);
+          expect(boundaryFinished).toBe(false);
+          expect(upstream.locked).toBe(true);
+          gate.resolve();
+          await canceled;
+          expect(boundaryFinished).toBe(true);
+          expect(qualifications).toBe(1);
+          expect(queries).toBe(queriesAtCancel);
+          if (boundary === 'qualification') expect(queries).toBe(0);
+          else expect(principalReads).toBe(4);
+          expect(upstreamPull).not.toHaveBeenCalled();
+          expect(upstreamCancel).toHaveBeenCalledTimes(1);
+          expect(upstreamCancel).toHaveBeenCalledWith(reason);
+          expect(upstream.locked).toBe(false);
+          expect(await reading).toEqual({ done: true, value: undefined });
+        } finally {
+          gate.resolve();
+          cancelGate.resolve();
+          await Promise.allSettled([reading, canceled]);
+          vi.mocked(client.getDatabase).mockReturnValue(fixture.db);
+          reader.releaseLock();
+        }
+      },
+      30000,
+    );
+    it.each(['signal', 'consumer'] as const)(
+      'retains the original %s cancel reason and upstream cleanup failure',
+      async (entry) => {
+        const t = await setup();
+        const actualStorage = storage();
+        const uploaded = await uploadWorkbenchFile(
+          t.owner,
+          uploadInput(t.owner),
+          actualStorage,
+        );
+        const source = {
+          ...uploaded,
+          checksum: (await readWorkbenchFile(t.owner, uploaded.objectId)).object
+            .checksum,
+        };
+        const cancelEntered = readPathSignal();
+        const cancelGate = readPathSignal();
+        const cleanup = new Error('upstream cancellation failed');
+        const upstreamCancel = vi.fn(async () => {
+          cancelEntered.resolve();
+          await cancelGate.promise;
+          throw cleanup;
+        });
+        const upstream = new ReadableStream<Uint8Array>(
+          { cancel: upstreamCancel },
+          { highWaterMark: 0 },
+        );
+        const port = createDeliverablesPort({
+          requireCurrentAccess: async () => {}, // Explicit qualification substitute.
+          storage: {
+            ...boundStorage(actualStorage),
+            get: async () => upstream,
+          },
+        });
+        const cancellation = new AbortController();
+        const resource = await port.authorizedResource(
+          t.owner,
+          source,
+          cancellation.signal,
+        );
+        const reader = (await resource.open(cancellation.signal)).getReader();
+        // Signal termination is observed only through closed, never a rescue read.
+        const closed = reader.closed.then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        const reason = new Error('original native cancellation');
+        let outcome: Promise<unknown>;
+        if (entry === 'signal') {
+          cancellation.abort(reason);
+          outcome = closed;
+        } else
+          outcome = reader.cancel(reason).then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+        let settled = false;
+        void outcome.then(() => {
+          settled = true;
+        });
+        try {
+          await cancelEntered.promise;
+          if (entry === 'consumer')
+            cancellation.abort(
+              new Error('later signal must not replace reason'),
+            );
+          await nextTurn();
+          expect(settled).toBe(false);
+          expect(upstream.locked).toBe(true);
+          cancelGate.resolve();
+          expect(await outcome).toBeInstanceOf(AggregateError);
+          expect(await outcome).toMatchObject({
+            cause: reason,
+            errors: [reason, cleanup],
+          });
+          expect(upstreamCancel).toHaveBeenCalledTimes(1);
+          expect(upstreamCancel).toHaveBeenCalledWith(reason);
+          expect(upstream.locked).toBe(false);
+        } finally {
+          cancelGate.resolve();
+          await outcome;
+          reader.releaseLock();
+        }
+      },
+      30000,
+    );
+    it('returns native MCP text and the exact verified owner projection without a second storage read', async () => {
+      const t = await setup();
+      const actualStorage = storage();
+      const body = '\ufeff验收🙂\n回款出处。';
+      const uploaded = await uploadWorkbenchFile(
+        t.owner,
+        {
+          ...uploadInput(t.owner),
+          contentBase64: Buffer.from(body).toString('base64'),
+        },
+        actualStorage,
+      );
+      const stored = await readWorkbenchFile(t.owner, uploaded.objectId);
+      const get = vi.fn(actualStorage.get.bind(actualStorage));
+      const adapter = createDeliverablesMcpReadPort(
+        createDeliverablesPort({
+          storage: { ...boundStorage(actualStorage), get },
+          requireCurrentAccess: async () => {}, // Explicit test qualification only.
+        }),
+      );
+      const source = {
+        objectId: uploaded.objectId,
+        checksum: stored.object.checksum,
+      };
+      const signal = new AbortController().signal;
+      const expected = {
+        id: uploaded.objectId,
+        checksum: source.checksum,
+        downloadUrl: `/api/v1/files/${uploaded.objectId}/download?name=%E6%94%B6%E5%85%A5%E5%8F%A3%E5%BE%84.txt`,
+        fileName: '收入口径.txt',
+        mediaType: 'text/plain',
+        content: '\ufeff验收🙂\n回款出处。',
+        offset: 0,
+        totalCharacters: 11,
+        truncated: false,
+        nextOffset: null,
+      };
+      expect(await adapter.readExact(t.owner, source, signal)).toEqual({
+        content: [{ type: 'text', text: JSON.stringify(expected) }],
+        structuredContent: expected,
+      });
+      const page = {
+        ...expected,
+        content: '回款出处。',
+        offset: 6,
+        truncated: true,
+      };
+      expect(
+        await adapter.readExact(
+          t.owner,
+          { ...source, offset: 6, limit: 5 },
+          signal,
+        ),
+      ).toEqual({
+        content: [{ type: 'text', text: JSON.stringify(page) }],
+        structuredContent: page,
+      });
+      expect(get).toHaveBeenCalledTimes(2);
+      expect(
+        Buffer.from(
+          await new Response(
+            await actualStorage.get(stored.object),
+          ).arrayBuffer(),
+        ),
+      ).toEqual(Buffer.from(body));
+    }, 30000);
+    it('keeps MCP owner qualification, private-resource refusals and unknown storage failures distinct', async () => {
+      const t = await setup();
+      const other = await setup();
+      const actualStorage = storage();
+      const uploaded = await uploadWorkbenchFile(
+        t.owner,
+        uploadInput(t.owner),
+        actualStorage,
+      );
+      const source = {
+        objectId: uploaded.objectId,
+        checksum: (await readWorkbenchFile(t.owner, uploaded.objectId)).object
+          .checksum,
+      };
+      const signal = new AbortController().signal;
+      const owner = createDeliverablesPort({
+        storage: actualStorage,
+        requireCurrentAccess: async () => {}, // Explicit test qualification only.
+      });
+      const adapter = createDeliverablesMcpReadPort(owner);
+      for (const [context, reader, input, code, message] of [
+        [
+          t.owner,
+          createDeliverablesMcpReadPort(
+            createDeliverablesPort({ storage: actualStorage }),
+          ),
+          source,
+          'AUTHORIZATION_DENIED',
+          'authorization_denied',
+        ],
+        [t.maintainer, adapter, source, 'RESOURCE_NOT_FOUND', 'not_found'],
+        [other.owner, adapter, source, 'RESOURCE_NOT_FOUND', 'not_found'],
+        [
+          t.owner,
+          adapter,
+          { ...source, checksum: `sha256:${'0'.repeat(64)}` },
+          'RESOURCE_NOT_FOUND',
+          'not_found',
+        ],
+      ] as const) {
+        expect(await reader.readExact(context, input, signal)).toEqual({
+          isError: true,
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                error: {
+                  code,
+                  message,
+                  requestId: context.requestId,
+                  retryable: false,
+                },
+              }),
+            },
+          ],
+        });
+      }
+      const preCanceled = new AbortController();
+      const reason = new Error('native request canceled before owner entry');
+      const read = vi.spyOn(owner, 'readExact');
+      preCanceled.abort(reason);
+      await expect(
+        adapter.readExact(t.owner, source, preCanceled.signal),
+      ).rejects.toBe(reason);
+      expect(read).not.toHaveBeenCalled();
+      const failure = new Error(
+        'private storage failure stays inside protocol redaction',
+      );
+      const broken = createDeliverablesMcpReadPort(
+        createDeliverablesPort({
+          requireCurrentAccess: async () => {}, // Explicit test qualification only.
+          storage: {
+            ...boundStorage(actualStorage),
+            get: async () => {
+              throw failure;
+            },
+          },
+        }),
+      );
+      await expect(broken.readExact(t.owner, source, signal)).rejects.toBe(
+        failure,
+      );
+      const corrupt = createDeliverablesMcpReadPort(
+        createDeliverablesPort({
+          requireCurrentAccess: async () => {}, // Explicit test qualification only.
+          storage: {
+            ...boundStorage(actualStorage),
+            get: async () => new Blob(['corrupt']).stream(),
+          },
+        }),
+      );
+      expect(await corrupt.readExact(t.owner, source, signal)).toEqual({
+        isError: true,
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              code: 'TOOL_FILE_CHECKSUM_MISMATCH',
+              message: 'TOOL_FILE_CHECKSUM_MISMATCH',
+              retryable: false,
+            }),
+          },
+        ],
+      });
+    }, 30000);
+    it.each(['abort', 'revoke', 'cleanup-failure'] as const)(
+      'MCP read joins actual storage and cancellation before settling (%s)',
+      async (mode) => {
+        const t = await setup();
+        const actualStorage = storage();
+        const uploaded = await uploadWorkbenchFile(
+          t.owner,
+          uploadInput(t.owner),
+          actualStorage,
+        );
+        const source = {
+          objectId: uploaded.objectId,
+          checksum: (await readWorkbenchFile(t.owner, uploaded.objectId)).object
+            .checksum,
+        };
+        const readEntered = readPathSignal();
+        const readGate = readPathSignal();
+        const cancelEntered = readPathSignal();
+        const cancelGate = readPathSignal();
+        const cleanup = new Error('actual storage cleanup failed');
+        let enabled = true;
+        let upstream: ReadableStream<Uint8Array> | undefined;
+        const get = vi.fn(async (object: Parameters<StoragePort['get']>[0]) => {
+          const reader = (await actualStorage.get(object)).getReader();
+          let stopped = false;
+          let work: Promise<void> | undefined;
+          upstream = new ReadableStream<Uint8Array>(
+            {
+              pull(controller) {
+                work = (async () => {
+                  const chunk = await reader.read(); // Real stored bytes, not a fabricated source.
+                  readEntered.resolve();
+                  await readGate.promise;
+                  if (!stopped) {
+                    if (chunk.done) controller.close();
+                    else controller.enqueue(chunk.value);
+                  }
+                })();
+                return work;
+              },
+              async cancel(reason) {
+                stopped = true;
+                cancelEntered.resolve();
+                await cancelGate.promise;
+                try {
+                  await Promise.all([work, reader.cancel(reason)]);
+                } finally {
+                  reader.releaseLock();
+                }
+                if (mode === 'cleanup-failure') throw cleanup;
+              },
+            },
+            { highWaterMark: 0 },
+          );
+          return upstream;
+        });
+        const adapter = createDeliverablesMcpReadPort(
+          createDeliverablesPort({
+            storage: { ...boundStorage(actualStorage), get },
+            requireCurrentAccess: async () => {
+              // Explicit host qualification substitute; live resource SQL remains real.
+              if (!enabled) throw new DataAccessError('authorization_denied');
+            },
+          }),
+        );
+        const cancellation = new AbortController();
+        const reason = new Error('native MCP request canceled');
+        let settled = false;
+        const outcome = adapter
+          .readExact(t.owner, source, cancellation.signal)
+          .then(
+            (value) => ({ value, error: undefined }),
+            (error: unknown) => ({ value: undefined, error }),
+          )
+          .finally(() => {
+            settled = true;
+          });
+        try {
+          await readEntered.promise;
+          if (mode === 'revoke') {
+            enabled = false;
+            readGate.resolve();
+          } else cancellation.abort(reason);
+          await cancelEntered.promise;
+          await nextTurn();
+          expect(settled).toBe(false);
+          expect(upstream!.locked).toBe(true);
+          cancelGate.resolve();
+          if (mode !== 'revoke') {
+            await nextTurn();
+            expect(settled).toBe(false); // Real entered storage work still held.
+            readGate.resolve();
+          }
+          const result = await outcome;
+          expect(get).toHaveBeenCalledTimes(1);
+          expect(upstream!.locked).toBe(false);
+          if (mode === 'revoke')
+            expect(result).toEqual({
+              error: undefined,
+              value: {
+                isError: true,
+                content: [
+                  {
+                    type: 'text',
+                    text: JSON.stringify({
+                      error: {
+                        code: 'AUTHORIZATION_DENIED',
+                        message: 'authorization_denied',
+                        requestId: t.owner.requestId,
+                        retryable: false,
+                      },
+                    }),
+                  },
+                ],
+              },
+            });
+          else {
+            expect(result.value).toBeUndefined();
+            if (mode === 'cleanup-failure') {
+              expect(result.error).toBeInstanceOf(AggregateError);
+              expect(result.error).toMatchObject({
+                cause: reason,
+                errors: [reason, cleanup],
+              });
+            } else expect(result.error).toBe(reason);
+          }
+        } finally {
+          readGate.resolve();
+          cancelGate.resolve();
+          await outcome;
+        }
+      },
+      30000,
+    );
+    it('uses the materials Port for independent saves and current personal, department and company publication queries', async () => {
+      const t = await setup();
+      const actualStorage = storage();
+      // Explicit qualification substitute only. Audience, live memberships,
+      // publisher maintenance and exact selection remain real owner checks.
+      const port = createEnterpriseMaterialsPort({
+        storage: actualStorage,
+        requireCurrentAccess: async () => {},
+      });
+      const signal = new AbortController().signal;
+      const input = {
+        ...uploadInput(t.owner),
+        scope: 'personal' as const,
+        purpose: '本人的固定资料',
+      };
+      const first = await port.save(t.owner, input, signal);
+      expect(await port.save(t.owner, input, signal)).toEqual(first);
+      const second = await port.save(
+        t.owner,
+        { ...input, requestId: randomUUID() },
+        signal,
+      );
+      expect(second.sourceId).not.toBe(first.sourceId);
+      expect(second.revisionId).not.toBe(first.revisionId);
+      const firstFile = await getReferenceFile(
+        t.owner,
+        t.owner.workspaceId!,
+        first.revisionId,
+      );
+      const secondFile = await getReferenceFile(
+        t.owner,
+        t.owner.workspaceId!,
+        second.revisionId,
+      );
+      expect([firstFile.fileName, secondFile.fileName]).toEqual([
+        '收入口径.txt',
+        '收入口径（2）.txt',
+      ]);
+      expect(
+        (
+          await port.listCurrent(
+            t.owner,
+            { workspaceId: t.owner.workspaceId! },
+            signal,
+          )
+        ).references
+          .map((file) => file.revisionId)
+          .sort(),
+      ).toEqual([first.revisionId, second.revisionId].sort());
+      expect(
+        await new Response(await actualStorage.get(firstFile.object)).text(),
+      ).toBe('按已经确认的回款统计收入。');
+      const replacement = {
+        ...input,
+        sourceId: first.sourceId,
+        expectedRevision: 1,
+      };
+      await expect(port.save(t.owner, replacement, signal)).rejects.toThrow();
+      await expect(
+        port.save(
+          t.owner,
+          {
+            ...input,
+            contentBase64: Buffer.from('改变原请求').toString('base64'),
+          },
+          signal,
+        ),
+      ).rejects.toMatchObject({ code: 'request_conflict' });
+      const companyText = '验收全文中的回款出处。';
+      const published = await port.publishUpload(
+        t.owner,
+        {
+          ...uploadInput(t.owner),
+          fileName: '公司固定资料.txt',
+          origin: 'upload',
+          contentBase64: Buffer.from(companyText).toString('base64'),
+          audience: { scope: 'company', departmentIds: [] },
+        },
+        signal,
+      );
+      const pending = await port.query(
+        t.a,
+        { sourceId: published.sourceId },
+        signal,
+      );
+      expect(pending.references.map((file) => file.revisionId)).toEqual([
+        published.revisionId,
+      ]);
+      expect(pending.fullTextCoverage).toEqual({ ready: 0, unavailable: 1 });
+      await fixture.db`update allrice_knowledge_processing set updated_at='2000-01-01' where revision_id=${published.revisionId}`;
+      const claim = await claimReferenceProcessing();
+      expect(claim?.revisionId).toBe(published.revisionId);
+      await finishReferenceProcessing(
+        claim!,
+        [{ content: companyText, start: 0, end: companyText.length }],
+        {
+          text: companyText,
+          kind: 'text',
+          warnings: [],
+          units: [{ label: '正文', start: 0, end: companyText.length }],
+        },
+      );
+      const found = await port.query(
+        t.a,
+        { query: '回款出处', sourceId: published.sourceId },
+        signal,
+      );
+      expect(found.fullTextCoverage).toEqual({ ready: 1, unavailable: 0 });
+      expect(found.matches).toEqual([
+        {
+          revisionId: published.revisionId,
+          content: '回款出处。',
+          start: 6,
+          end: 11,
+          locations: [{ unit: 0, label: '正文', start: 0, end: 11 }],
+          warnings: [],
+        },
+      ]);
+      const selected = await port.captureSelection(
+        t.a,
+        { workspaceId: t.a.workspaceId!, revisionId: published.revisionId },
+        signal,
+      );
+      expect(selected.selection).toMatchObject({
+        sourceId: published.sourceId,
+        revisionId: published.revisionId,
+        checksum: claim!.object.checksum,
+      });
+      const publishedFile = await getReferenceFile(
+        t.a,
+        t.a.workspaceId!,
+        published.revisionId,
+      );
+      expect(publishedFile.sourceId).toBe(published.sourceId);
+      expect(publishedFile.object.checksum).toBe(selected.selection.checksum);
+      expect(
+        await new Response(
+          await actualStorage.get(publishedFile.object),
+        ).text(),
+      ).toBe(companyText);
+      const department = await port.publishUpload(
+        t.owner,
+        {
+          ...uploadInput(t.owner),
+          fileName: '部门固定资料.txt',
+          origin: 'upload',
+          audience: {
+            scope: 'departments',
+            departmentIds: [t.departments[0]!],
+          },
+        },
+        signal,
+      );
+      const personal = await port.publishUpload(
+        t.owner,
+        {
+          ...uploadInput(t.owner),
+          fileName: '个人固定资料.txt',
+          origin: 'upload',
+          audience: { scope: 'personal', departmentIds: [] },
+        },
+        signal,
+      );
+      expect(
+        (await port.query(t.a, { sourceId: department.sourceId }, signal))
+          .references,
+      ).toHaveLength(1);
+      expect(
+        (await port.query(t.b, { sourceId: department.sourceId }, signal))
+          .references,
+      ).toEqual([]);
+      expect(
+        (await port.query(t.a, { sourceId: personal.sourceId }, signal))
+          .references,
+      ).toEqual([]);
+      await expect(
+        port.changePublication(
+          t.a,
+          {
+            target: { sourceId: published.sourceId },
+            body: {
+              workspaceId: t.a.workspaceId!,
+              requestId: randomUUID(),
+              expectedRevision: 1,
+              action: 'delete',
+            },
+          },
+          signal,
+        ),
+      ).rejects.toThrow();
+      const changed = {
+        target: { sourceId: published.sourceId },
+        body: {
+          workspaceId: t.owner.workspaceId!,
+          requestId: randomUUID(),
+          expectedRevision: 1,
+          action: 'audience' as const,
+          audience: { scope: 'personal' as const, departmentIds: [] },
+        },
+      };
+      await port.changePublication(t.owner, changed, signal);
+      expect(
+        (await port.query(t.a, { sourceId: published.sourceId }, signal))
+          .references,
+      ).toEqual([]);
+      await expect(
+        port.changePublication(
+          t.owner,
+          { ...changed, body: { ...changed.body, requestId: randomUUID() } },
+          signal,
+        ),
+      ).rejects.toMatchObject({ code: 'version_conflict' });
+      await expect(
+        port.captureSelection(
+          t.a,
+          { workspaceId: t.a.workspaceId!, revisionId: published.revisionId },
+          signal,
+        ),
+      ).rejects.toThrow();
+      const unbound = createEnterpriseMaterialsPort({ storage: actualStorage });
+      await expect(unbound.query(t.owner, {}, signal)).rejects.toMatchObject({
+        code: 'authorization_denied',
+      });
+    }, 30000);
     it.each(['departments', 'company'] as const)(
       'keeps a legacy %s original owner-only without migrating its policy',
       async (scope) => {

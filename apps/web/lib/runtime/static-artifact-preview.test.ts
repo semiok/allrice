@@ -145,3 +145,117 @@ describe('native preview dispatch', () => {
     },
   );
 });
+
+describe('n4 authorized fixed-resource preview', () => {
+  function authorized(name: string, text = '中文\n第二行\n') {
+    const data = Buffer.from(text);
+    const resource = {
+      open: vi.fn(async () => new Blob([data]).stream()),
+      bytes: vi.fn(async () => data),
+    };
+    return {
+      kind: 'file' as const,
+      version: { fileName: name },
+      object: {
+        id: 'fixed-object',
+        checksum: 'sha256:' + createHash('sha256').update(data).digest('hex'),
+        sizeBytes: data.length,
+        mediaType: 'application/octet-stream',
+      },
+      resource,
+    };
+  }
+  it.each([
+    ['file.pdf', 'pdf'],
+    ['file.png', 'image'],
+    ['file.svg', 'image'],
+    ['file.html', 'html'],
+    ['file.csv', 'spreadsheet'],
+    ['file.tsv', 'spreadsheet'],
+    ['file.xls', 'spreadsheet'],
+    ['file.xlsx', 'spreadsheet'],
+  ])('reads %s only from the authorized resource', async (name, kind) => {
+    const input = authorized(name!);
+    expect(await readStaticArtifactPreview(input)).toMatchObject({ kind });
+    expect(input.resource.bytes).toHaveBeenCalledTimes(1);
+    expect(ports.read).not.toHaveBeenCalled();
+    expect(ports.storage.get).not.toHaveBeenCalled();
+  });
+  it.each(['html', 'svg', 'csv', 'tsv'])(
+    'source view for %s uses the same complete UTF-8 stream and line offsets',
+    async (extension) => {
+      const input = authorized(
+        'source.' + extension,
+        '第一行\n第二行\n第三行\n',
+      );
+      expect(
+        await readStaticArtifactPreview(input, { source: true, offset: 2 }),
+      ).toMatchObject({
+        kind: 'text',
+        text: '第二行\n第三行',
+        offset: 2,
+        eof: true,
+      });
+      expect(input.resource.open).toHaveBeenCalledTimes(1);
+      expect(input.resource.bytes).not.toHaveBeenCalled();
+      expect(ports.storage.get).not.toHaveBeenCalled();
+    },
+  );
+  it.each(['doc', 'docx', 'ppt', 'pptx'])(
+    'passes fixed %s bytes and the converter signal to the existing DSH Office runtime',
+    async (extension) => {
+      const input = authorized('office.' + extension);
+      const stop = new AbortController();
+      ports.office.mockImplementationOnce(
+        async (request: {
+          signal: AbortSignal;
+          read(signal: AbortSignal, maximum: number): Promise<Buffer>;
+        }) => {
+          expect(request.signal).toBe(stop.signal);
+          await request.read(stop.signal, 50 * 1024 * 1024);
+          return { pdf: Buffer.from('%PDF-converted'), missingFonts: [] };
+        },
+      );
+      expect(
+        await readStaticArtifactPreview(input, { signal: stop.signal }),
+      ).toMatchObject({
+        kind: 'pdf',
+        converted: true,
+        base64: Buffer.from('%PDF-converted').toString('base64'),
+      });
+      expect(input.resource.bytes).toHaveBeenCalledWith(50 * 1024 * 1024);
+      expect(ports.read).not.toHaveBeenCalled();
+    },
+  );
+  it('does not turn an authorized source denial into a successful Office fallback', async () => {
+    const input = authorized('office.docx'),
+      denial = Error('object no longer accessible');
+    input.resource.bytes.mockRejectedValueOnce(denial);
+    ports.office.mockImplementationOnce(
+      (request: {
+        read(signal: AbortSignal, maximum: number): Promise<Buffer>;
+      }) => request.read(new AbortController().signal, 50 * 1024 * 1024),
+    );
+    await expect(readStaticArtifactPreview(input)).rejects.toBe(denial);
+    expect(ports.storage.get).not.toHaveBeenCalled();
+  });
+  it('retains genuine converter failure as a retryable download fallback', async () => {
+    const input = authorized('office.docx');
+    ports.office.mockRejectedValueOnce(Error('converter unavailable'));
+    expect(await readStaticArtifactPreview(input)).toMatchObject({
+      kind: 'download_only',
+      retryable: true,
+    });
+    expect(ports.read).not.toHaveBeenCalled();
+  });
+  it('cannot render source text for a binary PDF or image', async () => {
+    for (const name of ['scan.pdf', 'photo.png']) {
+      const input = authorized(name);
+      expect(
+        await readStaticArtifactPreview(input, { source: true }),
+      ).toMatchObject({ kind: 'download_only' });
+      expect(input.resource.bytes).not.toHaveBeenCalled();
+      expect(input.resource.open).not.toHaveBeenCalled();
+    }
+  });
+});

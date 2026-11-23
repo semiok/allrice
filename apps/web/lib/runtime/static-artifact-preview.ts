@@ -1,4 +1,4 @@
-import type { WorkbenchArtifact } from '@allrice/contracts';
+import type { StorageObject, WorkbenchArtifact } from '@allrice/contracts';
 import {
   ArtifactReviewError,
   parseChangesetBytes,
@@ -6,7 +6,10 @@ import {
 } from '@allrice/database';
 import { previewOfficePdf } from '@allrice/office-runtime/preview';
 import { getStorageAdapter } from '../storage/runtime';
-import { readDocumentTextPage } from './document-text-page';
+import {
+  readDocumentTextPage,
+  readDocumentTextPageFromStream,
+} from './document-text-page';
 import {
   previewPhase,
   reportPreviewFailure,
@@ -24,9 +27,24 @@ import { unviewableBinaryPath } from '../../app/chatflow/dsh-upstream/document/d
 /** DSH renderers and defaults, fed authorized immutable AllRice objects.
  * Routes authorize both before this read and after it completes. */
 export async function readStaticArtifactPreview(
-  artifact: Pick<WorkbenchArtifact, 'object' | 'kind'> & {
+  artifact: {
+    kind: WorkbenchArtifact['kind'];
     version?: { fileName: string };
-  },
+  } & (
+    | { object: StorageObject; resource?: never }
+    | {
+        object: {
+          id: string;
+          checksum: string;
+          mediaType: string;
+          sizeBytes: number;
+        };
+        resource: {
+          open(signal: AbortSignal): Promise<ReadableStream<Uint8Array>>;
+          bytes(maximum: number): Promise<Buffer>;
+        };
+      }
+  ),
   options: {
     offset?: number;
     source?: boolean;
@@ -40,13 +58,14 @@ export async function readStaticArtifactPreview(
     artifact.version?.fileName,
     object.mediaType,
   );
-  const storage = getStorageAdapter();
   const download = (reason: string) => ({
     kind: 'download_only' as const,
     reason,
   });
   const bytes = (maximum: number) =>
-    readArtifactBytes(storage, object, maximum);
+    artifact.resource
+      ? artifact.resource.bytes(maximum)
+      : readArtifactBytes(getStorageAdapter(), artifact.object, maximum);
   if (artifact.kind === 'changeset')
     return {
       kind: 'changeset',
@@ -55,6 +74,7 @@ export async function readStaticArtifactPreview(
   if (!options.source && ['doc', 'docx', 'ppt', 'pptx'].includes(extension)) {
     if (object.sizeBytes > limits.officeInputBytes)
       return download('此文档超过 50 MiB 预览上限，请下载查看。');
+    let resourceReadFailed = false;
     try {
       const result = await previewPhase(
         options.diagnostic,
@@ -67,14 +87,19 @@ export async function readStaticArtifactPreview(
             format: extension as OfficePreviewFormat,
             signal: options.signal,
             read: async (signal, maximum) => {
-              signal.throwIfAborted();
-              const data = await previewPhase(
-                options.diagnostic,
-                'object-read',
-                () => bytes(maximum),
-              );
-              signal.throwIfAborted();
-              return data;
+              try {
+                signal.throwIfAborted();
+                const data = await previewPhase(
+                  options.diagnostic,
+                  'object-read',
+                  () => bytes(maximum),
+                );
+                signal.throwIfAborted();
+                return data;
+              } catch (error) {
+                resourceReadFailed = !!artifact.resource;
+                throw error;
+              }
             },
           }),
       );
@@ -85,7 +110,7 @@ export async function readStaticArtifactPreview(
         converted: true,
       };
     } catch (error) {
-      if (options.signal?.aborted) throw error;
+      if (options.signal?.aborted || resourceReadFailed) throw error;
       reportPreviewFailure(
         'office-conversion',
         error,
@@ -120,15 +145,28 @@ export async function readStaticArtifactPreview(
       return { kind: 'image', mediaType: imageMediaType, base64 };
     return { kind: extension === 'pdf' ? 'pdf' : 'html', base64 };
   }
+  if (
+    artifact.resource &&
+    options.source &&
+    (extension === 'pdf' || (imageMediaType && extension !== 'svg'))
+  )
+    return download('此文件格式暂不支持源文本，请下载查看。');
   if (unviewableBinaryPath(artifact.version?.fileName || `file.${extension}`))
     return download('此文件格式暂不支持预览，请下载查看。');
   try {
-    const page = await readDocumentTextPage(
-      storage,
-      object,
-      options.offset,
-      options.signal,
-    );
+    const page = artifact.resource
+      ? await readDocumentTextPageFromStream(
+          artifact.resource.open,
+          object,
+          options.offset,
+          options.signal,
+        )
+      : await readDocumentTextPage(
+          getStorageAdapter(),
+          artifact.object,
+          options.offset,
+          options.signal,
+        );
     return {
       kind: 'text',
       ...page,

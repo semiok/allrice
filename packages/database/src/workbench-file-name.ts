@@ -45,7 +45,15 @@ export async function allocateWorkbenchFileName(
   const rows = await sql<
     { file_name: string }[]
   >`with ${personalWorkbenchOrigins(sql, scope)}
-    select file_name from origins where id<>${objectId}`;
+    select file_name from origins where id<>${objectId}
+    union
+    select p.file_name from allrice_workbench_file_policies p
+    join allrice_storage_objects o on o.id=p.object_id
+      and o.organization_id=p.organization_id and o.workspace_id=p.workspace_id and o.owner_id=p.owner_id
+    where p.organization_id=${scope.organizationId} and p.workspace_id=${scope.workspaceId} and p.owner_id=${scope.ownerId}
+      and p.object_id<>${objectId} and p.upload_request_id is not null and p.upload_digest is not null
+      and o.category='uploads' and o.state='pending' and o.deleted_at is null
+      and (o.retention_until is null or o.retention_until>clock_timestamp())`;
   return availableWorkbenchFileName(
     requested,
     new Set(rows.map((row) => row.file_name)),
