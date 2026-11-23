@@ -9,7 +9,9 @@ import type {
 } from './production-config.ts';
 
 export async function productionInputsFixture() {
-  const root = await mkdtemp('/tmp/n3-h2a-');
+  // Keep the task-owned socket root short enough for the real native endpoint.
+  // Callers' existing recursive root cleanup also owns every generated socket.
+  const root = await mkdtemp('/tmp/h-');
   const hash = '1'.repeat(64);
   const native = {
     binary: join(root, 'msb'),
@@ -40,7 +42,7 @@ export async function productionInputsFixture() {
         treeSha256: hash,
       },
       rootDiskGiB: 8,
-      socketRoot: join(root, 'sockets'),
+      socketRoot: root,
       jobCleanupTimeoutMs: 10000,
     },
     disk: {
