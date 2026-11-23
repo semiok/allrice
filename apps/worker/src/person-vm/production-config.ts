@@ -122,6 +122,15 @@ const configuration = z
   })
   .strict()
   .refine((value) => {
+    const platform = readPlatformPersonVmConfiguration();
+    const policy = value.memory.policy;
+    return (
+      policy.commandHighBytes === platform.commandHighBytes &&
+      policy.commandMaxBytes === platform.commandMaxBytes &&
+      policy.commandSwapMaxBytes === platform.commandSwapMaxBytes
+    );
+  })
+  .refine((value) => {
     const roots = [
       value.disk.root,
       value.disk.keyRoot,

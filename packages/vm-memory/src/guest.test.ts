@@ -20,6 +20,7 @@ import {
   VM_PHYSICAL_MEMORY_BYTES,
 } from './contract.ts';
 import type * as Platform from '@allrice/contracts';
+import { readPlatformPersonVmConfiguration } from '@allrice/contracts';
 import type { GuestMemorySample, VmMemoryPolicy } from './contract.ts';
 import { createVmMemoryGuestPlan as createPlan } from './guest-config.ts';
 
@@ -353,7 +354,11 @@ describe.sequential(
 
     it('a non-default application platform snapshot flows through the actual plan into the initializer', async () => {
       // Only the trusted static source boundary is varied; no request/env writer.
-      const platform = Object.freeze({ memoryMiB: 3072, idleMs: 3333 });
+      const platform = Object.freeze({
+        ...readPlatformPersonVmConfiguration(),
+        memoryMiB: 3072,
+        idleMs: 3333,
+      });
       vi.resetModules();
       vi.doMock('@allrice/contracts', async (original) => ({
         ...(await original<typeof Platform>()),

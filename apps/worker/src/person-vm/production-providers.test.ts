@@ -42,7 +42,11 @@ it('constructs actual providers without launching or creating a disk', async () 
 
 it('the actual native configuration consumes the same loaded platform snapshot', async () => {
   // A source-boundary double varies the trusted platform snapshot, not a product override.
-  const platform = Object.freeze({ memoryMiB: 3072, idleMs: 3333 });
+  const platform = Object.freeze({
+    ...f.loaded.platform,
+    memoryMiB: 3072,
+    idleMs: 3333,
+  });
   const first = {
     ...f.loaded,
     platform,

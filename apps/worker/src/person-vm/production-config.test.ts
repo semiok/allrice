@@ -89,9 +89,10 @@ function value() {
         swapBytes: 64,
         dshLowBytes: 1,
         dshSwapMaxBytes: 1,
-        commandHighBytes: 1,
-        commandMaxBytes: 2,
-        commandSwapMaxBytes: 1,
+        commandHighBytes: readPlatformPersonVmConfiguration().commandHighBytes,
+        commandMaxBytes: readPlatformPersonVmConfiguration().commandMaxBytes,
+        commandSwapMaxBytes:
+          readPlatformPersonVmConfiguration().commandSwapMaxBytes,
         commandOomGroup: 0,
         dshOomScoreAdj: -1,
         commandOomScoreAdj: 1,
@@ -257,6 +258,46 @@ describe('private production Host configuration', () => {
     ).toBe(input.memory.policy.physicalBytes);
     expect(readPlatformPersonVmConfiguration().memoryMiB).toBe(2 * 1024);
   });
+  it.each([
+    'commandHighBytes',
+    'commandMaxBytes',
+    'commandSwapMaxBytes',
+  ] as const)(
+    'rejects a correctly sealed command policy %s that differs from platform defaults',
+    async (field) => {
+      const input = value();
+      input.memory.policy[field] += field === 'commandMaxBytes' ? 1 : -1;
+      await seal(input);
+      await expect(
+        readProductionHostConfiguration(signal()),
+      ).rejects.toBeInstanceOf(ProductionHostConfigurationUnavailable);
+      expect(
+        JSON.parse(
+          await fs.readFile(join(root, '.local/person-vm-host.json'), 'utf8'),
+        ).memory.policy[field],
+      ).toBe(input.memory.policy[field]);
+    },
+  );
+  it.each([
+    'commandHighBytes',
+    'commandMaxBytes',
+    'commandSwapMaxBytes',
+  ] as const)(
+    'rejects an absent sealed command policy %s without filling a default',
+    async (field) => {
+      const input = value();
+      expect(Reflect.deleteProperty(input.memory.policy, field)).toBe(true);
+      await seal(input);
+      await expect(
+        readProductionHostConfiguration(signal()),
+      ).rejects.toBeInstanceOf(ProductionHostConfigurationUnavailable);
+      expect(
+        JSON.parse(
+          await fs.readFile(join(root, '.local/person-vm-host.json'), 'utf8'),
+        ).memory.policy,
+      ).not.toHaveProperty(field);
+    },
+  );
   it('does not accept private JSON or claimed env SHA without a verified service build', async () => {
     source.build.mockResolvedValue(null);
     vi.stubEnv('ALLRICE_RELEASE_SHA', 'a'.repeat(40));
@@ -359,7 +400,8 @@ describe('private production Host configuration', () => {
   });
   it('rejects an invalid guest policy and credential-bearing ingress', async () => {
     const changed = value();
-    changed.memory.policy.commandHighBytes = 3;
+    changed.memory.policy.commandHighBytes =
+      changed.memory.policy.commandMaxBytes + 1;
     changed.web.publicOrigin = 'https://private:credential@example.test';
     await seal(changed);
     await expect(
