@@ -1,5 +1,5 @@
 /** Real inert constructors/installation; synthetic seal, SQL and required external sources only. */
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { rm, stat } from 'node:fs/promises';
 import { setImmediate as turn } from 'node:timers/promises';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -20,12 +20,23 @@ import {
 import { nativeEntryFixture } from '../d-entry/native-entry.fixture.js';
 import { installDEntryNativePrewarmPort } from '../d-entry/native-prewarm.js';
 import { productionInputsFixture } from './production-inputs.fixture.js';
+import { personNativeWebRoster } from '../native-web/composition.js';
+import {
+  harness,
+  MemoryStore,
+} from '../../../../packages/person-vm/src/test-support.js';
 
 const io = vi.hoisted(() => ({
   read: vi.fn(),
   database: vi.fn(),
   dedicated: vi.fn(),
-  gateway: vi.fn(),
+  gateway:
+    vi.fn<
+      (
+        options: Parameters<typeof Egress.createEgressGateway>[0],
+        gateway: ReturnType<typeof Egress.createEgressGateway>,
+      ) => void
+    >(),
 }));
 vi.mock('./production-config.js', () => ({
   readProductionHostConfiguration: io.read,
@@ -42,8 +53,9 @@ vi.mock('@allrice/egress-gateway', async (original) => {
     createEgressGateway: (
       options: Parameters<typeof actual.createEgressGateway>[0],
     ) => {
-      io.gateway(options);
-      return actual.createEgressGateway(options);
+      const gateway = actual.createEgressGateway(options);
+      io.gateway(options, gateway);
+      return gateway;
     },
   };
 });
@@ -134,6 +146,81 @@ async function open(value = fixture(), lifetime = new AbortController()) {
   });
   cleanup.push(() => host.close());
   return { ...value, host, lifetime };
+}
+/** Public service start/cleanup with synthetic physical/PG boundaries. The
+ * actual Host, service receipt copies and gateway listener/revoke remain real. */
+async function receiptFixture() {
+  const memory = new MemoryStore(),
+    physical = harness(memory),
+    entry = nativeEntryFixture(),
+    value = fixture();
+  value.bound.egress.revokeModel = vi.fn(async () => {});
+  const opened = await open(value),
+    input = opened.input(),
+    gateway = io.gateway.mock.calls[0]?.[1];
+  if (!gateway) throw Error('actual gateway was not constructed');
+  vi.spyOn(PostgresPersonVmStore.prototype, 'withLease').mockImplementation(
+    memory.withLease.bind(memory),
+  );
+  vi.spyOn(input.current.authority, 'authorize').mockImplementation(
+    physical.options.authority.authorize,
+  );
+  // Replace the external shared PG observation only, not the service callback.
+  vi.spyOn(input.admission, 'trackOwner').mockImplementation(
+    async (_personId, active, work) => {
+      active.throwIfAborted();
+      return work(active);
+    },
+  );
+  vi.spyOn(input.providers.disk, 'create').mockImplementation(
+    physical.disk.create,
+  );
+  vi.spyOn(input.providers.disk, 'inspect').mockImplementation(
+    physical.disk.inspect,
+  );
+  vi.spyOn(input.providers.disk, 'attach').mockImplementation(
+    physical.disk.attach,
+  );
+  vi.spyOn(input.providers.disk, 'detach').mockImplementation(
+    physical.disk.detach,
+  );
+  vi.spyOn(input.providers.native, 'status').mockImplementation(
+    physical.native.status,
+  );
+  vi.spyOn(input.providers.native, 'stop').mockImplementation(
+    physical.native.stop,
+  );
+  const startFailure = new PersonVmError('RUNTIME_NOT_READY');
+  vi.spyOn(input.providers.native, 'prepareWebEndpoints').mockRejectedValue(
+    startFailure,
+  );
+  const facts = {
+    personId: entry.context.actor.id,
+    organizationId: entry.context.organizationId,
+    entries: [
+      {
+        workspaceId: entry.identity.workspaceId,
+        employeeInstanceId: entry.identity.employeeInstanceId,
+        employeeRevision: entry.identity.employeeRevision,
+        employeeVersionId: entry.identity.employeeVersionId,
+      },
+    ],
+  };
+  vi.spyOn(personNativeWebRoster, 'prepare').mockResolvedValue({
+    ...facts,
+    digest: `sha256:${createHash('sha256').update(JSON.stringify(facts)).digest('hex')}`,
+  });
+  const provisioner = input.providers.egressInstallation.provisioner;
+  vi.spyOn(provisioner, 'endpoint').mockImplementation(async (_vmId, ports) => {
+    const port = ports[0] ?? 0;
+    return { host: '127.0.0.1', port, guestOrigin: `http://127.0.0.1:${port}` };
+  });
+  vi.spyOn(provisioner, 'install').mockResolvedValue(undefined);
+  vi.spyOn(provisioner, 'remove').mockResolvedValue(undefined);
+  const prepare = vi.spyOn(gateway, 'prepare'),
+    revoke = vi.spyOn(gateway, 'revoke');
+  await input.vm.create(entry.context, signal());
+  return { ...opened, memory, entry, gateway, prepare, revoke, startFailure };
 }
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -268,6 +355,93 @@ it('an egress source cannot substitute another VM or shared admission boundary',
     revokeModel: value.bound.egress.revokeModel,
     provisioner: actual.providers.egressInstallation.provisioner,
   });
+});
+
+it('actual service cleanup revokes a copied receipt once and Host.close does not revoke it again', async () => {
+  const value = await receiptFixture();
+  await expect(
+    value.input().vm.start(value.entry.context, signal()),
+  ).rejects.toBe(value.startFailure);
+  expect(value.prepare).toHaveBeenCalledTimes(1);
+  expect(value.revoke).toHaveBeenCalledTimes(1);
+  const original = await value.prepare.mock.results[0]!.value,
+    copied = value.revoke.mock.calls[0]![0];
+  expect(copied).toEqual(original);
+  expect(copied).not.toBe(original);
+  expect(copied.binding).not.toBe(original.binding);
+  expect(copied.gatewayPorts).not.toBe(original.gatewayPorts);
+  expect(
+    (await value.memory.read(value.entry.context.actor.id))?.egressReceipt,
+  ).toBeNull();
+  await value.host.close();
+  expect(value.revoke).toHaveBeenCalledTimes(1);
+  expect(value.bound.egress.revokeModel).toHaveBeenCalledTimes(1);
+});
+
+it('a failed actual service revoke retains the receipt for the real Host.close retry', async () => {
+  const value = await receiptFixture(),
+    modelFailure = Error('synthetic first model drain failure');
+  vi.mocked(value.bound.egress.revokeModel).mockRejectedValueOnce(modelFailure);
+  await expect(
+    value.input().vm.start(value.entry.context, signal()),
+  ).rejects.toMatchObject({ code: 'CLEANUP_INCOMPLETE' });
+  expect(value.revoke).toHaveBeenCalledTimes(1);
+  const persisted = await value.memory.read(value.entry.context.actor.id);
+  expect(persisted?.egressReceipt).toEqual(value.revoke.mock.calls[0]![0]);
+  expect(persisted?.phase).toBe('failed');
+  await value.host.close();
+  expect(value.revoke).toHaveBeenCalledTimes(2);
+  expect(value.revoke.mock.calls[1]![0]).toEqual(
+    value.revoke.mock.calls[0]![0],
+  );
+  expect(value.bound.egress.revokeModel).toHaveBeenCalledTimes(2);
+});
+
+it('a stale persisted service receipt cannot remove a retained newer epoch from Host cleanup', async () => {
+  const value = await receiptFixture(),
+    vm = value.input().vm,
+    context = value.entry.context;
+  await expect(vm.start(context, signal())).rejects.toBe(value.startFailure);
+  const old = await value.memory.read(context.actor.id);
+  if (!old) throw Error('actual service did not persist its first epoch');
+  const oldReceipt = await value.prepare.mock.results[0]!.value;
+  let failNew = true;
+  vi.mocked(value.bound.egress.revokeModel).mockImplementation(
+    async (binding) => {
+      if (binding.leaseEpoch > old.leaseEpoch && failNew)
+        throw Error('synthetic new epoch drain failure');
+    },
+  );
+  await expect(vm.start(context, signal())).rejects.toMatchObject({
+    code: 'CLEANUP_INCOMPLETE',
+  });
+  const current = await value.memory.read(context.actor.id);
+  if (!current?.egressReceipt)
+    throw Error('new epoch receipt was not retained');
+  expect(current.leaseEpoch).toBeGreaterThan(old.leaseEpoch);
+  // Explicit stale-store fixture: the actual service delivers another copied
+  // old epoch to gateway.revoke, whose exact check leaves the new state alone.
+  value.memory.rows.set(context.actor.id, {
+    ...old,
+    egressReceipt: structuredClone(oldReceipt),
+  });
+  await expect(vm.stop(context, signal())).resolves.toMatchObject({
+    phase: 'stopped',
+  });
+  const stale = value.revoke.mock.calls.at(-1)![0];
+  expect(stale).toEqual(oldReceipt);
+  expect(stale).not.toBe(oldReceipt);
+  await expect(
+    value.gateway.assertActive(current.egressReceipt, signal()),
+  ).rejects.toBeInstanceOf(Error); // Failed drain fenced the new state.
+  failNew = false;
+  const beforeClose = value.revoke.mock.calls.length;
+  await value.host.close();
+  expect(value.revoke).toHaveBeenCalledTimes(beforeClose + 1);
+  expect(value.revoke.mock.calls.at(-1)![0]).toEqual(current.egressReceipt);
+  expect(value.revoke.mock.calls.at(-1)![0].binding.leaseEpoch).toBe(
+    current.leaseEpoch,
+  );
 });
 
 it('missing native activity is unknown, and a real later observer is forwarded without synthesized counts', async () => {

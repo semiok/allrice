@@ -11,6 +11,7 @@ import {
   PersonVmError,
   PersonVmService,
   PostgresPersonVmStore,
+  sameVmBinding,
   type PersonVmBinding,
   type PersonVmEgressPort,
   type PersonVmEgressReceipt,
@@ -192,7 +193,18 @@ export function createProductionPersonVmHost(input: {
       // Host shutdown must not make that existing cleanup impossible.
       return own(async () => {
         await requireGateway().revoke(receipt, reason, signal);
-        receipts.delete(receipt);
+        // The service freezes fresh copies before saving and cleanup. Remove
+        // only this exact value after actual revoke succeeds, never a new epoch.
+        for (const retained of receipts)
+          if (
+            retained.bindingId === receipt.bindingId &&
+            sameVmBinding(retained.binding, receipt.binding) &&
+            retained.gatewayPorts.length === receipt.gatewayPorts.length &&
+            retained.gatewayPorts.every(
+              (port, index) => port === receipt.gatewayPorts[index],
+            )
+          )
+            receipts.delete(retained);
       });
     },
   };
