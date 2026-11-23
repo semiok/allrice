@@ -37,7 +37,9 @@ function initialize(config, io = fs, run = cp.execFileSync) {
     !scores.every(
       (value) => Number.isInteger(value) && value >= -1000 && value <= 1000,
     ) ||
-    policy.physicalBytes !== 2147483648 ||
+    !Number.isSafeInteger(config.platformPhysicalBytes) ||
+    !(config.platformPhysicalBytes > 0) ||
+    policy.physicalBytes !== config.platformPhysicalBytes ||
     !(policy.swapBytes > 0) ||
     policy.commandHighBytes > policy.commandMaxBytes ||
     policy.commandOomGroup !== 0

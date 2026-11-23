@@ -86,6 +86,7 @@ export async function createVmMemoryGuestPlan(input: {
   const commandsGroup = join(cgroupRoot, 'allrice-commands');
   const config = {
     contractVersion: VM_MEMORY_CONTRACT_VERSION,
+    platformPhysicalBytes: VM_PHYSICAL_MEMORY_BYTES,
     cgroupRoot,
     dshGroup,
     commandsGroup,

@@ -15,7 +15,11 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PERSON_VM_COMMAND_MEMORY_PROGRAM } from '@allrice/person-vm';
-import { VM_MEMORY_PHASE4_REFERENCE_POLICY } from './contract.ts';
+import {
+  VM_MEMORY_PHASE4_REFERENCE_POLICY,
+  VM_PHYSICAL_MEMORY_BYTES,
+} from './contract.ts';
+import type * as Platform from '@allrice/contracts';
 import type { GuestMemorySample, VmMemoryPolicy } from './contract.ts';
 import { createVmMemoryGuestPlan as createPlan } from './guest-config.ts';
 
@@ -33,6 +37,7 @@ const createVmMemoryGuestPlan = (input: {
 const require = createRequire(import.meta.url);
 type Config = {
   contractVersion: number;
+  platformPhysicalBytes: number;
   policyRef: string;
   cgroupRoot: string;
   dshGroup: string;
@@ -59,8 +64,8 @@ afterEach(async () => {
     await rm(directory, { recursive: true, force: true });
 });
 
-async function virtualGuest() {
-  const plan = await createVmMemoryGuestPlan({
+async function virtualGuest(plan?: Awaited<ReturnType<typeof createPlan>>) {
+  plan ??= await createVmMemoryGuestPlan({
     persistentDirectory: '/fixture/encrypted',
   });
   const config = JSON.parse(
@@ -335,6 +340,73 @@ describe.sequential(
       ).toThrow('approved_memory_policy_required');
       expect(f.run).not.toHaveBeenCalled();
     });
+    it('the default plan stages the same platform cap that the actual initializer accepts', async () => {
+      const f = await virtualGuest();
+      expect(f.config.platformPhysicalBytes).toBe(VM_PHYSICAL_MEMORY_BYTES);
+      expect(f.config.policy.physicalBytes).toBe(
+        f.config.platformPhysicalBytes,
+      );
+      expect(initialize(f.config, f.io, f.run).swapFileBytes).toBe(
+        f.config.policy.swapBytes,
+      );
+    });
+
+    it('a non-default application platform snapshot flows through the actual plan into the initializer', async () => {
+      // Only the trusted static source boundary is varied; no request/env writer.
+      const platform = Object.freeze({ memoryMiB: 3072, idleMs: 3333 });
+      vi.resetModules();
+      vi.doMock('@allrice/contracts', async (original) => ({
+        ...(await original<typeof Platform>()),
+        readPlatformPersonVmConfiguration: () => platform,
+      }));
+      try {
+        const { createVmMemoryGuestPlan: currentPlan } =
+          await import('./guest-config.ts');
+        const physicalBytes = platform.memoryMiB * 1024 ** 2;
+        const plan = await currentPlan({
+          persistentDirectory: '/fixture/encrypted',
+          policy: { ...VM_MEMORY_PHASE4_REFERENCE_POLICY, physicalBytes },
+          policyRef: 'fixture:nondefault-application-platform-snapshot',
+        });
+        const f = await virtualGuest(plan);
+        expect(f.config.platformPhysicalBytes).toBe(physicalBytes);
+        expect(f.config.policy.physicalBytes).toBe(physicalBytes);
+        expect(initialize(f.config, f.io, f.run).swapFileBytes).toBe(
+          f.config.policy.swapBytes,
+        );
+        await expect(
+          currentPlan({
+            persistentDirectory: '/fixture/encrypted',
+            policy: VM_MEMORY_PHASE4_REFERENCE_POLICY,
+            policyRef: 'fixture:wrong-platform-physical-policy',
+          }),
+        ).rejects.toThrow('invalid_memory_policy');
+      } finally {
+        vi.doUnmock('@allrice/contracts');
+        vi.resetModules();
+      }
+    });
+
+    it.each(['missing', 'zero', 'mismatch'] as const)(
+      'initializer rejects a %s staged platform cap before resource mutation',
+      async (kind) => {
+        const f = await virtualGuest();
+        const config = { ...f.config };
+        if (kind === 'missing')
+          Reflect.deleteProperty(config, 'platformPhysicalBytes');
+        else
+          config.platformPhysicalBytes =
+            kind === 'zero' ? 0 : VM_PHYSICAL_MEMORY_BYTES + 1;
+        const mkdir = vi.spyOn(f.io, 'mkdirSync');
+        expect(() => initialize(config, f.io, f.run)).toThrow(
+          'invalid_memory_policy',
+        );
+        expect(mkdir).not.toHaveBeenCalled();
+        expect(f.io.writeFileSync).not.toHaveBeenCalled();
+        expect(f.run).not.toHaveBeenCalled();
+      },
+    );
+
     it('初始化读取真实接口回值，RAM/swap分开，重复启动不重格式化已用swap', async () => {
       const f = await virtualGuest();
       const result = initialize(f.config, f.io, f.run);
