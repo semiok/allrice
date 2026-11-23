@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate as turn } from 'node:timers/promises';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readPlatformPersonVmConfiguration } from '@allrice/contracts';
 import type { ServiceBuildIdentity } from '@allrice/database';
 
 const source = vi.hoisted(() => ({ build: vi.fn() }));
@@ -193,6 +194,10 @@ describe('private production Host configuration', () => {
   it('reads only exact measured bytes after the original build verifier succeeds', async () => {
     const result = await readProductionHostConfiguration(signal());
     expect(result.configuration).toEqual(value());
+    expect(result.platform).toBe(readPlatformPersonVmConfiguration());
+    expect(result.configuration.memory.policy.physicalBytes).toBe(
+      result.platform.memoryMiB * 1024 ** 2,
+    );
     expect(result.applicationBuild).toEqual({
       sourceSha: build.sourceSha,
       sourceTree: build.sourceTree,
@@ -201,6 +206,20 @@ describe('private production Host configuration', () => {
     expect(source.build).toHaveBeenCalledWith('worker');
     expect(result).not.toHaveProperty('verified');
     expect(result).not.toHaveProperty('ready');
+  });
+  it('rejects a measured guest physical policy that differs from the platform cap without overwriting it', async () => {
+    const input = value();
+    input.memory.policy.physicalBytes = 3 * 1024 ** 3;
+    await seal(input);
+    await expect(
+      readProductionHostConfiguration(signal()),
+    ).rejects.toBeInstanceOf(ProductionHostConfigurationUnavailable);
+    expect(
+      JSON.parse(
+        await fs.readFile(join(root, '.local/person-vm-host.json'), 'utf8'),
+      ).memory.policy.physicalBytes,
+    ).toBe(input.memory.policy.physicalBytes);
+    expect(readPlatformPersonVmConfiguration().memoryMiB).toBe(2 * 1024);
   });
   it('does not accept private JSON or claimed env SHA without a verified service build', async () => {
     source.build.mockResolvedValue(null);

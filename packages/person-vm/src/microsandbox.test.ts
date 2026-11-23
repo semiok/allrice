@@ -20,6 +20,7 @@ import { createConnection, createServer } from 'node:net';
 import { once } from 'node:events';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MicrosandboxPersonVm } from './microsandbox.ts';
+import { PERSON_VM_MEMORY_MIB } from './contract.ts';
 import { runCommand } from './process.ts';
 import { context, currentReceipt, harness, signal } from './test-support.ts';
 import { PersonVmService } from './person-vm.ts';
@@ -1282,6 +1283,62 @@ fs.writeFileSync(f,JSON.stringify(v));
       join(root, 'mount/microsandbox/sandboxes'),
     );
   });
+  it.each([undefined, 3072])(
+    'writes the configured %s MiB cap to actual provider configuration and snapshots it',
+    async (memoryMiB) => {
+      const root = await directory();
+      const options = {
+        binary: '/b',
+        libkrunfw: '/fw',
+        agentd: '/a',
+        image: 'registry/node@sha256:' + 'a'.repeat(64),
+        rootDiskGiB: 20,
+        socketRoot: await socketDirectory(),
+        memoryMiB,
+        runner: async () => 'microsandbox 0.7.16',
+      };
+      const expected =
+        memoryMiB === undefined ? PERSON_VM_MEMORY_MIB : memoryMiB;
+      const native = new MicrosandboxPersonVm(options);
+      options.memoryMiB = 1;
+      await native.prepare(
+        {
+          vmId: randomUUID(),
+          personId: randomUUID(),
+          organizationId: randomUUID(),
+          instanceId: randomUUID(),
+          leaseEpoch: 1,
+        },
+        join(root, 'mount'),
+        signal(),
+      );
+      const configuration = JSON.parse(
+        await readFile(join(root, 'mount/msb-config.json'), 'utf8'),
+      );
+      expect(configuration.sandbox_defaults.memory_mib).toBe(expected);
+    },
+  );
+  it.each([null, 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER, '2048'])(
+    'rejects invalid provider MiB cap %s before native work',
+    async (memoryMiB) => {
+      const runner = vi.fn();
+      expect(() =>
+        Reflect.construct(MicrosandboxPersonVm, [
+          {
+            binary: '/b',
+            libkrunfw: '/fw',
+            agentd: '/a',
+            image: 'registry/node@sha256:' + 'a'.repeat(64),
+            rootDiskGiB: 20,
+            socketRoot: '/s',
+            memoryMiB,
+            runner,
+          },
+        ]),
+      ).toThrowError('PROVIDER_FAILED');
+      expect(runner).not.toHaveBeenCalled();
+    },
+  );
   it('不接可变镜像tag或不固定的运行版本', async () => {
     expect(
       () =>

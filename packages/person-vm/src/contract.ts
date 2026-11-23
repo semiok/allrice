@@ -1,4 +1,7 @@
-import type { RequestContext } from '@allrice/contracts';
+import {
+  readPlatformPersonVmConfiguration,
+  type RequestContext,
+} from '@allrice/contracts';
 import type {
   PersonVmBootstrapScope,
   PersonVmMemoryGuestPlan,
@@ -6,8 +9,10 @@ import type {
 import type { PersonVmWebStartup } from './web-endpoints.ts';
 
 export const PERSON_VM_CONTRACT_VERSION = 1 as const;
-export const PERSON_VM_MEMORY_MIB = 2048 as const;
-export const PERSON_VM_IDLE_MS = 20 * 60 * 1000;
+// Compatibility aliases; defaults are defined only by platform configuration.
+export const PERSON_VM_MEMORY_MIB =
+  readPlatformPersonVmConfiguration().memoryMiB;
+export const PERSON_VM_IDLE_MS = readPlatformPersonVmConfiguration().idleMs;
 export const PERSON_VM_COLD_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Host-only. Never accept this object, or RequestContext, from guest JSON. */

@@ -7,7 +7,7 @@ import {
   readServiceBuildIdentity,
   ServiceBuildManifestSchema,
 } from '@allrice/database';
-import { PERSON_VM_MEMORY_MIB } from '@allrice/person-vm';
+import { readPlatformPersonVmConfiguration } from '@allrice/contracts';
 import { z } from 'zod';
 
 const configPath = '.local/person-vm-host.json';
@@ -71,7 +71,7 @@ const configuration = z
         policyRef: z.string().trim().min(1),
         policy: z
           .object({
-            physicalBytes: z.literal(PERSON_VM_MEMORY_MIB * 1024 ** 2),
+            physicalBytes: positive,
             swapBytes: positive,
             dshLowBytes: bytes,
             dshSwapMaxBytes: bytes,
@@ -127,6 +127,11 @@ const configuration = z
       value.disk.keyRoot,
       value.native.socketRoot,
     ];
+    if (
+      value.memory.policy.physicalBytes !==
+      readPlatformPersonVmConfiguration().memoryMiB * 1024 ** 2
+    )
+      return false;
     return roots.every((root, i) =>
       roots.every(
         (other, j) =>
@@ -206,6 +211,7 @@ export async function readProductionHostConfiguration(signal: AbortSignal) {
       const value = configuration.parse(JSON.parse(contents.toString('utf8')));
       return Object.freeze({
         configuration: value,
+        platform: readPlatformPersonVmConfiguration(),
         applicationBuild: Object.freeze({
           sourceSha: build.sourceSha,
           sourceTree: build.sourceTree,

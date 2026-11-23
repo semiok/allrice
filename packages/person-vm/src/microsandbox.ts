@@ -103,6 +103,7 @@ export interface PersonVmNativePort extends PersonVmGuestBootstrapPort {
 /** Uses only the pinned public CLI. Does not edit Microsandbox's private DB. */
 export class MicrosandboxPersonVm implements PersonVmNativePort {
   private readonly run: CommandRunner;
+  private readonly memoryMiB: number;
   private readonly homes = new Map<
     string,
     { home: string; config: string; userHome: string }
@@ -116,6 +117,8 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
       readonlyDshDirectory?: ReadonlyDshDirectory;
       rootDiskGiB: number;
       socketRoot: string;
+      /** Host-only platform configuration snapshot, never guest/request input. */
+      memoryMiB?: number;
       runner?: CommandRunner;
       jobCleanupTimeoutMs?: number;
     },
@@ -131,6 +134,10 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
         : {}),
     };
     this.run = options.runner ?? runCommand;
+    this.memoryMiB =
+      options.memoryMiB === undefined
+        ? PERSON_VM_MEMORY_MIB
+        : options.memoryMiB;
     if (
       ![
         options.binary,
@@ -139,6 +146,9 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
         options.socketRoot,
       ].every(isAbsolute) ||
       !/^.+@sha256:[a-f0-9]{64}$/.test(options.image) ||
+      !Number.isSafeInteger(this.memoryMiB) ||
+      this.memoryMiB <= 0 ||
+      !Number.isSafeInteger(this.memoryMiB * 1024 ** 2) ||
       !Number.isInteger(options.rootDiskGiB) ||
       options.rootDiskGiB <= 0 ||
       !Number.isFinite(options.jobCleanupTimeoutMs ?? 10000) ||
@@ -350,7 +360,7 @@ export class MicrosandboxPersonVm implements PersonVmNativePort {
         },
         sandbox_defaults: {
           cpus: 2,
-          memory_mib: PERSON_VM_MEMORY_MIB,
+          memory_mib: this.memoryMiB,
           oci: {
             root_disk: {
               kind: 'flat',

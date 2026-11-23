@@ -111,6 +111,7 @@ export class PersonVmService
    * providers and physical store; the callbacks below never reacquire a lock. */
   createAdmissionHost(input: {
     openSql: PersonVmSqlFactory;
+    idleMs?: number;
     nativeActivity?: PersonVmNativeActivityPort;
     monotonic?: () => number;
   }) {
