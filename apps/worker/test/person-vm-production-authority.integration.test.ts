@@ -263,6 +263,7 @@ suite(
       const f = await setup(),
         vm = owner();
       await enable(f);
+      let updateCompleted = false;
       await expect(
         vm.withCurrentSelection(f.context, f.identity, signal(), async () => {
           const updated = await updateEmployeeInstance(
@@ -289,9 +290,11 @@ suite(
           expect(persisted.profile.expressionStyle).toBe(
             updated.profile.expressionStyle,
           );
+          updateCompleted = true;
           return 'old revision result';
         }),
       ).rejects.toMatchObject({ code: 'AUTHORIZATION_DENIED' });
+      expect(updateCompleted).toBe(true);
     });
     it('rejects cross-tenant metadata without trusting the supplied organization', async () => {
       const f = await setup(),
