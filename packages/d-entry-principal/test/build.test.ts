@@ -9,7 +9,7 @@ import {
   stat,
   writeFile,
 } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { dirname, resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
@@ -28,6 +28,9 @@ const require = createRequire(import.meta.url);
 const protocol = dirname(
   require.resolve('@deepseek-ai/dsh-typert-protocol/package.json'),
 );
+const values = dirname(
+  require.resolve('@deepseek-ai/dsh-util-values/package.json'),
+);
 const digest = (bytes: Uint8Array) =>
   createHash('sha256').update(bytes).digest('hex');
 describe('real official generator and same-release artifact closure', () => {
@@ -45,18 +48,29 @@ describe('real official generator and same-release artifact closure', () => {
           checkDiagnostics: true,
           rejectBuildOutputs: true,
         });
-        const declared = join(protocol, 'lib/types');
-        const source = join(scratch, 'packages/protocol/src');
-        const names = (await readdir(declared))
-          .filter((name) => name.endsWith('.d.ts'))
-          .sort();
-        expect((await readdir(source)).sort()).toEqual(
-          names.map((name) => name.replace(/\.d\.ts$/, '.ts')),
-        );
-        for (const name of names)
-          expect(
-            await readFile(join(source, name.replace(/\.d\.ts$/, '.ts'))),
-          ).toEqual(await readFile(join(declared, name)));
+        for (const [name, original] of [
+          ['protocol', protocol],
+          ['values', values],
+        ] as const) {
+          const declared = join(original, 'lib/types');
+          const staged = join(scratch, 'packages', name);
+          const source = join(staged, 'src');
+          const names = (await readdir(declared))
+            .filter((name) => name.endsWith('.d.ts'))
+            .sort();
+          if (name === 'values')
+            expect(names).toEqual(['index.d.ts', 'partial-json.d.ts']);
+          expect((await readdir(source)).sort()).toEqual(
+            names.map((name) => name.replace(/\.d\.ts$/, '.ts')),
+          );
+          expect(await readFile(join(staged, 'package.json'))).toEqual(
+            await readFile(join(original, 'package.json')),
+          );
+          for (const file of names)
+            expect(
+              await readFile(join(source, file.replace(/\.d\.ts$/, '.ts'))),
+            ).toEqual(await readFile(join(declared, file)));
+        }
         const config = JSON.parse(
           await readFile(join(scratch, 'tsconfig.host.json'), 'utf8'),
         );
@@ -80,11 +94,18 @@ describe('real official generator and same-release artifact closure', () => {
               targets.map((target) => resolve(root, '../..', target)),
           );
         expect(
+          config.compilerOptions.paths['@deepseek-ai/dsh-util-values'],
+        ).toEqual([join(scratch, 'packages/values/src/index.ts')]);
+        expect(
+          config.compilerOptions.paths['@deepseek-ai/dsh-typert-protocol'],
+        ).toEqual([join(scratch, 'packages/protocol/src/index.ts')]);
+        expect(
           config.references.map((entry: { path: string }) => entry.path),
         ).toEqual([
           join(scratch, 'packages/d-entry-principal'),
           join(scratch, 'packages/contracts'),
           join(scratch, 'packages/protocol'),
+          join(scratch, 'packages/values'),
         ]);
         const contracts = resolve(root, '../contracts');
         const contractManifest = JSON.parse(
@@ -157,6 +178,25 @@ describe('real official generator and same-release artifact closure', () => {
       expect(() => uplink.codec.create().parse('cancelScope')).toThrow();
     }
   });
+  it('retains legal native JSON emit fields and rejects non-JSON values in the generated stream result codec', () => {
+    const codec =
+      TYPERT_REMOTE.methods['allricePrincipal/streamScoped'].result.create();
+    const frame = {
+      type: 'item',
+      scopeId: randomUUID(),
+      value: {
+        type: 'emit',
+        event: 'codec-domain-only',
+        args: [null, true, false, '', -7, 0, [1, { nested: ['x', null] }]],
+      },
+    };
+    // Codec coverage supplies no notification permission to the product Peer.
+    expect(codec.parse(frame)).toEqual(frame);
+    for (const args of [[undefined], [Infinity], [() => undefined]])
+      expect(() =>
+        codec.parse({ ...frame, value: { ...frame.value, args } }),
+      ).toThrow();
+  });
   it('publishes a closed manifest only after every generated/Node/Host byte is sealed', async () => {
     const manifest = JSON.parse(
       await readFile(
@@ -194,82 +234,100 @@ describe('real official generator and same-release artifact closure', () => {
     ).toBe(true);
   });
   it('removes only its scratch when the analysis consumer rejects and leaves dependency symlink targets intact', async () => {
-    const original = await readFile(join(protocol, 'lib/types/index.d.ts'));
+    const originals = await Promise.all(
+      [protocol, values].map(async (path) => ({
+        path,
+        bytes: await readFile(join(path, 'lib/types/index.d.ts')),
+      })),
+    );
     const failure = Error('analysis consumer rejected');
     let scratch = '';
-    let dependencyTarget = '';
+    let dependencyTargets: string[] = [];
     await expect(
       withPrincipalGeneratorInput(async (options: WorkspaceAnalyzerOptions) => {
         scratch = options.root;
-        dependencyTarget = await realpath(
-          join(scratch, 'packages/protocol/node_modules'),
+        dependencyTargets = await Promise.all(
+          ['protocol', 'values'].map((name) =>
+            realpath(join(scratch, 'packages', name, 'node_modules')),
+          ),
         );
         throw failure;
       }),
     ).rejects.toBe(failure);
     await expect(stat(scratch)).rejects.toMatchObject({ code: 'ENOENT' });
-    expect((await stat(dependencyTarget)).isDirectory()).toBe(true);
-    expect(digest(await readFile(join(protocol, 'lib/types/index.d.ts')))).toBe(
-      digest(original),
+    for (const target of dependencyTargets)
+      expect((await stat(target)).isDirectory()).toBe(true);
+    for (const { path, bytes } of originals)
+      expect(digest(await readFile(join(path, 'lib/types/index.d.ts')))).toBe(
+        digest(bytes),
+      );
+  });
+  describe.each([
+    ['protocol', protocol, 'PROTOCOL'],
+    ['values', values, 'VALUES'],
+  ] as const)('%s declaration closure', (name, original, label) => {
+    it.each(['hash', 'closure', 'metadata'] as const)(
+      'rejects %s drift before the official analyzer without changing the provided declaration source',
+      async (drift) => {
+        const fixture = await realpath(
+          await mkdtemp(join(tmpdir(), `principal-${name}-negative-`)),
+        );
+        const isolated = join(fixture, name);
+        try {
+          await mkdir(isolated);
+          await cp(
+            join(original, 'package.json'),
+            join(isolated, 'package.json'),
+          );
+          await cp(join(original, 'lib/types'), join(isolated, 'lib/types'), {
+            recursive: true,
+          });
+          if (drift === 'hash')
+            await writeFile(
+              join(isolated, 'lib/types/index.d.ts'),
+              Buffer.concat([
+                await readFile(join(isolated, 'lib/types/index.d.ts')),
+                Buffer.from('\n'),
+              ]),
+            );
+          else if (drift === 'closure')
+            await writeFile(
+              join(isolated, 'lib/types/unexpected.d.ts'),
+              'export {};\n',
+            );
+          else {
+            const changed = JSON.parse(
+              await readFile(join(isolated, 'package.json'), 'utf8'),
+            );
+            changed.version = 'different';
+            await writeFile(
+              join(isolated, 'package.json'),
+              JSON.stringify(changed),
+            );
+          }
+          const before = await readFile(join(isolated, 'lib/types/index.d.ts'));
+          let analyzed = false;
+          await expect(
+            withPrincipalGeneratorInput(
+              () => {
+                analyzed = true;
+              },
+              name === 'protocol' ? isolated : protocol,
+              name === 'values' ? isolated : values,
+            ),
+          ).rejects.toThrow(
+            drift === 'metadata'
+              ? `PRINCIPAL_${label}_PACKAGE_CHANGED`
+              : `PRINCIPAL_${label}_DECLARATIONS_CHANGED`,
+          );
+          expect(analyzed).toBe(false);
+          expect(
+            await readFile(join(isolated, 'lib/types/index.d.ts')),
+          ).toEqual(before);
+        } finally {
+          await rm(fixture, { recursive: true, force: true });
+        }
+      },
     );
   });
-  it.each(['hash', 'closure', 'metadata'] as const)(
-    'rejects %s drift before the official analyzer without changing the provided declaration source',
-    async (drift) => {
-      const fixture = await realpath(
-        await mkdtemp(join(tmpdir(), 'principal-protocol-negative-')),
-      );
-      const isolated = join(fixture, 'protocol');
-      try {
-        await mkdir(isolated);
-        await cp(
-          join(protocol, 'package.json'),
-          join(isolated, 'package.json'),
-        );
-        await cp(join(protocol, 'lib/types'), join(isolated, 'lib/types'), {
-          recursive: true,
-        });
-        if (drift === 'hash')
-          await writeFile(
-            join(isolated, 'lib/types/index.d.ts'),
-            Buffer.concat([
-              await readFile(join(isolated, 'lib/types/index.d.ts')),
-              Buffer.from('\n'),
-            ]),
-          );
-        else if (drift === 'closure')
-          await writeFile(
-            join(isolated, 'lib/types/unexpected.d.ts'),
-            'export {};\n',
-          );
-        else {
-          const changed = JSON.parse(
-            await readFile(join(isolated, 'package.json'), 'utf8'),
-          );
-          changed.version = 'different';
-          await writeFile(
-            join(isolated, 'package.json'),
-            JSON.stringify(changed),
-          );
-        }
-        const before = await readFile(join(isolated, 'lib/types/index.d.ts'));
-        let analyzed = false;
-        await expect(
-          withPrincipalGeneratorInput(() => {
-            analyzed = true;
-          }, isolated),
-        ).rejects.toThrow(
-          drift === 'metadata'
-            ? 'PRINCIPAL_PROTOCOL_PACKAGE_CHANGED'
-            : 'PRINCIPAL_PROTOCOL_DECLARATIONS_CHANGED',
-        );
-        expect(analyzed).toBe(false);
-        expect(await readFile(join(isolated, 'lib/types/index.d.ts'))).toEqual(
-          before,
-        );
-      } finally {
-        await rm(fixture, { recursive: true, force: true });
-      }
-    },
-  );
 });

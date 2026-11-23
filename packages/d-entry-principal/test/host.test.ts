@@ -205,6 +205,175 @@ describe('public rc.2 Host issuer, generated faces and real in-process Node carr
     await close(scope.handle, scope.iterator);
   });
 
+  it('uses the real native Gateway JSON guard before broadcast and removes its event registration on an invalid source value', async () => {
+    const fixture = await setup();
+    // An isolated native owner exercises the Gateway source contract. The
+    // issued AllRice non-owner policy above remains unchanged and denies emits.
+    const peer = fixture.host.connection.createPeer({
+      principal: { kind: 'owner' },
+      interactions: 'answer',
+    });
+    const source = await fixture.host.typertGateway.wireStream.open(
+      '$events',
+      { args: {} },
+      { async *[Symbol.asyncIterator]() {} },
+      peer,
+      new AbortController().signal,
+    );
+    const iterator = source[Symbol.asyncIterator]();
+    try {
+      expect(await iterator.next()).toMatchObject({
+        value: {
+          type: 'ready',
+          clientId: expect.any(String),
+          host: { home: '/home/native-fixture' },
+        },
+      });
+      const args = [null, false, 'native', -2, [1, { nested: true }]];
+      fixture.emit({ event: 'native-json-domain-only', args });
+      expect(await iterator.next()).toEqual({
+        done: false,
+        value: { type: 'emit', event: 'native-json-domain-only', args },
+      });
+      const pending = iterator.next();
+      fixture.emit({ event: 'invalid-before-broadcast', args: [undefined] });
+      // The official registration fails and ends its queue. It does not
+      // promise the same TypeError to every connected consumer.
+      expect(await pending).toMatchObject({ done: true });
+      expect(fixture.host.typertGateway.hasLiveClient()).toBe(false);
+      const unavailable = await fixture.host.typertGateway.wireStream.open(
+        '$events',
+        { args: {} },
+        { async *[Symbol.asyncIterator]() {} },
+        peer,
+        new AbortController().signal,
+      );
+      await expect(
+        unavailable[Symbol.asyncIterator]().next(),
+      ).rejects.toMatchObject({ code: 'gateway/service-unavailable' });
+    } finally {
+      await iterator.return?.();
+      await peer.dispose();
+    }
+  });
+
+  it.each([
+    { name: 'undefined', args: () => [undefined] },
+    { name: 'negative zero', args: () => [-0] },
+    { name: 'non-finite number', args: () => [Infinity] },
+    { name: 'function', args: () => [() => undefined] },
+    { name: 'symbol', args: () => [Symbol('not-json')] },
+    { name: 'bigint', args: () => [1n] },
+    { name: 'sparse array', args: () => Array<unknown>(1) },
+    {
+      name: 'extra array own key',
+      args: () => Object.assign([1], { extra: true }),
+    },
+    {
+      name: 'cycle',
+      args: () => {
+        const values: unknown[] = [];
+        values.push(values);
+        return values;
+      },
+    },
+  ])(
+    'rejects $name in original emit args at the owned boundary, joins the real event iterator and leaves a sibling activity live',
+    async ({ args }) => {
+      const fixture = await setup();
+      const scope = await opened(fixture);
+      const entered = deferred(),
+        release = deferred();
+      let joined = false;
+      const open = fixture.host.typertGateway.wireStream.open.bind(
+        fixture.host.typertGateway.wireStream,
+      );
+      const fault = vi
+        .spyOn(fixture.host.typertGateway.wireStream, 'open')
+        .mockImplementation(async (...input) => {
+          const source = await open(...input);
+          if (input[0] !== '$events') return source;
+          return {
+            [Symbol.asyncIterator]() {
+              const iterator = source[Symbol.asyncIterator]();
+              let reads = 0;
+              return {
+                async next(): Promise<IteratorResult<unknown>> {
+                  if (++reads === 1) return iterator.next();
+                  // Negative output corruption occurs after the actual native
+                  // ready. No synthetic positive emit or permission is used.
+                  return {
+                    done: false,
+                    value: {
+                      type: 'emit',
+                      event: 'corrupted-after-gateway',
+                      args: args(),
+                    },
+                  };
+                },
+                async return(): Promise<IteratorResult<unknown>> {
+                  entered.resolve();
+                  await release.promise;
+                  const result = await iterator.return?.();
+                  joined = true;
+                  return result ?? { done: true, value: undefined };
+                },
+              };
+            },
+          };
+        });
+      const handle = TYPERT_REMOTE.methods[
+        'allricePrincipal/streamScoped'
+      ].invoke(fixture.node.remote, {
+        call: {
+          kind: 'events',
+          scopeId: fixture.selected.scopeId,
+          payload: { args: {} },
+        },
+      });
+      const iterator = handle[Symbol.asyncIterator]();
+      expect(await iterator.next()).toMatchObject({
+        value: { type: 'item', value: { type: 'ready' } },
+      });
+      const pending = iterator.next();
+      let settled = false;
+      void pending.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      await entered.promise;
+      try {
+        expect(settled).toBe(false);
+        expect(joined).toBe(false);
+      } finally {
+        release.resolve();
+      }
+      await expect(pending).rejects.toBeDefined();
+      expect(joined).toBe(true);
+      expect(await iterator.next()).toMatchObject({ done: true });
+      fault.mockRestore();
+      const sibling = TYPERT_REMOTE.methods[
+        'allricePrincipal/streamScoped'
+      ].invoke(fixture.node.remote, {
+        call: {
+          kind: 'events',
+          scopeId: fixture.selected.scopeId,
+          payload: { args: {} },
+        },
+      });
+      const siblingIterator = sibling[Symbol.asyncIterator]();
+      expect(await siblingIterator.next()).toMatchObject({
+        value: { type: 'item', value: { type: 'ready' } },
+      });
+      await close(sibling, siblingIterator);
+      await close(scope.handle, scope.iterator);
+    },
+  );
+
   it.each(['remoteAccess/follow', 'session/follow'] as const)(
     'typed close joins the real pending second next/return of %s before exact closed/end',
     async (endpoint) => {

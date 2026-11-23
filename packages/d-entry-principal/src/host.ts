@@ -3,6 +3,7 @@ import {
   Remote,
   TypertRemoteService,
   isTypertRemoteMethod,
+  isRemoteJsonValue,
   remoteErrorOf,
   type PeerScope,
   type RemoteStream,
@@ -10,6 +11,7 @@ import {
   type TypertRemoteMethod,
 } from '@deepseek-ai/dsh-typert-protocol';
 import type { TypertContribution } from '@deepseek-ai/dsh-typert-registry';
+import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type {} from '@deepseek-ai/dsh-client-connection';
 import type {} from '@deepseek-ai/dsh-api-gateway';
 import type {} from '@deepseek-ai/dsh-api-session-controller';
@@ -651,7 +653,9 @@ class PrincipalService extends TypertRemoteService {
                 .object({
                   type: z.literal('emit'),
                   event: z.string().min(1),
-                  args: z.array(z.unknown()),
+                  args: z.custom<readonly JsonValue[]>(
+                    (value) => Array.isArray(value) && isRemoteJsonValue(value),
+                  ),
                 })
                 .strict(),
             ])

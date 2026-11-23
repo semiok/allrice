@@ -55,19 +55,29 @@ const protocolDeclarations = {
   'types.d.ts':
     '0012b113b2b7518a19c0a5ccb637abb1c70cda29e59709c0b715627aa4634b98',
 };
+const valuesDeclarations = {
+  'index.d.ts':
+    '76f14f1093bcea3a76e05ca8b8337894184617af5fae01530718b620dc3dc20a',
+  'partial-json.d.ts':
+    'd078e55e06f901888dfcca04a77c5169a60abc1b3f5794c387b885c72ad9f6ef',
+};
 
 /** Build-only input adapter, shared with its direct tests. The CLI always uses
- * the installed public protocol export; the optional path permits isolated
+ * the installed public package exports; optional paths permit isolated
  * corruption fixtures without ever changing an installed dependency.
  * @template T
  * @param {(options: import('@deepseek-ai/dsh-typert-generator').WorkspaceAnalyzerOptions) => T | Promise<T>} consume
  * @param {string} protocol
+ * @param {string} values
  * @returns {Promise<T>}
  */
 export async function withPrincipalGeneratorInput(
   consume,
   protocol = dirname(
     require.resolve('@deepseek-ai/dsh-typert-protocol/package.json'),
+  ),
+  values = dirname(
+    require.resolve('@deepseek-ai/dsh-util-values/package.json'),
   ),
 ) {
   const createdScratch = await mkdtemp(
@@ -78,6 +88,7 @@ export async function withPrincipalGeneratorInput(
     const nativeRoot = join(scratch, 'packages/d-entry-principal');
     const contractsRoot = join(scratch, 'packages/contracts');
     const protocolRoot = join(scratch, 'packages/protocol');
+    const valuesRoot = join(scratch, 'packages/values');
     const sourcePackages = [
       [root, nativeRoot],
       [join(workspace, 'packages/contracts'), contractsRoot],
@@ -113,41 +124,61 @@ export async function withPrincipalGeneratorInput(
         'dir',
       );
     }
-    const protocolManifest = await readFile(join(protocol, 'package.json'));
-    const metadata = JSON.parse(protocolManifest.toString());
-    if (
-      metadata.name !== '@deepseek-ai/dsh-typert-protocol' ||
-      metadata.version !== dshVersion ||
-      digest(protocolManifest) !==
-        '7d989625c8ecc8f5f42457d2aae6acb7aba9db735ba45fed223d0608e2c62b0d'
-    )
-      throw Error('PRINCIPAL_PROTOCOL_PACKAGE_CHANGED');
-    const declared = join(protocol, 'lib/types');
-    const names = (await readdir(declared))
-      .filter((name) => name.endsWith('.d.ts'))
-      .sort();
-    if (names.join(',') !== Object.keys(protocolDeclarations).sort().join(','))
-      throw Error('PRINCIPAL_PROTOCOL_DECLARATIONS_CHANGED');
-    const source = join(protocolRoot, 'src');
-    await mkdir(source, { recursive: true });
-    await writeFile(join(protocolRoot, 'package.json'), protocolManifest);
-    for (const name of names) {
-      const bytes = await readFile(join(declared, name));
-      if (digest(bytes) !== protocolDeclarations[name])
-        throw Error('PRINCIPAL_PROTOCOL_DECLARATIONS_CHANGED');
-      const target = join(source, name.replace(/\.d\.ts$/, '.ts'));
-      await writeFile(target, bytes);
-      if (digest(await readFile(target)) !== protocolDeclarations[name])
-        throw Error('PRINCIPAL_PROTOCOL_COPY_CHANGED');
+    for (const input of [
+      {
+        name: '@deepseek-ai/dsh-typert-protocol',
+        originalRoot: protocol,
+        stagedRoot: protocolRoot,
+        hash: '7d989625c8ecc8f5f42457d2aae6acb7aba9db735ba45fed223d0608e2c62b0d',
+        declarations: protocolDeclarations,
+        label: 'PROTOCOL',
+      },
+      {
+        name: '@deepseek-ai/dsh-util-values',
+        originalRoot: values,
+        stagedRoot: valuesRoot,
+        hash: '6922c24c0d397eaead3e371ed0c1595a3f6cb65bebffb81c832c4389ddd3c71d',
+        declarations: valuesDeclarations,
+        label: 'VALUES',
+      },
+    ]) {
+      const originalManifest = await readFile(
+        join(input.originalRoot, 'package.json'),
+      );
+      const metadata = JSON.parse(originalManifest.toString());
+      if (
+        metadata.name !== input.name ||
+        metadata.version !== dshVersion ||
+        digest(originalManifest) !== input.hash
+      )
+        throw Error(`PRINCIPAL_${input.label}_PACKAGE_CHANGED`);
+      const declared = join(input.originalRoot, 'lib/types');
+      const names = (await readdir(declared))
+        .filter((name) => name.endsWith('.d.ts'))
+        .sort();
+      if (names.join(',') !== Object.keys(input.declarations).sort().join(','))
+        throw Error(`PRINCIPAL_${input.label}_DECLARATIONS_CHANGED`);
+      const source = join(input.stagedRoot, 'src');
+      await mkdir(source, { recursive: true });
+      await writeFile(join(input.stagedRoot, 'package.json'), originalManifest);
+      for (const name of names) {
+        const bytes = await readFile(join(declared, name));
+        if (digest(bytes) !== input.declarations[name])
+          throw Error(`PRINCIPAL_${input.label}_DECLARATIONS_CHANGED`);
+        const target = join(source, name.replace(/\.d\.ts$/, '.ts'));
+        await writeFile(target, bytes);
+        if (digest(await readFile(target)) !== input.declarations[name])
+          throw Error(`PRINCIPAL_${input.label}_COPY_CHANGED`);
+      }
+      await symlink(
+        dirname(dirname(input.originalRoot)),
+        join(input.stagedRoot, 'node_modules'),
+        'dir',
+      );
     }
     await symlink(
       join(workspace, 'node_modules'),
       join(scratch, 'node_modules'),
-      'dir',
-    );
-    await symlink(
-      dirname(dirname(protocol)),
-      join(protocolRoot, 'node_modules'),
       'dir',
     );
     // rc.2 checks each source project with rootDir fixed to the analyzer root.
@@ -176,7 +207,10 @@ export async function withPrincipalGeneratorInput(
       compilerOptions: {
         paths: {
           ...paths,
-          '@deepseek-ai/dsh-typert-protocol': [join(source, 'index.ts')],
+          '@deepseek-ai/dsh-typert-protocol': [
+            join(protocolRoot, 'src/index.ts'),
+          ],
+          '@deepseek-ai/dsh-util-values': [join(valuesRoot, 'src/index.ts')],
         },
       },
       include: ['src/**/*.ts'],
@@ -184,6 +218,7 @@ export async function withPrincipalGeneratorInput(
     for (const [originalRoot, packageRoot] of [
       ...sourcePackages,
       [root, protocolRoot],
+      [root, valuesRoot],
     ])
       await writeFile(
         join(packageRoot, 'tsconfig.json'),
@@ -198,9 +233,9 @@ export async function withPrincipalGeneratorInput(
         ...config,
         include: [],
         files: [],
-        references: [nativeRoot, contractsRoot, protocolRoot].map((path) => ({
-          path,
-        })),
+        references: [nativeRoot, contractsRoot, protocolRoot, valuesRoot].map(
+          (path) => ({ path }),
+        ),
       }),
     );
     return await consume({

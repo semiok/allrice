@@ -3,6 +3,7 @@ import { DEntryIdentitySchema, UuidSchema } from '@allrice/contracts';
 import type { Context } from '@deepseek-ai/cordis';
 import type { DEntryIdentity } from '@allrice/contracts';
 import type { RemoteAccessBaseline } from '@deepseek-ai/dsh-api-remote-access';
+import type { JsonValue } from '@deepseek-ai/dsh-util-values';
 import type { TYPERT_REMOTE as Native } from '@deepseek-ai/dsh-api-session-controller/remote';
 import type { TYPERT_REMOTE as Access } from '@deepseek-ai/dsh-api-remote-access/remote';
 import type {
@@ -91,6 +92,11 @@ export type DEntryScopedStreamCall =
       scopeId: string;
       payload: typeof REMOTE_EVENT_STREAM_PAYLOAD;
     }>;
+type ScopedEventFrame =
+  | Extract<RemoteEventDownlinkFrame, { type: 'ready' }>
+  | (Omit<Extract<RemoteEventDownlinkFrame, { type: 'emit' }>, 'args'> & {
+      readonly args: readonly JsonValue[];
+    });
 export type DEntryScopedStreamFrame =
   | Readonly<{ type: 'closed'; scopeId: string }>
   | Readonly<{
@@ -99,7 +105,7 @@ export type DEntryScopedStreamFrame =
       value:
         | OutputOf<NativeMethods['session/follow']>
         | OutputOf<AccessMethods['remoteAccess/follow']>
-        | Extract<RemoteEventDownlinkFrame, { type: 'ready' | 'emit' }>;
+        | ScopedEventFrame;
     }>;
 export interface DEntryPrincipalControlScope {
   readonly opened: Extract<ScopeFrame, { type: 'opened' }>;
